@@ -1,0 +1,7 @@
+dist/
+node_modules/
+coverage/
+.cache/
+pnpm-lock.yaml
+*.md
+fixtures/

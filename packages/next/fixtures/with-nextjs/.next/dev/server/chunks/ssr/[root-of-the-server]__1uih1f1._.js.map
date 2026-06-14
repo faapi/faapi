@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 10, "column": 0}, "map": {"version":3,"sources":["file:///Users/tu/workspace/github/faapi/packages/next/fixtures/with-nextjs/app/dynamic/%5Bslug%5D/page.tsx"],"sourcesContent":["// Next.js 动态路由页面（Next.js 16 params 为 Promise，需 async 访问）\nexport default async function DynamicPage({\n  params,\n}: {\n  params: Promise<{ slug: string }>;\n}) {\n  const { slug } = await params;\n  return (\n    <div>\n      <h1>Dynamic: {slug}</h1>\n      <p>Next.js dynamic route.</p>\n    </div>\n  );\n}\n"],"names":["DynamicPage","params","slug"],"mappings":"AAAA,yDAAyD;;;;;;;AAC1C,eAAeA,YAAY,EACxCC,MAAM,EAGP;IACC,MAAM,EAAEC,IAAI,EAAE,GAAG,MAAMD;IACvB,qBACE,mYAAC;;0BACC,mYAAC;;oBAAG;oBAAUC;;;;;;;0BACd,mYAAC;0BAAE;;;;;;;;;;;;AAGT"}}]
+}
