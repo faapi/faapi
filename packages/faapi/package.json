@@ -15,14 +15,13 @@
     "faapi": "./dist/cli/index.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsup",
-    "prepublishOnly": "pnpm build",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },

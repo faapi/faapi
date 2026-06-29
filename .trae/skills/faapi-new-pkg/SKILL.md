@@ -60,11 +60,10 @@ packages/<name>/
   "exports": {
     ".": { "types": "./src/index.ts", "import": "./src/index.ts" }
   },
-  "engines": { "node": ">=22" },
+  "engines": { "node": ">=24" },
   "files": ["dist"],
   "scripts": {
     "build": "tsup",
-    "prepublishOnly": "pnpm build",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
