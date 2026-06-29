@@ -410,6 +410,175 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 - 代码质量：`eslint`（flat config）+ `prettier` + `husky` + `lint-staged` + `commitlint`
 - 版本与发布：`@changesets/cli` + `@changesets/changelog-github`，CI 由 GitHub Actions 驱动
 
+### 6.5 新增子包配置清单
+
+新增 `@faapi/<name>` 子包时，按本清单逐项配置，确保与现有三个包一致并通过 Trusted Publisher（OIDC）发布。
+
+#### 6.5.1 目录结构
+
+```
+packages/<name>/
+├── src/
+│   └── index.ts
+├── LICENSE            # MIT，从其他包复制
+├── README.md
+├── package.json
+├── tsconfig.json
+├── tsup.config.ts
+└── vitest.config.ts
+```
+
+#### 6.5.2 `package.json` 必需字段
+
+```json
+{
+  "name": "@faapi/<name>",
+  "version": "0.0.0-canary.0",
+  "description": "...",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": { "types": "./src/index.ts", "import": "./src/index.ts" }
+  },
+  "engines": { "node": ">=22" },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "pnpm build",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/faapi/faapi.git",
+    "directory": "packages/<name>"
+  },
+  "bugs": { "url": "https://github.com/faapi/faapi/issues" },
+  "keywords": [...],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    }
+  }
+}
+```
+
+要点：
+
+- `version` 固定 `0.0.0-canary.0`，canary 阶段不递增（canary 版本由 CI 基于 git hash 生成）。
+- `repository.directory` 指向 `packages/<name>`。
+- `publishConfig.provenance: true` 必填，否则无法通过 Trusted Publisher 发布。
+- 依赖主包时加 `"dependencies": { "@faapi/faapi": "workspace:*" }`。
+
+#### 6.5.3 `tsconfig.json`（固定模板）
+
+```json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"]
+}
+```
+
+含 e2e 测试时加 `"exclude": ["src/**/*.e2e.test.ts"]`，避免 tsc 检查 e2e 深路径导入。
+
+#### 6.5.4 `tsup.config.ts`
+
+```ts
+import { defineConfig } from 'tsup';
+
+export default defineConfig({
+  entry: ['src/index.ts'],
+  format: ['esm'],
+  dts: true,
+  clean: true,
+  splitting: false,
+  sourcemap: true,
+  platform: 'node',
+  external: ['node:*', '@faapi/faapi'],
+});
+```
+
+`external` 至少包含 `node:*` 和 `@faapi/faapi`；有第三方 peer 依赖（如 `next`）一并加入。
+
+#### 6.5.5 `vitest.config.ts`（依赖主包时需 alias）
+
+```ts
+import { defineConfig } from 'vitest/config';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      '@faapi/faapi/src': path.resolve(__dirname, '../faapi/src'),
+      '@faapi/faapi': path.resolve(__dirname, '../faapi/src/index.ts'),
+    },
+  },
+  test: {
+    globals: true,
+    include: ['src/**/*.test.{ts,tsx}'],
+    exclude: ['node_modules', 'dist'],
+    testTimeout: 15000,
+    fileParallelism: true,
+    maxWorkers: '50%',
+  },
+});
+```
+
+E2E 测试含服务器启动时追加 `pool: 'forks'`（worker 线程易崩溃）。
+
+#### 6.5.6 `.changeset/config.json` — 加入 fixed 数组
+
+```json
+"fixed": [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/<name>"]]
+```
+
+fixed 模式强制所有包统一版本号，新增包必须加入此数组。
+
+#### 6.5.7 新增 changeset
+
+- 首次发布：创建 `.changeset/<name>-init.md`，frontmatter 声明 `"@faapi/<name>": major`。
+- 日常用户可见变更：新增描述性 `.changeset/*.md`，声明对应版本类型（`major`/`minor`/`patch`）。
+- canary 阶段不执行 `pnpm changeset version`，changeset 累积到首次正式发版时统一消费。
+
+#### 6.5.8 无需修改的文件（已自动化）
+
+| 文件 | 原因 |
+|------|------|
+| `pnpm-workspace.yaml` | 已用 `packages/*` 通配 |
+| `eslint.config.js` | 全局 `**/*.ts` 覆盖 |
+| `.github/workflows/ci.yml` | `pnpm -r run` 递归 |
+| `.github/workflows/release.yml` | `pnpm -r publish` 递归 |
+
+#### 6.5.9 npm 端手动配置（无法自动化）
+
+每个新包需在 npm 网站单独配置 Trusted Publisher 记录：
+
+- 包页面 → Settings → Publishing access → Trusted Publishers
+- Repository owner：`faapi`
+- Repository name：`faapi`
+- Workflow filename：`.github/workflows/release.yml`
+- Environment：留空
+
+#### 6.5.10 验证
+
+1. `pnpm install` —— 链接 workspace
+2. `pnpm -r run typecheck` / `lint` / `test` / `build` —— 全部通过
+3. push 到 main 触发 canary 发布，确认新包以 `0.0.0-canary.<hash>` 发布到 npm `canary` tag
+
 ## 7. 验收标准
 
 ### 7.1 第一版核心验收

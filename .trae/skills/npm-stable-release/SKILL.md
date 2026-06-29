@@ -87,7 +87,7 @@ cd "$TMPDIR"
 
 # 初始化并安装 canary 版本
 npm init -y > /dev/null 2>&1
-npm install @faapi/faapi@$CANARY_VERSION @faapi/schema@$CANARY_VERSION > /dev/null 2>&1
+npm install @faapi/faapi@$CANARY_VERSION @faapi/schema@$CANARY_VERSION @faapi/next@$CANARY_VERSION > /dev/null 2>&1
 
 # 验证 CLI 可运行
 npx faapi --version 2>&1 || echo "CLI check failed"
@@ -97,6 +97,9 @@ node -e "import('@faapi/faapi').then(m => console.log('faapi exports:', Object.k
 
 # 验证 schema 包可导入
 node -e "import('@faapi/schema').then(m => console.log('schema default export:', typeof m.default))" 2>&1
+
+# 验证 next 包可导入
+node -e "import('@faapi/next').then(m => console.log('next exports:', Object.keys(m).length > 0))" 2>&1
 
 cd - > /dev/null
 rm -rf "$TMPDIR"
@@ -166,17 +169,18 @@ fi
 **多类改动混合时,取最高 bump type**(major > minor > patch > none)。
 
 **特殊情况**:
-- 改了 `@faapi/faapi` 和 `@faapi/schema` 两个包 → 因 `fixed` 配置,两个包都标同一个 bump type
-- 只改了 `@faapi/schema` → 仍然两个包都标(因 `fixed` 配置强制同步)
+- 改了 `@faapi/faapi` / `@faapi/schema` / `@faapi/next` 中的任意一个或多个 → 因 `fixed` 配置,三个包都标同一个 bump type
+- 只改了 `@faapi/schema`(或 `@faapi/next`) → 仍然三个包都标(因 `fixed` 配置强制同步)
 - 改动只在 devDependencies → none(不影响运行时)
 
 ##### 4.3 判断影响的包
 
 - 改动 `packages/faapi/src/**` → `@faapi/faapi`
 - 改动 `packages/schema/src/**` → `@faapi/schema`
-- 两者都改 → 两个包都标
+- 改动 `packages/next/src/**` → `@faapi/next`
+- 多个都改 → 实际影响的包都标
 
-**因 `fixed` 配置,实际会取最高 bump type 同步升级两个包**,但 changeset 文件里仍按实际影响的包标注。
+**因 `fixed` 配置,实际会取最高 bump type 同步升级三个包**,但 changeset 文件里仍按实际影响的包标注。
 
 ##### 4.4 询问用户确认
 
@@ -184,7 +188,7 @@ fi
 
 ```
 基于 git diff 分析:
-- 影响包: @faapi/faapi, @faapi/schema
+- 影响包: @faapi/faapi, @faapi/schema, @faapi/next
 - 建议 bump type: minor (新增了 xxx 功能,导出了 xxx)
 - 变更描述: <自动生成的简短描述>
 
@@ -203,6 +207,7 @@ fi
 ---
 "@faapi/faapi": <bump_type>
 "@faapi/schema": <bump_type>
+"@faapi/next": <bump_type>
 ---
 
 <变更描述,会写入 CHANGELOG>
@@ -248,7 +253,7 @@ pnpm changeset version
 - 更新 `packages/*/CHANGELOG.md`
 - 删除已消费的 changeset 文件
 
-**fixed 配置保证两包版本同步**:即使 changeset 只标记其中一个包,[.changeset/config.json](file:///Users/tu/workspace/github/faapi/.changeset/config.json) 的 `fixed: ["@faapi/faapi", "@faapi/schema"]` 会让两个包版本号保持一致(取最高 bump type)。
+**fixed 配置保证三包版本同步**:即使 changeset 只标记其中一个包,[.changeset/config.json](file:///Users/tu/workspace/github/faapi/.changeset/config.json) 的 `fixed: [["@faapi/faapi", "@faapi/schema", "@faapi/next"]]` 会让三个包版本号保持一致(取最高 bump type)。
 
 ### 7. 验证版本升级
 
@@ -259,14 +264,15 @@ node -p "require('./packages/faapi/package.json').version"
 
 对比 `OLD_VERSION`,确认版本号已升级。若未变,说明 changeset 文件的 bump type 有问题,中止流程。
 
-### 8. 验证两包版本同步
+### 8. 验证三包版本同步
 
 ```bash
 FAAPI_VERSION=$(node -p "require('./packages/faapi/package.json').version")
 SCHEMA_VERSION=$(node -p "require('./packages/schema/package.json').version")
+NEXT_VERSION=$(node -p "require('./packages/next/package.json').version")
 ```
 
-两个版本必须一致(因 fixed 配置)。若不一致,中止流程并提示检查 changeset config。
+三个版本必须一致(因 fixed 配置)。若不一致,中止流程并提示检查 changeset config。
 
 ### 9. 本地验证(发版前)
 
@@ -285,6 +291,7 @@ pnpm test
 # 验证构建产物可导入
 node -e "import('./packages/faapi/dist/index.js').then(m => console.log('faapi OK:', Object.keys(m).length > 0))"
 node -e "import('./packages/schema/dist/index.js').then(m => console.log('schema OK:', typeof m.default === 'object'))"
+node -e "import('./packages/next/dist/index.js').then(m => console.log('next OK:', Object.keys(m).length > 0))"
 ```
 
 **任一验证失败则中止**,提示用户修复后重试。
@@ -328,20 +335,23 @@ CI 跑完后(约 2-3 分钟),完整验证:
 # 1. 验证 npm 版本号
 npm view @faapi/faapi version      # 应输出 NEW_VERSION
 npm view @faapi/schema version     # 应输出 NEW_VERSION
+npm view @faapi/next version       # 应输出 NEW_VERSION
 
 # 2. 验证 dist-tags
 npm view @faapi/faapi dist-tags    # latest 应指向 NEW_VERSION
 npm view @faapi/schema dist-tags   # latest 应指向 NEW_VERSION
+npm view @faapi/next dist-tags     # latest 应指向 NEW_VERSION
 
 # 3. 验证安装(dry-run,不实际安装)
 npm install @faapi/faapi@$NEW_VERSION --dry-run
 npm install @faapi/schema@$NEW_VERSION --dry-run
+npm install @faapi/next@$NEW_VERSION --dry-run
 
 # 4. 验证运行(临时目录)
 TMPDIR=$(mktemp -d)
 cd "$TMPDIR"
 npm init -y > /dev/null 2>&1
-npm install @faapi/faapi@$NEW_VERSION @faapi/schema@$NEW_VERSION > /dev/null 2>&1
+npm install @faapi/faapi@$NEW_VERSION @faapi/schema@$NEW_VERSION @faapi/next@$NEW_VERSION > /dev/null 2>&1
 
 # 验证 CLI 可运行
 npx faapi --version 2>&1
@@ -351,6 +361,9 @@ node -e "import('@faapi/faapi').then(m => console.log('faapi exports:', Object.k
 
 # 验证 schema 包可导入
 node -e "import('@faapi/schema').then(m => console.log('schema default:', typeof m.default === 'object'))"
+
+# 验证 next 包可导入
+node -e "import('@faapi/next').then(m => console.log('next exports:', Object.keys(m).length > 0))"
 
 cd - > /dev/null
 rm -rf "$TMPDIR"
@@ -374,7 +387,7 @@ CI 进度监控: https://github.com/faapi/faapi/actions
 | minor | 中位 +1,末位归 0 | 0.0.1 → 0.1.0 |
 | major | 首位 +1,中末位归 0 | 0.1.0 → 1.0.0 |
 
-**fixed 配置**:两个包取所有 changeset 中最高的 bump type 同步升级。
+**fixed 配置**:三个包取所有 changeset 中最高的 bump type 同步升级。
 
 ## 异常处理
 
@@ -388,11 +401,11 @@ CI 进度监控: https://github.com/faapi/faapi/actions
 
 **处理**:回到步骤 4,重新生成 changeset,确认选了 patch/minor/major(不是 none)。
 
-### 两包版本不同步
+### 包版本不同步
 
-**症状**:`@faapi/faapi` 和 `@faapi/schema` 版本号不一致
+**症状**:`@faapi/faapi` / `@faapi/schema` / `@faapi/next` 三者版本号不一致
 
-**处理**:检查 [.changeset/config.json](file:///Users/tu/workspace/github/faapi/.changeset/config.json) 的 `fixed` 字段是否包含两个包。
+**处理**:检查 [.changeset/config.json](file:///Users/tu/workspace/github/faapi/.changeset/config.json) 的 `fixed` 字段是否包含全部三个包。
 
 ### CI stable job 失败
 

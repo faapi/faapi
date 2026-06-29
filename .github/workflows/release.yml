@@ -27,8 +27,8 @@ jobs:
       - name: Set canary version
         run: |
           SHORT_HASH=$(git rev-parse --short HEAD)
-          VERSION=$(node -p "require('./packages/faapi/package.json').version")
-          CANARY_VERSION="${VERSION}-canary.${SHORT_HASH}"
+          BASE_VERSION=$(node -p "require('./packages/faapi/package.json').version.split('-')[0]")
+          CANARY_VERSION="${BASE_VERSION}-canary.${SHORT_HASH}"
           pnpm -r exec -- npm version "${CANARY_VERSION}" --no-git-tag-version
       - run: pnpm -r publish --access public --tag canary --no-git-checks --provenance
 

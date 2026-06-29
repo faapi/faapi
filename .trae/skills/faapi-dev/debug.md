@@ -89,7 +89,7 @@ export interface Anything {
 1. **检查文件位置**
 
 ```
-❌ src/api/user/handler.ts      ← appDir 默认是 app
+❌ src/api/user/handler.ts      ← appDir 默认是 .（根目录），扫描 api/ 不是 src/api/
 ❌ app/user/handler.ts          ← 必须在 api/ 下
 ✅ api/user/handler.ts
 ```
