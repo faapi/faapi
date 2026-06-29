@@ -39,7 +39,7 @@ AGENTS.md                       ← 项目唯一顶层文档（本文件）
 | --- | --- | --- |
 | `src/**/*.md` | DDD 文档：模块用途、为什么需要、使用场景、相关模块 | 新增/删除 `.ts` 模块时 |
 | `src/**/README.md` | 跨模块功能概述（目录级） | 新增跨模块目录时 |
-| `AGENTS.md` | 项目定位、架构、约定、验收标准 | 架构变更或里程碑完成时 |
+| `AGENTS.md` | 项目定位、架构、约定、交付定义 | 架构变更或里程碑完成时 |
 
 ### 4.3 核心原则：不重复
 
@@ -578,65 +578,7 @@ fixed 模式强制所有包统一版本号，新增包必须加入此数组。
 2. `pnpm -r run typecheck` / `lint` / `test` / `build` —— 全部通过
 3. push 到 main 触发 canary 发布，确认新包以 `0.0.0-canary.<hash>` 发布到 npm `canary` tag
 
-## 7. 验收标准
-
-### 7.1 第一版核心验收
-
-- [x] `faapi` 可以启动服务
-- [x] `api/auth/login/handler.ts` 可以映射到 `GET /api/auth/login` 和 `POST /api/auth/login`
-- [x] `api/user/[id]/handler.ts` 可以映射到 `GET /api/user/:id`
-- [x] 未匹配路由返回 `404`
-- [x] 路由存在但 method 不存在时返回 `405`
-- [x] 必填 query 缺失时返回 `400`
-- [x] 必填 body 字段缺失时返回 `400`
-- [x] handler 返回 object 时自动返回 JSON
-- [x] handler 返回 `Response` 时原样透传
-- [x] 中间件洋葱模型（单一 async 函数 + await next）
-- [x] 注入器机制（按参数名提供依赖，与中间件解耦）
-- [x] 父子中间件叠加（从根到路由目录合并）
-- [x] 就近 middlewares.ts 查找，构建时加载
-- [x] CORS 内置支持，dev 模式自动启用
-- [x] Cookie 读写（ctx.cookies / getCookie / setCookie / deleteCookie）
-- [x] 文件上传 multipart/form-data 解析
-- [x] 请求日志中间件
-- [x] 静态文件服务
-- [x] RPC 类型导出（faapi build --types）
-- [x] 路由 schema 扩展包 @faapi/schema（通过 MCP 协议暴露路由 schema 给 AI 助手）
-- [x] 配置文件（faapi.config.ts）支持 responseFormat / errorFormat / lifecycle
-- [x] 全局错误处理（errorFormat 自定义错误响应格式）
-- [x] 统一响应格式（responseFormat 自动包装成功响应）
-- [x] 生命周期钩子（onReady / onClose）
-- [x] Catch-all 路由 [...slug]
-
-#### 扩展机制增强
-
-- [x] CORS 统一到中间件链（消除声明与实现矛盾，CORS 走标准 compose + mergeMeta）
-- [x] ctx 扩展能力（extendContext 钩子 + declare module 增强 FaapiContext 类型）
-- [x] 配置类型安全（FaapiContextConfig 可增强接口，ctx.config 类型可声明合并）
-- [x] onError 生命周期钩子（错误响应发出后触发副作用，参考 Fastify 语义；errorFormat 未处理或抛错时由内置 formatErrorResponse 兜底）
-
-### 7.2 后续增强验收
-
-- [x] 支持 watch 模式
-- [x] 文件变化后自动重建路由清单
-- [x] 文件变化后自动清理模块缓存
-- [x] 路由分组（(groupName) 不影响 URL）
-- [x] schema manifest 注入（build 时生成 faapi-schema.js，prd 运行时加载）
-- [x] dev/prd 共用校验逻辑（schemaRegistry 统一入口）
-- [x] dev watch 增量更新 schema（单文件 AST 提取，不全量重建）
-- [x] Pick/Omit 工具类型解析（通过 checker 解析实际字段）
-- [x] 校验函数代码生成（RuntimeType → JS 校验函数源码）
-- [x] 循环引用支持（ref 类型 + 函数递归 + WeakSet 防无限递归）
-- [x] 不支持的类型抛错（不降级为 any）
-- [x] dev watch 全量重建 schema（替代增量更新，简化逻辑、消除 dev/prd 差异）
-- [x] SSE 流式响应（ctx.sse() / SseWriter，text/event-stream）
-- [x] WebSocket 支持（路由级 WS 导出，事件对象 API，WsSocket 封装，ws 库）
-- [x] WebSocket 握手中间件链（握手阶段复用洋葱中间件做鉴权，事件回调阶段不走）
-- [x] 全局中间件（faapi.config.ts middlewares 字段，CORS 之后/目录中间件之前执行，HTTP + WS 握手共用）
-- [x] 全局注入器（faapi.config.ts injectors 字段，目录注入器覆盖同名，HTTP handler 参数注入生效）
-- [x] 插件系统（faapi.config.ts plugins 字段，声明式加载应用级扩展，FaapiPlugin { name, setup(ctx) } 约定接口）
-
-## 8. 交付完成定义
+## 7. 交付完成定义
 
 某个子功能只有在以下条件全部满足时才算完成：
 
