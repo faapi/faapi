@@ -121,12 +121,3 @@ faapi 遵循"**只转译不检查类型**"的框架职责边界。框架用 tsx/
 ```
 
 `@faapi/schema` 和 `@faapi/next` 均为可选扩展,通过 `faapi.config.ts` 的 `plugins` 字段声明加载——未安装时自动跳过,不影响核心功能。
-
-## 与 DDD 的关系
-
-faapi 项目自身用 DDD 模式开发(`.trae/skills/ddd/SKILL.md`),但**用户使用 faapi 开发应用时不强制 DDD**。用户只按场景文档写 handler/中间件/配置即可,无需写 .md 文档。
-
-## 参考资料
-
-- [AGENTS.md](../../../AGENTS.md) — faapi 项目顶层文档(架构、约定、验收标准)
-- [.trae/skills/ddd/SKILL.md](../ddd/SKILL.md) — DDD 通用规范(faapi 项目自身开发用)
