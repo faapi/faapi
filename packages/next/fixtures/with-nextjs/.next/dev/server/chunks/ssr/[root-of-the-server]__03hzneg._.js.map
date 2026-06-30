@@ -1,6 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 10, "column": 0}, "map": {"version":3,"sources":["file:///Users/tu/workspace/github/faapi/packages/next/fixtures/with-nextjs/app/page.tsx"],"sourcesContent":["export default function HomePage() {\n  return (\n    <div>\n      <h1>Next.js + faapi E2E Fixture</h1>\n      <p>This page is rendered by Next.js.</p>\n    </div>\n  );\n}\n"],"names":["HomePage"],"mappings":";;;;;;AAAe,SAASA;IACtB,qBACE,mYAAC;;0BACC,mYAAC;0BAAG;;;;;;0BACJ,mYAAC;0BAAE;;;;;;;;;;;;AAGT"}}]
-}
