@@ -39,7 +39,7 @@ export default {
   db: { host: 'localhost', port: 5432 },
 };
 
-// api/user/handler.ts
+// src/api/user/handler.ts
 export function GET(ctx) {
   return { dbHost: ctx.config.db.host };
 }
@@ -52,7 +52,7 @@ export function GET(ctx) {
 ### 目录级注入器
 
 ```ts
-// api/admin/middlewares.ts
+// src/api/admin/middlewares.ts
 import type { FaapiMiddleware, InjectorMap } from '@faapi/faapi';
 
 export default [
@@ -86,7 +86,7 @@ export default {
 ## handler 接收注入
 
 ```ts
-// api/admin/handler.ts
+// src/api/admin/handler.ts
 export function GET(db: Db, user: User) {
   //  db ← injectors.db()
   //  user ← injectors.user(ctx)
@@ -110,7 +110,7 @@ type InjectorMap = Record<string, Injector>;
 ## 示例:数据库注入
 
 ```ts
-// api/db/middlewares.ts
+// src/api/db/middlewares.ts
 import type { InjectorMap } from '@faapi/faapi';
 import { createConnection } from 'mysql2/promise';
 
@@ -127,7 +127,7 @@ export const injectors: InjectorMap = {
 ```
 
 ```ts
-// api/users/handler.ts
+// src/api/users/handler.ts
 export interface Db {
   query: (sql: string) => Promise<any[]>;
 }
@@ -143,7 +143,7 @@ export async function GET(db: Db) {
 中间件塞值到 ctx,注入器读 ctx:
 
 ```ts
-// api/middlewares.ts
+// src/api/middlewares.ts
 export default [
   async (ctx, next) => {
     const token = ctx.headers.get('authorization');
@@ -160,7 +160,7 @@ export const injectors: InjectorMap = {
 ```
 
 ```ts
-// api/me/handler.ts
+// src/api/me/handler.ts
 export interface User { id: number; name: string; }
 
 export function GET(user: User) {
@@ -178,7 +178,7 @@ export default {
   },
 };
 
-// api/special/middlewares.ts(目录)
+// src/api/special/middlewares.ts(目录)
 export const injectors: InjectorMap = {
   db: () => specialDb(),  // 覆盖全局 db
   cache: () => getCache(),

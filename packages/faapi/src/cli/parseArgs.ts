@@ -19,7 +19,7 @@ export interface CliArgs {
  * - faapi api/auth/*
  * - faapi api/auth/*,api/novel/*
  * - faapi --port 3000 api/auth/*
- * - faapi --app-dir src api/auth/*
+ * - faapi --app-dir . api/auth/*   # 显式回退到项目根目录
  *
  * 端口优先级：--port > PORT 环境变量 > 默认 3000
  */
@@ -28,7 +28,7 @@ export function parseArgs(argv: string[]): CliArgs {
 
   cli
     .option('--port <port>', 'Server port (env: PORT)')
-    .option('--app-dir <dir>', 'App directory (root by default)', { default: '.' })
+    .option('--app-dir <dir>', 'App directory (src by default)', { default: 'src' })
     .option('--cors', 'Enable CORS (default in dev mode)')
     .option('--no-cors', 'Disable CORS')
     .option('--static <dir>', 'Static files directory', { default: undefined })
@@ -45,7 +45,7 @@ export function parseArgs(argv: string[]): CliArgs {
   // 端口优先级：--port > PORT 环境变量 > 3000
   const port = options.port ? Number(options.port) : Number(process.env.PORT) || 3000;
 
-  const appDir = String(options.appDir ?? '.');
+  const appDir = String(options.appDir ?? 'src');
 
   // CORS: --no-cors 显式禁用，否则默认启用（dev 模式）
   const cors = options.cors !== false;
@@ -54,7 +54,7 @@ export function parseArgs(argv: string[]): CliArgs {
   const staticDir: string | undefined =
     options.static === false ? undefined : (options.static as string | undefined);
 
-  // 默认扫描 <appDir>/api/**/*.ts（appDir='.' 时为 api/**/*.ts）
+  // 默认扫描 <appDir>/api/**/*.ts（显式 --app-dir . 时回退为 api/**/*.ts，保持向后兼容）
   const defaultPattern = appDir === '.' ? 'api/**/*.ts' : `${appDir}/api/**/*.ts`;
 
   return {

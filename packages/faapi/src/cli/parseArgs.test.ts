@@ -32,19 +32,19 @@ describe('parseArgs', () => {
     expect(result.appDir).toBe('src');
   });
 
-  it('默认 appDir 为 .', () => {
-    const result = parseArgs(['api/auth/*']);
-    expect(result.appDir).toBe('.');
-  });
-
-  it('无参数时 patterns 默认为 api/**/*.ts', () => {
-    const result = parseArgs([]);
-    expect(result.patterns).toEqual(['api/**/*.ts']);
-  });
-
-  it('--app-dir src 时默认 patterns 为 src/api/**/*.ts', () => {
-    const result = parseArgs(['--app-dir', 'src']);
+  it('默认 appDir 为 src', () => {
+    const result = parseArgs(['src/api/auth/*']);
     expect(result.appDir).toBe('src');
+  });
+
+  it('无参数时 patterns 默认为 src/api/**/*.ts', () => {
+    const result = parseArgs([]);
     expect(result.patterns).toEqual(['src/api/**/*.ts']);
+  });
+
+  it('--app-dir . 时回退为 api/**/*.ts（向后兼容）', () => {
+    const result = parseArgs(['--app-dir', '.']);
+    expect(result.appDir).toBe('.');
+    expect(result.patterns).toEqual(['api/**/*.ts']);
   });
 });

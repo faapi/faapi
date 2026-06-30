@@ -147,7 +147,7 @@ function extractSchemaEntries(
 export function parseBuildArgs(argv: string[]): BuildOptions {
   const rootDir = process.cwd();
   let outdir = 'dist';
-  let appDir = '.';
+  let appDir = 'src';
   let types: string | undefined;
   const patterns: string[] = [];
 

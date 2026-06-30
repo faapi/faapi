@@ -10,9 +10,10 @@
 
 ```
 my-app/
-├── api/
-│   └── user/
-│       └── handler.ts      ← 路由文件
+├── src/
+│   └── api/
+│       └── user/
+│           └── handler.ts      ← 路由文件
 ├── faapi.config.ts             ← 配置文件(可选)
 ├── tsconfig.json
 ├── package.json
@@ -23,8 +24,9 @@ my-app/
 
 ```
 my-app/
-├── api/                         ← faapi 路由
-│   └── user/handler.ts
+├── src/
+│   └── api/                     ← faapi 路由
+│       └── user/handler.ts
 ├── app/                         ← Next.js App Router
 │   └── page.tsx
 ├── faapi.config.ts             ← 声明 @faapi/next 插件
@@ -83,17 +85,17 @@ pnpm add @faapi/schema
     "rootDir": "./",
     "types": ["node"]
   },
-  "include": ["api/**/*.ts", "faapi.config.ts", "faapi-types.ts"],
+  "include": ["src/api/**/*.ts", "faapi.config.ts", "faapi-types.ts"],
   "exclude": ["node_modules", "dist"]
 }
 ```
 
-**关键**:`include` 必须包含 `api/**/*.ts`,这样 `tsc --noEmit` 才能检查 handler 内部的类型错误(如 `query.unknownProp`)。
+**关键**:`include` 必须包含 `src/api/**/*.ts`,这样 `tsc --noEmit` 才能检查 handler 内部的类型错误(如 `query.unknownProp`)。
 
 ### 5. 创建第一个路由
 
 ```ts
-// api/user/handler.ts
+// src/api/user/handler.ts
 export interface Query {
   page: number;
   pageSize: number;
@@ -113,7 +115,7 @@ faapi
 ```
 
 默认行为:
-- 扫描 `api/**/*.ts`
+- 扫描 `src/api/**/*.ts`
 - 启动 watch 模式(文件变化自动重建路由)
 - 自动启用 CORS
 - 端口 3000
@@ -133,7 +135,7 @@ faapi                           # 启动 dev(默认)
 faapi dev                       # 同上
 faapi api/auth/*            # 指定路由 pattern
 faapi --port 3000               # 指定端口
-faapi --app-dir src         # 指定项目子目录(默认 .，即根目录)
+faapi --app-dir .           # 回退到项目根目录(扫描 api/)
 faapi --static public           # 托管静态文件
 faapi --no-cors                 # 禁用 CORS
 faapi --types faapi-types.ts    # 生成 RPC 类型文件
@@ -158,7 +160,7 @@ pnpm start
 2. `dist/faapi-schema.js` 存在
 
 prod 行为:
-- 加载 `dist/api/**/*.js`(已编译)
+- 加载 `dist/src/api/**/*.js`(已编译)
 - 从 `dist/faapi-schema.js` 加载 schema(不跑 AST 提取)
 - 不启动 watch
 
@@ -189,7 +191,7 @@ export default {
 ### 3. 创建路由文件
 
 ```ts
-// api/user/handler.ts  ← faapi 路由(CLI 默认扫描 api/)
+// src/api/user/handler.ts  ← faapi 路由(CLI 默认扫描 src/api/)
 export function GET() {
   return { name: 'foo' };
 }
@@ -232,12 +234,12 @@ NODE_ENV=production faapi   # 启动(自动用 prod 模式)
 ### 1. handler 文件位置错误
 
 ```
-❌ src/api/user/handler.ts     ← 默认扫描根目录下的 api/，不是 src/api/
+❌ api/user/handler.ts     ← 默认扫描 src/api/，根目录 api/ 需 --app-dir .
 ❌ user/handler.ts             ← 必须在 api/ 下
-✅ api/user/handler.ts
+✅ src/api/user/handler.ts
 ```
 
-如需用 `src/api/`，启动时加 `--app-dir src`。
+如需用根目录 `api/`，启动时加 `--app-dir .`。
 
 ### 2. handler 没导出方法
 
@@ -251,7 +253,7 @@ export function GET() { ... }
 
 ### 3. tsconfig 没包含 api/
 
-`tsc --noEmit` 不报 handler 内部错误,因为 tsconfig 的 include 漏了 `api/**/*.ts`。
+`tsc --noEmit` 不报 handler 内部错误,因为 tsconfig 的 include 漏了 `src/api/**/*.ts`。
 
 ### 4. prod 启动失败
 
@@ -268,8 +270,8 @@ Error: dist/faapi-schema.js not found
 ### CLI 形态
 
 - [ ] `package.json` 有 `@faapi/faapi` 依赖
-- [ ] `api/` 目录存在,内有 `handler.ts`
-- [ ] `tsconfig.json` 的 include 包含 `api/**/*.ts`
+- [ ] `src/api/` 目录存在,内有 `handler.ts`
+- [ ] `tsconfig.json` 的 include 包含 `src/api/**/*.ts`
 - [ ] `pnpm dev` 能启动,访问路由返回正常
 - [ ] `pnpm typecheck` 通过
 - [ ] `pnpm build` 生成 `dist/`

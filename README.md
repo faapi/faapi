@@ -53,11 +53,11 @@ export function POST(body: CreateUserBody) {
 ### 启动开发服务器
 
 ```bash
-# 默认扫描 api/**/*.ts
+# 默认扫描 src/api/**/*.ts
 faapi
 
 # 指定路由 pattern
-faapi api/auth/*
+faapi src/api/auth/*
 
 # 指定端口
 faapi --port 3000
@@ -68,11 +68,11 @@ faapi --port 3000
 ## CLI 命令
 
 ```bash
-faapi                      # 启动 dev server（默认）
+faapi                      # 启动 dev server（默认，扫描 src/api/）
 faapi dev                  # 同上
-faapi api/auth/*       # 指定路由 pattern
+faapi src/api/auth/*       # 指定路由 pattern
 faapi --port 3000          # 指定端口
-faapi --app-dir src    # 指定项目子目录（默认 .，即根目录）
+faapi --app-dir .          # 回退到项目根目录（扫描 api/）
 faapi --static public      # 托管静态文件
 faapi --no-cors            # 禁用 CORS
 faapi --types faapi-types.ts  # 生成 RPC 类型文件

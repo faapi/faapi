@@ -29,7 +29,7 @@ function isProductionMode(rootDir: string): boolean {
  * 将 dev 模式的 patterns/appDir 调整为 prod 模式（指向 dist 目录）
  *
  * - patterns: .ts 后缀 → .js 后缀，加 dist/ 前缀
- * - appDir: '.' → 'dist'，'src' → 'dist/src'
+ * - appDir: '.' → 'dist'，'src'（默认）→ 'dist/src'
  */
 function adjustForProd(patterns: string[], appDir: string): { patterns: string[]; appDir: string } {
   const prodPatterns = patterns

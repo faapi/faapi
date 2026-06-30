@@ -43,7 +43,7 @@ faapi
 
 ```
 project/
-├── api/                  ← faapi 路由
+├── src/api/              ← faapi 路由
 │   └── user/handler.ts
 ├── app/                  ← Next.js App Router
 │   └── page.tsx
@@ -68,7 +68,7 @@ export default {
 
 ### 3. API 前缀
 
-`apiPrefix` 决定哪些请求走 faapi（默认 `/api`）。faapi 路由 URL 由文件路径推导（`api/user/handler.ts` → `/api/user`），因此 `apiPrefix` 应与 faapi 路由前缀保持一致，默认 `/api` 无需额外配置。
+`apiPrefix` 决定哪些请求走 faapi（默认 `/api`）。faapi 路由 URL 由文件路径推导（`src/api/user/handler.ts` → `/api/user`），因此 `apiPrefix` 应与 faapi 路由前缀保持一致，默认 `/api` 无需额外配置。
 
 ## 设计要点
 

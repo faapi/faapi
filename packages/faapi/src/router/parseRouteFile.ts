@@ -65,8 +65,8 @@ export function isRouteGroup(segment: string): boolean {
  * - 忽略路由分组 (groupName) — 不影响 URL
  * - 标准化路径
  *
- * 说明：API 路由放在 api/ 下，URL 自然带 /api 前缀。
- * 若通过 --app-dir 指定子目录（如 src），则剥离该前缀后再推导 URL。
+ * 说明：CLI 默认扫描 src/api/（appDir='src'），底层 API 默认 '.'。
+ * 无论 appDir 是 'src' 还是 '.'，api/ 前缀都保留在 URL 中，因此 URL 始终带 /api 前缀。
  */
 export function filePathToUrlPath(filePath: string, appDir: string = '.'): string {
   // 去掉 appDir 前缀（appDir='.' 时不剥离）

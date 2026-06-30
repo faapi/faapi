@@ -9,17 +9,17 @@
 | 约定 | 说明 |
 |------|------|
 | 文件名 | `handler.ts`(固定) |
-| 位置 | `api/<路径>/handler.ts`(默认在项目根目录下) |
+| 位置 | `src/api/<路径>/handler.ts`(默认在 src/ 下) |
 | 导出 | HTTP 方法名(`GET`/`POST`/`PUT`/`DELETE`/`PATCH` 等) |
 | URL | 由文件路径推导，`api/user/handler.ts` → `/api/user` |
 
-默认扫描根目录下的 `api/**/*.ts`，可通过 CLI `--app-dir <dir>` 指定子目录（如 `--app-dir src` 扫描 `src/api/**/*.ts`）。
+默认扫描 `src/api/**/*.ts`，可通过 CLI `--app-dir <dir>` 指定子目录（`--app-dir .` 回退到根目录扫描 `api/**/*.ts`）。
 
 ## URL 推导规则
 
 ```
 文件路径:  api/user/handler.ts
-appDir:    .  (默认，项目根目录)
+appDir:    src  (默认)
 路由路径:  /api/user  (文件路径去掉文件名)
 URL:       /api/user
 ```
@@ -38,7 +38,7 @@ api/(auth)/login/handler.ts      → /api/login   (分组不影响 URL)
 ### GET 请求
 
 ```ts
-// api/user/handler.ts
+// src/api/user/handler.ts
 export interface Query {
   page: number;
   pageSize: number;
@@ -78,7 +78,7 @@ export function POST(body: CreateUserBody) {
 ### 动态路由参数
 
 ```ts
-// api/user/[id]/handler.ts
+// src/api/user/[id]/handler.ts
 export interface Params {
   id: string;
 }
@@ -93,7 +93,7 @@ export function GET(params: Params) {
 ### 多种参数混合
 
 ```ts
-// api/user/[id]/handler.ts
+// src/api/user/[id]/handler.ts
 export interface Query { includeDeleted?: boolean; }
 export interface Params { id: string; }
 export interface UpdateBody { name: string; }
@@ -172,7 +172,7 @@ export function GET(ctx) {
 ## 文件上传
 
 ```ts
-// api/upload/handler.ts
+// src/api/upload/handler.ts
 export async function POST(files: File[], fields: Record<string, string>) {
   for (const file of files) {
     const buf = await file.arrayBuffer();
@@ -283,7 +283,7 @@ export function GET(query: Query) {
 // types.ts
 export interface User { id: number; name: string; }
 
-// api/user/handler.ts
+// src/api/user/handler.ts
 import type { User } from '../../types';  // Bundler 模式不写后缀
 
 export function GET(): User {

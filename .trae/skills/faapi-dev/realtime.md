@@ -19,7 +19,7 @@
 ### 基本用法
 
 ```ts
-// api/stream/handler.ts
+// src/api/stream/handler.ts
 export function GET(ctx) {
   const sse = ctx.sse();
 
@@ -50,7 +50,7 @@ sse.send({ data: 'update', event: 'progress', id: '1', retry: 5000 });
 ### LLM 流式输出示例
 
 ```ts
-// api/chat/handler.ts
+// src/api/chat/handler.ts
 export async function POST(ctx, body: { prompt: string }) {
   const sse = ctx.sse();
 
@@ -77,7 +77,7 @@ export async function POST(ctx, body: { prompt: string }) {
 ### 基本用法
 
 ```ts
-// api/chat/handler.ts
+// src/api/chat/handler.ts
 import type { WsContext, WsEventHandlers } from '@faapi/faapi';
 
 export function WS(ctx: WsContext): WsEventHandlers {
@@ -159,7 +159,7 @@ api/chat/[...slug]/handler.ts → ws://host/api/chat/anything
 握手阶段(HTTP upgrade)**复用洋葱中间件链**,与同目录 HTTP 路由共享鉴权/CORS/限流:
 
 ```ts
-// api/chat/middlewares.ts
+// src/api/chat/middlewares.ts
 import type { FaapiMiddleware } from '@faapi/faapi';
 
 export default [
@@ -195,7 +195,7 @@ WS 路由的握手阶段会跑这个中间件。**连接建立后**(onOpen 触�
 ## 完整示例:聊天室
 
 ```ts
-// api/chat/[room]/handler.ts
+// src/api/chat/[room]/handler.ts
 import type { WsContext, WsEventHandlers, WsSocket } from '@faapi/faapi';
 
 const rooms = new Map<string, Set<WsSocket>>();
@@ -226,7 +226,7 @@ export function WS(ctx: WsContext): WsEventHandlers {
 ```
 
 ```ts
-// api/chat/[room]/middlewares.ts
+// src/api/chat/[room]/middlewares.ts
 import type { FaapiMiddleware, InjectorMap } from '@faapi/faapi';
 
 export default [

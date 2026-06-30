@@ -51,7 +51,7 @@ export default [middleware] satisfies FaapiMiddleware[];
 ### 鉴权(拦截)
 
 ```ts
-// api/admin/middlewares.ts
+// src/api/admin/middlewares.ts
 import type { FaapiMiddleware } from '@faapi/faapi';
 
 export default [
@@ -152,7 +152,7 @@ export default {
 中间件文件可同时导出 `injectors`,提供依赖注入:
 
 ```ts
-// api/admin/middlewares.ts
+// src/api/admin/middlewares.ts
 import type { FaapiMiddleware, InjectorMap } from '@faapi/faapi';
 
 export default [
@@ -171,7 +171,7 @@ export const injectors: InjectorMap = {
 handler 参数名匹配 injectors 的 key:
 
 ```ts
-// api/admin/handler.ts
+// src/api/admin/handler.ts
 export function GET(db: Db, user: User) {
   // db 来自 injectors.db
   // user 来自 injectors.user(中间件塞的)

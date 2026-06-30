@@ -20,7 +20,7 @@
 | 选项 | 说明 | 默认值 |
 | --- | --- | --- |
 | `--port` | 服务端口（env: PORT） | 3000 |
-| `--app-dir` | app 目录 | `app` |
+| `--app-dir` | app 目录 | `src` |
 | `--cors` / `--no-cors` | 启用/禁用 CORS | dev 模式默认启用 |
 | `--static` / `--no-static` | 静态文件目录 | 无 |
 | `--types` | 类型文件输出路径 | 无 |

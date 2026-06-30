@@ -128,7 +128,7 @@ export async function hasWsExport(absPath: string): Promise<boolean> {
  *
  * @param rootDir 项目根目录
  * @param patterns glob patterns
- * @param appDir app 目录前缀，默认 '.'（项目根目录）
+ * @param appDir app 目录前缀，默认 '.'（项目根目录）；CLI 层默认 'src'，传 undefined 时回退到 '.'
  */
 export async function scanRoutes(
   rootDir: string,

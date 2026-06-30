@@ -8,8 +8,8 @@
 
 **@faapi/faapi（核心包）**
 
-- CLI：`faapi` 启动 dev server（默认扫描 `api/**/*.ts`），`faapi build` 构建，`faapi --types` 生成 RPC 类型
-- 路由约定：`api/<路径>/handler.ts` 导出 HTTP 方法名（`GET`/`POST`/`PUT`/`DELETE`/`PATCH` 等）
+- CLI：`faapi` 启动 dev server（默认扫描 `src/api/**/*.ts`），`faapi build` 构建，`faapi --types` 生成 RPC 类型
+- 路由约定：`src/api/<路径>/handler.ts` 导出 HTTP 方法名（`GET`/`POST`/`PUT`/`DELETE`/`PATCH` 等）
 - 路由能力：动态路由 `[id]`、catch-all `[...slug]`、分组 `(name)` 不影响 URL
 - 类型校验：基于 TypeScript AST 提取类型，生成运行时校验函数
   - 支持基础类型、对象、数组、可选字段、字面量联合、enum、tuple、Date、Pick/Omit

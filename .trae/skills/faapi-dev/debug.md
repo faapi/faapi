@@ -89,9 +89,9 @@ export interface Anything {
 1. **检查文件位置**
 
 ```
-❌ src/api/user/handler.ts      ← appDir 默认是 .（根目录），扫描 api/ 不是 src/api/
+❌ api/user/handler.ts      ← appDir 默认是 src，扫描 src/api/ 不是 api/
 ❌ app/user/handler.ts          ← 必须在 api/ 下
-✅ api/user/handler.ts
+✅ src/api/user/handler.ts
 ```
 
 2. **检查 URL**
@@ -104,7 +104,7 @@ api/user/[id]/handler.ts → /api/user/123
 3. **检查启动参数**
 
 ```bash
-faapi --app-dir src      # 如果路由在 src/api/
+faapi --app-dir .      # 如果路由在根目录 api/
 faapi api/auth/*          # 只扫描 auth 下的路由
 ```
 
@@ -128,7 +128,7 @@ handler 文件存在,但没导出对应的 HTTP 方法。
 ### 排查
 
 ```ts
-// api/user/handler.ts
+// src/api/user/handler.ts
 
 // 只导出了 GET
 export function GET() { ... }
@@ -274,7 +274,7 @@ faapi build  # 重新编译
 - 文件不在 watch patterns 内
 - 文件在 `node_modules`/`dist` 等忽略目录
 
-**解决**:检查 `api/**/*.ts` 是否匹配,文件是否在忽略目录。
+**解决**:检查 `src/api/**/*.ts` 是否匹配,文件是否在忽略目录。
 
 ### 2. 重建报错
 

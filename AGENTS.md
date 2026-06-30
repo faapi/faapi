@@ -75,12 +75,12 @@ CLI → Server → Router → Loader → Runtime → Response
 ### 5.3 使用方式
 
 ```bash
-# 启动 dev server（默认扫描 api/**/*.ts）
+# 启动 dev server（默认扫描 src/api/**/*.ts）
 faapi
 faapi dev                      # 同上
-faapi api/auth/*           # 指定路由 pattern
+faapi src/api/auth/*           # 指定路由 pattern
 faapi --port 3000              # 指定端口
-faapi --app-dir src        # 指定项目子目录（默认 .，即根目录）
+faapi --app-dir .              # 回退到项目根目录（扫描 api/**/*.ts）
 faapi --static public          # 托管静态文件
 faapi --no-cors                # 禁用 CORS
 faapi --types faapi-types.ts    # 生成 RPC 类型文件
@@ -364,8 +364,8 @@ export function WS(ctx: WsContext): WsEventHandlers {
 - 源码文件使用小驼峰：`scanRoutes.ts`、`matchRoute.ts`。
 - 类型文件使用 `Types.ts` 后缀：`routeTypes.ts`、`configTypes.ts`。
 - 测试文件使用 `.test.ts`，端到端测试使用 `.e2e.test.ts`。
-- 路由根目录默认为项目根目录（可通过 `--app-dir` 指定子目录）：API 路由放在 `api/` 下。
-- 用户路由文件统一使用 `handler.ts`，放在 `api/` 下，导出 HTTP 方法名（`GET`、`POST` 等）；导出 `WS` 函数即声明 WebSocket 路由（与 HTTP 方法同级）。
+- 路由根目录默认为 `src/`（可通过 `--app-dir` 指定子目录，`--app-dir .` 回退到项目根目录）：API 路由放在 `src/api/` 下。
+- 用户路由文件统一使用 `handler.ts`，放在 `src/api/` 下，导出 HTTP 方法名（`GET`、`POST` 等）；导出 `WS` 函数即声明 WebSocket 路由（与 HTTP 方法同级）。
 - 中间件文件使用 `middlewares.ts`，导出默认数组。
 - 动态路由目录使用 `[name]`：`[id]`。
 - Catch-all 路由目录使用 `[...name]`：`[...slug]`。
