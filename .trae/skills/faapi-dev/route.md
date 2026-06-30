@@ -123,6 +123,7 @@ export function PUT(params: Params, body: UpdateBody) {
 | `headers` | Headers 对象 | `GET(headers)` |
 | `context` / `ctx` | 完整请求上下文 | `GET(ctx)` |
 | `cookies` | Cookie 对象 | `GET(cookies)` |
+| `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 

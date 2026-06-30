@@ -10,6 +10,7 @@ export type InjectionType =
   | 'params'
   | 'context'
   | 'cookies'
+  | 'ip'
   | 'files'
   | 'fields'
   | 'unknown';
@@ -34,6 +35,7 @@ export const PARAM_TYPE_MAP: Record<string, InjectionType> = {
   context: 'context',
   ctx: 'context', // 别名
   cookies: 'cookies',
+  ip: 'ip',
   files: 'files',
   fields: 'fields',
 };

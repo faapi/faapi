@@ -44,6 +44,14 @@ export interface FaapiContext {
   headers: Headers;
   method: string;
   path: string;
+  /**
+   * 客户端 IP
+   *
+   * 优先 `x-forwarded-for` 第一个 IP（反向代理场景），回退到 socket.remoteAddress。
+   * IPv6 形式 `::ffff:1.2.3.4` 会被规整为 IPv4 形式 `1.2.3.4`。
+   * 无法获取时为空字符串。
+   */
+  ip: string;
   /** 解析后的所有 cookie 键值对 */
   cookies: Record<string, string>;
   /** 配置文件中的自定义业务配置（类型可通过 declare module '@faapi/faapi' 增强 FaapiContextConfig） */

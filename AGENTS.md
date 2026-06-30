@@ -292,6 +292,7 @@ TypeScript 的 `interface` 在运行时会被擦除。第一版通过 TypeScript
 | `headers` | 请求头 Headers 对象 | `GET(headers)` |
 | `context` / `ctx` | 完整请求上下文 | `GET(context)` |
 | `cookies` | Cookie 对象 | `GET(cookies)` |
+| `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 

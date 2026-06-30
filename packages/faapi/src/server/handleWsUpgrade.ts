@@ -22,6 +22,7 @@ import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
+import { getClientIp } from '../utils/getClientIp';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 import type { ErrorFormatFn } from '../config/configTypes';
 import {
@@ -171,7 +172,7 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
 
     // 构造 Web Request 与 FaapiContext（与 HTTP 请求一致，供中间件使用）
     const request = new Request(url, { method: 'GET', headers });
-    const ctx = createContext(request, params, config);
+    const ctx = createContext(request, params, config, getClientIp(req));
     const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
 
     // 标记握手是否已完成协议升级（用于判断 socket 是否可写）

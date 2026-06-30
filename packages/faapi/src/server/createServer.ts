@@ -17,6 +17,7 @@ import { sendNodeResponse } from '../response/sendNodeResponse';
 import { RouteNotFoundError, MethodNotAllowedError, ValidationError } from '../errors/httpErrors';
 import { validateInput } from '../validator/validateInput';
 import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
+import { getClientIp } from '../utils/getClientIp';
 import { cors, type CorsOptions } from '../middleware/cors';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
@@ -234,7 +235,7 @@ async function handleRequest(
   const request = toWebRequest(req);
   const method = request.method.toUpperCase();
   const urlPath = new URL(request.url).pathname;
-  const ctx = createContext(request, {}, config);
+  const ctx = createContext(request, {}, config, getClientIp(req));
   const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
 
   // 路由处理管线：作为 CORS 中间件的 next

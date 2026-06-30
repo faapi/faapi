@@ -8,6 +8,16 @@ describe('createContext', () => {
     expect(ctx.path).toBe('/api/users');
   });
 
+  it('未传 ip 时 ctx.ip 默认为空字符串', () => {
+    const ctx = createContext(new Request('http://localhost/'), {});
+    expect(ctx.ip).toBe('');
+  });
+
+  it('传入 ip 时 ctx.ip 正确存储', () => {
+    const ctx = createContext(new Request('http://localhost/'), {}, {}, '203.0.113.1');
+    expect(ctx.ip).toBe('203.0.113.1');
+  });
+
   it('query 参数正确提取', () => {
     const request = new Request('http://localhost/api/users?name=alice&age=30');
     const ctx = createContext(request, {});

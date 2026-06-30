@@ -67,6 +67,17 @@ describe('invokeHandler', () => {
     expect(result).toEqual({ received: { name: 'test' } });
   });
 
+  it('handler 通过参数名注入接收 ip', async () => {
+    const ctx = createContext(new Request('http://localhost/api/test'), {}, {}, '203.0.113.10');
+
+    const handler = (ip: unknown) => ({ clientIp: ip });
+
+    const response = await invokeHandler(handler, ctx);
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result).toEqual({ clientIp: '203.0.113.10' });
+  });
+
   it('ctx.setStatus 修改响应状态码', async () => {
     const handler = (context: any) => {
       context.setStatus(201);

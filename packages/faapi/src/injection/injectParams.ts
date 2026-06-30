@@ -19,6 +19,8 @@ function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?:
       return ctx;
     case 'cookies':
       return ctx.cookies;
+    case 'ip':
+      return ctx.ip;
     case 'body':
       return body;
     case 'files':

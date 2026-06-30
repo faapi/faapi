@@ -37,11 +37,13 @@ function formatSetCookie(name: string, value: string, options?: CookieOptions): 
  * @param request Web Request 对象
  * @param params 动态路由参数
  * @param config 自定义业务配置（来自 faapi.config.ts）
+ * @param ip 客户端 IP（由调用方从 IncomingMessage 提取，HTTP/WS 握手均通过 utils/getClientIp）
  */
 export function createContext(
   request: Request,
   params: Record<string, string>,
   config: Record<string, unknown> = {},
+  ip: string = '',
 ): FaapiContext {
   const url = new URL(request.url);
   const meta: ResponseMeta = { headers: {}, setCookies: [] };
@@ -58,6 +60,7 @@ export function createContext(
     headers: request.headers,
     method: request.method,
     path: url.pathname,
+    ip,
     cookies: cookiesObj,
     config,
     meta,
