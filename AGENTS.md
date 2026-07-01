@@ -92,9 +92,9 @@ faapi start                    # 启动生产服务器（读 dist/faapi-routes.j
 ```
 
 **dev / start 模式区分**：
-- `faapi` / `faapi dev`：dev 模式，扫描 `.ts`，watch 文件变化，全量提取 schema
+- `faapi` / `faapi dev`：dev 模式，esbuild 编译 `.ts` → `.faapi/dev/*.js`，加载产物启动，watch 文件变化（增量编译 + 热替换路由），预生成 schema 到 `.faapi/dev/faapi-schema.js`
 - `faapi start`：生产模式，读 `dist/faapi-routes.js` 路由清单（水合中间件）+ `dist/faapi-schema.js` schema，不 watch
-- `faapi build`：构建，不启动服务器
+- `faapi build`：构建，编译 `.ts` → `dist/*.js` + 生成 `dist/faapi-routes.js` + `dist/faapi-schema.js`，不启动服务器
 
 不再通过 `NODE_ENV=production` 切换 dev/prd 模式。`NODE_ENV`/`FAAPI_ENV` 仅用于加载环境配置文件（`faapi.config.{env}.ts`），优先级 `FAAPI_ENV > NODE_ENV > 'development'`。
 
@@ -403,12 +403,12 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 - 如遇 AST 暂不支持的语法，直接抛 `SchemaExtractionError`，不降级为 `any`（方便开发时改正）。
 - 显式声明 `unknown` 表示不校验；`any`/`void`/`never`/`object` 均抛错。
 - AST 提取 `RuntimeType` 结构化类型描述，再编译为校验函数 JS 代码：
-  - dev：`new Function` 动态创建校验函数。
+  - dev：预生成 `.faapi/dev/faapi-schema.js`（ESM 模块），启动时 `import` 加载；watch 时重新生成。
   - prd：`faapi build` 生成 `dist/faapi-schema.js`（ESM 模块），启动时 `import` 加载。
 - 循环引用通过 JS 函数递归 + WeakSet 防无限递归处理。
 - 跨文件类型引用（包括跨文件循环引用）：dev 和 prd 都先合并所有文件的类型为全局 `allTypes`，再生成校验函数，行为一致。
 - dev 和 prd 都通过 `schemaRegistry` 获取 `{ properties, validator }`，不降级：
-  - dev：启动时全量 AST 提取，watch 时全量重建（非增量，简单可靠，跨文件类型引用自然解决）。
+  - dev：启动时全量 AST 提取并预生成 schema 文件，watch 时增量编译 + 全量重建 schema。
   - prd：`faapi build` 生成 `dist/faapi-schema.js`，启动时加载。
   - schema 缺失（manifest 不完整）抛 `InternalError`，不静默放行。
 

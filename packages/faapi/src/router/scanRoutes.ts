@@ -15,8 +15,26 @@ import type { InjectorMap } from '../middleware/injectorTypes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 
 /**
- * 从路由文件所在目录向上逐级查找 middlewares.ts，
+ * 把源码绝对路径转为产物绝对路径（用于 import 产物 .js）
+ *
+ * dev/build 模式下 scanRoutes 不再 import 源码 .ts（无需 tsx），
+ * 而是先编译到 prodDir（.faapi/dev 或 dist），再 import 产物 .js。
+ *
+ * @param sourceAbsPath 源码绝对路径（如 /root/src/api/hello/handler.ts）
+ * @param rootDir 项目根目录
+ * @param prodDir 产物目录（dist 或 .faapi/dev）
+ */
+function toProdAbsPath(sourceAbsPath: string, rootDir: string, prodDir: string): string {
+  const rel = path.relative(rootDir, sourceAbsPath);
+  const prodRel = `${prodDir}/${rel.replace(/\.ts$/, '.js')}`;
+  return path.resolve(rootDir, prodRel);
+}
+
+/**
+ * 从路由文件所在目录向上逐级查找 middlewares.ts（源码），
  * 按从根到路由目录的顺序合并中间件和注入器（父级在前，子级在后）。
+ *
+ * 若传入 prodDir，加载产物 middlewares.js（已编译）；否则加载源码 middlewares.ts。
  *
  * 子级中间件包裹父级（洋葱模型下后注册的先执行 after）；
  * 子级注入器覆盖父级同名注入器。
@@ -24,22 +42,34 @@ import { importWithCacheBust } from '../utils/importWithCacheBust';
 async function findMergedMiddlewares(
   routeFilePath: string,
   rootDir: string,
+  prodDir?: string,
 ): Promise<{ middlewares: FaapiMiddleware[]; injectors: InjectorMap } | undefined> {
   const routeDir = path.dirname(routeFilePath);
   const resolvedRoot = path.resolve(rootDir);
 
-  // 收集从根到路由目录的所有 middlewares.{ts,js} 路径
-  // dev 模式扫 .ts，start 模式扫 .js（dist 产物）
+  // 收集从根到路由目录的所有 middlewares 路径
+  // prodDir 传入时查找产物 middlewares.js；否则查找源码 middlewares.ts（兼容旧路径）
   const mwPaths: string[] = [];
   let currentDir = path.resolve(rootDir, routeDir);
   while (true) {
-    // 优先 .ts（dev），回退 .js（prd dist 产物）
-    for (const ext of ['.ts', '.js']) {
-      const mwPath = path.join(currentDir, `middlewares${ext}`);
+    if (prodDir) {
+      // 新模式：查找产物 middlewares.js
+      const mwPath = path.join(currentDir, 'middlewares.js');
       const absMwPath = path.resolve(rootDir, mwPath);
-      if (fs.existsSync(absMwPath)) {
-        mwPaths.push(absMwPath);
-        break;
+      // 产物路径：把源码路径转为产物路径
+      const prodAbsMwPath = toProdAbsPath(absMwPath, rootDir, prodDir);
+      if (fs.existsSync(prodAbsMwPath)) {
+        mwPaths.push(prodAbsMwPath);
+      }
+    } else {
+      // 旧模式：查找源码 middlewares.ts/.js
+      for (const ext of ['.ts', '.js']) {
+        const mwPath = path.join(currentDir, `middlewares${ext}`);
+        const absMwPath = path.resolve(rootDir, mwPath);
+        if (fs.existsSync(absMwPath)) {
+          mwPaths.push(absMwPath);
+          break;
+        }
       }
     }
     if (currentDir === resolvedRoot) break;
@@ -78,7 +108,9 @@ async function findMergedMiddlewares(
 }
 
 /**
- * 从 handler.ts 模块中提取导出的 HTTP 方法名
+ * 从 handler 模块中提取导出的 HTTP 方法名
+ *
+ * @param absPath handler 文件路径（产物 .js 或源码 .ts，取决于调用方）
  */
 export async function extractMethodsFromHandler(absPath: string): Promise<HttpMethod[]> {
   try {
@@ -99,9 +131,11 @@ export async function extractMethodsFromHandler(absPath: string): Promise<HttpMe
 }
 
 /**
- * 检测 handler.ts 模块是否导出 WS 函数
+ * 检测 handler 模块是否导出 WS 函数
  *
  * WS 导出与 HTTP 方法导出（GET/POST 等）同级，导出名必须为 `WS`。
+ *
+ * @param absPath handler 文件路径（产物 .js 或源码 .ts，取决于调用方）
  */
 export async function hasWsExport(absPath: string): Promise<boolean> {
   try {
@@ -132,13 +166,16 @@ export async function hasWsExport(absPath: string): Promise<boolean> {
  * 分别生成 HTTP RouteRecord 和 WsRouteRecord。
  *
  * @param rootDir 项目根目录
- * @param patterns glob patterns
- * @param appDir app 目录前缀，默认 '.'（项目根目录）；CLI 层默认 'src'，传 undefined 时回退到 '.'
+ * @param patterns glob patterns（源码 .ts 路径，如 src/api 下所有 .ts）
+ * @param appDir app 目录前缀，默认 '.'（项目根目录）；CLI 层默认 'src'
+ * @param prodDir 产物目录（dist 或 .faapi/dev）。传入时 import 产物 .js（不依赖 tsx）；
+ *                不传时 import 源码 .ts（旧模式，需要 tsx）。
  */
 export async function scanRoutes(
   rootDir: string,
   patterns: string[],
   appDir?: string,
+  prodDir?: string,
 ): Promise<{ routes: RouteManifest; wsRoutes: WsRouteManifest }> {
   const dir = appDir ?? '.';
 
@@ -156,17 +193,19 @@ export async function scanRoutes(
     const fileName = normalizedFile.split('/').pop()!;
 
     // 处理 handler.{ts,js} — API 路由 + WebSocket 路由
-    // dev 模式扫 .ts，start 模式扫 .js（dist 产物）
+    // dev/build 模式扫源码 .ts（prodDir 传入），start 模式扫产物 .js（由 hydrateRoutes 处理）
     if (fileName === 'handler.ts' || fileName === 'handler.js') {
       const absPath = path.resolve(rootDir, normalizedFile);
+      // prodDir 传入时 import 产物 .js；否则 import 源码 .ts
+      const importPath = prodDir ? toProdAbsPath(absPath, rootDir, prodDir) : absPath;
       const urlPath = filePathToUrlPath(normalizedFile, dir);
       const paramNames = extractParamNames(urlPath);
       const isDynamic = paramNames.length > 0;
       const isCatchAll = normalizedFile.split('/').some(isCatchAllSegment);
-      const middlewareBundle = await findMergedMiddlewares(normalizedFile, rootDir);
+      const middlewareBundle = await findMergedMiddlewares(normalizedFile, rootDir, prodDir);
 
       // HTTP 方法导出
-      const methods = await extractMethodsFromHandler(absPath);
+      const methods = await extractMethodsFromHandler(importPath);
       for (const method of methods) {
         routes.push({
           method,
@@ -181,7 +220,7 @@ export async function scanRoutes(
       }
 
       // WS 导出
-      const hasWs = await hasWsExport(absPath);
+      const hasWs = await hasWsExport(importPath);
       if (hasWs) {
         wsRoutes.push({
           urlPath,

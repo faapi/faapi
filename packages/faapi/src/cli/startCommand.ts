@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { parseArgs } from './parseArgs';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
@@ -9,53 +8,59 @@ import { startServer, applyPluginWrappers } from '../server/startServer';
 import { generateTypes } from './generateTypes';
 import { startWatcher } from './watcher';
 import { loadConfig } from '../config/loadConfig';
-import { schemaRegistry } from '../validator/schemaRegistry';
-import { extractSchemasForRoutes, readManifestFile } from './generateSchema';
-import { hydrateRoutes } from './generateRoutes';
+import { generateSchemaFile, loadSchemaToRegistry } from './generateSchema';
+import { hydrateRoutes, type SerializedRouteManifest } from './generateRoutes';
+import { compileRoutes } from './compileRoutes';
 import { loadPlugins } from './loadPlugins';
-import type { SchemaManifest } from '../validator/schemaRegistry';
+import { importWithCacheBust } from '../utils/importWithCacheBust';
+import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
+
+/** dev 模式产物目录 */
+const DEV_OUT_DIR = '.faapi/dev';
+/** build/start 模式产物目录 */
+const PROD_OUT_DIR = 'dist';
 
 /**
  * CLI 启动命令的完整流程
  *
- * dev 模式（默认，`faapi` 或 `faapi dev`）：
+ * 参考 Next.js 实现：dev 和 start 共用"加载中间产物"路径，差异仅在产物来源。
+ *
+ * dev 模式（`faapi` 或 `faapi dev`）：
  * 1. 解析参数
- * 2. 加载配置文件
- * 3. 扫描路由（.ts）
- * 4. 排序路由
- * 5. 检测路由冲突
- * 6. 全量提取 schema → schemaRegistry.loadManifest
+ * 2. 加载配置
+ * 3. 编译 src 下所有 .ts → .faapi/dev 下对应 .js（esbuild，含别名重写）
+ * 4. 扫描路由（import 产物 .js 拿方法名，filePath 保持源码 .ts）
+ * 5. 排序路由 + 检测冲突
+ * 6. 预生成 schema 到 `.faapi/dev/faapi-schema.js`，再加载（与 start 统一）
  * 7. 生成类型文件（可选）
  * 8. 启动 server
  * 9. 执行 onReady 生命周期钩子
- * 10. 启动 watch 模式（文件变化全量重建 schema）
+ * 10. 启动 watch 模式（增量编译 + 重新生成 schema + 热替换路由）
  *
  * start 模式（`faapi start`，生产模式）：
- * 1. 解析参数（patterns/appDir 自动指向 dist）
- * 2. 加载配置文件
- * 3. 扫描路由（.js）
- * 4. 排序路由
- * 5. 检测路由冲突
- * 6. 加载 dist/faapi-schema.js → schemaRegistry.loadManifest
- * 7. 启动 server
- * 8. 执行 onReady 生命周期钩子
+ * 1. 解析参数
+ * 2. 加载配置
+ * 3. 从 `dist/faapi-routes.js` 读取清单，水合（加载中间件）
+ * 4. 排序路由 + 检测冲突
+ * 5. 从 `dist/faapi-schema.js` 加载 schema
+ * 6. 启动 server
+ * 7. 执行 onReady 生命周期钩子
  *
  * dev 和 start 共用 createServer / handleRequest / validateInput，
- * 差异仅在 schema 来源、文件类型、是否启动 watch。
+ * 差异仅在产物目录（.faapi/dev vs dist）、是否编译、是否启动 watch。
  *
  * @param argv 原始 CLI 参数（含命令词 dev/start，由 parseArgs 解析）
  */
 export async function startCommand(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const rootDir = process.cwd();
-
-  // mode === 'start' → 生产模式，加载 dist 产物
   const isProd = args.mode === 'start';
+  const prodDir = isProd ? PROD_OUT_DIR : DEV_OUT_DIR;
 
-  // 生产模式要求 dist/faapi-routes.js 和 dist/faapi-schema.js 存在（由 faapi build 生成）
+  // start 模式要求 dist/faapi-routes.js 和 dist/faapi-schema.js 存在（由 faapi build 生成）
   if (isProd) {
-    const routesPath = path.resolve(rootDir, 'dist', 'faapi-routes.js');
-    const schemaPath = path.resolve(rootDir, 'dist', 'faapi-schema.js');
+    const routesPath = path.resolve(rootDir, PROD_OUT_DIR, 'faapi-routes.js');
+    const schemaPath = path.resolve(rootDir, PROD_OUT_DIR, 'faapi-schema.js');
     if (!fs.existsSync(routesPath) || !fs.existsSync(schemaPath)) {
       console.error(
         '[faapi] dist/faapi-routes.js 或 dist/faapi-schema.js 不存在，请先执行 `faapi build` 构建生产产物。',
@@ -82,21 +87,22 @@ export async function startCommand(argv: string[]): Promise<void> {
     console.log('- Config loaded');
   }
 
-  // 路由获取：start 读清单+水合，dev 扫描文件系统
-  let routes: import('../router/routeTypes').RouteManifest;
-  let wsRoutes: import('../router/routeTypes').WsRouteManifest;
+  // 路由获取：start 读清单+水合，dev 编译+扫描文件系统
+  let routes: RouteManifest;
+  let wsRoutes: WsRouteManifest;
   if (isProd) {
     // start 模式：从 dist/faapi-routes.js 读取序列化清单，水合（加载中间件）
-    const routesPath = path.resolve(rootDir, 'dist', 'faapi-routes.js');
-    const serialized = (await import(pathToFileURL(routesPath).href)) as import('./generateRoutes').SerializedRouteManifest;
+    const routesPath = path.resolve(rootDir, PROD_OUT_DIR, 'faapi-routes.js');
+    const serialized = (await importWithCacheBust(routesPath)) as unknown as SerializedRouteManifest;
     const hydrated = await hydrateRoutes(serialized);
     routes = hydrated.routes;
     wsRoutes = hydrated.wsRoutes;
     console.log(`- Routes loaded: ${routes.length} routes, ${wsRoutes.length} WS routes`);
   } else {
-    // dev 模式：扫描文件系统
-    const { patterns, appDir } = { patterns: args.patterns, appDir: args.appDir };
-    const scanned = await scanRoutes(rootDir, patterns, appDir);
+    // dev 模式：先编译 src/**/*.ts → .faapi/dev/**/*.js，再扫描路由（import 产物 .js）
+    console.log('- Compiling TypeScript...');
+    await compileRoutes({ rootDir, appDir: args.appDir, outDir: DEV_OUT_DIR });
+    const scanned = await scanRoutes(rootDir, args.patterns, args.appDir, DEV_OUT_DIR);
     routes = scanned.routes;
     wsRoutes = scanned.wsRoutes;
     console.log(`- Routes scanned: ${routes.length} routes, ${wsRoutes.length} WS routes`);
@@ -114,23 +120,16 @@ export async function startCommand(argv: string[]): Promise<void> {
     }
   }
 
-  // 加载 schema
-  if (isProd) {
-    // prod 模式：从 faapi-schema.js import 加载
-    const schemaPath = path.resolve(rootDir, 'dist', 'faapi-schema.js');
-    const manifest = await readManifestFile(schemaPath);
-    // build 时 schema key 是绝对路径 + .ts（如 /abs/api/health/handler.ts），
-    // 运行时 route.filePath 是相对路径 + .js + dist 前缀（如 dist/api/health/handler.js）。
-    // 重写 key 使两者匹配，validateInput 才能查到。
-    const remapped = remapManifestKeys(manifest, rootDir);
-    schemaRegistry.loadManifest(remapped);
-    console.log(`- Schema loaded: ${schemaPath}`);
-  } else {
-    // dev 模式：全量提取 schema 并生成校验函数（watcher 全量重建）
-    const manifest = extractSchemasForRoutes(sorted, rootDir);
-    schemaRegistry.loadManifest(manifest);
-    console.log(`- Schema extracted: ${manifest.size} file(s)`);
+  // 加载 schema：dev 预生成到 .faapi/dev/，start 直接读 dist/
+  // dev 模式：route.filePath 是源码路径，schema key 也是源码路径，不需要 remap
+  // start 模式：route.filePath 是产物路径，schema key 需 remap 为产物路径
+  const schemaPath = path.resolve(rootDir, prodDir, 'faapi-schema.js');
+  if (!isProd) {
+    // dev 模式：预生成 schema 文件（AST 从源码 .ts，与 build 一致）
+    await generateSchemaFile(sorted, rootDir, schemaPath);
   }
+  await loadSchemaToRegistry(schemaPath, rootDir, prodDir, isProd);
+  console.log(`- Schema loaded: ${schemaPath}`);
 
   // 生成类型文件（仅 dev 启动时）
   if (!isProd && args.types) {
@@ -222,31 +221,4 @@ const FAAPI_CONFIG_KEYS = new Set([
 
 function isFaapiConfigKey(key: string): boolean {
   return FAAPI_CONFIG_KEYS.has(key);
-}
-
-/**
- * 重写 manifest 的 filePath key，使 prd 运行时能匹配 validateInput 传入的路径
- *
- * build 时 key 形式：/abs/root/api/health/handler.ts（绝对路径 + .ts）
- * 运行时 validateInput 传入：/abs/root/dist/api/health/handler.js（绝对路径 + .js + dist 前缀）
- *
- * 转换：/abs/root/api/health/handler.ts → /abs/root/dist/api/health/handler.js
- */
-function remapManifestKeys(manifest: SchemaManifest, rootDir: string): SchemaManifest {
-  const remapped: SchemaManifest = new Map();
-  const rootPrefix = rootDir + path.sep;
-  for (const [filePath, fileSchemas] of manifest) {
-    // 绝对路径 → 相对路径（api/health/handler.ts）
-    let rel = filePath;
-    if (filePath.startsWith(rootPrefix)) {
-      rel = filePath.slice(rootPrefix.length);
-    } else if (filePath.startsWith(rootDir)) {
-      rel = filePath.slice(rootDir.length).replace(/^[/\\]/, '');
-    }
-    // .ts → .js，加 dist/ 前缀，再转回绝对路径（与 createServer 里的 absoluteFilePath 一致）
-    const prodRel = `dist/${rel.replace(/\.ts$/, '.js')}`;
-    const prodAbs = path.resolve(rootDir, prodRel);
-    remapped.set(prodAbs, fileSchemas);
-  }
-  return remapped;
 }

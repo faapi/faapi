@@ -1,6 +1,6 @@
 # scanRoutes
 
-一句话概括：扫描文件系统，生成路由清单。
+一句话概括：扫描文件系统，生成路由清单。支持 dev/build 模式（import 产物 `.js`）和旧模式（import 源码 `.ts`）。
 
 ## 为什么需要
 
@@ -12,15 +12,21 @@ faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为
 - 根据 glob pattern 过滤路由文件
 - 将文件路径转换为 URL 路径
 
-## 文件类型
+## 文件类型与 prodDir 参数
 
-同时支持 `.ts`（dev 模式）和 `.js`（start 模式加载 dist 产物）：
+`scanRoutes` 接受可选的 `prodDir` 参数（`dist` 或 `.faapi/dev`）：
 
-- 路由文件：`handler.ts` / `handler.js`
-- 中间件文件：`middlewares.ts` / `middlewares.js`（逐级向上查找时优先 `.ts`，回退 `.js`）
+- **传入 prodDir（dev/build 模式）**：扫描源码 `.ts` 文件列表，但 import 产物 `.js` 拿方法名。`filePath` 保持源码路径（如 `src/api/hello/handler.ts`），AST schema 提取需要 `.ts`。
+- **不传 prodDir（旧模式）**：扫描并 import 源码 `.ts`（需要 tsx 即时转译，已不推荐）。
+
+中间件文件查找逻辑：
+- 传入 prodDir：查找产物 `middlewares.js`（已编译）
+- 不传 prodDir：优先 `.ts`，回退 `.js`
 
 ## 相关模块
 
 - `parseRouteFile.ts` - 解析文件路径
 - `sortRoutes.ts` - 排序扫描结果
 - `routeTypes.ts` - 返回类型定义
+- `compileRoutes.ts` - 编译源码到产物（dev/build 模式前置步骤）
+- `importWithCacheBust.ts` - ESM cache bust 加载
