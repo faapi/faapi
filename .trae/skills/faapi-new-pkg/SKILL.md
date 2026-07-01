@@ -5,7 +5,7 @@ description: "在 faapi monorepo 创建新子包(@faapi/<name>),按 AGENTS.md 6.
 
 # faapi 新增子包
 
-本流程在 faapi monorepo 下创建新的 `@faapi/<name>` 子包,按 [AGENTS.md 6.5](../../../AGENTS.md#新增子包配置清单) 配置完整文件结构,确保通过 Trusted Publisher(COIDC)发布。
+本流程在 faapi monorepo 下创建新的 `@faapi/<name>` 子包,配置完整文件结构,确保通过 Trusted Publisher(COIDC)发布。
 
 ## 何时使用
 
@@ -194,7 +194,7 @@ export {};
 
 ### 7. `LICENSE`
 
-从 [packages/faapi/LICENSE](../../../packages/faapi/LICENSE) 复制,MIT 协议,版权年份和持有者保持一致。
+从现有包的 LICENSE 文件复制(如 `packages/faapi/LICENSE`),MIT 协议,版权年份和持有者保持一致。
 
 ### 8. `README.md`
 
@@ -218,7 +218,7 @@ pnpm add @faapi/<name>
 
 ### 9. 更新 `.changeset/config.json` — 加入 fixed 数组
 
-读取 [.changeset/config.json](../../../.changeset/config.json),在 `fixed` 数组中加入新包名:
+读取 `.changeset/config.json`,在 `fixed` 数组中加入新包名:
 
 ```json
 "fixed": [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/<name>"]]
@@ -304,7 +304,7 @@ pnpm -r run build
 **处理**:
 1. 检查 npm 包 Settings → Trusted Publishers 是否存在记录
 2. 确认 Repository owner=`faapi`、Repository name=`faapi`、Workflow filename=`.github/workflows/release.yml`
-3. 确认 [.github/workflows/release.yml](../../../.github/workflows/release.yml) 的 canary job 有 `permissions: id-token: write`
+3. 确认 `.github/workflows/release.yml` 的 canary job 有 `permissions: id-token: write`
 4. 确认 package.json 的 `publishConfig.provenance: true`
 
 ### CI canary 发布失败:版本已存在
@@ -362,7 +362,7 @@ npm 不允许重新发布已存在的版本号。若需"覆盖",只能:
 
 ## 参考资料
 
-- [AGENTS.md 6.5 新增子包配置清单](../../../AGENTS.md#新增子包配置清单) — 单一来源,本 skill 是其执行版
-- [npm-stable-release](../npm-stable-release/SKILL.md) — 正式版发布流程
-- [.changeset/config.json](../../../.changeset/config.json) — fixed 配置
-- [.github/workflows/release.yml](../../../.github/workflows/release.yml) — CI canary/stable workflow
+- AGENTS.md 6.5 "新增子包配置清单" — 单一来源,本 skill 是其执行版
+- npm-stable-release skill — 正式版发布流程
+- `.changeset/config.json` — fixed 配置(fixed 数组含所有包名)
+- `.github/workflows/release.yml` — CI canary/stable workflow

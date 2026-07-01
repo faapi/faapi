@@ -253,7 +253,7 @@ pnpm changeset version
 - 更新 `packages/*/CHANGELOG.md`
 - 删除已消费的 changeset 文件
 
-**fixed 配置保证三包版本同步**:即使 changeset 只标记其中一个包,[.changeset/config.json](file:///Users/tu/workspace/github/faapi/.changeset/config.json) 的 `fixed: [["@faapi/faapi", "@faapi/schema", "@faapi/next"]]` 会让三个包版本号保持一致(取最高 bump type)。
+**fixed 配置保证三包版本同步**:即使 changeset 只标记其中一个包,`.changeset/config.json` 的 `fixed: [["@faapi/faapi", "@faapi/schema", "@faapi/next"]]` 会让三个包版本号保持一致(取最高 bump type)。
 
 ### 7. 验证版本升级
 
@@ -314,7 +314,7 @@ git commit -m "release: v$NEW_VERSION"
 git tag "v$NEW_VERSION"
 ```
 
-**tag 名格式**: `v` + 版本号(如 `v0.0.1`、`v1.2.3`),与 [release.yml](file:///Users/tu/workspace/github/faapi/.github/workflows/release.yml) 的 `tags: ['v*']` 匹配。
+**tag 名格式**: `v` + 版本号(如 `v0.0.1`、`v1.2.3`),与 `.github/workflows/release.yml` 的 `tags: ['v*']` 匹配。
 
 ### 12. 推送触发 CI
 
@@ -405,7 +405,7 @@ CI 进度监控: https://github.com/faapi/faapi/actions
 
 **症状**:`@faapi/faapi` / `@faapi/schema` / `@faapi/next` 三者版本号不一致
 
-**处理**:检查 [.changeset/config.json](file:///Users/tu/workspace/github/faapi/.changeset/config.json) 的 `fixed` 字段是否包含全部三个包。
+**处理**:检查 `.changeset/config.json` 的 `fixed` 字段是否包含全部三个包。
 
 ### CI stable job 失败
 
