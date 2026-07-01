@@ -276,7 +276,7 @@ export function GET(query: Query) {
 }
 ```
 
-**需要用户自己跑** `pnpm typecheck`(`tsc --noEmit`)。框架用 tsx 转译,不跑 tsc。
+**需要用户自己跑** `pnpm typecheck`(`tsc --noEmit`)。框架用 esbuild 编译,不跑 tsc。
 
 ### 5. 跨文件类型引用
 

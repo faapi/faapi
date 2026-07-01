@@ -328,7 +328,7 @@ export function GET(query: Query) {
 
 ### 原因
 
-faapi 用 tsx 转译,**只转译不检查类型**。框架不主动跑 tsc。
+faapi dev 用 esbuild 编译,**只编译不检查类型**。框架不主动跑 tsc。
 
 ### 解决
 
@@ -350,7 +350,7 @@ handler 引用了其他文件的类型,dev 模式校验不生效。
 
 ### 原因
 
-dev 模式 watch 是全量重建,跨文件类型引用应该自然解决。如果还有问题:
+dev 模式 watch 增量编译 + 重新生成 schema,跨文件类型引用应该自然解决。如果还有问题:
 
 1. 类型导出方式不对(用 `export interface` 不是 `export type`)
 2. 循环引用
