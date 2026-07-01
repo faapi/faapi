@@ -237,19 +237,19 @@ import { foo } from './utils.ts';
 
 ## prod 启动失败
 
-### 1. dist/faapi-schema.js 不存在
+### 1. dist/faapi-routes.js 或 dist/faapi-schema.js 不存在
 
 ```
-Error: dist/faapi-schema.js not found
+[faapi] dist/faapi-routes.js 或 dist/faapi-schema.js 不存在,请先执行 `faapi build` 构建生产产物。
 ```
 
-**原因**:没跑 `faapi build` 就用 `NODE_ENV=production` 启动。
+**原因**:没跑 `faapi build` 就用 `faapi start` 启动。
 
 **解决**:
 
 ```bash
 faapi build
-NODE_ENV=production faapi
+faapi start
 ```
 
 ### 2. 路由文件未编译

@@ -12,6 +12,13 @@ faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为
 - 根据 glob pattern 过滤路由文件
 - 将文件路径转换为 URL 路径
 
+## 文件类型
+
+同时支持 `.ts`（dev 模式）和 `.js`（start 模式加载 dist 产物）：
+
+- 路由文件：`handler.ts` / `handler.js`
+- 中间件文件：`middlewares.ts` / `middlewares.js`（逐级向上查找时优先 `.ts`，回退 `.js`）
+
 ## 相关模块
 
 - `parseRouteFile.ts` - 解析文件路径

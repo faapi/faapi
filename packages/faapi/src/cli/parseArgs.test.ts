@@ -47,4 +47,34 @@ describe('parseArgs', () => {
     expect(result.appDir).toBe('.');
     expect(result.patterns).toEqual(['api/**/*.ts']);
   });
+
+  it('无命令词时 mode 默认为 dev', () => {
+    const result = parseArgs([]);
+    expect(result.mode).toBe('dev');
+  });
+
+  it('faapi dev → mode 为 dev', () => {
+    const result = parseArgs(['dev']);
+    expect(result.mode).toBe('dev');
+    // dev 命令词不进入 patterns
+    expect(result.patterns).toEqual(['src/api/**/*.ts']);
+  });
+
+  it('faapi start → mode 为 start', () => {
+    const result = parseArgs(['start']);
+    expect(result.mode).toBe('start');
+    expect(result.patterns).toEqual(['src/api/**/*.ts']);
+  });
+
+  it('faapi start api/auth/* → mode 为 start，patterns 保留', () => {
+    const result = parseArgs(['start', 'api/auth/*']);
+    expect(result.mode).toBe('start');
+    expect(result.patterns).toEqual(['api/auth/*']);
+  });
+
+  it('faapi dev --port 4000 → mode 为 dev，参数正常解析', () => {
+    const result = parseArgs(['dev', '--port', '4000']);
+    expect(result.mode).toBe('dev');
+    expect(result.port).toBe(4000);
+  });
 });

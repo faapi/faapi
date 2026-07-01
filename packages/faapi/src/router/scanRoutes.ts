@@ -28,14 +28,19 @@ async function findMergedMiddlewares(
   const routeDir = path.dirname(routeFilePath);
   const resolvedRoot = path.resolve(rootDir);
 
-  // 收集从根到路由目录的所有 middlewares.ts 路径
+  // 收集从根到路由目录的所有 middlewares.{ts,js} 路径
+  // dev 模式扫 .ts，start 模式扫 .js（dist 产物）
   const mwPaths: string[] = [];
   let currentDir = path.resolve(rootDir, routeDir);
   while (true) {
-    const mwPath = path.join(currentDir, 'middlewares.ts');
-    const absMwPath = path.resolve(rootDir, mwPath);
-    if (fs.existsSync(absMwPath)) {
-      mwPaths.push(absMwPath);
+    // 优先 .ts（dev），回退 .js（prd dist 产物）
+    for (const ext of ['.ts', '.js']) {
+      const mwPath = path.join(currentDir, `middlewares${ext}`);
+      const absMwPath = path.resolve(rootDir, mwPath);
+      if (fs.existsSync(absMwPath)) {
+        mwPaths.push(absMwPath);
+        break;
+      }
     }
     if (currentDir === resolvedRoot) break;
     const parentDir = path.dirname(currentDir);
@@ -150,8 +155,9 @@ export async function scanRoutes(
     const normalizedFile = file.replace(/\\/g, '/');
     const fileName = normalizedFile.split('/').pop()!;
 
-    // 处理 handler.ts — API 路由 + WebSocket 路由
-    if (fileName === 'handler.ts') {
+    // 处理 handler.{ts,js} — API 路由 + WebSocket 路由
+    // dev 模式扫 .ts，start 模式扫 .js（dist 产物）
+    if (fileName === 'handler.ts' || fileName === 'handler.js') {
       const absPath = path.resolve(rootDir, normalizedFile);
       const urlPath = filePathToUrlPath(normalizedFile, dir);
       const paramNames = extractParamNames(urlPath);

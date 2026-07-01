@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseArgs } from './parseArgs';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
@@ -10,45 +11,17 @@ import { startWatcher } from './watcher';
 import { loadConfig } from '../config/loadConfig';
 import { schemaRegistry } from '../validator/schemaRegistry';
 import { extractSchemasForRoutes, readManifestFile } from './generateSchema';
+import { hydrateRoutes } from './generateRoutes';
 import { loadPlugins } from './loadPlugins';
-
-/**
- * 判断是否为生产模式
- *
- * 满足两个条件：
- * 1. NODE_ENV=production（或 FAAPI_ENV=production）
- * 2. dist/faapi-schema.js 存在
- */
-function isProductionMode(rootDir: string): boolean {
-  const env = process.env.NODE_ENV ?? process.env.FAAPI_ENV ?? 'development';
-  if (env !== 'production') return false;
-  return fs.existsSync(path.resolve(rootDir, 'dist', 'faapi-schema.js'));
-}
-
-/**
- * 将 dev 模式的 patterns/appDir 调整为 prod 模式（指向 dist 目录）
- *
- * - patterns: .ts 后缀 → .js 后缀，加 dist/ 前缀
- * - appDir: '.' → 'dist'，'src'（默认）→ 'dist/src'
- */
-function adjustForProd(patterns: string[], appDir: string): { patterns: string[]; appDir: string } {
-  const prodPatterns = patterns
-    .map((p) => p.replace(/\.ts$/g, '.js'))
-    .map((p) => {
-      if (p.startsWith('dist/')) return p;
-      return `dist/${p}`;
-    });
-  const prodAppDir = appDir === '.' ? 'dist' : `dist/${appDir}`;
-  return { patterns: prodPatterns, appDir: prodAppDir };
-}
+import type { SchemaManifest } from '../validator/schemaRegistry';
 
 /**
  * CLI 启动命令的完整流程
  *
- * dev 模式（默认）：
+ * dev 模式（默认，`faapi` 或 `faapi dev`）：
  * 1. 解析参数
  * 2. 加载配置文件
- * 3. 扫描路由
+ * 3. 扫描路由（.ts）
  * 4. 排序路由
  * 5. 检测路由冲突
  * 6. 全量提取 schema → schemaRegistry.loadManifest
@@ -56,39 +29,50 @@ function adjustForProd(patterns: string[], appDir: string): { patterns: string[]
  * 8. 启动 server
  * 9. 执行 onReady 生命周期钩子
  * 10. 启动 watch 模式（文件变化全量重建 schema）
- * 11. 如果 MCP 启用，启动 MCP server
  *
- * prod 模式（NODE_ENV=production 且 dist/faapi-schema.json 存在）：
+ * start 模式（`faapi start`，生产模式）：
  * 1. 解析参数（patterns/appDir 自动指向 dist）
  * 2. 加载配置文件
- * 3. 扫描路由（.js 文件）
+ * 3. 扫描路由（.js）
  * 4. 排序路由
  * 5. 检测路由冲突
- * 6. 加载 faapi-schema.json → schemaRegistry.loadManifest
+ * 6. 加载 dist/faapi-schema.js → schemaRegistry.loadManifest
  * 7. 启动 server
  * 8. 执行 onReady 生命周期钩子
- * 9. 如果 MCP 启用，启动 MCP server
  *
- * dev 和 prod 共用 createServer / handleRequest / validateInput，
+ * dev 和 start 共用 createServer / handleRequest / validateInput，
  * 差异仅在 schema 来源、文件类型、是否启动 watch。
+ *
+ * @param argv 原始 CLI 参数（含命令词 dev/start，由 parseArgs 解析）
  */
 export async function startCommand(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const rootDir = process.cwd();
 
-  // 判断模式
-  const isProd = isProductionMode(rootDir);
+  // mode === 'start' → 生产模式，加载 dist 产物
+  const isProd = args.mode === 'start';
 
-  // 调整 patterns/appDir（prod 模式指向 dist）
-  const { patterns, appDir } = isProd
-    ? adjustForProd(args.patterns, args.appDir)
-    : { patterns: args.patterns, appDir: args.appDir };
+  // 生产模式要求 dist/faapi-routes.js 和 dist/faapi-schema.js 存在（由 faapi build 生成）
+  if (isProd) {
+    const routesPath = path.resolve(rootDir, 'dist', 'faapi-routes.js');
+    const schemaPath = path.resolve(rootDir, 'dist', 'faapi-schema.js');
+    if (!fs.existsSync(routesPath) || !fs.existsSync(schemaPath)) {
+      console.error(
+        '[faapi] dist/faapi-routes.js 或 dist/faapi-schema.js 不存在，请先执行 `faapi build` 构建生产产物。',
+      );
+      process.exit(1);
+    }
+  }
 
   if (isProd) {
+    // 同步 NODE_ENV 给生态（如 Next.js 运行时 20+ 处直接读 process.env.NODE_ENV 做分支）
+    // 仅在未显式设置时回退，避免覆盖用户意图
+    if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production';
     console.log('- Production mode');
   } else {
     // 标记 dev 模式
     process.env.__FAAPI_DEV__ = '1';
+    if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
     console.log('- Development mode');
   }
 
@@ -98,8 +82,25 @@ export async function startCommand(argv: string[]): Promise<void> {
     console.log('- Config loaded');
   }
 
-  // 扫描路由（HTTP + WebSocket）
-  const { routes, wsRoutes } = await scanRoutes(rootDir, patterns, appDir);
+  // 路由获取：start 读清单+水合，dev 扫描文件系统
+  let routes: import('../router/routeTypes').RouteManifest;
+  let wsRoutes: import('../router/routeTypes').WsRouteManifest;
+  if (isProd) {
+    // start 模式：从 dist/faapi-routes.js 读取序列化清单，水合（加载中间件）
+    const routesPath = path.resolve(rootDir, 'dist', 'faapi-routes.js');
+    const serialized = (await import(pathToFileURL(routesPath).href)) as import('./generateRoutes').SerializedRouteManifest;
+    const hydrated = await hydrateRoutes(serialized);
+    routes = hydrated.routes;
+    wsRoutes = hydrated.wsRoutes;
+    console.log(`- Routes loaded: ${routes.length} routes, ${wsRoutes.length} WS routes`);
+  } else {
+    // dev 模式：扫描文件系统
+    const { patterns, appDir } = { patterns: args.patterns, appDir: args.appDir };
+    const scanned = await scanRoutes(rootDir, patterns, appDir);
+    routes = scanned.routes;
+    wsRoutes = scanned.wsRoutes;
+    console.log(`- Routes scanned: ${routes.length} routes, ${wsRoutes.length} WS routes`);
+  }
   const sorted = sortRoutes(routes);
 
   // 检测路由冲突（相同 method + urlPath 的多个文件）
@@ -118,7 +119,11 @@ export async function startCommand(argv: string[]): Promise<void> {
     // prod 模式：从 faapi-schema.js import 加载
     const schemaPath = path.resolve(rootDir, 'dist', 'faapi-schema.js');
     const manifest = await readManifestFile(schemaPath);
-    schemaRegistry.loadManifest(manifest);
+    // build 时 schema key 是绝对路径 + .ts（如 /abs/api/health/handler.ts），
+    // 运行时 route.filePath 是相对路径 + .js + dist 前缀（如 dist/api/health/handler.js）。
+    // 重写 key 使两者匹配，validateInput 才能查到。
+    const remapped = remapManifestKeys(manifest, rootDir);
+    schemaRegistry.loadManifest(remapped);
     console.log(`- Schema loaded: ${schemaPath}`);
   } else {
     // dev 模式：全量提取 schema 并生成校验函数（watcher 全量重建）
@@ -217,4 +222,31 @@ const FAAPI_CONFIG_KEYS = new Set([
 
 function isFaapiConfigKey(key: string): boolean {
   return FAAPI_CONFIG_KEYS.has(key);
+}
+
+/**
+ * 重写 manifest 的 filePath key，使 prd 运行时能匹配 validateInput 传入的路径
+ *
+ * build 时 key 形式：/abs/root/api/health/handler.ts（绝对路径 + .ts）
+ * 运行时 validateInput 传入：/abs/root/dist/api/health/handler.js（绝对路径 + .js + dist 前缀）
+ *
+ * 转换：/abs/root/api/health/handler.ts → /abs/root/dist/api/health/handler.js
+ */
+function remapManifestKeys(manifest: SchemaManifest, rootDir: string): SchemaManifest {
+  const remapped: SchemaManifest = new Map();
+  const rootPrefix = rootDir + path.sep;
+  for (const [filePath, fileSchemas] of manifest) {
+    // 绝对路径 → 相对路径（api/health/handler.ts）
+    let rel = filePath;
+    if (filePath.startsWith(rootPrefix)) {
+      rel = filePath.slice(rootPrefix.length);
+    } else if (filePath.startsWith(rootDir)) {
+      rel = filePath.slice(rootDir.length).replace(/^[/\\]/, '');
+    }
+    // .ts → .js，加 dist/ 前缀，再转回绝对路径（与 createServer 里的 absoluteFilePath 一致）
+    const prodRel = `dist/${rel.replace(/\.ts$/, '.js')}`;
+    const prodAbs = path.resolve(rootDir, prodRel);
+    remapped.set(prodAbs, fileSchemas);
+  }
+  return remapped;
 }

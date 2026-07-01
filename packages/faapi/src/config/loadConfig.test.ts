@@ -164,6 +164,8 @@ export default {
       });
 
       const originalNodeEnv = process.env.NODE_ENV;
+      const originalFaapiEnv = process.env.FAAPI_ENV;
+      delete process.env.FAAPI_ENV;
       process.env.NODE_ENV = 'production';
 
       try {
@@ -175,6 +177,7 @@ export default {
         expect(result!.redis).toEqual({ host: '127.0.0.1' });
       } finally {
         process.env.NODE_ENV = originalNodeEnv;
+        process.env.FAAPI_ENV = originalFaapiEnv;
       }
     });
 
@@ -207,7 +210,7 @@ export default {
       }
     });
 
-    it('NODE_ENV 优先于 FAAPI_ENV', async () => {
+    it('FAAPI_ENV 优先于 NODE_ENV', async () => {
       const dir = makeDir({
         'faapi.config.js': `
 export default {
@@ -234,7 +237,37 @@ export default {
       try {
         const result = await loadConfig(dir);
         expect(result).not.toBeNull();
-        // NODE_ENV 优先，加载 production 配置
+        // FAAPI_ENV 优先，加载 staging 配置
+        expect(result!.db).toEqual({ host: 'staging.db.com' });
+      } finally {
+        process.env.NODE_ENV = originalNodeEnv;
+        process.env.FAAPI_ENV = originalFaapiEnv;
+      }
+    });
+
+    it('FAAPI_ENV 未设时回退 NODE_ENV', async () => {
+      const dir = makeDir({
+        'faapi.config.js': `
+export default {
+  db: { host: 'localhost' },
+};
+`,
+        'faapi.config.production.js': `
+export default {
+  db: { host: 'db.production.com' },
+};
+`,
+      });
+
+      const originalNodeEnv = process.env.NODE_ENV;
+      const originalFaapiEnv = process.env.FAAPI_ENV;
+      delete process.env.FAAPI_ENV;
+      process.env.NODE_ENV = 'production';
+
+      try {
+        const result = await loadConfig(dir);
+        expect(result).not.toBeNull();
+        // FAAPI_ENV 未设，回退到 NODE_ENV=production
         expect(result!.db).toEqual({ host: 'db.production.com' });
       } finally {
         process.env.NODE_ENV = originalNodeEnv;
@@ -279,6 +312,8 @@ export default {
       });
 
       const originalNodeEnv = process.env.NODE_ENV;
+      const originalFaapiEnv = process.env.FAAPI_ENV;
+      delete process.env.FAAPI_ENV;
       process.env.NODE_ENV = 'production';
 
       try {
@@ -289,6 +324,7 @@ export default {
         expect(result!.db).toEqual({ host: 'localhost' });
       } finally {
         process.env.NODE_ENV = originalNodeEnv;
+        process.env.FAAPI_ENV = originalFaapiEnv;
       }
     });
 

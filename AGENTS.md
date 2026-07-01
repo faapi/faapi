@@ -75,7 +75,7 @@ CLI → Server → Router → Loader → Runtime → Response
 ### 5.3 使用方式
 
 ```bash
-# 启动 dev server（默认扫描 src/api/**/*.ts）
+# dev 模式（默认扫描 src/api/**/*.ts）
 faapi
 faapi dev                      # 同上
 faapi src/api/auth/*           # 指定路由 pattern
@@ -85,8 +85,20 @@ faapi --static public          # 托管静态文件
 faapi --no-cors                # 禁用 CORS
 faapi --types faapi-types.ts    # 生成 RPC 类型文件
 faapi --config faapi.config.ts  # 指定配置文件
-faapi build                    # 构建
+
+# 生产模式
+faapi build                    # 构建（编译 .ts → dist/*.js + 生成 dist/faapi-routes.js + dist/faapi-schema.js）
+faapi start                    # 启动生产服务器（读 dist/faapi-routes.js 路由清单 + dist/faapi-schema.js schema，无需 NODE_ENV）
 ```
+
+**dev / start 模式区分**：
+- `faapi` / `faapi dev`：dev 模式，扫描 `.ts`，watch 文件变化，全量提取 schema
+- `faapi start`：生产模式，读 `dist/faapi-routes.js` 路由清单（水合中间件）+ `dist/faapi-schema.js` schema，不 watch
+- `faapi build`：构建，不启动服务器
+
+不再通过 `NODE_ENV=production` 切换 dev/prd 模式。`NODE_ENV`/`FAAPI_ENV` 仅用于加载环境配置文件（`faapi.config.{env}.ts`），优先级 `FAAPI_ENV > NODE_ENV > 'development'`。
+
+启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`faapi start` → `production`。目的是同步给生态下游（如 Next.js 运行时多处直接读 `process.env.NODE_ENV` 做分支判断），让 `@faapi/next` 等集成插件无需自己推导 mode。
 
 ### 5.4 接口文件示例
 
@@ -230,7 +242,7 @@ export default {
 
 #### 5.5.1 多环境配置
 
-支持按环境加载不同配置，环境由 `NODE_ENV` 或 `FAAPI_ENV` 决定（默认 `development`）：
+支持按环境加载不同配置，环境由 `FAAPI_ENV` 或 `NODE_ENV` 决定（默认 `development`）。优先级 `FAAPI_ENV > NODE_ENV > 'development'`：
 
 ```ts
 // faapi.config.ts — 基础配置

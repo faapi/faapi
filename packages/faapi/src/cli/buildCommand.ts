@@ -3,6 +3,7 @@ import { sortRoutes } from '../router/sortRoutes';
 import { detectRouteConflicts } from '../router/detectRouteConflicts';
 import { generateTypes } from './generateTypes';
 import { writeSchemaModule } from './generateSchema';
+import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { collectRouteSchemaSources } from './collectRouteSchemaSources';
 import type { SchemaModuleEntry } from '../ast/generateValidatorCode';
 import type { HandlerTypeInfo } from '../ast/extractHandlerTypes';
@@ -37,10 +38,10 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
   console.log(`- Output: ${outdir}`);
 
   // 1. 扫描路由
-  console.log('\n[1/4] Scanning routes...');
-  const { routes } = await scanRoutes(rootDir, patterns, appDir);
+  console.log('\n[1/5] Scanning routes...');
+  const { routes, wsRoutes } = await scanRoutes(rootDir, patterns, appDir);
   const sorted = sortRoutes(routes);
-  console.log(`  Found ${sorted.length} routes`);
+  console.log(`  Found ${sorted.length} routes, ${wsRoutes.length} WS routes`);
 
   // 检测路由冲突
   const conflicts = detectRouteConflicts(sorted);
@@ -55,20 +56,27 @@ export async function buildCommand(options: BuildOptions): Promise<void> {
   }
 
   // 2. 生成类型文件
-  console.log('\n[2/4] Generating types...');
+  console.log('\n[2/5] Generating types...');
   const typesPath = types ? path.resolve(rootDir, types) : path.resolve(rootDir, 'faapi-types.ts');
   await generateTypes(sorted, rootDir, typesPath);
   console.log(`  Written to ${typesPath}`);
 
   // 3. 生成 schema 模块（prd 运行时类型校验的数据来源）
-  console.log('\n[3/4] Generating schema module...');
+  console.log('\n[3/5] Generating schema module...');
   const schemaPath = path.resolve(rootDir, outdir, 'faapi-schema.js');
   const { entries, allTypesByFile } = extractSchemaEntries(sorted, rootDir);
   await writeSchemaModule(entries, allTypesByFile, schemaPath);
   console.log(`  Written to ${schemaPath}`);
 
-  // 4. 编译 TypeScript（逐文件编译，保持目录结构）
-  console.log('\n[4/4] Compiling TypeScript...');
+  // 4. 生成路由清单（prd 启动时直接读取，不再 scanRoutes）
+  console.log('\n[4/5] Generating routes manifest...');
+  const routesPath = path.resolve(rootDir, outdir, 'faapi-routes.js');
+  const serialized = serializeRoutes(sorted, wsRoutes, rootDir);
+  await writeRoutesModule(serialized, routesPath);
+  console.log(`  Written to ${routesPath}`);
+
+  // 5. 编译 TypeScript（逐文件编译，保持目录结构）
+  console.log('\n[5/5] Compiling TypeScript...');
   await compileTypeScript(rootDir, patterns, appDir, outdir);
   console.log('  Done');
 
@@ -164,5 +172,15 @@ export function parseBuildArgs(argv: string[]): BuildOptions {
     }
   }
 
-  return { rootDir, patterns, appDir, outdir, types };
+  // 默认扫描 <appDir>/api/**/*.ts（与 parseArgs 保持一致）
+  // --app-dir . 时为 api/**/*.ts
+  const defaultPattern = appDir === '.' ? 'api/**/*.ts' : `${appDir}/api/**/*.ts`;
+
+  return {
+    rootDir,
+    patterns: patterns.length > 0 ? patterns : [defaultPattern],
+    appDir,
+    outdir,
+    types,
+  };
 }

@@ -348,7 +348,7 @@ declare module '@faapi/faapi' {
 
 ## 多环境配置
 
-环境由 `NODE_ENV` 或 `FAAPI_ENV` 决定(默认 `development`)。
+环境由 `FAAPI_ENV` 或 `NODE_ENV` 决定(默认 `development`),优先级 `FAAPI_ENV > NODE_ENV > 'development'`。
 
 ```ts
 // faapi.config.ts — 基础配置

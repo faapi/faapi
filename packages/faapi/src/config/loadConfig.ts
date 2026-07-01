@@ -14,12 +14,15 @@ import type { FaapiConfig } from './configTypes';
 const BASE_CONFIG_FILES = ['faapi.config.ts', 'faapi.config.js'];
 
 /**
- * 获取当前运行环境
+ * 获取当前运行环境（用于加载 faapi.config.{env}.ts）
  *
- * 优先级：NODE_ENV → FAAPI_ENV → 'development'
+ * 优先级：FAAPI_ENV → NODE_ENV → 'development'
+ *
+ * FAAPI_ENV 优先：让 faapi 的环境切换不污染全局 NODE_ENV（其他库也读 NODE_ENV）。
+ * FAAPI_ENV 未设时回退 NODE_ENV，符合 Node 生态默认直觉。
  */
 function getEnv(): string {
-  return process.env.NODE_ENV || process.env.FAAPI_ENV || 'development';
+  return process.env.FAAPI_ENV || process.env.NODE_ENV || 'development';
 }
 
 /**
@@ -101,7 +104,7 @@ async function loadConfigFile(filePath: string): Promise<Partial<FaapiConfig> | 
  * 2. faapi.config.ts / faapi.config.js（基础配置）
  * 3. faapi.config.{env}.ts / faapi.config.{env}.js（环境覆盖，深度合并）
  *
- * 环境由 NODE_ENV 或 FAAPI_ENV 决定，默认 'development'
+ * 环境由 FAAPI_ENV 或 NODE_ENV 决定，默认 'development'
  *
  * @param rootDir 项目根目录
  * @param configPath 指定的配置文件路径（可选）
