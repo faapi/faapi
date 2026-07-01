@@ -67,7 +67,7 @@ filePath
 
 - 每个命名类型生成一个 `validate_X` 函数
 - 循环引用通过函数递归处理（JS 函数声明提升）
-- dev 模式写入 `.faapi/dev/faapi-schema.js`，prd 模式写入 `dist/faapi-schema.js`（两者均预生成 JS 模块文件并 import 加载，`new Function` 仅作 registry 为空时的兜底）
+- dev 模式写入 `.faapi/dev/faapi-schema.js`，prd 模式写入 `dist/faapi-schema.js`（两者均预生成 JS 模块文件并 import 加载）
 
 ## 相关模块
 

@@ -95,7 +95,9 @@ export type TypeResolver = (name: string) => RuntimeType | undefined;
  * @param typeInfo 类型信息
  * @param resolveType 类型解析器（可选，用于解析循环引用中的 ref）
  *
- * 用法：`new Function('input', source + '; return validate(input);')`
+ * 返回的源码包含 `validate(input)` 入口函数，可由调用方写入文件后 import，
+ * 或用 `new Function('input', source + '; return validate(input);')` 执行。
+ * 框架运行时统一走 `generateSchemaModule` 生成 JS 模块文件 → import 加载。
  */
 export function generateValidatorSource(
   typeInfo: HandlerTypeInfo,

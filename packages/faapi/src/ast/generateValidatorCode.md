@@ -17,7 +17,6 @@
 
 - dev 模式：`generateSchemaModule` 生成完整 JS 模块 → 写入 `.faapi/dev/faapi-schema.js`，启动时 import 加载
 - prd 模式：`generateSchemaModule` 生成完整 JS 模块 → 写入 `dist/faapi-schema.js`
-- 兜底路径（e2e/直接调用 registry 为空时）：`generateValidatorSource` 生成源码 → `new Function` 动态创建校验函数
 
 ## API
 

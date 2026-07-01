@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { validateInput } from './validateInput';
 import { schemaRegistry } from './schemaRegistry';
-import { extractSchemasForRoutes } from '../cli/generateSchema';
+import { generateSchemaFile, loadSchemaToRegistry } from '../cli/generateSchema';
 import type { RouteManifest } from '../router/routeTypes';
 
 describe('validateInput', () => {
@@ -12,7 +12,7 @@ describe('validateInput', () => {
   let tempFile: string;
   let tempFileNoSchema: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     schemaRegistry.clear();
     tempDir = join(tmpdir(), `faapi-validate-test-${Date.now()}`);
     mkdirSync(tempDir, { recursive: true });
@@ -29,7 +29,7 @@ describe('validateInput', () => {
 export function GET(query: GETQuery) { return query; }
 `,
     );
-    // 提取 schema 并注册到 registry（经 extractSchemasForRoutes 单文件路由）
+    // 生成 schema JS 模块文件并加载到 registry（与 dev/start 路径一致）
     // 两个文件合并到同一路由清单一次提取，避免 loadManifest 覆盖
     tempFileNoSchema = join(tempDir, 'noschema.ts');
     writeFileSync(tempFileNoSchema, `export const GET = () => 'hello';\n`);
@@ -50,7 +50,9 @@ export function GET(query: GETQuery) { return query; }
         isDynamic: false,
       },
     ];
-    schemaRegistry.loadManifest(extractSchemasForRoutes(routes));
+    const schemaPath = join(tempDir, 'faapi-schema.js');
+    await generateSchemaFile(routes, tempDir, schemaPath);
+    await loadSchemaToRegistry(schemaPath, tempDir, '', false);
   });
 
   afterEach(() => {

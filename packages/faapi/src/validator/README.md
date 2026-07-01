@@ -34,7 +34,6 @@ dev 和 prd 都通过 `schemaRegistry` 获取校验函数，不降级：
 | --- | --- | --- |
 | dev | AST 提取 → 生成源码 → 写入 `.faapi/dev/faapi-schema.js` → import 加载 | 启动时全量，watch 时全量重建 |
 | prd | `dist/faapi-schema.js` | 启动时 import 加载 |
-| e2e/直接调用 | AST 自动提取 | createServer 发现 registry 为空时自动提取 |
 
 三种状态：
 - `ValidatorFn`：有类型声明，执行校验

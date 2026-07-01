@@ -24,16 +24,19 @@
 
 | 方法 | 说明 |
 |------|------|
-| `extractSchemasForRoutes(routes, rootDir?)` | 从 RouteManifest 提取完整 SchemaManifest（唯一生产入口） |
+| `generateSchemaFile(routes, rootDir, outputPath)` | 从路由清单提取 schema 并生成 JS 模块文件（dev/build 共用） |
 | `writeSchemaModule(entries, allTypesMap, outputPath)` | 生成 JS 模块源码并写入文件 |
 | `readManifestFile(inputPath)` | 动态 import JS 模块并转为 SchemaManifest |
+| `loadSchemaToRegistry(schemaPath, rootDir, prodDir, remap)` | 加载 schema 文件并注册到 registry（dev/start 共用） |
 
-## 提取规则
+## 提取流程
 
-`extractSchemasForRoutes` 用于 registry 为空时的兜底（e2e/直接调用）；dev/build 主路径走 `generateSchemaFile`/`writeSchemaModule` 生成 JS 模块文件。两阶段处理：
+`generateSchemaFile` 内部调用 `collectRouteSchemaSources` 收集数据，再调 `writeSchemaModule` 生成 JS 模块文件。
 
-1. **收集阶段**：遍历所有路由文件，提取每个文件的 `allTypes` 并合并为全局 `mergedAllTypes`（用于解析跨文件类型引用）
-2. **生成阶段**：每个文件按 method 用 `analyzeInjection` 从 handler 签名提取真实参数类型名，再用该类型名提取 typeInfo，编译为 `{ properties, validator }`
+`collectRouteSchemaSources` 两阶段处理：
+
+1. **收集阶段**：遍历所有路由文件，提取每个文件的 `allTypes` 并合并为全局 `allTypesByFile`（用于解析跨文件类型引用）
+2. **生成阶段**：每个文件按 method 用 `analyzeInjection` 从 handler 签名提取真实参数类型名，再用该类型名提取 typeInfo
 
 对每个 `(filePath, method)`：
 
@@ -42,9 +45,7 @@
 3. `meta = analyzeInjection(code, method)` —— 解析 handler 签名
 4. `typeName = meta.params.find(p => p.type === inputType)?.typeName` —— 真实参数类型名（如 `Query`、`CreateUserBody`，可自由命名）
 5. `typeInfo = typeName ? extractTypeInfo(program, filePath, typeName) : null`
-6. `entry = typeInfoToSchemaEntry(typeInfo, mergedAllTypes)`：
-   - `typeInfo === null` → `null`（无类型声明，跳过校验）
-   - 否则 → `{ properties, validator }`，其中 validator 由 `generateValidatorSource` + `new Function` 创建
+6. 生成校验函数源码（`generateSchemaModule`），写入 JS 模块文件，运行时 import 加载
 
 ### 类型名与存储 key 的分离
 
@@ -54,7 +55,7 @@
 
 ## 跨文件类型引用
 
-`extractSchemasForRoutes` 与 prd 的 `writeSchemaModule` 行为一致：
+`generateSchemaFile` 与 prd 的 `writeSchemaModule` 行为一致：
 先收集所有文件的类型并合并为全局 `allTypes`，再传给每个文件的 schema 生成，
 确保跨文件类型引用（包括跨文件循环引用）可解析。
 

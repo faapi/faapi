@@ -25,7 +25,7 @@ export interface RouteSchemaSource {
  * 4. 同时返回按文件分组的 allTypesMap 和合并后的全局 allTypes
  *
  * 调用方基于返回的 sources 和 allTypes 各自做最终转换：
- * - dev：编译 validator 函数 → SchemaManifest（用 mergedAllTypes）
+ * - dev：生成 JS 模块文件 → import 加载（用 allTypesByFile）
  * - prd：生成 JS 模块代码 → SchemaModuleEntry[]（用 allTypesByFile）
  */
 export function collectRouteSchemaSources(
@@ -35,7 +35,7 @@ export function collectRouteSchemaSources(
   sources: RouteSchemaSource[];
   /** 按文件分组的类型映射（prd writeSchemaModule 用） */
   allTypesByFile: Map<string, Map<string, HandlerTypeInfo>>;
-  /** 合并后的全局类型映射（dev typeInfoToSchemaEntry 用） */
+  /** 合并后的全局类型映射（兼容旧调用方保留，新路径使用 allTypesByFile） */
   mergedAllTypes: Map<string, HandlerTypeInfo>;
 } {
   // 按文件分组收集方法（去重）

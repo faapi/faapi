@@ -23,8 +23,6 @@ import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import type { ResponseFormatFn, ErrorFormatFn } from '../config/configTypes';
 import { serveStatic } from './serveStatic';
-import { schemaRegistry } from '../validator/schemaRegistry';
-import { extractSchemasForRoutes } from '../cli/generateSchema';
 import { attachWebSocket } from './handleWsUpgrade';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 
@@ -171,13 +169,8 @@ export function createServer(options: CreateServerOptions): Server {
     globalRef.__FAAPI_WS_ROUTES__ = wsRoutes;
   }
 
-  // 确保 schema 已注册到 registry
-  // - 如果 registry 已有数据（startCommand 已加载 manifest 或 dev 已提取），跳过
-  // - 如果 registry 为空（e2e 测试或直接调用 createServer），自动提取
-  if (schemaRegistry.size === 0 && routes.length > 0) {
-    const manifest = extractSchemasForRoutes(routes, rootDir);
-    schemaRegistry.loadManifest(manifest);
-  }
+  // schema 由调用方负责加载（startCommand/watcher 调 loadSchemaToRegistry，e2e 测试显式调用）
+  // 若未加载，validateInput 会抛 InternalError（schema 缺失），不静默放行
 
   // Build CORS middleware if enabled
   const corsMiddleware: FaapiMiddleware | null =

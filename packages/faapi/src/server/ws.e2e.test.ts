@@ -1,10 +1,12 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, type RawData } from 'ws';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { createServer } from './createServer';
+import { generateSchemaFile, loadSchemaToRegistry } from '../cli/generateSchema';
 import type { Server } from 'node:http';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -97,6 +99,13 @@ async function connect(pathname: string): Promise<{ ws: WebSocket; queue: Messag
 beforeAll(async () => {
   const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
+  // 加载 schema 到 registry（createServer 不再自动提取）
+  const schemaPath = path.join(
+    os.tmpdir(),
+    `faapi-e2e-ws-schema-${Date.now()}-${Math.random().toString(36).slice(2)}.js`,
+  );
+  await generateSchemaFile(sorted, FIXTURES_DIR, schemaPath);
+  await loadSchemaToRegistry(schemaPath, FIXTURES_DIR, '', false);
   const srv = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,

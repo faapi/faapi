@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { extractSchemasForRoutes, readManifestFile, writeSchemaModule } from './generateSchema';
+import { generateSchemaFile, readManifestFile, writeSchemaModule, loadSchemaToRegistry } from './generateSchema';
+import { schemaRegistry } from '../validator/schemaRegistry';
 import { createProgram } from '../ast/createProgram';
 import { extractTypeInfo, extractAllTypes } from '../ast/extractHandlerTypes';
 import { getInputTypeForMethod } from '../runtime/inputType';
@@ -10,10 +11,21 @@ import { getSchemaName } from '../validator/schemaName';
 import type { SchemaModuleEntry } from '../ast/generateValidatorCode';
 import type { RouteManifest } from '../router/routeTypes';
 
+/**
+ * generateSchema 测试：从路由清单提取 schema → 生成 JS 模块 → import 加载
+ *
+ * 覆盖：
+ * - generateSchemaFile：从路由清单生成 schema JS 模块文件（dev/build 共用）
+ * - writeSchemaModule：生成 JS 模块源码并写入文件
+ * - readManifestFile：动态 import JS 模块并转为 SchemaManifest
+ * - loadSchemaToRegistry：加载 schema 文件并注册到 registry
+ * - 端到端往返：generateSchemaFile → readManifestFile
+ */
 describe('generateSchema', () => {
   let tempDir: string;
 
   beforeEach(() => {
+    schemaRegistry.clear();
     tempDir = join(
       tmpdir(),
       `faapi-gen-schema-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -22,10 +34,11 @@ describe('generateSchema', () => {
   });
 
   afterEach(() => {
+    schemaRegistry.clear();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  // 构造单文件路由清单，复用 extractSchemasForRoutes（生产唯一入口）
+  // 构造单文件路由清单
   function singleFileRoutes(filePath: string, methods: string[]): RouteManifest {
     return methods.map((method) => ({
       method: method as any,
@@ -36,8 +49,8 @@ describe('generateSchema', () => {
     }));
   }
 
-  describe('单文件提取（经 extractSchemasForRoutes）', () => {
-    it('提取有类型声明的 schema', () => {
+  describe('generateSchemaFile', () => {
+    it('生成 schema JS 模块文件（含 validator 和 properties）', async () => {
       const filePath = join(tempDir, 'user.ts');
       writeFileSync(
         filePath,
@@ -49,7 +62,12 @@ export function GET(query: GETQuery) { return query; }
 `,
       );
 
-      const manifest = extractSchemasForRoutes(singleFileRoutes(filePath, ['GET']));
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(singleFileRoutes(filePath, ['GET']), tempDir, outputPath);
+
+      expect(existsSync(outputPath)).toBe(true);
+
+      const manifest = await readManifestFile(outputPath);
       const schemas = manifest.get(filePath)!;
 
       // 存储 key 仍为约定名 GETQuery
@@ -61,7 +79,7 @@ export function GET(query: GETQuery) { return query; }
       expect(typeof entry!.validator).toBe('function');
     });
 
-    it('类型名可自由命名（不强制为约定名）', () => {
+    it('类型名可自由命名（不强制为约定名）', async () => {
       // 用户写 interface Query 而非 GETQuery，也应被正确提取
       const filePath = join(tempDir, 'user.ts');
       writeFileSync(
@@ -74,7 +92,10 @@ export function GET(query: Query) { return query; }
 `,
       );
 
-      const manifest = extractSchemasForRoutes(singleFileRoutes(filePath, ['GET']));
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(singleFileRoutes(filePath, ['GET']), tempDir, outputPath);
+
+      const manifest = await readManifestFile(outputPath);
       const schemas = manifest.get(filePath)!;
 
       // 存储 key 仍是约定名 GETQuery（运行时查找不变），但 schema 来自真实类型 Query
@@ -92,7 +113,7 @@ export function GET(query: Query) { return query; }
       expect(missing.valid).toBe(false);
     });
 
-    it('POST body 类型名可自由命名', () => {
+    it('POST body 类型名可自由命名', async () => {
       const filePath = join(tempDir, 'user.ts');
       writeFileSync(
         filePath,
@@ -104,7 +125,10 @@ export function POST(body: CreateUserBody) { return body; }
 `,
       );
 
-      const manifest = extractSchemasForRoutes(singleFileRoutes(filePath, ['POST']));
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(singleFileRoutes(filePath, ['POST']), tempDir, outputPath);
+
+      const manifest = await readManifestFile(outputPath);
       const schemas = manifest.get(filePath)!;
 
       expect(schemas.has('POSTBody')).toBe(true);
@@ -113,17 +137,20 @@ export function POST(body: CreateUserBody) { return body; }
       expect(entry!.properties.map((p) => p.name).sort()).toEqual(['email', 'name']);
     });
 
-    it('无类型声明时 schema 为 null', () => {
+    it('无类型声明时 schema 为 null', async () => {
       const filePath = join(tempDir, 'health.ts');
       writeFileSync(filePath, `export function GET() { return 'ok'; }\n`);
 
-      const manifest = extractSchemasForRoutes(singleFileRoutes(filePath, ['GET']));
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(singleFileRoutes(filePath, ['GET']), tempDir, outputPath);
+
+      const manifest = await readManifestFile(outputPath);
       const schemas = manifest.get(filePath)!;
 
       expect(schemas.get('GETQuery')).toBeNull();
     });
 
-    it('多方法提取各自的 schema', () => {
+    it('多方法提取各自的 schema', async () => {
       const filePath = join(tempDir, 'user.ts');
       writeFileSync(
         filePath,
@@ -134,7 +161,10 @@ export function POST(body: POSTBody) { return body; }
 `,
       );
 
-      const manifest = extractSchemasForRoutes(singleFileRoutes(filePath, ['GET', 'POST']));
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(singleFileRoutes(filePath, ['GET', 'POST']), tempDir, outputPath);
+
+      const manifest = await readManifestFile(outputPath);
       const schemas = manifest.get(filePath)!;
 
       expect(schemas.has('GETQuery')).toBe(true);
@@ -143,7 +173,7 @@ export function POST(body: POSTBody) { return body; }
       expect(schemas.get('POSTBody')!.properties[0].name).toBe('name');
     });
 
-    it('生成的校验函数能正确校验输入', () => {
+    it('生成的校验函数能正确校验输入', async () => {
       const filePath = join(tempDir, 'user.ts');
       writeFileSync(
         filePath,
@@ -152,7 +182,10 @@ export function GET(query: GETQuery) { return query; }
 `,
       );
 
-      const manifest = extractSchemasForRoutes(singleFileRoutes(filePath, ['GET']));
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(singleFileRoutes(filePath, ['GET']), tempDir, outputPath);
+
+      const manifest = await readManifestFile(outputPath);
       const entry = manifest.get(filePath)!.get('GETQuery')!;
 
       // 正确输入
@@ -168,10 +201,8 @@ export function GET(query: GETQuery) { return query; }
       const wrongType = entry.validator({ page: '1' });
       expect(wrongType.valid).toBe(false);
     });
-  });
 
-  describe('extractSchemasForRoutes', () => {
-    it('从路由清单提取完整 manifest', () => {
+    it('从路由清单提取完整 manifest（多文件）', async () => {
       const file1 = join(tempDir, 'user.ts');
       const file2 = join(tempDir, 'health.ts');
       writeFileSync(
@@ -193,14 +224,17 @@ export function GET(query: GETQuery) { return query; }
         },
       ];
 
-      const manifest = extractSchemasForRoutes(routes);
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(routes, tempDir, outputPath);
+
+      const manifest = await readManifestFile(outputPath);
 
       expect(manifest.size).toBe(2);
       expect(manifest.get(file1)!.get('GETQuery')!.properties[0].name).toBe('page');
       expect(manifest.get(file2)!.get('GETQuery')).toBeNull();
     });
 
-    it('同一文件多方法合并到同一 FileSchemas', () => {
+    it('同一文件多方法合并到同一 FileSchemas', async () => {
       const filePath = join(tempDir, 'user.ts');
       writeFileSync(
         filePath,
@@ -216,7 +250,10 @@ export function POST(body: POSTBody) { return body; }
         { method: 'POST', urlPath: '/api/user', filePath, paramNames: [], isDynamic: false },
       ];
 
-      const manifest = extractSchemasForRoutes(routes);
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(routes, tempDir, outputPath);
+
+      const manifest = await readManifestFile(outputPath);
 
       expect(manifest.size).toBe(1);
       const fileSchemas = manifest.get(filePath)!;
@@ -225,7 +262,7 @@ export function POST(body: POSTBody) { return body; }
       expect(fileSchemas.has('POSTBody')).toBe(true);
     });
 
-    it('跨文件类型引用可解析（与 prd 行为一致）', () => {
+    it('跨文件类型引用可解析', async () => {
       // 文件 A 的 GETQuery 引用文件 B 的 B 类型，文件 B 的 GETQuery 引用文件 A 的 A 类型（跨文件循环引用）
       const fileA = join(tempDir, 'a.ts');
       const fileB = join(tempDir, 'b.ts');
@@ -250,7 +287,10 @@ export function GET(query: GETQuery) { return query; }
         { method: 'GET', urlPath: '/api/b', filePath: fileB, paramNames: [], isDynamic: false },
       ];
 
-      const manifest = extractSchemasForRoutes(routes);
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(routes, tempDir, outputPath);
+
+      const manifest = await readManifestFile(outputPath);
 
       // 文件 A 的 schema 应能校验含 B 的对象
       const entryA = manifest.get(fileA)!.get('GETQuery')!;
@@ -325,6 +365,26 @@ export function GET(query: GETQuery) { return query; }
       const loaded = await readManifestFile(outputPath);
 
       expect(loaded.get(filePath)!.get('GETQuery')).toBeNull();
+    });
+  });
+
+  describe('loadSchemaToRegistry', () => {
+    it('加载 schema 文件并注册到 registry', async () => {
+      const filePath = join(tempDir, 'user.ts');
+      writeFileSync(
+        filePath,
+        `export interface GETQuery { page: number; }
+export function GET(query: GETQuery) { return query; }
+`,
+      );
+
+      const outputPath = join(tempDir, 'faapi-schema.js');
+      await generateSchemaFile(singleFileRoutes(filePath, ['GET']), tempDir, outputPath);
+
+      await loadSchemaToRegistry(outputPath, tempDir, '', false);
+
+      expect(schemaRegistry.size).toBe(1);
+      expect(schemaRegistry.hasFile(filePath)).toBe(true);
     });
   });
 });

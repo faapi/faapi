@@ -6,18 +6,34 @@ import { fileURLToPath } from 'node:url';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { createServer } from './createServer';
+import { generateSchemaFile, loadSchemaToRegistry } from '../cli/generateSchema';
 import { ValidationError } from '../errors/httpErrors';
 import type { Server } from 'node:http';
+import type { RouteManifest } from '../router/routeTypes';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
 
 let server: Server | null = null;
 let baseUrl: string;
+let schemaLoaded = false;
+
+/** 加载 schema 到 registry（createServer 不再自动提取，需调用方负责） */
+async function ensureSchemaLoaded(routes: RouteManifest, rootDir: string): Promise<void> {
+  if (schemaLoaded) return;
+  const schemaPath = path.join(
+    os.tmpdir(),
+    `faapi-e2e-schema-${Date.now()}-${Math.random().toString(36).slice(2)}.js`,
+  );
+  await generateSchemaFile(routes, rootDir, schemaPath);
+  await loadSchemaToRegistry(schemaPath, rootDir, '', false);
+  schemaLoaded = true;
+}
 
 async function setupServer(): Promise<{ server: Server; baseUrl: string }> {
   const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
+  await ensureSchemaLoaded(sorted, FIXTURES_DIR);
   const srv = createServer({ routes: sorted, rootDir: FIXTURES_DIR });
 
   return new Promise((resolve, reject) => {
@@ -50,6 +66,7 @@ async function setupServerWithOptions(
 ): Promise<{ server: Server; baseUrl: string }> {
   const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
+  await ensureSchemaLoaded(sorted, FIXTURES_DIR);
   const srv = createServer({ routes: sorted, rootDir: FIXTURES_DIR, ...options });
   return new Promise((resolve, reject) => {
     srv.listen(0, () => {
