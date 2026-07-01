@@ -18,10 +18,10 @@ build 时将 RuntimeType 编译为校验函数 JS 代码，运行时直接调用
 ```
 AST 提取 → RuntimeType → generateValidatorCode → 校验函数源码
                                                          ↓
-                                          dev: new Function 动态创建
-                                          prd: dist/faapi-schema.js 导出
+                                          dev: .faapi/dev/faapi-schema.js 预生成
+                                          prd: dist/faapi-schema.js 预生成
                                                          ↓
-                                              schemaRegistry 注册
+                                              schemaRegistry 注册（import 加载）
                                                          ↓
                                               validateInput 调用
 ```
@@ -32,7 +32,7 @@ dev 和 prd 都通过 `schemaRegistry` 获取校验函数，不降级：
 
 | 模式 | 校验函数来源 | 加载时机 |
 | --- | --- | --- |
-| dev | AST 提取 → 生成源码 → `new Function` | 启动时全量，watch 时全量重建 |
+| dev | AST 提取 → 生成源码 → 写入 `.faapi/dev/faapi-schema.js` → import 加载 | 启动时全量，watch 时全量重建 |
 | prd | `dist/faapi-schema.js` | 启动时 import 加载 |
 | e2e/直接调用 | AST 自动提取 | createServer 发现 registry 为空时自动提取 |
 

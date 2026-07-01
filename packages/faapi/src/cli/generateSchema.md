@@ -1,24 +1,24 @@
 # generateSchema
 
-一句话概括：从路由清单提取所有 handler 的 schema，生成校验函数（dev 启动加载到内存 / build 写入 JS 模块文件）。
+一句话概括：从路由清单提取所有 handler 的 schema，生成校验函数（dev 预生成 `.faapi/dev/faapi-schema.js` / build 写入 `dist/faapi-schema.js`，均 import 加载）。
 
 ## 为什么需要
 
 `schemaRegistry` 需要 schema 数据才能工作。schema 数据的来源是 TypeScript AST 分析，但提取时机因模式而异：
 
-- **dev 启动**：全量扫描路由 → 提取每个文件的 schema → `registry.loadManifest`
-- **dev watch**：文件变化 → 全量重新提取 → `registry.loadManifest`（全量重建，非增量）
-- **build**：全量扫描路由 → 提取 schema → 写入 `faapi-schema.js`
-- **prd 启动**：读取 `faapi-schema.js` → `registry.loadManifest`
+- **dev 启动**：全量扫描路由 → 提取 schema → 写入 `.faapi/dev/faapi-schema.js` → `registry.loadManifest`
+- **dev watch**：文件变化 → 重新生成 `.faapi/dev/faapi-schema.js` → `registry.loadManifest`（全量重建，非增量）
+- **build**：全量扫描路由 → 提取 schema → 写入 `dist/faapi-schema.js`
+- **prd 启动**：读取 `dist/faapi-schema.js` → `registry.loadManifest`
 
 `generateSchema` 封装"从路由清单提取 schema"这一核心逻辑，供 dev 启动、dev watch、build 三处复用。
 
 ## 使用场景
 
 - `faapi build`：全量提取 → 写入 `dist/faapi-schema.js`
-- `faapi`/`faapi dev` 启动：全量提取 → `schemaRegistry.loadManifest`
-- watch 文件变化：全量重新提取 → `schemaRegistry.loadManifest`
-- `faapi start`（prd）：读取 `faapi-schema.js` → `schemaRegistry.loadManifest`
+- `faapi`/`faapi dev` 启动：全量提取 → 写入 `.faapi/dev/faapi-schema.js` → `schemaRegistry.loadManifest`
+- watch 文件变化：重新生成 `.faapi/dev/faapi-schema.js` → `schemaRegistry.loadManifest`
+- `faapi start`（prd）：读取 `dist/faapi-schema.js` → `schemaRegistry.loadManifest`
 
 ## API
 
@@ -30,7 +30,7 @@
 
 ## 提取规则
 
-`extractSchemasForRoutes` 两阶段处理：
+`extractSchemasForRoutes` 用于 registry 为空时的兜底（e2e/直接调用）；dev/build 主路径走 `generateSchemaFile`/`writeSchemaModule` 生成 JS 模块文件。两阶段处理：
 
 1. **收集阶段**：遍历所有路由文件，提取每个文件的 `allTypes` 并合并为全局 `mergedAllTypes`（用于解析跨文件类型引用）
 2. **生成阶段**：每个文件按 method 用 `analyzeInjection` 从 handler 签名提取真实参数类型名，再用该类型名提取 typeInfo，编译为 `{ properties, validator }`

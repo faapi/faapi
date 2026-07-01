@@ -9,7 +9,7 @@
 `schemaRegistry` 将 schema 的"获取"与"使用"解耦：
 
 - **prd 模式**：`faapi build` 时全量提取 schema 生成校验函数，写入 `dist/faapi-schema.js`，启动时一次性加载到 registry。
-- **dev 模式**：启动时全量提取到内存，watch 时全量重新提取并 `loadManifest`（全量重建，非增量）。
+- **dev 模式**：启动时全量提取并预生成 `.faapi/dev/faapi-schema.js`，import 加载到 registry；watch 时重新生成并 `loadManifest`（全量重建，非增量）。
 
 `validateInput` 只查 registry，不关心 schema 来源，dev/prd 调用路径完全一致。
 
@@ -17,9 +17,9 @@
 
 - `validateInput` 校验输入前查询 schema
 - `faapi build` 生成 schema JS 模块（调用提取逻辑，不经过 registry）
-- `faapi`/`faapi dev` 启动时全量提取并注册到 registry
-- watch 模式下文件变化时全量重建 registry
-- `faapi start`（prd）启动时从 `faapi-schema.js` 加载到 registry
+- `faapi`/`faapi dev` 启动时预生成 `.faapi/dev/faapi-schema.js` 并加载到 registry
+- watch 模式下文件变化时重新生成 schema 文件并 `loadManifest`（全量重建）
+- `faapi start`（prd）启动时从 `dist/faapi-schema.js` 加载到 registry
 
 ## 数据模型
 

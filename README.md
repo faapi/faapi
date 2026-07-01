@@ -68,7 +68,7 @@ faapi --port 3000
 ## CLI 命令
 
 ```bash
-faapi                      # 启动 dev server（默认，扫描 src/api/）
+faapi                      # 启动 dev server（默认，编译 src/api/ → .faapi/dev/ 并 watch）
 faapi dev                  # 同上
 faapi src/api/auth/*       # 指定路由 pattern
 faapi --port 3000          # 指定端口
@@ -77,7 +77,8 @@ faapi --static public      # 托管静态文件
 faapi --no-cors            # 禁用 CORS
 faapi --types faapi-types.ts  # 生成 RPC 类型文件
 faapi --config faapi.config.ts  # 指定配置文件
-faapi build                # 构建
+faapi build                # 构建（编译 .ts → dist/，生成路由清单 + schema）
+faapi start                # 启动生产服务器（需先 build，读 dist/ 产物）
 ```
 
 ## 文档

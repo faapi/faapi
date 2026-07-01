@@ -17,8 +17,8 @@
 
 | 命令词 | mode | 行为 |
 |--------|------|------|
-| `faapi` / `faapi dev` | `dev` | 扫描 `.ts`，watch，全量提取 schema |
-| `faapi start` | `start` | 加载 `dist/*.js`，读 `dist/faapi-schema.js`，不 watch |
+| `faapi` / `faapi dev` | `dev` | 编译 `.ts` → `.faapi/dev/*.js`，watch，预生成 schema |
+| `faapi start` | `start` | 加载 `dist/faapi-routes.js` + `dist/faapi-schema.js`，不 watch |
 
 命令词作为位置参数的第一个非选项词识别，不进入 `patterns`。`build` 命令词由 `cli/index.ts` 顶层分发，不进 `parseArgs`。
 

@@ -113,7 +113,7 @@ WS upgrade:
 
 ## 限制
 
-1. **prod 模式 build**：用户需分别执行 `faapi build` 和 `next build`，然后用 `faapi`（生产模式）启动
+1. **prod 模式 build**：用户需分别执行 `faapi build` 和 `next build`，然后用 `faapi start` 启动
 2. **Next.js getUpgradeHandler 非公开 API**：依赖 Next.js 内部实现，未来大版本可能变化
 3. **静态资源**：Next.js 的静态资源（`/public`、`/_next/static`）由 Next.js handler 自动处理，faapi 不参与
 
