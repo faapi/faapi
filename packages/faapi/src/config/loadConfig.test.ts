@@ -60,22 +60,52 @@ export default {
     expect(result!.cors).toEqual({ origin: '*' });
   });
 
-  it('优先加载 faapi.config.ts 而非 faapi.config.js', async () => {
-    // .ts 文件在动态导入时需要 tsx 等工具支持
-    // 这里只验证 .js 存在时能正确加载
+  it('加载 faapi.config.ts 配置文件（esbuild 编译）', async () => {
     const dir = makeDir({
-      'faapi.config.js': `
+      'faapi.config.ts': `
 export default {
-  port: 9090,
-  db: { host: 'localhost' },
+  port: 7070,
+  db: { host: 'localhost', port: 5432 },
 };
 `,
     });
 
     const result = await loadConfig(dir);
     expect(result).not.toBeNull();
-    expect(result!.port).toBe(9090);
-    expect(result!.db).toEqual({ host: 'localhost' });
+    expect(result!.port).toBe(7070);
+    expect(result!.db).toEqual({ host: 'localhost', port: 5432 });
+  });
+
+  it('faapi.config.ts 优先于 faapi.config.js', async () => {
+    const dir = makeDir({
+      'faapi.config.ts': `
+export default { port: 1111 };
+`,
+      'faapi.config.js': `
+export default { port: 2222 };
+`,
+    });
+
+    const result = await loadConfig(dir);
+    expect(result).not.toBeNull();
+    expect(result!.port).toBe(1111);
+  });
+
+  it('faapi.config.ts 支持本地相对 import（esbuild bundle）', async () => {
+    const dir = makeDir({
+      'faapi.config.ts': `
+import { baseConfig } from './base';
+export default { ...baseConfig, port: 8989 };
+`,
+      'base.ts': `
+export const baseConfig = { db: { host: 'from-base' } };
+`,
+    });
+
+    const result = await loadConfig(dir);
+    expect(result).not.toBeNull();
+    expect(result!.port).toBe(8989);
+    expect(result!.db).toEqual({ host: 'from-base' });
   });
 
   it('指定 configPath 加载指定路径的配置文件', async () => {

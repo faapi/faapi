@@ -220,7 +220,7 @@ Error: Cannot find module './handler'
 
 **原因**:tsconfig 配置为 `moduleResolution: Bundler`,但运行时用了不支持无后缀解析的工具(如直接 `node dist/index.js` 而未经过 tsup 打包)。
 
-**解决**:本地相对导入路径不写后缀,由 tsc/tsx/tsup 解析。
+**解决**:本地相对导入路径不写后缀,由 tsc/tsup/esbuild 解析。
 
 ```ts
 // ✅ 正确:无后缀
@@ -233,7 +233,7 @@ import { foo } from './utils.js';
 import { foo } from './utils.ts';
 ```
 
-> 注:dev 模式 esbuild 编译支持 Bundler 解析(无后缀导入由 esbuild 解析);prod 模式由 tsup 打包成单文件,无相对路径问题。tsx 仅加载 faapi.config.ts,不参与路由文件解析。
+> 注:dev 模式 esbuild 编译支持 Bundler 解析(无后缀导入由 esbuild 解析);prod 模式由 tsup 打包成单文件,无相对路径问题。faapi.config.ts 也由 esbuild 编译为临时 .mjs 后 import。
 
 ## prod 启动失败
 

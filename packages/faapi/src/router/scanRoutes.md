@@ -17,7 +17,7 @@ faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为
 `scanRoutes` 接受可选的 `prodDir` 参数（`dist` 或 `.faapi/dev`）：
 
 - **传入 prodDir（dev/build 模式）**：扫描源码 `.ts` 文件列表，但 import 产物 `.js` 拿方法名。`filePath` 保持源码路径（如 `src/api/hello/handler.ts`），AST schema 提取需要 `.ts`。
-- **不传 prodDir（旧模式，CLI 不再使用）**：扫描并 import 源码 `.ts`（依赖 tsx 即时转译，仅 e2e/测试保留）。
+- **不传 prodDir（旧模式，CLI 不再使用）**：扫描并 import 源码 `.ts`（依赖 esbuild 即时转译，仅 e2e/测试保留）。
 
 中间件文件查找逻辑：
 - 传入 prodDir：查找产物 `middlewares.js`（已编译）

@@ -6,7 +6,7 @@
 
 参考 Next.js 的实现，dev 和 build 都先编译 `.ts` 到中间产物（`.js`），再扫描路由和加载。这样：
 
-- **移除 tsx 依赖**：运行时只加载 `.js`，不再需要 tsx 即时转译 `.ts`。
+- **移除 tsx 依赖**：运行时只加载 `.js`，路由文件由 esbuild 编译，`faapi.config.ts` 也由 esbuild 编译为临时 `.mjs`。
 - **dev 和 build 加载逻辑统一**：都从 `.js` 产物加载，scanRoutes 只扫描 `.js`。
 - **别名在编译时处理**：esbuild onLoad 插件重写别名 specifier 为产物相对路径，运行时无需 paths resolve hook。
 

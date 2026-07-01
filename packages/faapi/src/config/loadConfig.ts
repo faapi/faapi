@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { pathToFileURL } from 'node:url';
+import os from 'node:os';
+import { importWithCacheBust } from '../utils/importWithCacheBust';
 import type { FaapiConfig } from './configTypes';
 
 /**
@@ -78,6 +79,12 @@ export function deepMerge<T extends Record<string, unknown>>(
 
 /**
  * 加载单个配置文件
+ *
+ * - `.js` / `.mjs`：直接 import
+ * - `.ts`：用 esbuild 编译为临时 `.mjs` 后 import（替代 tsx register）
+ *
+ * `.ts` 编译产物写入系统临时目录（每次启动唯一子目录），避免污染用户项目。
+ * 第三方依赖与 `@faapi/*` 保持 external，从用户 node_modules 解析。
  */
 async function loadConfigFile(filePath: string): Promise<Partial<FaapiConfig> | null> {
   if (!fs.existsSync(filePath)) {
@@ -85,8 +92,13 @@ async function loadConfigFile(filePath: string): Promise<Partial<FaapiConfig> | 
   }
 
   try {
-    const url = pathToFileURL(filePath).href;
-    const module = (await import(url)) as { default?: Partial<FaapiConfig> };
+    let modulePath = filePath;
+    if (filePath.endsWith('.ts')) {
+      modulePath = await compileConfigFile(filePath);
+    }
+    const module = (await importWithCacheBust(modulePath)) as {
+      default?: Partial<FaapiConfig>;
+    };
     return module.default ?? {};
   } catch (err) {
     throw new Error(
@@ -94,6 +106,43 @@ async function loadConfigFile(filePath: string): Promise<Partial<FaapiConfig> | 
       { cause: err },
     );
   }
+}
+
+/**
+ * 用 esbuild 编译单个 `.ts` 配置文件为 `.mjs` 临时文件
+ *
+ * - `bundle: true`：跟随 import 链，本地相对导入会被打包进来
+ * - 第三方依赖与 `@faapi/*` 保持 external，从用户 node_modules 解析
+ * - 产物路径基于源文件内容哈希，避免重复编译（同一文件多次加载复用产物）
+ *
+ * @returns 编译后的 `.mjs` 文件绝对路径
+ */
+async function compileConfigFile(tsPath: string): Promise<string> {
+  const { createHash } = await import('node:crypto');
+  const content = await fs.promises.readFile(tsPath, 'utf8');
+  const hash = createHash('sha1').update(content).digest('hex').slice(0, 12);
+  const tmpDir = path.join(os.tmpdir(), 'faapi-config');
+  await fs.promises.mkdir(tmpDir, { recursive: true });
+  const outFile = path.join(tmpDir, `config-${hash}.mjs`);
+
+  // 内容未变化时跳过编译（同一进程多次加载同一配置文件）
+  if (fs.existsSync(outFile)) {
+    return outFile;
+  }
+
+  const esbuild = await import('esbuild');
+  await esbuild.build({
+    entryPoints: [tsPath],
+    outfile: outFile,
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    sourcemap: true,
+    packages: 'external',
+    logLevel: 'silent',
+  });
+  return outFile;
 }
 
 /**

@@ -415,8 +415,8 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 ### 6.4 技术栈
 
 - TypeScript、Node.js ESM
-- `tsx` 加载用户 `faapi.config.ts`、`tsup` 打包
-- `esbuild` 编译路由文件到中间产物、`cac` CLI、`fast-glob` 文件扫描、`chokidar` watch
+- `esbuild` 编译路由文件与 `faapi.config.ts`、`tsup` 打包
+- `cac` CLI、`fast-glob` 文件扫描、`chokidar` watch
 - TypeScript Compiler API AST 分析
 - `ws` WebSocket 协议
 - `vitest` 测试

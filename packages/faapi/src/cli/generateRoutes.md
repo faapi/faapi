@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-start 模式不应重新扫描文件系统（生产环境无需 tsx、无需 glob）。
+start 模式不应重新扫描文件系统（生产环境无需 glob）。
 build 时把路由元数据序列化为 `dist/faapi-routes.js`，start 时 import 读取并水合：
 按 `middlewarePaths` 重新加载中间件文件，还原洋葱模型与注入器（函数无法序列化）。
 

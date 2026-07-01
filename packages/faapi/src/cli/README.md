@@ -16,7 +16,7 @@
 
 | 模块 | 说明 |
 | --- | --- |
-| [index.ts](./index.ts) | CLI 入口，分发 build/dev/start 命令，dev/start 模式注册 tsx（仅加载 faapi.config.ts） |
+| [index.ts](./index.ts) | CLI 入口，分发 build/dev/start 命令（config.ts 由 loadConfig 用 esbuild 编译） |
 | [parseArgs.ts](./parseArgs.ts) | 参数解析，识别 dev/start 命令词，基于 cac |
 | [normalizePatterns.ts](./normalizePatterns.ts) | pattern 标准化：逗号分隔→数组 |
 | [startCommand.ts](./startCommand.ts) | 启动：按 mode 走 dev/start 分支，dev 编译+扫描+生成 schema，start 读清单+水合 |
