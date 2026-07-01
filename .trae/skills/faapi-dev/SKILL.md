@@ -107,7 +107,7 @@ export default {
 
 ## 设计原则
 
-faapi 遵循"**只转译不检查类型**"的框架职责边界。框架用 tsx/esbuild 追求启动速度,**不主动做 tsc 检查**。类型安全由三层保证:
+faapi 遵循"**只转译不检查类型**"的框架职责边界。框架用 esbuild 编译路由（tsx 仅加载 faapi.config.ts）,**不主动做 tsc 检查**。类型安全由三层保证:
 
 1. **IDE 实时检查**(VSCode/WebStorm 写代码时即时提示)
 2. **用户项目** `pnpm typecheck`(`tsc --noEmit`)

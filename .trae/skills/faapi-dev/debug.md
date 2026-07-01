@@ -233,7 +233,7 @@ import { foo } from './utils.js';
 import { foo } from './utils.ts';
 ```
 
-> 注:dev 模式 tsx 支持 Bundler 解析。prod 模式由 tsup 打包成单文件,无相对路径问题。
+> 注:dev 模式 esbuild 编译支持 Bundler 解析(无后缀导入由 esbuild 解析);prod 模式由 tsup 打包成单文件,无相对路径问题。tsx 仅加载 faapi.config.ts,不参与路由文件解析。
 
 ## prod 启动失败
 
