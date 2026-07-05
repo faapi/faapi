@@ -73,6 +73,10 @@ export function createContext(
       meta.headers[key] = value;
     },
 
+    setETag(value: string) {
+      meta.headers['etag'] = value;
+    },
+
     redirect(url: string, status = 302): Response {
       return new Response(null, {
         status,

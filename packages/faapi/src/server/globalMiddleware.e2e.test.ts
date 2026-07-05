@@ -1,12 +1,14 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { createServer } from './createServer';
-import { generateSchemaFile, loadSchemaToRegistry } from '../cli/generateSchema';
+import { generateSchemaFiles } from '../cli/generateSchemaFiles';
+import { invalidateSchemaCache } from '../validator/validateInput';
 import type { Server } from 'node:http';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 
@@ -16,6 +18,7 @@ const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
 let server: Server | null = null;
 let baseUrl: string;
 let wsBaseUrl: string;
+let schemaOutDir: string;
 
 /**
  * 执行顺序记录器：全局中间件 + 目录中间件 + handler 各阶段 push 标记
@@ -47,16 +50,14 @@ const globalInterceptor: FaapiMiddleware = async (_ctx, _next) => {
 beforeAll(async () => {
   const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
-  // 加载 schema 到 registry（createServer 不再自动提取）
-  const schemaPath = path.join(
-    os.tmpdir(),
-    `faapi-e2e-mw-schema-${Date.now()}-${Math.random().toString(36).slice(2)}.js`,
-  );
-  await generateSchemaFile(sorted, FIXTURES_DIR, schemaPath);
-  await loadSchemaToRegistry(schemaPath, FIXTURES_DIR, '', false);
-  const srv = createServer({
+  // 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + outDir 计算 zod.js 路径）
+  schemaOutDir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-mw-schema-'));
+  await generateSchemaFiles(sorted, FIXTURES_DIR, '.', schemaOutDir);
+  const { server: srv } = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,
+    appDir: '.',
+    outDir: schemaOutDir,
     wsRoutes,
     middlewares: [globalMw],
   });
@@ -88,6 +89,10 @@ afterAll(async () => {
     });
     server = null;
   }
+  if (schemaOutDir) {
+    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  }
+  invalidateSchemaCache();
 });
 
 describe('全局中间件', () => {
@@ -130,9 +135,11 @@ describe('全局中间件拦截', () => {
   beforeAll(async () => {
     const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
     const sorted = sortRoutes(routes);
-    const srv = createServer({
+    const { server: srv } = createServer({
       routes: sorted,
       rootDir: FIXTURES_DIR,
+      appDir: '.',
+      outDir: schemaOutDir,
       middlewares: [globalInterceptor],
     });
     await new Promise<void>((resolve) => {
@@ -189,9 +196,11 @@ describe('全局中间件 + WebSocket 握手', () => {
     // 用拦截型全局中间件建独立 server
     const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
     const sorted = sortRoutes(routes);
-    const srv = createServer({
+    const { server: srv } = createServer({
       routes: sorted,
       rootDir: FIXTURES_DIR,
+      appDir: '.',
+      outDir: schemaOutDir,
       wsRoutes,
       middlewares: [globalInterceptor],
     });

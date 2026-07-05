@@ -14,7 +14,6 @@ describe('configTypes', () => {
   it('FaapiConfig 类型可正确构造（包含所有字段）', () => {
     const config: FaapiConfig = {
       port: 3000,
-      staticDir: 'public',
       cors: { origin: '*' },
       responseFormat: (data) => ({ code: 0, data }),
       errorFormat: (error) => new Response(JSON.stringify({ error }), { status: 500 }),
@@ -30,7 +29,6 @@ describe('configTypes', () => {
     const config: FaapiConfig = {
       port: 3000,
     };
-    expect(config.staticDir).toBeUndefined();
     expect(config.cors).toBeUndefined();
     expect(config.responseFormat).toBeUndefined();
     expect(config.errorFormat).toBeUndefined();

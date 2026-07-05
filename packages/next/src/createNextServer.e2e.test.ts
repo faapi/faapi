@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import type { Server } from 'node:http';
@@ -7,8 +8,9 @@ import { loadConfig } from '@faapi/faapi';
 import { scanRoutes } from '@faapi/faapi/src/router/scanRoutes';
 import { sortRoutes } from '@faapi/faapi/src/router/sortRoutes';
 import { detectRouteConflicts } from '@faapi/faapi/src/router/detectRouteConflicts';
-import { extractSchemasForRoutes } from '@faapi/faapi/src/cli/generateSchema';
-import { schemaRegistry } from '@faapi/faapi/src/validator/schemaRegistry';
+import { compileConfig } from '@faapi/faapi/src/cli/compileConfig';
+import { generateSchemaFiles } from '@faapi/faapi/src/cli/generateSchemaFiles';
+import { invalidateSchemaCache } from '@faapi/faapi/src/validator/validateInput';
 import { createServer } from '@faapi/faapi/src/server/createServer';
 import { loadPlugins } from '@faapi/faapi/src/cli/loadPlugins';
 import { applyPluginWrappers } from '@faapi/faapi/src/server/startServer';
@@ -22,8 +24,6 @@ const APP_DIR = '.';
 
 /** FaapiConfig 的内置 key 集合（排除自定义业务配置） */
 const FAAPI_CONFIG_KEYS = new Set([
-  'port',
-  'staticDir',
   'cors',
   'responseFormat',
   'errorFormat',
@@ -42,10 +42,15 @@ function isFaapiConfigKey(key: string): boolean {
 let server: Server;
 let baseUrl: string;
 let wsBaseUrl: string;
+let schemaOutDir: string;
 
 beforeAll(async () => {
-  // 1. 加载配置文件
-  const config = await loadConfig(FIXTURES_DIR);
+  // E2E 从源码生成配置产物（与 faapi dev 行为一致）
+  // 1. 编译配置文件 → fixtures/.faapi-e2e-schema/faapi-config.js
+  schemaOutDir = path.join(FIXTURES_DIR, '.faapi-e2e-schema');
+  await fs.mkdir(schemaOutDir, { recursive: true });
+  await compileConfig({ rootDir: FIXTURES_DIR, outDir: schemaOutDir });
+  const config = await loadConfig(FIXTURES_DIR, schemaOutDir);
 
   // 2. 扫描路由（HTTP + WebSocket）
   const { routes: rawRoutes, wsRoutes } = await scanRoutes(FIXTURES_DIR, PATTERNS, APP_DIR);
@@ -57,18 +62,19 @@ beforeAll(async () => {
     console.warn(`! 路由冲突: ${conflict.method} ${conflict.urlPath}`);
   }
 
-  // 4. schema 全量提取
+  // 4. 生成 zod.js 到 fixtures 内的临时目录（每个 handler 一个 schema 文件，与 faapi build 行为一致）
+  //    放在 fixtures 内是为了让 zod.js 能解析到 node_modules 中的 zod 包
   if (routes.length > 0) {
-    const manifest = extractSchemasForRoutes(routes, FIXTURES_DIR);
-    schemaRegistry.loadManifest(manifest);
+    await generateSchemaFiles(routes, FIXTURES_DIR, APP_DIR, schemaOutDir);
   }
 
   // 5. 创建 server（不 listen）
   server = createServer({
     routes,
     rootDir: FIXTURES_DIR,
+    appDir: APP_DIR,
+    outDir: schemaOutDir,
     cors: config?.cors,
-    staticDir: config?.staticDir,
     responseFormat: config?.responseFormat,
     errorFormat: config?.errorFormat,
     onError: config?.lifecycle?.onError,
@@ -76,7 +82,7 @@ beforeAll(async () => {
     wsRoutes,
     middlewares: config?.middlewares,
     injectors: config?.injectors,
-  });
+  }).server;
 
   // 6. 加载插件并应用 handler 包装（在 server.listen 之前，与 CLI 行为一致）
   const pluginConfig = config
@@ -109,6 +115,10 @@ afterAll(async () => {
     (server as any).closeAllConnections();
   }
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (schemaOutDir) {
+    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  }
+  invalidateSchemaCache();
 }, 30000);
 
 describe('@faapi/next e2e - HTTP 分流', () => {

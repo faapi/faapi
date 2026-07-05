@@ -14,7 +14,7 @@ import type { Server } from 'node:http';
 import type { Socket } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'node:path';
-import type { WsRouteManifest, WsRouteMatch } from '../router/routeTypes';
+import type { WsRouteMatch, RoutesRef } from '../router/routeTypes';
 import { matchWsRoute } from '../router/matchRoute';
 import { createContext } from '../runtime/createContext';
 import { compose, mergeMeta } from '../runtime/invokeHandler';
@@ -120,8 +120,8 @@ async function sendResponseToSocket(socket: Socket, response: Response): Promise
 export interface AttachWsOptions {
   /** HTTP server 实例（已由 createServer 创建） */
   server: Server;
-  /** WS 路由清单（watch 模式下可通过更新此数组热更新） */
-  wsRoutes: WsRouteManifest;
+  /** 路由可变引用容器（watch 模式热替换时 routesRef.wsCurrent 被更新） */
+  routesRef: RoutesRef;
   /** 项目根目录，用于解析路由文件绝对路径 */
   rootDir: string;
   /** 业务配置，注入到 WsContext.config */
@@ -144,17 +144,15 @@ export interface AttachWsOptions {
  * - 中间件抛错：由 errorFormat/内置兜底生成错误 Response，写回 socket 后销毁
  *
  * 中间件链顺序：全局中间件（外）→ 目录中间件（内）→ finalHandler。
- * watch 模式下 wsRoutes 通过引用更新（见 createServer 的 globalRef 模式）。
+ * watch 模式下 wsRoutes 通过 routesRef 引用更新。
  */
 export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
-  const { server, rootDir, config, errorFormat, globalMiddlewares } = options;
-  // wsRoutes 通过闭包引用 globalRef，支持 watch 热更新
-  const globalRef = globalThis as Record<string, unknown>;
+  const { server, routesRef, rootDir, config, errorFormat, globalMiddlewares } = options;
 
   const wss = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', async (req: IncomingMessage, socket: Socket, head: Buffer) => {
-    const currentWsRoutes = (globalRef.__FAAPI_WS_ROUTES__ as WsRouteManifest) ?? options.wsRoutes;
+    const currentWsRoutes = routesRef.wsCurrent;
     const pathname = getPathname(req);
     const match: WsRouteMatch | null = matchWsRoute(currentWsRoutes, pathname);
 

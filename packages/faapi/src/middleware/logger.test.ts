@@ -10,7 +10,7 @@ describe('logger middleware', () => {
 
   it('logs method, path, status, duration on successful request', async () => {
     const logs: string[] = [];
-    const mw = logger({ log: (msg) => logs.push(msg) });
+    const mw = logger({ log: (_obj, msg) => logs.push(msg ?? String(_obj)) });
     const handler = () => ({ ok: true });
 
     const response = await invokeHandler(handler, makeCtx('GET', '/api/users'), undefined, [mw]);
@@ -21,8 +21,8 @@ describe('logger middleware', () => {
 
   it('logs POST method correctly', async () => {
     const logs: string[] = [];
-    const mw = logger({ log: (msg) => logs.push(msg) });
-    const handler = () => ({ created: true });
+    const mw = logger({ log: (_obj, msg) => logs.push(msg ?? String(_obj)) });
+    const handler = () => ({ ok: true });
 
     const response = await invokeHandler(handler, makeCtx('POST', '/api/items'), undefined, [mw]);
     expect(response.status).toBe(200);
@@ -32,7 +32,7 @@ describe('logger middleware', () => {
 
   it('logs error with 500 status when handler throws (caught by inner middleware)', async () => {
     const logs: string[] = [];
-    const mw = logger({ log: (msg) => logs.push(msg) });
+    const mw = logger({ log: (_obj, msg) => logs.push(msg ?? String(_obj)) });
     const handler = () => {
       throw new Error('something broke');
     };
@@ -61,7 +61,7 @@ describe('logger middleware', () => {
 
   it('logs error with status and message when error propagates', async () => {
     const logs: string[] = [];
-    const mw = logger({ log: (msg) => logs.push(msg) });
+    const mw = logger({ log: (_obj, msg) => logs.push(msg ?? String(_obj)) });
     const handler = () => {
       throw new Error('fail');
     };
@@ -76,7 +76,7 @@ describe('logger middleware', () => {
 
   it('logs non-Error thrown value as string', async () => {
     const logs: string[] = [];
-    const mw = logger({ log: (msg) => logs.push(msg) });
+    const mw = logger({ log: (_obj, msg) => logs.push(msg ?? String(_obj)) });
     const handler = () => {
       throw 'string error';
     };
@@ -90,7 +90,7 @@ describe('logger middleware', () => {
 
   it('uses custom log function', async () => {
     const customLogs: string[] = [];
-    const mw = logger({ log: (msg) => customLogs.push(msg) });
+    const mw = logger({ log: (_obj, msg) => customLogs.push(msg ?? String(_obj)) });
     const handler = () => ({ ok: true });
 
     await invokeHandler(handler, makeCtx(), undefined, [mw]);
@@ -108,7 +108,7 @@ describe('logger middleware', () => {
 
   it('records duration that is >= 0', async () => {
     const logs: string[] = [];
-    const mw = logger({ log: (msg) => logs.push(msg) });
+    const mw = logger({ log: (_obj, msg) => logs.push(msg ?? String(_obj)) });
     const handler = () => ({ ok: true });
 
     await invokeHandler(handler, makeCtx(), undefined, [mw]);

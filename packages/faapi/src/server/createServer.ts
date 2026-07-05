@@ -4,9 +4,11 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http';
+import { createSecureServer as createHttp2SecureServer } from 'node:http2';
+import { readFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import path from 'node:path';
-import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
+import type { RouteManifest, WsRouteManifest, RoutesRef } from '../router/routeTypes';
 import { matchRoute, matchDynamicPath } from '../router/matchRoute';
 import { loadRouteModule } from '../loader/loadRouteModule';
 import { createContext } from '../runtime/createContext';
@@ -19,12 +21,13 @@ import { validateInput } from '../validator/validateInput';
 import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
 import { getClientIp } from '../utils/getClientIp';
 import { cors, type CorsOptions } from '../middleware/cors';
+import { helmet, type HelmetOptions } from '../middleware/helmet';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import type { ResponseFormatFn, ErrorFormatFn } from '../config/configTypes';
-import { serveStatic } from './serveStatic';
 import { attachWebSocket } from './handleWsUpgrade';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
+import { getRuntimeSchemaPath } from '../cli/generateSchemaFiles';
 
 /**
  * 将 Node.js IncomingMessage 转为 Web Request 对象
@@ -32,12 +35,10 @@ import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
  * 协议判断：
  * 1. 优先使用 X-Forwarded-Proto 头（反向代理场景）
  * 2. 回退到 http（HTTPS 由外部代理处理）
- *
- * 请求体大小限制：10MB（防止 DoS）
  */
-const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
+const DEFAULT_BODY_LIMIT = 10 * 1024 * 1024; // 10MB
 
-function toWebRequest(req: IncomingMessage): Request {
+function toWebRequest(req: IncomingMessage, bodyLimit: number = DEFAULT_BODY_LIMIT): Request {
   // 协议判断：优先 X-Forwarded-Proto（反向代理），否则 http
   const forwardedProto = req.headers['x-forwarded-proto'];
   const protocol = Array.isArray(forwardedProto)
@@ -58,7 +59,7 @@ function toWebRequest(req: IncomingMessage): Request {
   // 将 Node.js IncomingMessage 转为 Web ReadableStream
   // 并限制请求体大小（防止 DoS）
   const stream = Readable.toWeb(req) as ReadableStream<Uint8Array>;
-  const limitedStream = limitStreamSize(stream, MAX_BODY_SIZE);
+  const limitedStream = limitStreamSize(stream, bodyLimit);
   return new Request(url.toString(), {
     method,
     headers,
@@ -123,8 +124,11 @@ function findAllowedMethods(routes: RouteManifest, path: string): string[] {
 export interface CreateServerOptions {
   routes: RouteManifest;
   rootDir: string;
-  cors?: CorsOptions | boolean; // true = dev mode auto-enable, false = disabled
-  staticDir?: string;
+  /** app 目录前缀（如 'src' 或 '.'），用于计算 schema 路径 */
+  appDir: string;
+  /** 产物输出目录（如 '.faapi/dev' 或 'dist'），用于计算 schema 路径 */
+  outDir: string;
+  cors?: CorsOptions | boolean;
   /** 统一响应格式化函数 */
   responseFormat?: ResponseFormatFn;
   /** 错误响应格式化函数（优先于内置 formatErrorResponse 处理；返回 null/undefined 表示不处理） */
@@ -139,6 +143,17 @@ export interface CreateServerOptions {
   middlewares?: FaapiMiddleware[];
   /** 全局注入器（来自 faapi.config.ts，对所有路由 handler 参数注入生效） */
   injectors?: InjectorMap;
+  /** 安全头配置 */
+  helmet?: HelmetOptions | boolean;
+  /** 请求体大小限制（字节） */
+  bodyLimit?: number;
+  /** HTTP/2 配置，启用时需提供 SSL 证书路径 */
+  http2?: Http2Options | boolean;
+}
+
+export interface Http2Options {
+  key?: string;
+  cert?: string;
 }
 
 /**
@@ -147,12 +162,16 @@ export interface CreateServerOptions {
  * @param options 路由清单、根目录
  * @returns Node.js Server 实例
  */
-export function createServer(options: CreateServerOptions): Server {
+export function createServer(options: CreateServerOptions): {
+  server: Server;
+  routesRef: RoutesRef;
+} {
   const {
     routes,
     rootDir,
+    appDir,
+    outDir,
     cors: corsOption,
-    staticDir,
     responseFormat,
     errorFormat,
     onError,
@@ -160,43 +179,63 @@ export function createServer(options: CreateServerOptions): Server {
     wsRoutes,
     middlewares: globalMiddlewares,
     injectors: globalInjectors,
+    helmet: helmetOption,
+    bodyLimit = DEFAULT_BODY_LIMIT,
+    http2: http2Option,
   } = options;
 
-  // 初始化全局路由状态（watch 模式会更新这些值）
-  const globalRef = globalThis as Record<string, unknown>;
-  globalRef.__FAAPI_ROUTES__ = routes;
-  if (wsRoutes) {
-    globalRef.__FAAPI_WS_ROUTES__ = wsRoutes;
-  }
+  // 路由可变引用容器（watch 模式热替换时 reloadRoutes 更新 .current/.wsCurrent）
+  const routesRef: RoutesRef = { current: routes, wsCurrent: wsRoutes ?? [] };
 
-  // schema 由调用方负责加载（startCommand/watcher 调 loadSchemaToRegistry，e2e 测试显式调用）
-  // 若未加载，validateInput 会抛 InternalError（schema 缺失），不静默放行
+  // Build middleware chain from config options
+  const configMiddlewares: FaapiMiddleware[] = [];
 
-  // Build CORS middleware if enabled
+  // CORS
   const corsMiddleware: FaapiMiddleware | null =
     corsOption === false
       ? null
       : corsOption === true || corsOption === undefined
-        ? cors() // default: allow all (dev mode)
+        ? cors()
         : cors(corsOption);
+  if (corsMiddleware) configMiddlewares.push(corsMiddleware);
 
-  const server = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+  // Helmet — enabled only when explicitly configured
+  if (helmetOption) {
+    const helmOpts = typeof helmetOption === 'object' ? helmetOption : {};
+    configMiddlewares.push(helmet(helmOpts));
+  }
+
+  const server = ((): Server => {
+    if (http2Option) {
+      const h2Opts = typeof http2Option === 'object' ? http2Option : {};
+      return createHttp2SecureServer({
+        key: h2Opts.key ? readFileSync(h2Opts.key) : undefined,
+        cert: h2Opts.cert ? readFileSync(h2Opts.cert) : undefined,
+        allowHTTP1: true,
+      }) as unknown as Server;
+    }
+    return createHttpServer();
+  })();
+
+  server.on('request', (req: IncomingMessage, res: ServerResponse) => {
     // 每次请求读取最新的路由状态（支持 watch 模式热更新）
-    const currentRoutes = (globalRef.__FAAPI_ROUTES__ as RouteManifest) ?? routes;
+    const currentRoutes = routesRef.current;
 
     handleRequest(
       currentRoutes,
       rootDir,
+      appDir,
+      outDir,
       req,
       res,
-      corsMiddleware,
-      staticDir,
+      configMiddlewares,
       responseFormat,
       errorFormat,
       onError,
       config,
       globalMiddlewares,
       globalInjectors,
+      bodyLimit,
     ).catch(() => {
       res.statusCode = 500;
       res.end();
@@ -204,28 +243,30 @@ export function createServer(options: CreateServerOptions): Server {
   });
 
   // 挂载 WebSocket 升级处理（仅当提供了 WS 路由）
-  if (wsRoutes && wsRoutes.length > 0) {
-    attachWebSocket({ server, wsRoutes, rootDir, config, errorFormat, globalMiddlewares });
+  if (routesRef.wsCurrent.length > 0) {
+    attachWebSocket({ server, routesRef, rootDir, config, errorFormat, globalMiddlewares });
   }
 
-  return server;
+  return { server, routesRef };
 }
 
 async function handleRequest(
   routes: RouteManifest,
   rootDir: string,
+  appDir: string,
+  outDir: string,
   req: IncomingMessage,
   res: ServerResponse,
-  corsMiddleware: FaapiMiddleware | null,
-  staticDir: string | undefined,
+  configMiddlewares: FaapiMiddleware[],
   responseFormat: ResponseFormatFn | undefined,
   errorFormat: ErrorFormatFn | undefined,
   onError: ((error: unknown, ctx: FaapiContext) => Promise<void> | void) | undefined,
   config: Record<string, unknown> | undefined,
   globalMiddlewares: FaapiMiddleware[] | undefined,
   globalInjectors: InjectorMap | undefined,
+  bodyLimit: number,
 ): Promise<void> {
-  const request = toWebRequest(req);
+  const request = toWebRequest(req, bodyLimit);
   const method = request.method.toUpperCase();
   const urlPath = new URL(request.url).pathname;
   const ctx = createContext(request, {}, config, getClientIp(req));
@@ -238,15 +279,6 @@ async function handleRequest(
     const match = matchRoute(routes, method, urlPath);
 
     if (!match) {
-      // 静态文件 fallback
-      if (staticDir) {
-        const absStaticDir = path.resolve(rootDir, staticDir);
-        const staticResponse = await serveStatic(urlPath, absStaticDir);
-        if (staticResponse) {
-          return mergeMeta(staticResponse, meta);
-        }
-      }
-
       // 检查是否有其他方法匹配该路径
       const allowedMethods = findAllowedMethods(routes, urlPath);
       if (allowedMethods.length > 0) {
@@ -266,9 +298,10 @@ async function handleRequest(
     const routeModule = await loadRouteModule(absoluteFilePath, route.method);
     const input = await resolveInput(route.method, request);
 
-    // 参数校验（统一从 inputType 模块获取输入类型）
+    // 参数校验（运行时按 route.filePath 计算 zod.js 路径，import 并 safeParse）
     const inputType = getInputTypeForMethod(route.method);
-    const result = await validateInput(absoluteFilePath, route.method, inputType, input);
+    const schemaPath = getRuntimeSchemaPath(route.filePath, appDir, outDir, rootDir);
+    const result = await validateInput(schemaPath, route.method, inputType, input);
     if (!result.valid) {
       throw new ValidationError('参数校验失败', result.issues);
     }
@@ -304,10 +337,10 @@ async function handleRequest(
 
   try {
     let response: Response;
-    // 外层中间件链：CORS + 全局中间件（CORS 最外，全局次外）
-    // 顺序：CORS.before → 全局.before → routePipeline（含目录中间件 + handler）→ 全局.after → CORS.after
+    // 外层中间件链：配置中间件（CORS/helmet）+ 全局中间件
+    // 顺序：CORS → helmet → 全局 → routePipeline（含目录中间件 + handler）
     const outerMiddlewares: FaapiMiddleware[] = [];
-    if (corsMiddleware) outerMiddlewares.push(corsMiddleware);
+    if (configMiddlewares.length > 0) outerMiddlewares.push(...configMiddlewares);
     if (globalMiddlewares && globalMiddlewares.length > 0) {
       outerMiddlewares.push(...globalMiddlewares);
     }

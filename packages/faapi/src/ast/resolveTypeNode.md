@@ -49,12 +49,12 @@ HTTP 视角：JSON 只能传输 string/number/boolean/null/array/object，无法
 - `unknown` — 用户显式声明不校验
 - 属性无类型注解（`{ name; }`）
 
-循环引用通过 `ref` kind 支持（不抛错），由 `generateValidatorCode` 检测必填直接循环引用并抛错。
+循环引用通过 `ref` kind 支持（不抛错），由 `generateZodSchema` 用 `z.lazy` 处理。
 
 上层 `extractTypeInfo` / `extractAllTypes` 会 catch 并补充文件路径信息后重新抛出，方便用户定位问题。
 
 ## 相关模块
 
 - `extractHandlerTypes.ts` - 调用此函数，catch 错误补充文件路径
-- `generateSchema.ts` - 调用此函数，catch 错误补充文件路径
-- `generateValidatorCode.ts` - 消费 `RuntimeType` 生成校验函数
+- `../cli/collectRouteSchemaSources.ts` - 调用此函数提取类型，catch 错误补充文件路径
+- `generateZodSchema.ts` - 消费 `RuntimeType` 生成 zod schema 代码

@@ -23,6 +23,15 @@ faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为
 - 传入 prodDir：查找产物 `middlewares.js`（已编译）
 - 不传 prodDir：优先 `.ts`，回退 `.js`
 
+### 产物路径打平 appDir 前缀
+
+`toProdAbsPath` 将源码绝对路径转为产物绝对路径时，会剥离 `appDir` 前缀（如 `src/`），与 `compileRoutes` 的 `outbase` 设置一致：
+
+- 源码：`<rootDir>/src/api/hello/handler.ts`
+- 产物：`<rootDir>/dist/api/hello/handler.js`（去掉 `src/` 前缀）
+
+`appDir='.'` 时不剥离前缀（源码在根目录的场景）。
+
 ## 相关模块
 
 - `parseRouteFile.ts` - 解析文件路径

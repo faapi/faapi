@@ -1,38 +1,35 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { buildRouteSchemas } from './routeSchema';
+import { invalidateProgramCache } from '@faapi/faapi';
 import type { RouteManifest } from '@faapi/faapi';
-// @ts-expect-error — vitest alias 指向主包 src，运行时可用
-import { schemaRegistry } from '@faapi/faapi/src/validator/schemaRegistry';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = path.resolve(__dirname, '../../faapi/fixtures/injection-test');
-const BASIC_FIXTURES = path.resolve(__dirname, '../../faapi/fixtures/api-basic');
 
 describe('buildRouteSchemas', () => {
+  let tempDir: string;
+
   beforeEach(() => {
-    schemaRegistry.clear();
+    invalidateProgramCache();
+    tempDir = join(
+      tmpdir(),
+      `faapi-schema-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(tempDir, { recursive: true });
   });
 
-  it('从 registry 查询 GET 路由的 query schema', () => {
-    const filePath = path.resolve(FIXTURES_DIR, 'api/user/handler.ts');
+  afterEach(() => {
+    invalidateProgramCache();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
 
-    // 填充 registry（模拟 startCommand 已提取 schema）
-    schemaRegistry.set(
-      filePath,
-      new Map([
-        [
-          'GETQuery',
-          {
-            properties: [
-              { name: 'page', type: { kind: 'number' }, optional: false },
-              { name: 'pageSize', type: { kind: 'number' }, optional: false },
-            ],
-            validator: () => ({ valid: true, issues: [], data: {} }),
-          },
-        ],
-      ]),
+  it('从源文件提取 GET 路由的 query schema', () => {
+    // 写 handler 源文件
+    mkdirSync(join(tempDir, 'api/user'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/user/handler.ts'),
+      `export interface GETQuery { page: number; pageSize: number; }\nexport function GET(query: GETQuery) { return query; }\n`,
+      'utf-8',
     );
 
     const routes: RouteManifest = [
@@ -44,7 +41,7 @@ describe('buildRouteSchemas', () => {
         isDynamic: false,
       },
     ];
-    const schemas = buildRouteSchemas(routes, FIXTURES_DIR);
+    const schemas = buildRouteSchemas(routes, tempDir);
 
     expect(schemas).toHaveLength(1);
     const schema = schemas[0]!;
@@ -61,23 +58,12 @@ describe('buildRouteSchemas', () => {
     });
   });
 
-  it('从 registry 查询 POST 路由的 body schema', () => {
-    const filePath = path.resolve(FIXTURES_DIR, 'api/user/handler.ts');
-
-    schemaRegistry.set(
-      filePath,
-      new Map([
-        [
-          'POSTBody',
-          {
-            properties: [
-              { name: 'name', type: { kind: 'string' }, optional: false },
-              { name: 'email', type: { kind: 'string' }, optional: false },
-            ],
-            validator: () => ({ valid: true, issues: [], data: {} }),
-          },
-        ],
-      ]),
+  it('从源文件提取 POST 路由的 body schema', () => {
+    mkdirSync(join(tempDir, 'api/user'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/user/handler.ts'),
+      `export interface POSTBody { name: string; email: string; }\nexport function POST(body: POSTBody) { return body; }\n`,
+      'utf-8',
     );
 
     const routes: RouteManifest = [
@@ -89,7 +75,7 @@ describe('buildRouteSchemas', () => {
         isDynamic: false,
       },
     ];
-    const schemas = buildRouteSchemas(routes, FIXTURES_DIR);
+    const schemas = buildRouteSchemas(routes, tempDir);
 
     const schema = schemas[0]!;
     expect(schema.inputs[0]!.source).toBe('body');
@@ -101,7 +87,14 @@ describe('buildRouteSchemas', () => {
     });
   });
 
-  it('registry 无数据时返回空 properties', () => {
+  it('无类型声明时返回空 properties', () => {
+    mkdirSync(join(tempDir, 'api/health'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/health/handler.ts'),
+      `export function GET() { return { ok: true }; }\n`,
+      'utf-8',
+    );
+
     const routes: RouteManifest = [
       {
         method: 'GET',
@@ -111,7 +104,7 @@ describe('buildRouteSchemas', () => {
         isDynamic: false,
       },
     ];
-    const schemas = buildRouteSchemas(routes, BASIC_FIXTURES);
+    const schemas = buildRouteSchemas(routes, tempDir);
 
     const schema = schemas[0]!;
     expect(schema.inputs[0]!.source).toBe('query');
@@ -119,15 +112,12 @@ describe('buildRouteSchemas', () => {
     expect(schema.inputs[0]!.properties).toEqual([]);
   });
 
-  it('动态路由生成 params 输入', () => {
-    const filePath = path.resolve(BASIC_FIXTURES, 'api/user/[id]/handler.ts');
-
-    schemaRegistry.set(
-      filePath,
-      new Map([
-        ['GETQuery', null], // 无 query 类型
-        ['GETParams', null], // 无 params 类型
-      ]),
+  it('动态路由用 paramNames 兜底生成 params 输入', () => {
+    mkdirSync(join(tempDir, 'api/user/[id]'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/user/[id]/handler.ts'),
+      `export function GET(params: { id: string }) { return params; }\n`,
+      'utf-8',
     );
 
     const routes: RouteManifest = [
@@ -139,7 +129,7 @@ describe('buildRouteSchemas', () => {
         isDynamic: true,
       },
     ];
-    const schemas = buildRouteSchemas(routes, BASIC_FIXTURES);
+    const schemas = buildRouteSchemas(routes, tempDir);
 
     const schema = schemas[0]!;
     expect(schema.isDynamic).toBe(true);
@@ -148,5 +138,36 @@ describe('buildRouteSchemas', () => {
     expect(paramsInput!.properties).toHaveLength(1);
     expect(paramsInput!.properties[0]!.name).toBe('id');
     expect(paramsInput!.properties[0]!.type).toBe('string');
+  });
+
+  it('RuntimeType 正确转换为字符串', () => {
+    mkdirSync(join(tempDir, 'api/echo'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/echo/handler.ts'),
+      `export interface POSTBody {
+  name: string;
+  tags?: string[];
+  role: 'admin' | 'user';
+}
+export function POST(body: POSTBody) { return body; }\n`,
+      'utf-8',
+    );
+
+    const routes: RouteManifest = [
+      {
+        method: 'POST',
+        urlPath: '/api/echo',
+        filePath: 'api/echo/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+    const schemas = buildRouteSchemas(routes, tempDir);
+
+    const props = schemas[0]!.inputs[0]!.properties;
+    expect(props[0]!.type).toBe('string');
+    expect(props[1]!.type).toBe('string[]');
+    expect(props[1]!.required).toBe(false);
+    expect(props[2]!.type).toBe('"admin" | "user"');
   });
 });

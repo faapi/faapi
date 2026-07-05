@@ -29,7 +29,8 @@
     "esbuild": "^0.25.0",
     "fast-glob": "^3.3.3",
     "typescript": "^5.7.0",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@faapi/schema": "workspace:*",

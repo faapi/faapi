@@ -81,7 +81,7 @@ export function extractTypeInfo(
  *
  * 用于：
  * - 生成 schema 模块时遍历所有命名类型
- * - 作为 typeResolver 提供给 generateValidatorCode，解析循环引用中的 ref
+ * - 作为 typeResolver 提供给 generateZodSchema，解析循环引用中的 ref
  *
  * @returns Map<类型名, HandlerTypeInfo>
  */

@@ -39,6 +39,14 @@ export type RouteManifest = RouteRecord[];
 export type WsRouteManifest = WsRouteRecord[];
 
 /**
+ * 路由可变引用容器（用于 watch 热替换，createServer 闭包和 reloadRoutes 共享同一引用）
+ */
+export interface RoutesRef {
+  current: RouteManifest;
+  wsCurrent: WsRouteManifest;
+}
+
+/**
  * 路由单个参数的 schema 描述
  *
  * 供 @faapi/schema 扩展包消费，通过 MCP 暴露给 LLM。

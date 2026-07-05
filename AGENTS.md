@@ -54,12 +54,19 @@ AGENTS.md                       ← 项目唯一顶层文档（本文件）
 ### 5.1 层间关系
 
 ```
-CLI → Server → Router → Loader → Runtime → Response
-                   ↓                ↓
-               Injection        Validator
-                   ↓                ↓
-                 AST            Middleware
+dev:   CLI → compileDevRoutes  → .faapi/dev/ → createDevApp()  ─┐
+build: CLI → compileBuildRoutes → dist/ + dist/main.js         │
+prod:  node dist/main → createProdApp() → dist/ ─────────────── ┤→ Server → Router → Loader → Runtime → Response
+                                                                ↓                ↓
+                                                            Injection        Validator
+                                                                ↓                ↓
+                                                              AST            Middleware
 ```
+
+dev 模式：`faapi dev` 编译 + 调 `createDevApp()` + watcher（调 `app.reloadRoutes()`）。
+生产模式：`faapi build` 生成产物 + `dist/main.js` 启动入口，`node dist/main` 调 `createProdApp()` 自动水合路由清单。
+
+框架采用零入口设计——用户无需编写 `main.ts`：dev 由 CLI 内部编排，prod 由 build 阶段生成 `dist/main.js` 启动入口。
 
 ### 5.2 包结构
 
@@ -70,35 +77,85 @@ CLI → Server → Router → Loader → Runtime → Response
 
 `@faapi/schema` 为可选扩展，CLI 动态加载——未安装时自动跳过，不影响核心功能。
 
-主包公开 AST 能力（`createProgram`/`extractTypeInfo`/`getSchemaProperties` 等），`@faapi/schema` 组合这些能力生成路由 schema，不依赖主包内部模块。
+主包公开 AST 能力（`createProgram`/`extractTypeInfo`/`collectRouteSchemaSources` 等），`@faapi/schema` 组合这些能力生成路由 schema，不依赖主包内部模块。
 
 ### 5.3 使用方式
 
+参考 NestJS 模式：CLI 负责 `faapi dev`（编译 + watcher）和 `faapi build`（构建产物）。dev/prod 为两套独立代码路径，仅共享 `createAppBase` 编排核心和工具级函数，无 `if (isDev)` 分支：
+
+- **dev**：`faapi dev` 调用 `createDevApp()`（含 `reloadRoutes` 热替换）
+- **prod**：`faapi build` 生成 `dist/main.js` 启动入口（内部 import `createProdApp` + `listen`），`node dist/main` 直接启动
+
+框架采用零入口设计——用户无需编写 `main.ts`：dev 由 CLI 内部编排，prod 由 build 阶段自动生成 `dist/main.js` 启动入口。用户自定义启动逻辑（初始化数据库、注册信号处理等）通过 `faapi.config.ts` 的 `lifecycle.onReady` / `onClose` 钩子实现，dev/prod 都执行。
+
 ```bash
-# dev 模式（默认扫描 src/api/**/*.ts）
+# dev 模式（编译 .ts → .faapi/dev/*.js + 生成产物三元组 + 调 createDevApp() 启动 dev 应用 + 启动 watcher）
 faapi
 faapi dev                      # 同上
-faapi src/api/auth/*           # 指定路由 pattern
-faapi --port 3000              # 指定端口
-faapi --app-dir .              # 回退到项目根目录（扫描 api/**/*.ts）
-faapi --static public          # 托管静态文件
-faapi --no-cors                # 禁用 CORS
-faapi --types faapi-types.ts    # 生成 RPC 类型文件
-faapi --config faapi.config.ts  # 指定配置文件
 
 # 生产模式
-faapi build                    # 构建（编译 .ts → dist/*.js + 生成 dist/faapi-routes.js + dist/faapi-schema.js）
-faapi start                    # 启动生产服务器（读 dist/faapi-routes.js 路由清单 + dist/faapi-schema.js schema，无需 NODE_ENV）
+faapi build                    # 构建（bundle 编译 .ts → dist/*.js + 编译合并配置 → dist/faapi-config.js + 生成 dist/faapi-routes.js + 每个 handler 的 zod.js + 生成 dist/main.js 启动入口）
+node dist/main                 # 启动生产服务器（main.js 内部调 createProdApp 读 dist/ 产物三元组）
 ```
 
-**dev / start 模式区分**：
-- `faapi` / `faapi dev`：dev 模式，esbuild 编译 `.ts` → `.faapi/dev/*.js`，加载产物启动，watch 文件变化（增量编译 + 热替换路由），预生成 schema 到 `.faapi/dev/faapi-schema.js`
-- `faapi start`：生产模式，读 `dist/faapi-routes.js` 路由清单（水合中间件）+ `dist/faapi-schema.js` schema，不 watch
-- `faapi build`：构建，编译 `.ts` → `dist/*.js` + 生成 `dist/faapi-routes.js` + `dist/faapi-schema.js`，不启动服务器
+`createApp` / `createProdApp` / `createDevApp` 主要供编程式调用场景使用（如自定义启动器、测试场景），`dist/main.js` 内部也调用它们完成启动。
 
-不再通过 `NODE_ENV=production` 切换 dev/prd 模式。`NODE_ENV`/`FAAPI_ENV` 仅用于加载环境配置文件（`faapi.config.{env}.ts`），优先级 `FAAPI_ENV > NODE_ENV > 'development'`。
+配置分两类：
 
-启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`faapi start` → `production`。目的是同步给生态下游（如 Next.js 运行时多处直接读 `process.env.NODE_ENV` 做分支判断），让 `@faapi/next` 等集成插件无需自己推导 mode。
+- **应用行为配置**（CORS、responseFormat、lifecycle、middlewares、业务配置等）从 `faapi.config.ts` 读取
+- **框架元信息**（appDir、port、outDir）通过环境变量传入，不放在 config 内：
+  - `FAAPI_APP_DIR`：源码目录前缀，默认 'src'，设为 '.' 表示源码在项目根目录
+  - `PORT`：服务端口，默认 3000
+  - `FAAPI_OUT_DIR`：产物输出目录，dev 固定为 `.faapi/dev`，prod 默认 `dist`
+
+```ts
+// faapi.config.ts
+import type { FaapiConfig } from '@faapi/faapi';
+
+export default {
+  cors: { origin: '*' },
+  // 自定义业务配置（任意 key，通过 ctx.config 访问）
+  db: { host: 'localhost', port: 5432 },
+} satisfies FaapiConfig;
+```
+
+启动时通过环境变量传入框架元信息：
+
+```bash
+# dev 模式
+FAAPI_APP_DIR=src PORT=3000 faapi dev
+
+# prod 模式
+FAAPI_APP_DIR=src PORT=8080 node dist/main
+```
+
+**统一产物驱动（无 dev/prod if 分支）**：
+
+dev 和 prod 生成完全一致的产物三元组（`faapi-config.js` + `faapi-routes.js` + 各 handler 的 `zod.js`），`createAppBase`（dev/prod 共享编排核心）和 `loadConfig` 走完全相同的读产物代码路径，差异仅由 `FAAPI_OUT_DIR` 环境变量（路径参数 / 数据）驱动，不存在 `if (isDev)` 控制流分支。
+
+| 产物 | dev 模式 | prod 模式 |
+|------|---------|----------|
+| `*.js`（路由/middleware 编译） | `.faapi/dev/**/*.js` | `dist/**/*.js` |
+| `faapi-config.js`（配置合并产物） | `.faapi/dev/faapi-config.js` | `dist/faapi-config.js` |
+| `faapi-routes.js`（路由清单） | `.faapi/dev/faapi-routes.js` | `dist/faapi-routes.js` |
+| `zod.js`（schema 模块） | `.faapi/dev/**/zod.js` | `dist/**/zod.js` |
+| `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
+
+- `faapi` / `faapi dev`：dev 模式，`devCommand` 设 `FAAPI_OUT_DIR=.faapi/dev`，`compileDevRoutes` 逐文件编译 `.ts` → `.faapi/dev/*.js`（`bundle: false`，启动快、增量编译），调 `compileConfig` 生成 `.faapi/dev/faapi-config.js`，调 `generateRouteArtifacts` 生成 `faapi-routes.js` + `zod.js`，调 `createDevApp()` + `listen()`（含 `reloadRoutes` 热替换能力），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` 热替换路由）
+- `faapi build`：构建，`compileBuildRoutes` bundle 模式编译（`bundle: true` + `splitting` + `define: { 'process.env.NODE_ENV': '"production"' }` + `minifySyntax`，tree shaking + 死分支删除）→ `dist/*.js` + `compileConfig` 预编译合并配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 每个 handler 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `listen`），不启动服务器
+- `node dist/main`：生产模式，直接运行 `dist/main.js`，`createProdApp()` 读 `FAAPI_OUT_DIR`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
+
+`FAAPI_OUT_DIR` 是路径参数而非模式标志——`createAppBase` 内部无 `if (isDev)` 分支，统一水合 `faapi-routes.js`、统一 `loadConfig(outDir)` 读配置、统一按需 import `zod.js`。dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`，prod 的 `createProdApp` 直接返回 `createAppBase` 结果。
+
+**编译模式差异**：
+- dev：`bundle: false` 逐文件编译，每个 `.ts` 独立转 `.js`，不分析 import 关系，启动快、增量编译友好。配置文件由 `compileConfig` 编译源码 + 按 env 合并到 `.faapi/dev/faapi-config.js`（与 build 行为一致，env 在编译阶段固化，运行时不现场编译、不现场合并）。
+- build：`bundle: true` 从 entries（handler.ts + middlewares.ts）出发跟随 import 链分析依赖树，`splitting` 提取共享依赖为 chunk，`define` + `minifySyntax` 编译时替换 `process.env.NODE_ENV` 并删除 `if (false) {...}` 死分支，跨文件 tree shaking 删除未引用的 export。配置文件由 `compileConfig` 在 build 时按 `NODE_ENV`/`FAAPI_ENV` 合并 env 后输出为单个 `dist/faapi-config.js`，运行时零编译、零合并。
+
+`NODE_ENV`/`FAAPI_ENV` 仅用于 `compileConfig` 选择环境配置文件（按 `FAAPI_ENV > NODE_ENV > 'development'` 优先级选择 `faapi.config.{env}.ts` 与基础配置深度合并到 `faapi-config.js`），不再用于运行时配置合并。
+
+启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`node dist/main` → 由用户自行设置。build 时 `define` 已编译时替换业务代码中的 `process.env.NODE_ENV` 为 `'production'`，运行时业务代码直接拿到字面量。配置中的 `process.env.NODE_ENV` 在 `compileConfig` 阶段已固化（保留为运行时表达式，运行时读取环境变量）。如果业务配置中有运行时读取 `process.env.NODE_ENV` 的逻辑（如 `onReady` 钩子），仍需启动时显式设置或由部署环境注入。
+
+CORS 等运行时配置通过 `faapi.config.ts` 配置；框架元信息（appDir/port/outDir）通过环境变量传入。
 
 ### 5.4 接口文件示例
 
@@ -210,7 +267,7 @@ export default {
     ctx.t = (key: string) => key; // 示例：i18n
   },
 
-  // CORS 配置（覆盖 CLI 参数）
+  // CORS 配置
   cors: { origin: ['https://example.com'], credentials: true },
 
   // 全局中间件：对所有路由（HTTP + WebSocket 握手）生效，最外层
@@ -221,9 +278,6 @@ export default {
       await next();
     },
   ],
-
-  // 静态文件目录（覆盖 CLI 参数）
-  staticDir: 'public',
 
   // 插件：应用级扩展，启动时初始化（如启动后台服务、注册协议）
   // 与中间件的区别：中间件拦截每个请求，插件在启动时 setup 一次
@@ -377,8 +431,9 @@ export function WS(ctx: WsContext): WsEventHandlers {
 - 源码文件使用小驼峰：`scanRoutes.ts`、`matchRoute.ts`。
 - 类型文件使用 `Types.ts` 后缀：`routeTypes.ts`、`configTypes.ts`。
 - 测试文件使用 `.test.ts`，端到端测试使用 `.e2e.test.ts`。
-- 路由根目录默认为 `src/`（可通过 `--app-dir` 指定子目录，`--app-dir .` 回退到项目根目录）：API 路由放在 `src/api/` 下。
+- 路由根目录默认为 `src/`（可通过环境变量 `FAAPI_APP_DIR` 指定，设为 `.` 回退到项目根目录）：API 路由放在 `src/api/` 下。
 - 用户路由文件统一使用 `handler.ts`，放在 `src/api/` 下，导出 HTTP 方法名（`GET`、`POST` 等）；导出 `WS` 函数即声明 WebSocket 路由（与 HTTP 方法同级）。
+- 框架采用零入口设计——用户无需编写 `main.ts`：dev 由 `faapi dev` 内部编排（调 `createDevApp` + `listen`），prod 由 `faapi build` 自动生成 `dist/main.js` 启动入口（内部 import `createProdApp` + `listen`），`node dist/main` 直接启动。用户自定义启动逻辑通过 `faapi.config.ts` 的 `lifecycle.onReady` / `onClose` 钩子实现。`createApp` / `createProdApp` / `createDevApp` 主要供编程式调用场景使用（如自定义启动器、测试场景），`createApp` 为 `createProdApp` 的向后兼容别名。
 - 中间件文件使用 `middlewares.ts`，导出默认数组。
 - 动态路由目录使用 `[name]`：`[id]`。
 - Catch-all 路由目录使用 `[...name]`：`[...slug]`。
@@ -398,19 +453,26 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 
 ### 6.3 类型校验策略
 
-- 类型校验主方案通过 TypeScript AST 实现。
+- 类型校验主方案通过 TypeScript AST 提取 `RuntimeType`，再生成 zod schema 代码。
 - 不把手写 schema 作为第一版主路径。
 - 如遇 AST 暂不支持的语法，直接抛 `SchemaExtractionError`，不降级为 `any`（方便开发时改正）。
 - 显式声明 `unknown` 表示不校验；`any`/`void`/`never`/`object` 均抛错。
-- AST 提取 `RuntimeType` 结构化类型描述，再编译为校验函数 JS 代码：
-  - dev：预生成 `.faapi/dev/faapi-schema.js`（ESM 模块），启动时 `import` 加载；watch 时重新生成。
-  - prd：`faapi build` 生成 `dist/faapi-schema.js`（ESM 模块），启动时 `import` 加载。
-- 循环引用通过 JS 函数递归 + WeakSet 防无限递归处理。
-- 跨文件类型引用（包括跨文件循环引用）：dev 和 prd 都先合并所有文件的类型为全局 `allTypes`，再生成校验函数，行为一致。
-- dev 和 prd 都通过 `schemaRegistry` 获取 `{ properties, validator }`，不降级：
-  - dev：启动时全量 AST 提取并预生成 schema 文件，watch 时增量编译 + 全量重建 schema。
-  - prd：`faapi build` 生成 `dist/faapi-schema.js`，启动时加载。
-  - schema 缺失（manifest 不完整）抛 `InternalError`，不静默放行。
+- AST 提取 `RuntimeType` 结构化类型描述，再生成 zod schema JS 代码（`zod.js` 文件）：
+  - 每个 handler 生成一个 `zod.js`，与 `handler.js` 同级（如 `dist/api/hello/zod.js`）。
+  - dev：`devCommand` 启动时 + watch 时调 `generateSchemaFiles` 生成 `zod.js` 到 `.faapi/dev/`。
+  - prd：`faapi build` 调 `generateSchemaFiles` 生成 `zod.js` 到 `dist/`。
+  - 运行时 `validateInput` 按 `route.filePath` 计算 `zod.js` 路径并 `import`，执行 zod `safeParse` 校验。
+- 循环引用通过 zod 的 `z.lazy(() => ...)` 延迟求值处理。
+- 跨文件类型引用：TypeScript checker 在 AST 提取阶段已解析为完整 `RuntimeType`（内联），每个 `zod.js` 自包含，无需跨文件 import。
+- coerce 内联到 zod schema：query/params 来自 URL 值均为 string，类型转换（string→number/boolean）在代码生成阶段用 `z.preprocess` 内联到 schema，不再有独立的 `coerceInput` 步骤。
+  - `generateZodSchemaSource` 新增 `coerce` 参数（默认 `false`），`true` 时为 number/boolean 字段（含嵌套元素）包 `z.preprocess`。
+  - 公用函数提取到 outDir 根部的 `faapi-helpers.js`（仅一份，ESM export `coerceNumber` / `coerceBoolean`），各 `zod.js` 通过相对路径 `import` 复用，而非每个文件内联声明；无 coerce schema 时不生成该文件，zod.js 也不注入 import。
+  - `generateSchemaFileSource` 根据 schemaName 推断 inputType：以 `Query`/`Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）。
+  - `mapZodCode` 新增 `not_finite → COERCE_FAILED` 映射（实际场景中 coerce 失败多报 `invalid_type`）。
+- dev 和 prd 行为一致，不降级：
+  - dev：启动时全量 AST 提取并预生成 `zod.js`，watch 时增量编译 + 全量重建 schema + `invalidateSchemaCache()` 清空模块缓存。
+  - prd：`faapi build` 生成 `zod.js`，启动时按需 import。
+  - schema 缺失（`zod.js` 文件不存在或 import 失败）抛 `InternalError`，不静默放行。
 
 ### 6.4 技术栈
 
@@ -418,6 +480,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 - `esbuild` 编译路由文件与 `faapi.config.ts`、`tsup` 打包
 - `cac` CLI、`fast-glob` 文件扫描、`chokidar` watch
 - TypeScript Compiler API AST 分析
+- `zod` 运行时参数校验（AST → RuntimeType → zod schema 代码生成）
 - `ws` WebSocket 协议
 - `vitest` 测试
 - 代码质量：`eslint`（flat config）+ `prettier` + `husky` + `lint-staged` + `commitlint`

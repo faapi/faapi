@@ -8,8 +8,14 @@ import path from 'node:path';
 
 /**
  * 单个路由的 schema 提取结果
+ *
+ * key 使用 urlPath（如 '/api/hello'）而非 filePath，因为 urlPath 在 dev/prod 完全一致，
+ * 无需 remapManifestKeys 桥接 .ts/.js 路径差异。
  */
 export interface RouteSchemaSource {
+  /** 路由 URL 路径（如 '/api/hello'），作为 schema key */
+  urlPath: string;
+  /** 源文件绝对路径（用于 generateSchemaFiles 按文件分组生成 zod.js） */
   filePath: string;
   schemaName: string;
   typeInfo: HandlerTypeInfo | null;
@@ -39,15 +45,16 @@ export function collectRouteSchemaSources(
   mergedAllTypes: Map<string, HandlerTypeInfo>;
 } {
   // 按文件分组收集方法（去重）
-  const methodsByFile = new Map<string, Set<string>>();
+  // key 是文件绝对路径（createProgram 需要），但 schema key 用 urlPath
+  const methodsByFile = new Map<string, { urlPath: string; methods: Set<string> }>();
   for (const route of routes) {
     const filePath = rootDir ? path.resolve(rootDir, route.filePath) : route.filePath;
-    let methods = methodsByFile.get(filePath);
-    if (!methods) {
-      methods = new Set();
-      methodsByFile.set(filePath, methods);
+    let entry = methodsByFile.get(filePath);
+    if (!entry) {
+      entry = { urlPath: route.urlPath, methods: new Set() };
+      methodsByFile.set(filePath, entry);
     }
-    methods.add(route.method);
+    entry.methods.add(route.method);
   }
 
   // 先收集所有文件的类型
@@ -64,19 +71,19 @@ export function collectRouteSchemaSources(
     }
   }
 
-  // 每个文件提取 schema
+  // 每个文件提取 schema（key 用 urlPath）
   const sources: RouteSchemaSource[] = [];
-  for (const [filePath, methods] of methodsByFile) {
+  for (const [filePath, entry] of methodsByFile) {
     const program = programByFile.get(filePath)!;
     const sourceFile = program.getSourceFile(filePath);
     const code = sourceFile?.text ?? '';
-    for (const method of methods) {
+    for (const method of entry.methods) {
       const inputType = getInputTypeForMethod(method);
       const schemaName = getSchemaName(method, inputType);
       const meta = analyzeInjection(code, method);
       const param = meta.params.find((p) => p.type === inputType);
       const typeInfo = param?.typeName ? extractTypeInfo(program, filePath, param.typeName) : null;
-      sources.push({ filePath, schemaName, typeInfo });
+      sources.push({ urlPath: entry.urlPath, filePath, schemaName, typeInfo });
     }
   }
 

@@ -185,18 +185,25 @@ export function GET(db: Db, user: User) {
 
 | 属性/方法 | 说明 |
 |----------|------|
+| `ctx.request` | Web Request 对象 |
 | `ctx.method` | HTTP 方法 |
 | `ctx.path` | 请求路径 |
 | `ctx.headers` | Headers 对象 |
-| `ctx.query` | URL 查询参数 |
+| `ctx.query` | URL 查询参数（URLSearchParams） |
 | `ctx.params` | 动态路由参数 |
-| `ctx.cookies` | Cookie 对象 |
-| `ctx.body` | 请求体(已解析) |
+| `ctx.cookies` | Cookie 键值对 |
+| `ctx.ip` | 客户端 IP（X-Forwarded-For 优先） |
 | `ctx.config` | 配置文件中的自定义业务配置 |
-| `ctx.json(data, status?)` | 返回 JSON |
-| `ctx.html(html, status?)` | 返回 HTML |
-| `ctx.redirect(url, status?)` | 返回重定向 |
+| `ctx.json(data, status?)` | 返回 JSON 响应 |
+| `ctx.html(html, status?)` | 返回 HTML 响应 |
+| `ctx.redirect(url, status?)` | 返回重定向响应 |
 | `ctx.sse()` | 创建 SSE writer |
+| `ctx.setStatus(status)` | 设置响应状态码 |
+| `ctx.setHeader(key, value)` | 设置响应头 |
+| `ctx.setETag(value)` | 设置 ETag 响应头 |
+| `ctx.getCookie(name)` | 读取单个 cookie |
+| `ctx.setCookie(name, value, opts?)` | 设置 cookie |
+| `ctx.deleteCookie(name)` | 删除 cookie（设置过期） |
 
 **扩展 ctx**:
 

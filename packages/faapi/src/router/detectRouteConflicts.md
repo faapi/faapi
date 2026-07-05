@@ -14,4 +14,4 @@
 ## 相关模块
 
 - `routeTypes.ts` - 使用路由类型
-- `startCommand.ts` - 可选调用检测
+- `createApp.ts` - 可选调用检测

@@ -5,6 +5,17 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isCI = !!process.env.CI;
 
+// E2E 测试访问的是本机 127.0.0.1 / localhost，需绕过 HTTP 代理
+// （开发机常驻 Clash 等代理，Node 24+ 默认 NODE_USE_ENV_PROXY=1 会让 fetch 走代理，
+// 代理未启动时 ECONNREFUSED）。保留用户已有的 NO_PROXY 项，仅追加本机地址。
+{
+  const targets = ['localhost', '127.0.0.1'];
+  const existing = (process.env.NO_PROXY ?? '').split(',').map((s) => s.trim());
+  const merged = Array.from(new Set([...targets, ...existing])).filter(Boolean);
+  process.env.NO_PROXY = merged.join(',');
+  process.env.no_proxy = merged.join(',');
+}
+
 export default defineConfig({
   resolve: {
     alias: {

@@ -8,10 +8,10 @@
 
 ## 使用场景
 
-dev 模式自动启用；生产环境通过 --cors 或代码配置
+dev 模式自动启用；生产环境通过 `faapi.config.ts` 的 `cors` 字段配置
 
 ## 相关模块
 
 - `middlewareTypes.ts` - 实现中间件接口
 - `createServer.ts` - 注册中间件到服务
-- `parseArgs.ts` - 解析 --cors 命令行参数
+- `configTypes.ts` - `cors` 配置字段

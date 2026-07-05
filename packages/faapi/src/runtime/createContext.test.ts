@@ -189,4 +189,29 @@ describe('createContext', () => {
       expect(capturedPath).toBe('/api/test');
     });
   });
+
+  describe('setETag', () => {
+    it('ctx.setETag 设置 ETag 到 meta.headers', () => {
+      const request = new Request('http://localhost/api/test');
+      const ctx = createContext(request, {});
+      ctx.setETag('"abc123"');
+      expect((ctx as any).meta.headers['etag']).toBe('"abc123"');
+    });
+
+    it('ctx.setETag 支持弱 ETag', () => {
+      const request = new Request('http://localhost/api/test');
+      const ctx = createContext(request, {});
+      ctx.setETag('W/"xyz789"');
+      expect((ctx as any).meta.headers['etag']).toBe('W/"xyz789"');
+    });
+
+    it('ctx.setETag 与 ctx.setHeader 不冲突', () => {
+      const request = new Request('http://localhost/api/test');
+      const ctx = createContext(request, {});
+      ctx.setHeader('X-Custom', 'value');
+      ctx.setETag('"v1"');
+      expect((ctx as any).meta.headers['X-Custom']).toBe('value');
+      expect((ctx as any).meta.headers['etag']).toBe('"v1"');
+    });
+  });
 });

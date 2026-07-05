@@ -53,33 +53,23 @@ export function POST(body: CreateUserBody) {
 ### 启动开发服务器
 
 ```bash
-# 默认扫描 src/api/**/*.ts
-faapi
-
-# 指定路由 pattern
-faapi src/api/auth/*
-
-# 指定端口
-faapi --port 3000
+faapi                      # 编译 src/ → .faapi/dev/，启动 dev server + watcher
 ```
 
 访问 `http://localhost:3000/api/user?page=1&pageSize=10` 即可获取数据。
 
+框架采用零入口设计——无需编写 `main.ts`：dev 由 CLI 内部编排，prod 由 `faapi build` 自动生成 `dist/main.js` 启动入口。自定义启动逻辑（初始化数据库等）通过 `faapi.config.ts` 的 `lifecycle.onReady` / `onClose` 钩子实现。
+
 ## CLI 命令
 
 ```bash
-faapi                      # 启动 dev server（默认，编译 src/api/ → .faapi/dev/ 并 watch）
+faapi                      # 启动 dev server（编译 src/ → .faapi/dev/ 并 watch）
 faapi dev                  # 同上
-faapi src/api/auth/*       # 指定路由 pattern
-faapi --port 3000          # 指定端口
-faapi --app-dir .          # 回退到项目根目录（扫描 api/）
-faapi --static public      # 托管静态文件
-faapi --no-cors            # 禁用 CORS
-faapi --types faapi-types.ts  # 生成 RPC 类型文件
-faapi --config faapi.config.ts  # 指定配置文件
 faapi build                # 构建（编译 .ts → dist/，生成路由清单 + schema）
-faapi start                # 启动生产服务器（需先 build，读 dist/ 产物）
+node dist/main         # 启动生产服务器（需先 build，运行 main.ts）
 ```
+
+应用行为配置（CORS、responseFormat、middlewares 等）通过 `faapi.config.ts` 配置。框架元信息（appDir、port 等）通过环境变量（`FAAPI_APP_DIR`、`PORT`）控制。
 
 ## 文档
 

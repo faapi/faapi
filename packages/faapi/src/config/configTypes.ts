@@ -2,6 +2,9 @@ import type { FaapiContext } from '../runtime/contextTypes';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import type { PluginDeclaration } from './pluginTypes';
+import type { HelmetOptions } from '../middleware/helmet';
+import type { LoggerOptions } from '../middleware/logger';
+import type { Http2Options } from '../server/createServer';
 
 /**
  * 统一响应格式化函数
@@ -23,7 +26,7 @@ export type ErrorFormatFn = (error: unknown, ctx?: FaapiContext) => Response | n
  * 生命周期钩子
  */
 export interface LifecycleHooks {
-  /** 路由加载完成、服务器启动前调用（适合初始化数据库连接等） */
+  /** 服务器启动后调用（适合初始化数据库连接等） */
   onReady?: (ctx: LifecycleContext) => Promise<void> | void;
   /** 服务器关闭时调用（适合清理资源、优雅关闭） */
   onClose?: (ctx: LifecycleContext) => Promise<void> | void;
@@ -62,7 +65,6 @@ export interface LifecycleContext {
  * ```ts
  * import type { FaapiConfig } from '@faapi/faapi';
  * export default {
- *   port: 3000,
  *   cors: { origin: '*' },
  * } satisfies FaapiConfig;
  * ```
@@ -71,7 +73,6 @@ export interface LifecycleContext {
  * ```ts
  * import type { FaapiConfig } from '@faapi/faapi';
  * export default {
- *   port: 3000,
  *   cors: { origin: '*' },
  *   // 自定义业务配置（任意 key）
  *   db: { host: 'localhost', port: 5432 },
@@ -79,12 +80,13 @@ export interface LifecycleContext {
  * ```
  *
  * 环境覆盖通过 faapi.config.{NODE_ENV}.ts 实现（如 faapi.config.production.ts）
+ *
+ * 框架元信息通过环境变量配置（不放在 config 内）：
+ * - `FAAPI_APP_DIR`：源码目录前缀，默认 'src'，设为 '.' 表示源码在项目根目录
+ * - `PORT`：服务端口，默认 3000
+ * - `FAAPI_OUT_DIR`：产物输出目录，dev 固定为 '.faapi/dev'，prod 默认 'dist'
  */
 export interface FaapiConfig {
-  /** 服务端口，默认 3000（可被 --port / PORT 环境变量覆盖） */
-  port?: number;
-  /** 静态文件目录 */
-  staticDir?: string;
   /** CORS 配置，false 禁用 */
   cors?: import('../middleware/cors.js').CorsOptions | boolean;
   /** 统一响应格式化函数 */
@@ -93,6 +95,15 @@ export interface FaapiConfig {
   errorFormat?: ErrorFormatFn;
   /** 生命周期钩子 */
   lifecycle?: LifecycleHooks;
+
+  /** 安全头配置，false 禁用 */
+  helmet?: HelmetOptions | boolean;
+  /** 请求体大小限制（字节），默认 10MB（10 * 1024 * 1024） */
+  bodyLimit?: number;
+  /** 日志中间件配置 */
+  logger?: LoggerOptions | boolean;
+  /** HTTP/2 配置，false 禁用（默认 http/1.1） */
+  http2?: Http2Options | boolean;
 
   /**
    * 全局中间件：对所有路由（HTTP + WebSocket 握手）生效

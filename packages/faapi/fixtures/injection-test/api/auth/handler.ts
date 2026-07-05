@@ -4,17 +4,11 @@
 
 import type { FaapiContext } from '@faapi/faapi';
 
-// headers 注入的是 Web 标准 Headers 对象
-export interface Headers {
-  authorization?: string;
-}
-
 export interface Query {
   fields?: string;
 }
 
-// headers 在前，query 在后
-export function GET(headers: globalThis.Headers, query: Query) {
+export function GET(headers: Headers, query: Query) {
   return {
     injected: 'headers+query',
     hasAuth: !!headers.get('authorization'),

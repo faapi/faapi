@@ -1,12 +1,14 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, type RawData } from 'ws';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { createServer } from './createServer';
-import { generateSchemaFile, loadSchemaToRegistry } from '../cli/generateSchema';
+import { generateSchemaFiles } from '../cli/generateSchemaFiles';
+import { invalidateSchemaCache } from '../validator/validateInput';
 import type { Server } from 'node:http';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +16,7 @@ const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
 
 let server: Server | null = null;
 let wsBaseUrl: string;
+let schemaOutDir: string;
 
 /**
  * 消息队列：避免 once('message') 与服务端 onOpen 推送的竞态。
@@ -99,16 +102,14 @@ async function connect(pathname: string): Promise<{ ws: WebSocket; queue: Messag
 beforeAll(async () => {
   const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
-  // 加载 schema 到 registry（createServer 不再自动提取）
-  const schemaPath = path.join(
-    os.tmpdir(),
-    `faapi-e2e-ws-schema-${Date.now()}-${Math.random().toString(36).slice(2)}.js`,
-  );
-  await generateSchemaFile(sorted, FIXTURES_DIR, schemaPath);
-  await loadSchemaToRegistry(schemaPath, FIXTURES_DIR, '', false);
-  const srv = createServer({
+  // 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + outDir 计算 zod.js 路径）
+  schemaOutDir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-ws-schema-'));
+  await generateSchemaFiles(sorted, FIXTURES_DIR, '.', schemaOutDir);
+  const { server: srv } = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,
+    appDir: '.',
+    outDir: schemaOutDir,
     wsRoutes,
   });
 
@@ -140,6 +141,10 @@ afterAll(async () => {
     });
     server = null;
   }
+  if (schemaOutDir) {
+    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  }
+  invalidateSchemaCache();
 });
 
 describe('WebSocket e2e', () => {

@@ -12,6 +12,7 @@
 - `resolveInput` 从 FaapiContext 提取输入
 - `invokeHandler` 将 FaapiContext 传给 handler
 - `injectParams` 从 FaapiContext 注入参数
+- handler 通过 `ctx.setETag(value)` 设置 ETag 响应头（框架不自动做 304 协商缓存，由业务方自行判断）
 - 用户 `declare module '@faapi/faapi'` 增强 FaapiContext（自定义方法）或 FaapiContextConfig（ctx.config 类型）
 
 ## 相关模块

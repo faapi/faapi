@@ -65,5 +65,5 @@
 
 - `FaapiError.ts` - 基础错误类
 - `formatErrorResponse.ts` - 格式化响应
-- `../ast/generateValidatorCode.ts` - 生成校验函数,产生 `ValidationIssue`
+- `../validator/validateInput.ts` - 校验输入,将 zod issue 映射为 `ValidationIssue`
 - `../validator/coerceInput.ts` - 类型转换,产生 `COERCE_FAILED` issue

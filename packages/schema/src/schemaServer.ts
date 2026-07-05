@@ -21,6 +21,9 @@ export function isSchemaEnabled(): boolean {
 /**
  * 创建 faapi Schema Server
  * 通过 MCP 协议暴露路由信息供 LLM 查询
+ *
+ * @param routes 路由清单
+ * @param rootDir 项目根目录（用于 AST 分析解析源文件）
  */
 export function createSchemaServer(routes: RouteManifest, rootDir: string): McpServer {
   const server = new McpServer({
@@ -135,6 +138,9 @@ export function createSchemaServer(routes: RouteManifest, rootDir: string): McpS
 
 /**
  * 启动 Schema Server（stdio 模式）
+ *
+ * @param routes 路由清单
+ * @param rootDir 项目根目录（用于 AST 分析解析源文件）
  */
 export async function startSchemaServer(routes: RouteManifest, rootDir: string): Promise<void> {
   const server = createSchemaServer(routes, rootDir);

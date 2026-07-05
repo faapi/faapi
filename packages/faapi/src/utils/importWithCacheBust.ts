@@ -1,12 +1,15 @@
 import { pathToFileURL } from 'node:url';
 
 /**
- * 获取当前模块加载时间戳（watch 模式下用于绕过 ESM 缓存）
+ * 当前模块加载时间戳（watch 模式下用于绕过 ESM 缓存）
  *
- * 由 startCommand 在 watch 模式下设置到 globalThis.__FAAPI_LOAD_TS__。
+ * 由 createDevApp.reloadRoutes 调用 setLoadTimestamp 设置。
+ * ES 模块单例保证所有 import 此模块的地方共享同一个值，无需 globalThis。
  */
-export function getLoadTimestamp(): number | undefined {
-  return (globalThis as Record<string, unknown>).__FAAPI_LOAD_TS__ as number | undefined;
+let loadTs: number | undefined;
+
+export function setLoadTimestamp(ts: number): void {
+  loadTs = ts;
 }
 
 /**
@@ -17,9 +20,8 @@ export function getLoadTimestamp(): number | undefined {
  */
 export async function importWithCacheBust(filePath: string): Promise<Record<string, unknown>> {
   let url = pathToFileURL(filePath).href;
-  const ts = getLoadTimestamp();
-  if (ts !== undefined) {
-    url += `?t=${ts}`;
+  if (loadTs !== undefined) {
+    url += `?t=${loadTs}`;
   }
   return (await import(url)) as Record<string, unknown>;
 }

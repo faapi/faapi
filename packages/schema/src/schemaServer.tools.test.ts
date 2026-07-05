@@ -1,78 +1,63 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createSchemaServer } from './schemaServer';
+import { invalidateProgramCache } from '@faapi/faapi';
 import type { RouteManifest } from '@faapi/faapi';
-// @ts-expect-error — vitest alias 指向主包 src，运行时可用
-import { schemaRegistry } from '@faapi/faapi/src/validator/schemaRegistry';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURES_DIR = path.resolve(__dirname, '../../faapi/fixtures/injection-test');
-const FILE_PATH = path.resolve(FIXTURES_DIR, 'api/user/handler.ts');
-
-// 构造最小路由清单：GET /api/user + POST /api/user
-const routes: RouteManifest = [
-  {
-    method: 'GET',
-    urlPath: '/api/user',
-    filePath: 'api/user/handler.ts',
-    paramNames: [],
-    isDynamic: false,
-  },
-  {
-    method: 'POST',
-    urlPath: '/api/user',
-    filePath: 'api/user/handler.ts',
-    paramNames: [],
-    isDynamic: false,
-  },
-];
-
-// 填充 registry（模拟 startCommand 已提取 schema）
-function seedRegistry() {
-  schemaRegistry.set(
-    FILE_PATH,
-    new Map([
-      [
-        'GETQuery',
-        {
-          properties: [
-            { name: 'page', type: { kind: 'number' }, optional: false },
-            { name: 'pageSize', type: { kind: 'number' }, optional: false },
-          ],
-          validator: () => ({ valid: true, issues: [], data: {} }),
-        },
-      ],
-      [
-        'POSTBody',
-        {
-          properties: [
-            { name: 'name', type: { kind: 'string' }, optional: false },
-            { name: 'email', type: { kind: 'string' }, optional: false },
-          ],
-          validator: () => ({ valid: true, issues: [], data: {} }),
-        },
-      ],
-    ]),
-  );
-}
-
-async function connectClient() {
-  seedRegistry();
-  const server = createSchemaServer(routes, FIXTURES_DIR);
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  const client = new Client({ name: 'test-client', version: '0.0.1' });
-  await client.connect(clientTransport);
-  return client;
-}
 
 describe('schemaServer MCP tools', () => {
+  let tempDir: string;
+
   beforeEach(() => {
-    schemaRegistry.clear();
+    invalidateProgramCache();
+    tempDir = join(tmpdir(), `faapi-mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tempDir, { recursive: true });
+
+    // 写 handler 源文件：GET + POST /api/user
+    mkdirSync(join(tempDir, 'api/user'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/user/handler.ts'),
+      `export interface GETQuery { page: number; pageSize: number; }
+export interface POSTBody { name: string; email: string; }
+export function GET(query: GETQuery) { return query; }
+export function POST(body: POSTBody) { return body; }\n`,
+      'utf-8',
+    );
   });
+
+  afterEach(() => {
+    invalidateProgramCache();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const routes: RouteManifest = [
+    {
+      method: 'GET',
+      urlPath: '/api/user',
+      filePath: 'api/user/handler.ts',
+      paramNames: [],
+      isDynamic: false,
+    },
+    {
+      method: 'POST',
+      urlPath: '/api/user',
+      filePath: 'api/user/handler.ts',
+      paramNames: [],
+      isDynamic: false,
+    },
+  ];
+
+  async function connectClient() {
+    const server = createSchemaServer(routes, tempDir);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    const client = new Client({ name: 'test-client', version: '0.0.1' });
+    await client.connect(clientTransport);
+    return client;
+  }
 
   it('list_routes 返回所有路由', async () => {
     const client = await connectClient();

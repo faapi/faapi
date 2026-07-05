@@ -41,6 +41,10 @@ function createMockContext(
       meta.headers[key] = value;
     },
 
+    setETag(value: string) {
+      meta.headers['etag'] = value;
+    },
+
     json(data: unknown, status?: number): Response {
       return new Response(JSON.stringify(data), {
         status: status ?? 200,

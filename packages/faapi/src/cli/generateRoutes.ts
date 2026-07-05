@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { RouteManifest, WsRouteManifest, RouteRecord, WsRouteRecord } from '../router/routeTypes';
+import type {
+  RouteManifest,
+  WsRouteManifest,
+  RouteRecord,
+  WsRouteRecord,
+} from '../router/routeTypes';
 import type { HttpMethod } from '../router/constants';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
@@ -14,7 +19,8 @@ import type { LoadedMiddlewareBundle } from '../middleware/loadMiddlewares';
 /**
  * 序列化路由记录（可写入 JS 模块，无函数引用）
  *
- * build 时生成，start 时读取。filePath/middlewarePaths 已转为 prd 形式（prodDir 前缀 + .js）。
+ * build 时生成，start 时读取。filePath/middlewarePaths 已转为 prd 形式
+ * （打平 appDir 前缀 + prodDir 前缀 + .js）。
  */
 export interface SerializedRouteRecord {
   method: HttpMethod;
@@ -42,39 +48,49 @@ export interface SerializedRouteManifest {
 }
 
 /**
- * 把源码 filePath（src/api/hello/handler.ts）转为产物路径（dist/src/api/hello/handler.js）
+ * 把源码 filePath（src/api/hello/handler.ts）转为产物路径（dist/api/hello/handler.js）
+ *
+ * 产物结构打平 appDir 前缀：去掉 `src/`，加 prodDir 前缀，.ts → .js。
  *
  * @param filePath 源码相对路径
+ * @param appDir app 目录前缀（如 src，'.' 表示无前缀）
  * @param prodDir 产物目录（dist 或 .faapi/dev）
  */
-function toProdFilePath(filePath: string, prodDir: string): string {
-  const jsPath = filePath.replace(/\.ts$/, '.js');
+function toProdFilePath(filePath: string, appDir: string, prodDir: string): string {
+  let rel = filePath.replace(/\\/g, '/');
+  // 去掉 appDir 前缀（打平产物结构）
+  if (appDir !== '.' && rel.startsWith(`${appDir}/`)) {
+    rel = rel.slice(appDir.length + 1);
+  }
+  const jsPath = rel.replace(/\.ts$/, '.js');
   return jsPath.startsWith(`${prodDir}/`) ? jsPath : `${prodDir}/${jsPath}`;
 }
 
 /**
  * 序列化路由清单为可写入 JS 模块的结构
  *
- * - filePath 转为产物路径（prodDir 前缀 + .js）
+ * - filePath 转为产物路径（打平 appDir 前缀 + prodDir 前缀 + .js）
  * - middlewares/injectors 不序列化（函数无法序列化），改为 middlewarePaths（中间件文件绝对路径列表）
  * - middlewarePaths 已排序（根在前，路由目录在后），start 时按序加载即可还原洋葱模型
  *
  * @param rootDir 项目根目录
+ * @param appDir app 目录前缀（如 src，'.' 表示无前缀）
  * @param prodDir 产物目录（dist 或 .faapi/dev），用于转换 filePath 和查找中间件
  */
 export function serializeRoutes(
   routes: RouteManifest,
   wsRoutes: WsRouteManifest,
   rootDir: string,
+  appDir: string = 'src',
   prodDir: string = 'dist',
 ): SerializedRouteManifest {
   const serialize = <T extends RouteRecord | WsRouteRecord>(
     route: T,
   ): T extends RouteRecord ? SerializedRouteRecord : SerializedWsRouteRecord => {
-    const middlewarePaths = extractMiddlewarePaths(route.filePath, rootDir, prodDir);
+    const middlewarePaths = extractMiddlewarePaths(route.filePath, rootDir, appDir, prodDir);
     const serialized = {
       urlPath: route.urlPath,
-      filePath: toProdFilePath(route.filePath, prodDir),
+      filePath: toProdFilePath(route.filePath, appDir, prodDir),
       paramNames: route.paramNames,
       isDynamic: route.isDynamic,
       isCatchAll: route.isCatchAll,
@@ -100,11 +116,13 @@ export function serializeRoutes(
  *
  * @param routeFilePath 源码相对路径（如 src/api/hello/handler.ts）
  * @param rootDir 项目根目录
+ * @param appDir app 目录前缀（如 src，'.' 表示无前缀）
  * @param prodDir 产物目录（dist 或 .faapi/dev）
  */
 function extractMiddlewarePaths(
   routeFilePath: string,
   rootDir: string,
+  appDir: string,
   prodDir: string,
 ): string[] {
   const routeDir = path.dirname(routeFilePath);
@@ -118,11 +136,15 @@ function extractMiddlewarePaths(
     const mwJsPath = path.join(currentDir, 'middlewares.js');
     const absTsPath = path.resolve(rootDir, mwTsPath);
     const absJsPath = path.resolve(rootDir, mwJsPath);
-    const absMwPath = fs.existsSync(absTsPath) ? absTsPath : fs.existsSync(absJsPath) ? absJsPath : null;
+    const absMwPath = fs.existsSync(absTsPath)
+      ? absTsPath
+      : fs.existsSync(absJsPath)
+        ? absJsPath
+        : null;
     if (absMwPath) {
-      // 转为产物形式绝对路径
+      // 转为产物形式绝对路径（打平 appDir 前缀）
       const relMwPath = path.relative(rootDir, absMwPath);
-      const prodAbsPath = path.resolve(rootDir, toProdFilePath(relMwPath, prodDir));
+      const prodAbsPath = path.resolve(rootDir, toProdFilePath(relMwPath, appDir, prodDir));
       paths.push(prodAbsPath);
     }
     if (currentDir === resolvedRoot) break;
@@ -167,9 +189,7 @@ export const wsRoutes = ${JSON.stringify(manifest.wsRoutes, null, 2)};
 export async function hydrateRoutes(
   manifest: SerializedRouteManifest,
 ): Promise<{ routes: RouteManifest; wsRoutes: WsRouteManifest }> {
-  const hydrateRoute = async (
-    serialized: SerializedRouteRecord,
-  ): Promise<RouteRecord> => {
+  const hydrateRoute = async (serialized: SerializedRouteRecord): Promise<RouteRecord> => {
     const bundle = await loadMiddlewarePaths(serialized.middlewarePaths);
     return {
       method: serialized.method,
@@ -183,9 +203,7 @@ export async function hydrateRoutes(
     };
   };
 
-  const hydrateWsRoute = async (
-    serialized: SerializedWsRouteRecord,
-  ): Promise<WsRouteRecord> => {
+  const hydrateWsRoute = async (serialized: SerializedWsRouteRecord): Promise<WsRouteRecord> => {
     const bundle = await loadMiddlewarePaths(serialized.middlewarePaths);
     return {
       urlPath: serialized.urlPath,

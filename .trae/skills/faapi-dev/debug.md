@@ -103,10 +103,7 @@ api/user/[id]/handler.ts → /api/user/123
 
 3. **检查启动参数**
 
-```bash
-faapi --app-dir .      # 如果路由在根目录 api/
-faapi api/auth/*          # 只扫描 auth 下的路由
-```
+在 `faapi.config.ts` 中检查 `appDir` 字段（默认 `src`，设为 `.` 表示根目录）。
 
 4. **查看启动日志**
 
@@ -189,7 +186,7 @@ export default {
 Error: listen EADDRINUSE: address already in use :::3000
 ```
 
-**解决**:`faapi --port 3001` 或杀掉占用进程。
+**解决**:设置 `PORT` 环境变量换端口,或杀掉占用进程。
 
 ### 2. 配置文件语法错误
 
@@ -237,19 +234,19 @@ import { foo } from './utils.ts';
 
 ## prod 启动失败
 
-### 1. dist/faapi-routes.js 或 dist/faapi-schema.js 不存在
+### 1. dist/faapi-routes.js 或 zod.js 不存在
 
 ```
-[faapi] dist/faapi-routes.js 或 dist/faapi-schema.js 不存在,请先执行 `faapi build` 构建生产产物。
+[faapi] dist/faapi-routes.js 或 zod.js 不存在,请先执行 `faapi build` 构建生产产物。
 ```
 
-**原因**:没跑 `faapi build` 就用 `faapi start` 启动。
+**原因**:没跑 `faapi build` 就用 `node dist/main` 启动。
 
 **解决**:
 
 ```bash
 faapi build
-faapi start
+node dist/main
 ```
 
 ### 2. 路由文件未编译

@@ -17,15 +17,24 @@ import { importWithCacheBust } from '../utils/importWithCacheBust';
 /**
  * 把源码绝对路径转为产物绝对路径（用于 import 产物 .js）
  *
- * dev/build 模式下 scanRoutes 不再 import 源码 .ts（无需 tsx），
- * 而是先编译到 prodDir（.faapi/dev 或 dist），再 import 产物 .js。
+ * 产物结构打平 appDir 前缀：`src/api/hello/handler.ts` → `<prodDir>/api/hello/handler.js`
  *
  * @param sourceAbsPath 源码绝对路径（如 /root/src/api/hello/handler.ts）
  * @param rootDir 项目根目录
+ * @param appDir app 目录前缀（如 src，'.' 表示无前缀）
  * @param prodDir 产物目录（dist 或 .faapi/dev）
  */
-function toProdAbsPath(sourceAbsPath: string, rootDir: string, prodDir: string): string {
-  const rel = path.relative(rootDir, sourceAbsPath);
+function toProdAbsPath(
+  sourceAbsPath: string,
+  rootDir: string,
+  appDir: string,
+  prodDir: string,
+): string {
+  let rel = path.relative(rootDir, sourceAbsPath).replace(/\\/g, '/');
+  // 去掉 appDir 前缀（打平产物结构）
+  if (appDir !== '.' && rel.startsWith(`${appDir}/`)) {
+    rel = rel.slice(appDir.length + 1);
+  }
   const prodRel = `${prodDir}/${rel.replace(/\.ts$/, '.js')}`;
   return path.resolve(rootDir, prodRel);
 }
@@ -38,10 +47,16 @@ function toProdAbsPath(sourceAbsPath: string, rootDir: string, prodDir: string):
  *
  * 子级中间件包裹父级（洋葱模型下后注册的先执行 after）；
  * 子级注入器覆盖父级同名注入器。
+ *
+ * @param routeFilePath 源码相对路径（如 src/api/hello/handler.ts）
+ * @param rootDir 项目根目录
+ * @param appDir app 目录前缀（如 src，'.' 表示无前缀）
+ * @param prodDir 产物目录（dist 或 .faapi/dev），不传则加载源码
  */
 async function findMergedMiddlewares(
   routeFilePath: string,
   rootDir: string,
+  appDir: string,
   prodDir?: string,
 ): Promise<{ middlewares: FaapiMiddleware[]; injectors: InjectorMap } | undefined> {
   const routeDir = path.dirname(routeFilePath);
@@ -56,8 +71,8 @@ async function findMergedMiddlewares(
       // 新模式：查找产物 middlewares.js
       const mwPath = path.join(currentDir, 'middlewares.js');
       const absMwPath = path.resolve(rootDir, mwPath);
-      // 产物路径：把源码路径转为产物路径
-      const prodAbsMwPath = toProdAbsPath(absMwPath, rootDir, prodDir);
+      // 产物路径：把源码路径转为产物路径（打平 appDir 前缀）
+      const prodAbsMwPath = toProdAbsPath(absMwPath, rootDir, appDir, prodDir);
       if (fs.existsSync(prodAbsMwPath)) {
         mwPaths.push(prodAbsMwPath);
       }
@@ -196,13 +211,13 @@ export async function scanRoutes(
     // dev/build 模式扫源码 .ts（prodDir 传入），start 模式扫产物 .js（由 hydrateRoutes 处理）
     if (fileName === 'handler.ts' || fileName === 'handler.js') {
       const absPath = path.resolve(rootDir, normalizedFile);
-      // prodDir 传入时 import 产物 .js；否则 import 源码 .ts
-      const importPath = prodDir ? toProdAbsPath(absPath, rootDir, prodDir) : absPath;
+      // prodDir 传入时 import 产物 .js（打平 appDir 前缀）；否则 import 源码 .ts
+      const importPath = prodDir ? toProdAbsPath(absPath, rootDir, dir, prodDir) : absPath;
       const urlPath = filePathToUrlPath(normalizedFile, dir);
       const paramNames = extractParamNames(urlPath);
       const isDynamic = paramNames.length > 0;
       const isCatchAll = normalizedFile.split('/').some(isCatchAllSegment);
-      const middlewareBundle = await findMergedMiddlewares(normalizedFile, rootDir, prodDir);
+      const middlewareBundle = await findMergedMiddlewares(normalizedFile, rootDir, dir, prodDir);
 
       // HTTP 方法导出
       const methods = await extractMethodsFromHandler(importPath);

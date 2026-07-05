@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { createServer } from './createServer';
-import { generateSchemaFile, loadSchemaToRegistry } from '../cli/generateSchema';
+import { generateSchemaFiles } from '../cli/generateSchemaFiles';
+import { invalidateSchemaCache } from '../validator/validateInput';
 import { ValidationError } from '../errors/httpErrors';
 import type { Server } from 'node:http';
 import type { RouteManifest } from '../router/routeTypes';
@@ -16,25 +17,25 @@ const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
 
 let server: Server | null = null;
 let baseUrl: string;
-let schemaLoaded = false;
+let schemaOutDir: string;
 
-/** 加载 schema 到 registry（createServer 不再自动提取，需调用方负责） */
+/** 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + outDir 计算 zod.js 路径） */
 async function ensureSchemaLoaded(routes: RouteManifest, rootDir: string): Promise<void> {
-  if (schemaLoaded) return;
-  const schemaPath = path.join(
-    os.tmpdir(),
-    `faapi-e2e-schema-${Date.now()}-${Math.random().toString(36).slice(2)}.js`,
-  );
-  await generateSchemaFile(routes, rootDir, schemaPath);
-  await loadSchemaToRegistry(schemaPath, rootDir, '', false);
-  schemaLoaded = true;
+  if (schemaOutDir) return;
+  schemaOutDir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-schema-'));
+  await generateSchemaFiles(routes, rootDir, '.', schemaOutDir);
 }
 
 async function setupServer(): Promise<{ server: Server; baseUrl: string }> {
   const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
   await ensureSchemaLoaded(sorted, FIXTURES_DIR);
-  const srv = createServer({ routes: sorted, rootDir: FIXTURES_DIR });
+  const { server: srv } = createServer({
+    routes: sorted,
+    rootDir: FIXTURES_DIR,
+    appDir: '.',
+    outDir: schemaOutDir,
+  });
 
   return new Promise((resolve, reject) => {
     srv.listen(0, () => {
@@ -58,8 +59,15 @@ async function fetchFromServer(path: string, init?: RequestInit): Promise<Respon
   return fetch(`${baseUrl}${path}`, init);
 }
 
+/** 顶层 beforeAll：预生成 zod.js，确保所有 createServer 调用时 schemaOutDir 已就绪 */
+beforeAll(async () => {
+  const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
+  const sorted = sortRoutes(routes);
+  await ensureSchemaLoaded(sorted, FIXTURES_DIR);
+});
+
 /**
- * 使用自定义选项创建服务器（用于 CORS、静态文件等测试）
+ * 使用自定义选项创建服务器（用于 CORS 等测试）
  */
 async function setupServerWithOptions(
   options: Record<string, unknown> = {},
@@ -67,7 +75,13 @@ async function setupServerWithOptions(
   const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
   await ensureSchemaLoaded(sorted, FIXTURES_DIR);
-  const srv = createServer({ routes: sorted, rootDir: FIXTURES_DIR, ...options });
+  const { server: srv } = createServer({
+    routes: sorted,
+    rootDir: FIXTURES_DIR,
+    appDir: '.',
+    outDir: schemaOutDir,
+    ...options,
+  });
   return new Promise((resolve, reject) => {
     srv.listen(0, () => {
       const addr = srv.address();
@@ -96,6 +110,10 @@ afterAll(async () => {
     });
     server = null;
   }
+  if (schemaOutDir) {
+    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  }
+  invalidateSchemaCache();
 });
 
 describe('HTTP Server E2E', () => {
@@ -319,66 +337,7 @@ describe('HTTP Server E2E', () => {
     });
   });
 
-  // 静态文件 E2E 测试
-  describe('Static files', () => {
-    let staticServer: Server;
-    let staticBaseUrl: string;
-    let tmpDir: string;
-
-    beforeAll(async () => {
-      // 创建临时静态文件目录
-      tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-static-test-'));
-      await fs.mkdir(path.join(tmpDir, 'sub'), { recursive: true });
-      await fs.writeFile(path.join(tmpDir, 'hello.txt'), 'Hello, faapi!');
-      await fs.writeFile(path.join(tmpDir, 'style.css'), 'body { color: red; }');
-      await fs.writeFile(path.join(tmpDir, 'index.html'), '<html>Index</html>');
-      await fs.writeFile(path.join(tmpDir, 'sub', 'index.html'), '<html>Sub Index</html>');
-
-      const result = await setupServerWithOptions({ staticDir: tmpDir });
-      staticServer = result.server;
-      staticBaseUrl = result.baseUrl;
-    });
-
-    afterAll(async () => {
-      await closeServer(staticServer);
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    });
-
-    it('请求静态文件 → 返回文件内容及正确 Content-Type', async () => {
-      const res = await fetch(`${staticBaseUrl}/hello.txt`);
-      expect(res.status).toBe(200);
-      expect(res.headers.get('Content-Type')).toContain('text/plain');
-      const text = await res.text();
-      expect(text).toBe('Hello, faapi!');
-    });
-
-    it('请求 CSS 文件 → 返回正确 Content-Type', async () => {
-      const res = await fetch(`${staticBaseUrl}/style.css`);
-      expect(res.status).toBe(200);
-      expect(res.headers.get('Content-Type')).toContain('text/css');
-    });
-
-    it('请求不存在的静态文件 → 返回 404', async () => {
-      const res = await fetch(`${staticBaseUrl}/nonexistent.txt`);
-      expect(res.status).toBe(404);
-    });
-
-    it('请求目录 → 返回 index.html', async () => {
-      const res = await fetch(`${staticBaseUrl}/sub/`);
-      expect(res.status).toBe(200);
-      expect(res.headers.get('Content-Type')).toContain('text/html');
-      const text = await res.text();
-      expect(text).toBe('<html>Sub Index</html>');
-    });
-
-    it('静态文件与 API 路由共存 → API 路由优先', async () => {
-      // /auth/login 是 API 路由，不应被静态文件拦截
-      const res = await fetch(`${staticBaseUrl}/api/auth/login`);
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body).toEqual({ token: 'mock-jwt-token' });
-    });
-  });
+  // 静态文件服务已移除（生产环境应使用 CDN/Nginx 等专用静态文件服务）
 
   // 错误处理 E2E 测试
   describe('Error handling', () => {
@@ -410,9 +369,11 @@ describe('HTTP Server E2E', () => {
     beforeAll(async () => {
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
-      const srv = createServer({
+      const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
+        appDir: '.',
+        outDir: schemaOutDir,
         responseFormat: (data) => ({ code: 0, data, message: 'success' }),
         errorFormat: (err) =>
           new Response(
@@ -467,7 +428,12 @@ describe('HTTP Server E2E', () => {
       // 创建不带 responseFormat 的服务器
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
-      const noFmtSrv = createServer({ routes: sorted, rootDir: FIXTURES_DIR });
+      const { server: noFmtSrv } = createServer({
+        routes: sorted,
+        rootDir: FIXTURES_DIR,
+        appDir: '.',
+        outDir: schemaOutDir,
+      });
       const { server: rawSrv, baseUrl: rawUrl } = await new Promise<{
         server: Server;
         baseUrl: string;
@@ -496,7 +462,12 @@ describe('HTTP Server E2E', () => {
       // 创建不带 errorFormat 的服务器
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
-      const defaultErrSrv = createServer({ routes: sorted, rootDir: FIXTURES_DIR });
+      const { server: defaultErrSrv } = createServer({
+        routes: sorted,
+        rootDir: FIXTURES_DIR,
+        appDir: '.',
+        outDir: schemaOutDir,
+      });
       const { server: rawSrv, baseUrl: rawUrl } = await new Promise<{
         server: Server;
         baseUrl: string;
@@ -532,9 +503,11 @@ describe('HTTP Server E2E', () => {
     beforeAll(async () => {
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
-      const srv = createServer({
+      const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
+        appDir: '.',
+        outDir: schemaOutDir,
         onError: (error, ctx) => {
           capturedError = error;
           capturedPath = ctx.path;
@@ -578,9 +551,11 @@ describe('HTTP Server E2E', () => {
       const callOrder: string[] = [];
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
-      const srv = createServer({
+      const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
+        appDir: '.',
+        outDir: schemaOutDir,
         errorFormat: (_err) => {
           callOrder.push('errorFormat');
           return new Response(JSON.stringify({ ok: false }), {
@@ -619,9 +594,11 @@ describe('HTTP Server E2E', () => {
     it('errorFormat 自身抛错时由内置 formatErrorResponse 兜底', async () => {
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
-      const srv = createServer({
+      const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
+        appDir: '.',
+        outDir: schemaOutDir,
         errorFormat: () => {
           throw new Error('errorFormat boom');
         },
@@ -654,9 +631,11 @@ describe('HTTP Server E2E', () => {
     it('errorFormat 返回 null 时由内置 formatErrorResponse 处理', async () => {
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
-      const srv = createServer({
+      const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
+        appDir: '.',
+        outDir: schemaOutDir,
         // 仅处理 ValidationError，其余错误返回 null 交给框架兜底
         errorFormat: (err) => {
           if (err instanceof ValidationError) {
@@ -710,9 +689,11 @@ describe('HTTP Server E2E', () => {
       // 用带 responseFormat 的服务器测试 SSE 不被包装
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
-      const srv = createServer({
+      const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
+        appDir: '.',
+        outDir: schemaOutDir,
         responseFormat: (data) => ({ code: 0, data, message: 'success' }),
       });
       const { server: sseSrv, baseUrl: sseUrl } = await new Promise<{

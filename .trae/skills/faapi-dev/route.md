@@ -13,7 +13,7 @@
 | 导出 | HTTP 方法名(`GET`/`POST`/`PUT`/`DELETE`/`PATCH` 等) |
 | URL | 由文件路径推导，`api/user/handler.ts` → `/api/user` |
 
-默认扫描 `src/api/**/*.ts`，可通过 CLI `--app-dir <dir>` 指定子目录（`--app-dir .` 回退到根目录扫描 `api/**/*.ts`）。
+默认扫描 `src/api/**/*.ts`，通过 `FAAPI_APP_DIR` 环境变量指定子目录（设为 `.` 回退到根目录扫描 `api/**/*.ts`）。
 
 ## URL 推导规则
 

@@ -68,6 +68,20 @@ export interface FaapiContext {
   setHeader(key: string, value: string): void;
 
   /**
+   * 设置 ETag 响应头
+   *
+   * handler 中基于业务数据（如 updatedAt / version / contentHash）设置 ETag：
+   * ```ts
+   * export function GET(ctx) {
+   *   const data = await fetchData();
+   *   ctx.setETag(`"${data.version}-${data.updatedAt}"`);
+   *   return data;
+   * }
+   * ```
+   */
+  setETag(value: string): void;
+
+  /**
    * 返回 JSON 响应（handler 直接 return）
    *
    * ```ts

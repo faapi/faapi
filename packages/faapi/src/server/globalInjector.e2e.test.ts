@@ -1,11 +1,13 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { createServer } from './createServer';
-import { generateSchemaFile, loadSchemaToRegistry } from '../cli/generateSchema';
+import { generateSchemaFiles } from '../cli/generateSchemaFiles';
+import { invalidateSchemaCache } from '../validator/validateInput';
 import type { Server } from 'node:http';
 import type { InjectorMap } from '../middleware/injectorTypes';
 
@@ -14,6 +16,7 @@ const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
 
 let server: Server | null = null;
 let baseUrl: string;
+let schemaOutDir: string;
 
 /**
  * 全局注入器：db 返回固定 rows，globalUser 返回全局用户
@@ -30,16 +33,14 @@ const globalInjectors: InjectorMap = {
 beforeAll(async () => {
   const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
-  // 加载 schema 到 registry（createServer 不再自动提取）
-  const schemaPath = path.join(
-    os.tmpdir(),
-    `faapi-e2e-inj-schema-${Date.now()}-${Math.random().toString(36).slice(2)}.js`,
-  );
-  await generateSchemaFile(sorted, FIXTURES_DIR, schemaPath);
-  await loadSchemaToRegistry(schemaPath, FIXTURES_DIR, '', false);
-  const srv = createServer({
+  // 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + outDir 计算 zod.js 路径）
+  schemaOutDir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-inj-schema-'));
+  await generateSchemaFiles(sorted, FIXTURES_DIR, '.', schemaOutDir);
+  const { server: srv } = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,
+    appDir: '.',
+    outDir: schemaOutDir,
     injectors: globalInjectors,
   });
 
@@ -69,6 +70,10 @@ afterAll(async () => {
     });
     server = null;
   }
+  if (schemaOutDir) {
+    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  }
+  invalidateSchemaCache();
 });
 
 describe('全局注入器', () => {
@@ -105,9 +110,11 @@ describe('全局注入器与目录注入器同名覆盖', () => {
     const sorted = sortRoutes(routes);
     // 全局定义 user 注入器，目录 profile/middlewares.ts 也有 user 注入器
     // 目录应覆盖全局，handler 拿到目录的 alice 而非全局的 global-alice
-    const srv = createServer({
+    const { server: srv } = createServer({
       routes: sorted,
       rootDir: FIXTURES_DIR,
+      appDir: '.',
+      outDir: schemaOutDir,
       injectors: {
         user: () => ({ name: 'global-alice', role: 'global-admin' }),
       },
