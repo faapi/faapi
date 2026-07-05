@@ -25,6 +25,6 @@ export default defineConfig([
     // 仅外部化运行时已有的依赖 + Node 内置模块
     // cac / chokidar 由 tsup 打包进 CLI 产物
     // esbuild 外部化：动态 import('esbuild')，打包进 ESM 后 CJS require('fs') 在 ESM 下报错
-    external: ['node:*', 'typescript', 'fast-glob', 'ws', '@faapi/schema', 'esbuild'],
+    external: ['node:*', 'typescript', 'fast-glob', 'ws', 'esbuild'],
   },
 ]);

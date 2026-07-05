@@ -60,9 +60,6 @@ importers:
         specifier: ^3.25.0
         version: 3.25.76
     devDependencies:
-      '@faapi/schema':
-        specifier: workspace:*
-        version: link:../schema
       '@types/node':
         specifier: ^22.15.0
         version: 22.19.20
@@ -124,6 +121,9 @@ importers:
       ws:
         specifier: ^8.21.0
         version: 8.21.0
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
 
   packages/schema:
     dependencies:
