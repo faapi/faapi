@@ -22,7 +22,7 @@
 ## 文件命名与路径
 
 - `src/api/hello/handler.ts` → `dist/api/hello/zod.js`（与 handler.js 同级）
-- 产物路径打平 appDir 前缀（与 compileRoutes 一致）
+- 产物路径打平 appDir 前缀（与 compileDevRoutes / compileBuildRoutes 一致）
 
 ## zod.js 导出格式
 
@@ -126,4 +126,4 @@ function getHelpersImportPath(relDir: string): string
 - [generateZodSchema](../ast/generateZodSchema) — RuntimeType → zod schema 代码（含 coerce preprocess）
 - [collectRouteSchemaSources](./collectRouteSchemaSources) — AST 提取入口
 - [validateInput](../validator/validateInput) — 运行时 import zod.js 并 safeParse
-- [compileRoutes](./compileRoutes) — 编译 .ts → .js（zod.js 由本模块单独生成）
+- [compileDevRoutes](./compileDevRoutes) / [compileBuildRoutes](./compileBuildRoutes) — 编译 .ts → .js（zod.js 由本模块单独生成）

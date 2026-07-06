@@ -221,7 +221,7 @@ pnpm add @faapi/<name>
 读取 `.changeset/config.json`,在 `fixed` 数组中加入新包名:
 
 ```json
-"fixed": [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/<name>"]]
+"fixed": [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/mcp", "@faapi/<name>"]]
 ```
 
 fixed 模式强制所有包统一版本号,新增包必须加入此数组,否则发版时版本不同步。

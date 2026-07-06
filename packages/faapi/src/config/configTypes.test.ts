@@ -1,22 +1,13 @@
 import { describe, it, expect, expectTypeOf } from 'vitest';
-import type {
-  FaapiConfig,
-  ResponseFormatFn,
-  ErrorFormatFn,
-  LifecycleHooks,
-  LifecycleContext,
-} from './configTypes';
-import type { FaapiContext } from '../runtime/contextTypes';
+import type { FaapiConfig, LifecycleHooks, LifecycleContext } from './configTypes';
 import type { RouteManifest } from '../router/routeTypes';
 import type { Server } from 'node:http';
 
 describe('configTypes', () => {
-  it('FaapiConfig 类型可正确构造（包含所有字段）', () => {
+  it('FaapiConfig 类型可正确构造(包含所有字段)', () => {
     const config: FaapiConfig = {
       port: 3000,
       cors: { origin: '*' },
-      responseFormat: (data) => ({ code: 0, data }),
-      errorFormat: (error) => new Response(JSON.stringify({ error }), { status: 500 }),
       lifecycle: {
         onReady: async () => {},
         onClose: async () => {},
@@ -30,30 +21,7 @@ describe('configTypes', () => {
       port: 3000,
     };
     expect(config.cors).toBeUndefined();
-    expect(config.responseFormat).toBeUndefined();
-    expect(config.errorFormat).toBeUndefined();
     expect(config.lifecycle).toBeUndefined();
-  });
-
-  it('ResponseFormatFn 类型可正确构造', () => {
-    const fn: ResponseFormatFn = (data, _ctx) => {
-      return { code: 0, data, timestamp: Date.now() };
-    };
-    expect(typeof fn).toBe('function');
-  });
-
-  it('ErrorFormatFn 类型可正确构造（返回 Response 或 null/undefined）', () => {
-    const fn: ErrorFormatFn = (error, _ctx) => {
-      if (error instanceof Error) {
-        return new Response(JSON.stringify({ error: String(error) }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      // 不处理，交给框架兜底
-      return null;
-    };
-    expect(typeof fn).toBe('function');
   });
 
   it('LifecycleHooks 类型可正确构造', () => {
@@ -79,33 +47,6 @@ describe('configTypes', () => {
     expect(ctx.routes).toEqual([]);
   });
 
-  it('FaapiConfig 的 responseFormat 接收 data 和 ctx 参数', () => {
-    const config: FaapiConfig = {
-      port: 3000,
-      responseFormat: (data: unknown, ctx: FaapiContext) => {
-        expectTypeOf(data).toBeUnknown();
-        expectTypeOf(ctx).toMatchTypeOf<FaapiContext>();
-        return { code: 0, data };
-      },
-    };
-    expect(typeof config.responseFormat).toBe('function');
-  });
-
-  it('FaapiConfig 的 errorFormat 接收 error 参数返回 Response 或 null/undefined', () => {
-    const config: FaapiConfig = {
-      port: 3000,
-      errorFormat: (error: unknown) => {
-        expectTypeOf(error).toBeUnknown();
-        // 仅处理关心的错误，其余返回 null 交给框架兜底
-        if (typeof error === 'object' && error !== null) {
-          return new Response(JSON.stringify({ error: String(error) }), { status: 500 });
-        }
-        return null;
-      },
-    };
-    expect(typeof config.errorFormat).toBe('function');
-  });
-
   it('FaapiConfig 的 lifecycle.onReady 接收 LifecycleContext 参数', () => {
     const config: FaapiConfig = {
       port: 3000,
@@ -119,5 +60,14 @@ describe('configTypes', () => {
       },
     };
     expect(typeof config.lifecycle!.onReady).toBe('function');
+  });
+
+  it('FaapiConfig 支持自定义业务配置(任意 key)', () => {
+    const config: FaapiConfig = {
+      port: 3000,
+      db: { host: 'localhost', port: 5432 },
+      redis: { host: '127.0.0.1', port: 6379 },
+    };
+    expect((config as { db: { host: string } }).db.host).toBe('localhost');
   });
 });

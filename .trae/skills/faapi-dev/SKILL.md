@@ -1,8 +1,9 @@
-# faapi-dev
+---
+name: "faapi-dev"
+description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faapi 写 API 路由、中间件、WebSocket、SSE、配置文件、集成 Next.js，或遇到 dev/prod 行为差异、类型校验、错误排查等问题时。"
+---
 
-**Description:** 使用 faapi 框架开发应用。Invoke when 用户要基于 faapi 写 API 路由、中间件、WebSocket、SSE、配置文件、集成 Next.js，或遇到 dev/prod 行为差异、类型校验、错误排查等问题时。
-
-**Details:** # faapi 应用开发
+# faapi 应用开发
 
 ## 何时使用
 
@@ -20,7 +21,7 @@
 | 写注入器 / 自定义依赖 | [injection.md](./injection.md) | `export const injectors` |
 | 写配置文件 / 了解所有配置字段 | [config.md](./config.md) | `faapi.config.ts` |
 | 配置 CORS | [cors.md](./cors.md) | `cors: { origin: '*' }` |
-| 配置 responseFormat / errorFormat | [response-format.md](./response-format.md) | 统一响应包装、错误格式 |
+| 统一响应格式 / 自定义错误响应 | [response.md](./response.md) | `ok()` 辅助函数、全局错误中间件 |
 | 配置生命周期钩子 | [lifecycle.md](./lifecycle.md) | `lifecycle: { onReady, onClose, onError }` |
 | 扩展 ctx | [extend-context.md](./extend-context.md) | `extendContext(ctx) { ... }` |
 | 写插件 / 集成 Next.js | [plugins.md](./plugins.md) | `@faapi/next` 集成 |

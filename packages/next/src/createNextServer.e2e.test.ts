@@ -25,13 +25,15 @@ const APP_DIR = '.';
 /** FaapiConfig 的内置 key 集合（排除自定义业务配置） */
 const FAAPI_CONFIG_KEYS = new Set([
   'cors',
-  'responseFormat',
-  'errorFormat',
   'lifecycle',
   'middlewares',
   'injectors',
   'extendContext',
   'plugins',
+  'helmet',
+  'bodyLimit',
+  'logger',
+  'http2',
 ]);
 
 function isFaapiConfigKey(key: string): boolean {
@@ -75,8 +77,6 @@ beforeAll(async () => {
     appDir: APP_DIR,
     outDir: schemaOutDir,
     cors: config?.cors,
-    responseFormat: config?.responseFormat,
-    errorFormat: config?.errorFormat,
     onError: config?.lifecycle?.onError,
     config: config ?? undefined,
     wsRoutes,

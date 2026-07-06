@@ -15,7 +15,7 @@
 
 | 错误类 | 状态码 | 错误码 | 说明 |
 | --- | --- | --- | --- |
-| `ValidationError` | 400 | `VALIDATION_ERROR` | query/body/params 缺失或非法，附带 issues 详情 |
+| `ValidationError` | 400 / 422 | `VALIDATION_ERROR` | query/body/params 缺失或非法,状态码按 issue.code 推导（INVALID_FORMAT/MISSING_FIELD→400, TYPE_MISMATCH/INVALID_VALUE/COERCE_FAILED→422,多 issue 取最高严重度） |
 | `RouteNotFoundError` | 404 | `ROUTE_NOT_FOUND` | 路由不存在 |
 | `MethodNotAllowedError` | 405 | `METHOD_NOT_ALLOWED` | 方法不允许，附带 Allow 头 |
 | `InternalError` | 500 | `INTERNAL_ERROR` | 内部错误 |

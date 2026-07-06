@@ -5,8 +5,7 @@
 ## 为什么需要
 
 所有错误需要转换为统一的 JSON 格式响应，包含 code、message、issues 等字段。
-当用户未配置 `errorFormat`、或 `errorFormat` 返回 null/undefined（未处理）、或 `errorFormat` 抛错时，
-由本函数兜底生成响应。
+当全局错误中间件未捕获、或未配置错误中间件时，由本函数兜底生成响应。
 
 ## 使用场景
 
@@ -17,5 +16,5 @@
 
 - `httpErrors.ts` - 错误类
 - `server/serverUtils.ts` - `buildErrorResponse` 调用此函数
-- `config/configTypes.ts` - `ErrorFormatFn` 优先于此函数处理
+- 全局错误中间件（业务侧在 `faapi.config.ts` 的 `middlewares` 中 `try/catch next()`）优先于此函数处理
 

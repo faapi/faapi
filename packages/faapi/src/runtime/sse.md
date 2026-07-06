@@ -63,6 +63,17 @@ export function POST(ctx) {
 - 不需要用户手动构造 ReadableStream 和 encoder
 - writer 的生命周期由框架管理，避免忘记关闭流
 
+### SseWriter 接口
+
+| 成员 | 类型 | 说明 |
+|------|------|------|
+| `send(event)` | 方法 | 推送一个 SSE 事件（`{ data, event?, id?, retry? }`） |
+| `sendError(message)` | 方法 | 推送 `event: error` 事件并关闭流（异常分支用） |
+| `close()` | 方法 | 关闭流（重复调用幂等） |
+| `aborted` | 只读属性 | 客户端断开时变 `true`,底层监听 ReadableStream cancel 信号 |
+| `closed` | 只读属性 | 流已关闭时为 `true` |
+| `response` | 只读属性 | 框架构造的 `Response` 对象（handler 返回后由框架读取） |
+
 ### 客户端断开检测（aborted）
 
 `SseWriter` 提供 `aborted` 只读属性，客户端断开连接时变为 `true`。底层通过监听 ReadableStream 的 `cancel` 信号实现。
@@ -113,14 +124,13 @@ retry: <ms>\n
 | 机制 | 与 SSE 的关系 |
 |------|--------------|
 | `ctx.setStatus / setHeader` | 生效：合并到 SSE Response 的 headers（status 默认 200） |
-| `responseFormat` | **跳过**：SSE Response 的 Content-Type 是 `text/event-stream`，不是 `application/json`，不会被 responseFormat 包装 |
-| `errorFormat` | 流开始前报错走错误兜底链；流开始后报错，向流写入 error 事件后关闭 |
+| 全局错误中间件 | 流开始前报错可被中间件 `try/catch` 拦截；流开始后报错由框架向流写入 error 事件后关闭 |
 | 中间件洋葱模型 | 中间件返回 Response 时，若 handler 已用 ctx.sse()，handler 返回的值被忽略（SSE 优先） |
 | `ctx.json / ctx.html` | 与 ctx.sse 互斥：一个 handler 只能用一种响应方式 |
 
 ### 错误处理
 
-- **流开始前**（handler 同步抛错或返回前异常）：走现有错误兜底链（errorFormat → formatErrorResponse → 500）
+- **流开始前**（handler 同步抛错或返回前异常）：走错误兜底链（全局错误中间件 → formatErrorResponse → 500）
 - **流开始后**（已调用 sse.send）：向流写入 `event: error\ndata: <message>\n\n`，然后关闭流。客户端收到 error 事件后自行处理
 
 ### 客户端断开
@@ -135,4 +145,4 @@ retry: <ms>\n
 - [contextTypes](./contextTypes.md)：`FaapiContext` 接口包含 `sse()` 方法签名
 - [toResponse](../response/toResponse.md)：识别 ctx 持有的 SSE writer，构造 `text/event-stream` Response
 - [invokeHandler](./invokeHandler.md)：handler 返回后，invokeHandler 把 ctx 传给 toResponse
-- [createServer](../server/createServer.md)：responseFormat 跳过非 JSON 响应，SSE 不被包装
+- [createServer](../server/createServer.md)：SSE Response 不被中间件包装

@@ -166,14 +166,13 @@ interface ZodSafeParseError {
 type ZodSafeParseResult = ZodSafeParseSuccess | ZodSafeParseError;
 
 /**
- * 将 zod error issues 映射为框架的 ValidationIssue
+ * 将 zod v4 error issues 映射为框架的 ValidationIssue
  *
  * zod code → 框架 ValidationErrorCode 映射：
  * - invalid_type / invalid_union → TYPE_MISMATCH（422）
- * - too_small / too_big / invalid_string / invalid_date → INVALID_VALUE（422）
- * - invalid_enum_value → INVALID_VALUE（422）
+ * - too_small / too_big / invalid_string → INVALID_VALUE（422）
+ * - invalid_value（v4 新增，合并了 v3 的 invalid_enum_value / invalid_literal）→ INVALID_VALUE（422）
  * - unrecognized_keys → INVALID_FORMAT（400）
- * - not_finite → COERCE_FAILED（422，query 字符串转 number 失败）
  * - custom → INVALID_VALUE（422）
  *
  * path 数组转为 dot 路径（如 ['user', 'address', 'city'] → 'user.address.city'）。
@@ -203,22 +202,16 @@ function mapZodCode(zodCode: string, message: string): ValidationErrorCode {
       return 'TYPE_MISMATCH';
     case 'unrecognized_keys':
       return 'INVALID_FORMAT';
-    case 'invalid_enum_value':
+    case 'invalid_value':
     case 'invalid_string':
-    case 'invalid_date':
     case 'too_small':
     case 'too_big':
     case 'invalid_intersection_types':
     case 'not_multiple_of':
       return 'INVALID_VALUE';
-    case 'not_finite':
-      // query 字符串转 number 失败（如 "abc" → NaN，被 z.preprocess 保留原值后 z.number() 报错）
-      return 'COERCE_FAILED';
     case 'custom':
-      // custom 错误通常是业务校验，归为 INVALID_VALUE
       return 'INVALID_VALUE';
     default:
-      // 兜底：根据消息内容猜测
       if (message.includes('Required') || message.includes('required')) {
         return 'MISSING_FIELD';
       }

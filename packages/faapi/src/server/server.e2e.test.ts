@@ -8,9 +8,9 @@ import { sortRoutes } from '../router/sortRoutes';
 import { createServer } from './createServer';
 import { generateSchemaFiles } from '../cli/generateSchemaFiles';
 import { invalidateSchemaCache } from '../validator/validateInput';
-import { ValidationError } from '../errors/httpErrors';
 import type { Server } from 'node:http';
 import type { RouteManifest } from '../router/routeTypes';
+import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
@@ -361,10 +361,10 @@ describe('HTTP Server E2E', () => {
     });
   });
 
-  // responseFormat 和 errorFormat E2E 测试
-  describe('responseFormat and errorFormat', () => {
-    let fmtServer: Server;
-    let fmtBaseUrl: string;
+  // handler 返回值直接序列化(无全局包装)E2E 测试
+  describe('handler 返回值直接序列化为响应', () => {
+    let rawServer: Server;
+    let rawBaseUrl: string;
 
     beforeAll(async () => {
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
@@ -374,23 +374,14 @@ describe('HTTP Server E2E', () => {
         rootDir: FIXTURES_DIR,
         appDir: '.',
         outDir: schemaOutDir,
-        responseFormat: (data) => ({ code: 0, data, message: 'success' }),
-        errorFormat: (err) =>
-          new Response(
-            JSON.stringify({
-              code: 500,
-              message: err instanceof Error ? err.message : 'Unknown error',
-            }),
-            { status: 500, headers: { 'Content-Type': 'application/json' } },
-          ),
       });
 
       await new Promise<void>((resolve, reject) => {
         srv.listen(0, () => {
           const addr = srv.address();
           if (typeof addr === 'object' && addr !== null) {
-            fmtServer = srv;
-            fmtBaseUrl = `http://localhost:${addr.port}`;
+            rawServer = srv;
+            rawBaseUrl = `http://localhost:${addr.port}`;
             resolve();
           } else {
             reject(new Error('Failed to get server address'));
@@ -400,96 +391,27 @@ describe('HTTP Server E2E', () => {
     });
 
     afterAll(async () => {
-      await closeServer(fmtServer);
+      await closeServer(rawServer);
     });
 
-    it('responseFormat 包装成功响应', async () => {
-      const res = await fetch(`${fmtBaseUrl}/api/auth/login`);
+    it('handler 返回对象直接作为响应体(无外层包装)', async () => {
+      const res = await fetch(`${rawBaseUrl}/api/auth/login`);
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ code: 0, data: { token: 'mock-jwt-token' }, message: 'success' });
+      expect(body).toEqual({ token: 'mock-jwt-token' });
     });
 
-    it('responseFormat 不影响 Response 原样透传', async () => {
-      const res = await fetch(`${fmtBaseUrl}/api/redirect`, { redirect: 'manual' });
+    it('Response 原样透传(redirect 等)', async () => {
+      const res = await fetch(`${rawBaseUrl}/api/redirect`, { redirect: 'manual' });
       expect(res.status).toBe(302);
       expect(res.headers.get('Location')).toBe('/auth/login');
     });
 
-    it('errorFormat 自定义错误响应', async () => {
-      const res = await fetch(`${fmtBaseUrl}/unknown-route`);
-      expect(res.status).toBe(500);
+    it('未知路由由内置 formatErrorResponse 兜底(404 + 标准 error 结构)', async () => {
+      const res = await fetch(`${rawBaseUrl}/unknown-route`);
+      expect(res.status).toBe(404);
       const body = await res.json();
-      expect(body.code).toBe(500);
-      expect(body.message).toBeTruthy();
-    });
-
-    it('无 responseFormat 时保持原始响应', async () => {
-      // 创建不带 responseFormat 的服务器
-      const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
-      const sorted = sortRoutes(routes);
-      const { server: noFmtSrv } = createServer({
-        routes: sorted,
-        rootDir: FIXTURES_DIR,
-        appDir: '.',
-        outDir: schemaOutDir,
-      });
-      const { server: rawSrv, baseUrl: rawUrl } = await new Promise<{
-        server: Server;
-        baseUrl: string;
-      }>((resolve, reject) => {
-        noFmtSrv.listen(0, () => {
-          const addr = noFmtSrv.address();
-          if (typeof addr === 'object' && addr !== null) {
-            resolve({ server: noFmtSrv, baseUrl: `http://localhost:${addr.port}` });
-          } else {
-            reject(new Error('Failed to get server address'));
-          }
-        });
-      });
-
-      try {
-        const res = await fetch(`${rawUrl}/api/auth/login`);
-        expect(res.status).toBe(200);
-        const body = await res.json();
-        expect(body).toEqual({ token: 'mock-jwt-token' });
-      } finally {
-        await closeServer(rawSrv);
-      }
-    });
-
-    it('无 errorFormat 时使用默认错误格式', async () => {
-      // 创建不带 errorFormat 的服务器
-      const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
-      const sorted = sortRoutes(routes);
-      const { server: defaultErrSrv } = createServer({
-        routes: sorted,
-        rootDir: FIXTURES_DIR,
-        appDir: '.',
-        outDir: schemaOutDir,
-      });
-      const { server: rawSrv, baseUrl: rawUrl } = await new Promise<{
-        server: Server;
-        baseUrl: string;
-      }>((resolve, reject) => {
-        defaultErrSrv.listen(0, () => {
-          const addr = defaultErrSrv.address();
-          if (typeof addr === 'object' && addr !== null) {
-            resolve({ server: defaultErrSrv, baseUrl: `http://localhost:${addr.port}` });
-          } else {
-            reject(new Error('Failed to get server address'));
-          }
-        });
-      });
-
-      try {
-        const res = await fetch(`${rawUrl}/unknown-route`);
-        expect(res.status).toBe(404);
-        const body = await res.json();
-        expect(body.error.code).toBe('ROUTE_NOT_FOUND');
-      } finally {
-        await closeServer(rawSrv);
-      }
+      expect(body.error.code).toBe('ROUTE_NOT_FOUND');
     });
   });
 
@@ -531,7 +453,7 @@ describe('HTTP Server E2E', () => {
       await closeServer(onErrorServer);
     });
 
-    it('请求出错时 onError 被调用，接收 error 和 ctx', async () => {
+    it('请求出错时 onError 被调用,接收 error 和 ctx', async () => {
       capturedError = undefined;
       const res = await fetch(`${onErrorBaseUrl}/nonexistent-route`);
       expect(res.status).toBe(404);
@@ -539,35 +461,32 @@ describe('HTTP Server E2E', () => {
       expect(capturedPath).toBe('/nonexistent-route');
     });
 
-    it('onError 不影响响应格式（响应仍由默认 errorFormat 决定）', async () => {
+    it('onError 不影响响应格式(响应仍由内置 formatErrorResponse 决定)', async () => {
       const res = await fetch(`${onErrorBaseUrl}/nonexistent-route`);
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error.code).toBe('ROUTE_NOT_FOUND');
     });
 
-    it('onError 在 errorFormat 之后执行（响应已生成后才触发副作用）', async () => {
-      // 通过 errorFormat 与 onError 共同记录调用顺序，验证 onError 晚于 errorFormat
-      const callOrder: string[] = [];
+    it('全局中间件 try/catch 自定义错误响应', async () => {
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
+      const errorHandler: FaapiMiddleware = async (ctx, next) => {
+        try {
+          await next();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Unknown error';
+          return ctx.json({ code: 500, message }, 500);
+        }
+      };
       const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
         appDir: '.',
         outDir: schemaOutDir,
-        errorFormat: (_err) => {
-          callOrder.push('errorFormat');
-          return new Response(JSON.stringify({ ok: false }), {
-            status: 500,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        },
-        onError: () => {
-          callOrder.push('onError');
-        },
+        middlewares: [errorHandler],
       });
-      const { server: orderSrv, baseUrl: orderUrl } = await new Promise<{
+      const { server: customSrv, baseUrl: customUrl } = await new Promise<{
         server: Server;
         baseUrl: string;
       }>((resolve, reject) => {
@@ -581,94 +500,13 @@ describe('HTTP Server E2E', () => {
         });
       });
       try {
-        const res = await fetch(`${orderUrl}/nonexistent-route`);
+        const res = await fetch(`${customUrl}/nonexistent-route`);
         expect(res.status).toBe(500);
-        // 等待异步副作用落地
-        await new Promise((r) => setTimeout(r, 20));
-        expect(callOrder).toEqual(['errorFormat', 'onError']);
-      } finally {
-        await closeServer(orderSrv);
-      }
-    });
-
-    it('errorFormat 自身抛错时由内置 formatErrorResponse 兜底', async () => {
-      const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
-      const sorted = sortRoutes(routes);
-      const { server: srv } = createServer({
-        routes: sorted,
-        rootDir: FIXTURES_DIR,
-        appDir: '.',
-        outDir: schemaOutDir,
-        errorFormat: () => {
-          throw new Error('errorFormat boom');
-        },
-      });
-      const { server: boomSrv, baseUrl: boomUrl } = await new Promise<{
-        server: Server;
-        baseUrl: string;
-      }>((resolve, reject) => {
-        srv.listen(0, () => {
-          const addr = srv.address();
-          if (typeof addr === 'object' && addr !== null) {
-            resolve({ server: srv, baseUrl: `http://localhost:${addr.port}` });
-          } else {
-            reject(new Error('Failed to get server address'));
-          }
-        });
-      });
-      try {
-        // /nonexistent-route 触发 RouteNotFoundError
-        const res = await fetch(`${boomUrl}/nonexistent-route`);
-        // errorFormat 抛错 → 内置 formatErrorResponse 兜底 → RouteNotFoundError 的 404 + 标准 error 结构
-        expect(res.status).toBe(404);
         const body = await res.json();
-        expect(body.error.code).toBe('ROUTE_NOT_FOUND');
+        expect(body.code).toBe(500);
+        expect(body.message).toBeTruthy();
       } finally {
-        await closeServer(boomSrv);
-      }
-    });
-
-    it('errorFormat 返回 null 时由内置 formatErrorResponse 处理', async () => {
-      const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
-      const sorted = sortRoutes(routes);
-      const { server: srv } = createServer({
-        routes: sorted,
-        rootDir: FIXTURES_DIR,
-        appDir: '.',
-        outDir: schemaOutDir,
-        // 仅处理 ValidationError，其余错误返回 null 交给框架兜底
-        errorFormat: (err) => {
-          if (err instanceof ValidationError) {
-            return new Response(JSON.stringify({ custom: true, message: err.message }), {
-              status: 400,
-              headers: { 'Content-Type': 'application/json' },
-            });
-          }
-          return null;
-        },
-      });
-      const { server: nullSrv, baseUrl: nullUrl } = await new Promise<{
-        server: Server;
-        baseUrl: string;
-      }>((resolve, reject) => {
-        srv.listen(0, () => {
-          const addr = srv.address();
-          if (typeof addr === 'object' && addr !== null) {
-            resolve({ server: srv, baseUrl: `http://localhost:${addr.port}` });
-          } else {
-            reject(new Error('Failed to get server address'));
-          }
-        });
-      });
-      try {
-        // /nonexistent-route 触发 RouteNotFoundError，errorFormat 返回 null
-        // → 内置 formatErrorResponse 兜底 → 404 + 标准 error 结构
-        const res = await fetch(`${nullUrl}/nonexistent-route`);
-        expect(res.status).toBe(404);
-        const body = await res.json();
-        expect(body.error.code).toBe('ROUTE_NOT_FOUND');
-      } finally {
-        await closeServer(nullSrv);
+        await closeServer(customSrv);
       }
     });
   });
@@ -683,43 +521,6 @@ describe('HTTP Server E2E', () => {
       expect(res.headers.get('Connection')).toBe('keep-alive');
       const body = await res.text();
       expect(body).toBe('data: first\n\nevent: progress\ndata: 50\n\nevent: done\ndata: 100\n\n');
-    });
-
-    it('responseFormat 不包装 SSE 响应（保持原始事件流）', async () => {
-      // 用带 responseFormat 的服务器测试 SSE 不被包装
-      const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
-      const sorted = sortRoutes(routes);
-      const { server: srv } = createServer({
-        routes: sorted,
-        rootDir: FIXTURES_DIR,
-        appDir: '.',
-        outDir: schemaOutDir,
-        responseFormat: (data) => ({ code: 0, data, message: 'success' }),
-      });
-      const { server: sseSrv, baseUrl: sseUrl } = await new Promise<{
-        server: Server;
-        baseUrl: string;
-      }>((resolve, reject) => {
-        srv.listen(0, () => {
-          const addr = srv.address();
-          if (typeof addr === 'object' && addr !== null) {
-            resolve({ server: srv, baseUrl: `http://localhost:${addr.port}` });
-          } else {
-            reject(new Error('Failed to get server address'));
-          }
-        });
-      });
-      try {
-        const res = await fetch(`${sseUrl}/api/sse`);
-        expect(res.status).toBe(200);
-        expect(res.headers.get('Content-Type')).toBe('text/event-stream');
-        const body = await res.text();
-        // 不应被 responseFormat 包装成 { code: 0, data: ... }
-        expect(body).toBe('data: first\n\nevent: progress\ndata: 50\n\nevent: done\ndata: 100\n\n');
-        expect(body).not.toContain('"code":0');
-      } finally {
-        await closeServer(sseSrv);
-      }
     });
   });
 });

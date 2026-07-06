@@ -410,6 +410,227 @@ describe('generateZodSchema', () => {
     });
   });
 
+  describe('JSDoc 约束标签', () => {
+    describe('数值约束', () => {
+      it('@max @min 生成链式调用并校验', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @min 1 @max 100 */
+            page: number;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ page: 50 }).success).toBe(true);
+        expect(schema.safeParse({ page: 0 }).success).toBe(false);
+        expect(schema.safeParse({ page: 101 }).success).toBe(false);
+      });
+
+      it('@int 校验整数', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @int */
+            count: number;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ count: 5 }).success).toBe(true);
+        expect(schema.safeParse({ count: 5.5 }).success).toBe(false);
+      });
+
+      it('@positive @negative 校验', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @positive */
+            amount: number;
+            /** @negative */
+            debt: number;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ amount: 1, debt: -1 }).success).toBe(true);
+        expect(schema.safeParse({ amount: 0, debt: -1 }).success).toBe(false);
+        expect(schema.safeParse({ amount: 1, debt: 0 }).success).toBe(false);
+      });
+
+      it('@nonnegative @nonpositive 校验', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @nonnegative */
+            a: number;
+            /** @nonpositive */
+            b: number;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ a: 0, b: 0 }).success).toBe(true);
+        expect(schema.safeParse({ a: 1, b: -1 }).success).toBe(true);
+        expect(schema.safeParse({ a: -1, b: -1 }).success).toBe(false);
+        expect(schema.safeParse({ a: 1, b: 1 }).success).toBe(false);
+      });
+    });
+
+    describe('长度约束', () => {
+      it('string @minLength @maxLength 校验', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @minLength 3 @maxLength 5 */
+            name: string;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ name: 'abc' }).success).toBe(true);
+        expect(schema.safeParse({ name: 'abcde' }).success).toBe(true);
+        expect(schema.safeParse({ name: 'ab' }).success).toBe(false);
+        expect(schema.safeParse({ name: 'abcdef' }).success).toBe(false);
+      });
+
+      it('string @length 校验精确长度', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @length 4 */
+            code: string;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ code: '1234' }).success).toBe(true);
+        expect(schema.safeParse({ code: '123' }).success).toBe(false);
+        expect(schema.safeParse({ code: '12345' }).success).toBe(false);
+      });
+
+      it('array @maxLength 校验数组长度', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @maxLength 3 */
+            tags: string[];
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ tags: ['a', 'b', 'c'] }).success).toBe(true);
+        expect(schema.safeParse({ tags: ['a', 'b', 'c', 'd'] }).success).toBe(false);
+      });
+    });
+
+    describe('字符串格式约束', () => {
+      it('@regex 校验正则', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @regex /^[a-z]+$/i */
+            slug: string;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ slug: 'hello' }).success).toBe(true);
+        expect(schema.safeParse({ slug: 'HELLO' }).success).toBe(true);
+        expect(schema.safeParse({ slug: 'hello123' }).success).toBe(false);
+      });
+
+      it('@email 校验邮箱', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @email */
+            email: string;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ email: 'a@b.com' }).success).toBe(true);
+        expect(schema.safeParse({ email: 'not-email' }).success).toBe(false);
+      });
+
+      it('@url 校验 URL', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @url */
+            homepage: string;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ homepage: 'https://example.com' }).success).toBe(true);
+        expect(schema.safeParse({ homepage: 'not-url' }).success).toBe(false);
+      });
+
+      it('@uuid 校验 UUID', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @uuid */
+            id: string;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ id: '550e8400-e29b-41d4-a716-446655440000' }).success).toBe(true);
+        expect(schema.safeParse({ id: 'not-uuid' }).success).toBe(false);
+      });
+    });
+
+    describe('组合约束', () => {
+      it('多约束叠加生成链式调用', () => {
+        const code = makeZodSchema(
+          `export interface Q {
+            /** @min 0 @max 100 @int */
+            score: number;
+          }`,
+          'Q',
+        );
+        // 链式调用顺序与 JSDoc 标签顺序一致
+        expect(code).toContain('z.number().min(0).max(100).int()');
+      });
+
+      it('可选字段约束链 + .optional()', () => {
+        const code = makeZodSchema(
+          `export interface Q {
+            /** @max 100 */
+            score?: number;
+          }`,
+          'Q',
+        );
+        // 约束链在 .optional() 之前
+        expect(code).toContain('z.number().max(100).optional()');
+      });
+
+      it('生成代码实际校验组合约束', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @min 1 @max 100 @int */
+            page: number;
+          }`,
+          'Q',
+        );
+        expect(schema.safeParse({ page: 50 }).success).toBe(true);
+        expect(schema.safeParse({ page: 0 }).success).toBe(false);
+        expect(schema.safeParse({ page: 101 }).success).toBe(false);
+        expect(schema.safeParse({ page: 50.5 }).success).toBe(false);
+      });
+    });
+
+    describe('coerce + 约束组合', () => {
+      it('coerce 模式下约束作用于 z.number() 内层', () => {
+        const code = makeZodSchema(
+          `export interface Q {
+            /** @min 1 @max 100 */
+            page: number;
+          }`,
+          'Q',
+          true,
+        );
+        // 约束应在 preprocess 内部的 z.number() 上
+        expect(code).toMatch(/z\.preprocess\(coerceNumber, z\.number\(\)\.min\(1\)\.max\(100\)\)/);
+      });
+
+      it('coerce + 约束实际校验', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q {
+            /** @min 1 @max 100 */
+            page: number;
+          }`,
+          'Q',
+          true,
+        );
+        expect(schema.safeParse({ page: '50' }).success).toBe(true);
+        expect(schema.safeParse({ page: '0' }).success).toBe(false);
+        expect(schema.safeParse({ page: '101' }).success).toBe(false);
+      });
+    });
+  });
+
   describe('coerce 模式', () => {
     describe('coerce=true 时 number 字段包 preprocess', () => {
       it('生成代码包含 z.preprocess 包裹 z.number()', () => {

@@ -29,7 +29,7 @@ query/params 来自 URL，值均为 string。类型转换（string→number/bool
 - `generateSchemaFileSource` 根据 schemaName 推断 inputType：以 `Query`/`Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）
 - body schema 不含 preprocess
 
-zod issue code → 框架 `ValidationErrorCode` 映射：`invalid_type`/`invalid_union` → `TYPE_MISMATCH`；`unrecognized_keys` → `INVALID_FORMAT`；`invalid_enum_value`/`invalid_string`/`too_small`/`too_big`/`custom` → `INVALID_VALUE`；`not_finite` → `COERCE_FAILED`（query 字符串转 number 失败的兜底，实际场景中 coerce 失败多报 `invalid_type`）。
+zod v4 issue code → 框架 `ValidationErrorCode` 映射：`invalid_type`/`invalid_union` → `TYPE_MISMATCH`；`unrecognized_keys` → `INVALID_FORMAT`；`invalid_value`/`invalid_string`/`too_small`/`too_big`/`custom` → `INVALID_VALUE`。
 
 ## 相关模块
 

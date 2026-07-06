@@ -65,7 +65,7 @@ export class ModuleLoadError extends FaapiError {
 /**
  * 校验问题类型
  *
- * 结构化错误信息,便于上层(errorFormat/前端)按 code 做不同处理,
+ * 结构化错误信息,便于上层(全局错误中间件/前端)按 code 做不同处理,
  * 不依赖字符串解析。message 仅为人类可读的兜底描述。
  *
  * code 与 HTTP 状态码的映射（由 ValidationError 推导）：

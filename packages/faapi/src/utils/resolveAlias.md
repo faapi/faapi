@@ -18,10 +18,10 @@ TypeScript paths 规范只允许单个 `*`，本函数不处理多 `*`。
 
 ## 使用场景
 
-- `compileRoutes.ts` 的 esbuild onLoad 插件内调用，把别名 specifier 解析为候选路径后重写为产物相对路径写入产物
+- `compileDevRoutes.ts` / `compileBuildRoutes.ts` 的 esbuild onLoad 插件内调用，把别名 specifier 解析为候选路径后重写为产物相对路径写入产物
 - dev 模式（`.faapi/dev/`）和 build 模式（`dist/`）共用同一编译逻辑
 
 ## 相关模块
 
 - `readTsconfig.ts` - 提供 `TsconfigPathsConfig` 配置（baseUrl + paths 已规范化为绝对路径）
-- `compileRoutes.ts` - 编译时调用方（esbuild 别名重写插件）
+- `compileDevRoutes.ts` / `compileBuildRoutes.ts` - 编译时调用方（esbuild 别名重写插件）

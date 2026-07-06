@@ -5,7 +5,7 @@
 ## 为什么需要
 
 为常见 HTTP 错误（400/404/405/422/500）提供具体错误类，包含详细信息。
-`ValidationIssue` 提供结构化错误信息，便于上层（errorFormat / 前端）按 code 做不同处理。
+`ValidationIssue` 提供结构化错误信息，便于上层（全局错误中间件 / 前端）按 code 做不同处理。
 状态码按错误语义细分（参考 RFC 7807 / Rails / Laravel / Spring），让前端可基于状态码区分错误类型。
 
 ## 使用场景
@@ -65,5 +65,4 @@
 
 - `FaapiError.ts` - 基础错误类
 - `formatErrorResponse.ts` - 格式化响应
-- `../validator/validateInput.ts` - 校验输入,将 zod issue 映射为 `ValidationIssue`
-- `../validator/coerceInput.ts` - 类型转换,产生 `COERCE_FAILED` issue
+- `../validator/validateInput.ts` - 校验输入,将 zod issue 映射为 `ValidationIssue`（coerce 已内联到 zod schema,详见 `../validator/README.md`）

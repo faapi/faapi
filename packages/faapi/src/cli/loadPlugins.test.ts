@@ -5,6 +5,7 @@ import type { PluginContext } from '../config/pluginTypes';
 const mockCtx: PluginContext = {
   rootDir: '/tmp/test',
   routes: [],
+  getRoutes: () => [],
   server: {} as any,
   config: {},
 };

@@ -24,7 +24,6 @@ import type { InjectorMap } from '../middleware/injectorTypes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { getClientIp } from '../utils/getClientIp';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
-import type { ErrorFormatFn } from '../config/configTypes';
 import {
   wrapWsSocket,
   type WsContext,
@@ -126,8 +125,6 @@ export interface AttachWsOptions {
   rootDir: string;
   /** 业务配置，注入到 WsContext.config */
   config?: Record<string, unknown>;
-  /** 错误响应格式化函数（来自 faapi.config.ts） */
-  errorFormat?: ErrorFormatFn;
   /** 全局中间件（来自 faapi.config.ts，WS 握手最外层） */
   globalMiddlewares?: FaapiMiddleware[];
   /** 全局注入器（来自 faapi.config.ts，WS handler 可通过 ctx 间接访问全局依赖） */
@@ -141,13 +138,13 @@ export interface AttachWsOptions {
  * 路由匹配成功后，走洋葱中间件链：
  * - 中间件放行（await next）：finalHandler 内调用 ws.handleUpgrade 完成协议升级、绑定事件回调
  * - 中间件拦截（返回 Response）：把 Response 写回 socket 后销毁，不进行协议升级
- * - 中间件抛错：由 errorFormat/内置兜底生成错误 Response，写回 socket 后销毁
+ * - 中间件抛错：由 formatErrorResponse/内置兜底生成错误 Response，写回 socket 后销毁
  *
  * 中间件链顺序：全局中间件（外）→ 目录中间件（内）→ finalHandler。
  * watch 模式下 wsRoutes 通过 routesRef 引用更新。
  */
 export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
-  const { server, routesRef, rootDir, config, errorFormat, globalMiddlewares } = options;
+  const { server, routesRef, rootDir, config, globalMiddlewares } = options;
 
   const wss = new WebSocketServer({ noServer: true });
 
@@ -227,8 +224,9 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
         console.error('[faapi] WS 握手后中间件抛错:', err);
         return;
       }
-      // 错误兜底链：errorFormat 返回 null/未处理或抛错 → 内置 formatErrorResponse 兜底
-      response = buildErrorResponse(err, ctx, errorFormat);
+      // 错误兜底链:内置 formatErrorResponse 兜底
+      // 业务方如需自定义错误响应,在全局中间件中 try/catch next() 即可
+      response = buildErrorResponse(err);
     }
 
     // 握手成功：socket 已升级，中间件 after 阶段已执行完，无需再写

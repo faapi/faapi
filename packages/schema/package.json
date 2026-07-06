@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@faapi/faapi": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@faapi/mcp": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -7,22 +7,6 @@ import type { LoggerOptions } from '../middleware/logger';
 import type { Http2Options } from '../server/createServer';
 
 /**
- * 统一响应格式化函数
- *
- * 当配置了 responseFormat 时，handler 返回的非 Response 值会经过此函数包装
- * 例如：{ code: 0, data, message: 'success' }
- */
-export type ResponseFormatFn = (data: unknown, ctx: FaapiContext) => unknown;
-
-/**
- * 错误响应格式化函数
- *
- * 优先于内置 formatErrorResponse 处理错误。返回 Response 表示已处理；
- * 返回 null/undefined 表示不处理，由内置 formatErrorResponse 兜底。
- */
-export type ErrorFormatFn = (error: unknown, ctx?: FaapiContext) => Response | null | undefined;
-
-/**
  * 生命周期钩子
  */
 export interface LifecycleHooks {
@@ -31,17 +15,17 @@ export interface LifecycleHooks {
   /** 服务器关闭时调用（适合清理资源、优雅关闭） */
   onClose?: (ctx: LifecycleContext) => Promise<void> | void;
   /**
-   * 请求错误已被 errorFormat 处理为响应后调用（参考 Fastify onError 语义）
+   * 请求错误已被处理为响应后调用(参考 Fastify onError 语义)
    *
-   * 时机：handler 抛错 → errorFormat 生成错误响应（失败则由框架内置 formatErrorResponse 兜底）
+   * 时机:handler 抛错 → 全局中间件 try/catch(若有) → 框架内置 formatErrorResponse 兜底
    *      → 响应发出后 → onError 触发副作用
    *
-   * 职责：日志上报、告警、链路追踪等副作用。**不修改、不替换已生成的响应**。
-   * 自身抛错会被捕获并忽略，不影响响应已发送的事实。
+   * 职责:日志上报、告警、链路追踪等副作用。**不修改、不替换已生成的响应**。
+   * 自身抛错会被捕获并忽略,不影响响应已发送的事实。
    *
-   * 与 errorFormat 的区别：
-   * - errorFormat：把 error 翻译成 Response（主入口，决定响应内容）
-   * - onError：响应发出后的副作用（不能改响应）
+   * 与全局错误中间件的区别:
+   * - 全局错误中间件:把 error 翻译成 Response(主入口,决定响应内容)
+   * - onError:响应发出后的副作用(不能改响应)
    */
   onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
 }
@@ -89,10 +73,6 @@ export interface LifecycleContext {
 export interface FaapiConfig {
   /** CORS 配置，false 禁用 */
   cors?: import('../middleware/cors.js').CorsOptions | boolean;
-  /** 统一响应格式化函数 */
-  responseFormat?: ResponseFormatFn;
-  /** 错误响应格式化函数 */
-  errorFormat?: ErrorFormatFn;
   /** 生命周期钩子 */
   lifecycle?: LifecycleHooks;
 

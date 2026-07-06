@@ -63,7 +63,7 @@ export function WS(ctx: WsContext) {
 **中间件拦截语义**：
 - 中间件返回 Response（如鉴权失败 401）：拦截握手，**不**进行协议升级，把 Response 写回原始 socket 后销毁连接
 - 中间件 `await next()`：正常透传，握手完成、连接建立
-- 中间件抛错：由 `errorFormat`/内置兜底生成错误 Response，写回 socket 后销毁
+- 中间件抛错：由 `formatErrorResponse`/内置兜底生成错误 Response，写回 socket 后销毁
 
 **中间件塞值传递**：握手中间件塞入 ctx 的字段（如 `ctx.user`）保留在 ctx 上，WS handler 通过 `WsContext` 读取（WsContext 是 FaapiContext 的结构子集，直接复用 ctx 实例）。
 

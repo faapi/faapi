@@ -18,8 +18,10 @@ export type UpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer
 export interface PluginContext {
   /** 项目根目录 */
   rootDir: string;
-  /** 当前路由清单 */
+  /** 当前路由清单（setup 时的快照，reloadRoutes 后不会更新；需最新路由用 getRoutes()） */
   routes: RouteManifest;
+  /** 获取最新路由清单（reloadRoutes 后返回更新后的数组） */
+  getRoutes: () => RouteManifest;
   /** HTTP 服务器实例（未 listen） */
   server: Server;
   /** 自定义业务配置（faapi.config.ts 中的自定义 key） */

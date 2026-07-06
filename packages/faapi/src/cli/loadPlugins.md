@@ -26,7 +26,7 @@ plugins: [
 ## 加载流程
 
 1. 遍历 declarations，解析为统一格式 { specifier, options, enable }
-2. enable: false 跳过
+2. `enable: false` 跳过（唯一运行时开关——插件不应引入环境变量做冗余控制，详见 [pluginTypes.md](../config/pluginTypes.md#开关约定)）
 3. name 去重（已加载的跳过）
 4. await import(specifier) 加载
 5. 取 mod.default ?? mod 作为插件对象

@@ -21,7 +21,7 @@ export function getClientIp(req: IncomingMessage): string {
   }
 
   // 2. 直连 socket IP
-  const remote = req.socket.remoteAddress;
+  const remote = req.socket?.remoteAddress;
   if (remote) {
     // 去掉 IPv6 前缀 ::ffff:，统一返回 IPv4 形式
     if (remote.startsWith('::ffff:')) {

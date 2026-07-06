@@ -12,6 +12,7 @@ faapi 的核心设计是"函数即接口"。框架根据 handler 参数名自动
 | `headers` | headers | 请求头 |
 | `context` / `ctx` | context | 完整 FaapiContext |
 | `cookies` | cookies | 解析后的 cookie 键值对（Record<string, string>） |
+| `ip` | ip | 客户端 IP（X-Forwarded-For 优先） |
 | `files` | files | multipart 上传文件列表（UploadedFile[]） |
 | `fields` | fields | multipart 表单字段（Record<string, string>） |
 | 其他 | unknown | 不注入（由中间件 resolve 提供） |

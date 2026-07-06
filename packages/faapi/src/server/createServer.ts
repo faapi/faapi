@@ -24,7 +24,6 @@ import { cors, type CorsOptions } from '../middleware/cors';
 import { helmet, type HelmetOptions } from '../middleware/helmet';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
-import type { ResponseFormatFn, ErrorFormatFn } from '../config/configTypes';
 import { attachWebSocket } from './handleWsUpgrade';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 import { getRuntimeSchemaPath } from '../cli/generateSchemaFiles';
@@ -129,10 +128,6 @@ export interface CreateServerOptions {
   /** 产物输出目录（如 '.faapi/dev' 或 'dist'），用于计算 schema 路径 */
   outDir: string;
   cors?: CorsOptions | boolean;
-  /** 统一响应格式化函数 */
-  responseFormat?: ResponseFormatFn;
-  /** 错误响应格式化函数（优先于内置 formatErrorResponse 处理；返回 null/undefined 表示不处理） */
-  errorFormat?: ErrorFormatFn;
   /** 请求错误钩子（在错误响应生成后调用，用于副作用；不修改已发出的响应） */
   onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
   /** 自定义业务配置（来自 faapi.config.ts，注入到 ctx.config） */
@@ -172,8 +167,6 @@ export function createServer(options: CreateServerOptions): {
     appDir,
     outDir,
     cors: corsOption,
-    responseFormat,
-    errorFormat,
     onError,
     config,
     wsRoutes,
@@ -229,8 +222,6 @@ export function createServer(options: CreateServerOptions): {
       req,
       res,
       configMiddlewares,
-      responseFormat,
-      errorFormat,
       onError,
       config,
       globalMiddlewares,
@@ -244,7 +235,7 @@ export function createServer(options: CreateServerOptions): {
 
   // 挂载 WebSocket 升级处理（仅当提供了 WS 路由）
   if (routesRef.wsCurrent.length > 0) {
-    attachWebSocket({ server, routesRef, rootDir, config, errorFormat, globalMiddlewares });
+    attachWebSocket({ server, routesRef, rootDir, config, globalMiddlewares });
   }
 
   return { server, routesRef };
@@ -258,8 +249,6 @@ async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   configMiddlewares: FaapiMiddleware[],
-  responseFormat: ResponseFormatFn | undefined,
-  errorFormat: ErrorFormatFn | undefined,
   onError: ((error: unknown, ctx: FaapiContext) => Promise<void> | void) | undefined,
   config: Record<string, unknown> | undefined,
   globalMiddlewares: FaapiMiddleware[] | undefined,
@@ -311,26 +300,13 @@ async function handleRequest(
     const mergedInjectors = globalInjectors
       ? { ...globalInjectors, ...route.injectors }
       : route.injectors;
-    let response = await invokeHandler(
+    const response = await invokeHandler(
       routeModule.handler,
       ctx,
       body,
       route.middlewares,
       mergedInjectors,
     );
-
-    // 统一响应格式化：对非 Response 的成功响应应用 responseFormat
-    if (responseFormat && response.status >= 200 && response.status < 300) {
-      // 只对 JSON 响应（handler 返回的对象）应用格式化，跳过 Response 原样透传的情况
-      const contentType = response.headers.get('Content-Type') ?? '';
-      if (contentType.includes('application/json')) {
-        const data = await response.json();
-        const formatted = responseFormat(data, ctx);
-        // 重新构建响应（保留原有 meta 信息）
-        const { toResponse } = await import('../response/toResponse.js');
-        response = await toResponse(formatted, meta);
-      }
-    }
 
     return response;
   };
@@ -352,12 +328,12 @@ async function handleRequest(
     }
     await sendNodeResponse(response, res);
   } catch (err: unknown) {
-    // 错误处理兜底链（参考 Fastify 语义）：
-    //   1. 用户 errorFormat 返回 Response 表示已处理
-    //   2. errorFormat 未处理（返回 null/undefined）或抛错 → 框架内置 formatErrorResponse 兜底
-    //   3. 内置兜底仍抛错 → 最简 500 JSON 响应
-    //   4. 响应发出后 → onError 触发副作用（不修改已发出的响应）
-    const errorResponse = buildErrorResponse(err, ctx, errorFormat);
+    // 错误处理兜底链(参考 Fastify 语义):
+    //   1. 框架内置 formatErrorResponse 兜底(handler 抛错时)
+    //   2. 内置兜底仍抛错 → 最简 500 JSON 响应
+    //   3. 响应发出后 → onError 触发副作用(不修改已发出的响应)
+    //   注:业务方如需自定义错误响应,在全局中间件中 try/catch next() 即可
+    const errorResponse = buildErrorResponse(err);
     await sendNodeResponse(mergeMeta(errorResponse, meta), res);
 
     // 响应已发出，触发 onError 副作用（日志/告警），自身抛错被忽略

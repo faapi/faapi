@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": ["@changesets/changelog-github", { "repo": "faapi/faapi" }],
   "commit": false,
-  "fixed": [["@faapi/faapi", "@faapi/schema", "@faapi/next"]],
+  "fixed": [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/mcp"]],
   "linked": [],
   "access": "public",
   "baseBranch": "main",

@@ -67,7 +67,6 @@ export async function POST(ctx, body: { prompt: string }) {
 ### SSE 行为
 
 - 框架自动构造 `text/event-stream` Response
-- `responseFormat` **不包装** SSE 响应
 - `SseWriter.aborted` 检测客户端断开
 - handler 返回或抛错时框架自动 `close` 兜底,避免连接泄漏
 - SSE 与 `ctx.json`/`ctx.html` 互斥(handler 只能返回一个)

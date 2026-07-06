@@ -309,5 +309,6 @@ faapi 支持跨文件类型引用,dev 和 prod 都会合并所有文件的类型
 
 - [middleware.md](./middleware.md) — 在 handler 前后加鉴权/日志
 - [injection.md](./injection.md) — 注入 db、user 等自定义依赖
-- [config.md](./config.md) — responseFormat 自动包装返回值
+- [config.md](./config.md) — 配置字段一览
+- [response.md](./response.md) — `ok()` 辅助函数统一响应格式
 - [debug.md](./debug.md) — 400/404/405 排查

@@ -72,10 +72,13 @@ dev 模式：`faapi dev` 编译 + 调 `createDevApp()` + watcher（调 `app.relo
 
 ```
 @faapi/faapi           核心包：API 路由、中间件、注入、校验、AST 能力公开导出
-@faapi/schema          扩展包：路由 schema 生成 + 通过 MCP 协议暴露给 AI 助手
+@faapi/mcp             MCP Server SDK：纯手写 MCP 协议（Streamable HTTP transport），不依赖 @modelcontextprotocol/sdk
+@faapi/schema          扩展包：路由 schema 生成 + 通过 MCP 协议暴露给 AI 助手（基于 @faapi/mcp）
 ```
 
-`@faapi/schema` 为可选扩展，CLI 动态加载——未安装时自动跳过，不影响核心功能。
+`@faapi/mcp` 是独立的 MCP Server SDK，提供 `createMcpServer`（tool 注册 + JSON-RPC 分发）、`handleMcpRequest`（Streamable HTTP transport）、`createMcpHandler`/`createMcpNodeHandler`（faapi 适配器）等能力。仅依赖 zod（v4 内置 `toJSONSchema`，无需 zod-to-json-schema）。
+
+`@faapi/schema` 为可选扩展，CLI 动态加载——未安装时自动跳过，不影响核心功能。基于 `@faapi/mcp` 实现，通过插件 `wrapHandler` 在 `/mcp` 路径挂载 MCP 端点，AI 助手通过 Streamable HTTP 连接。
 
 主包公开 AST 能力（`createProgram`/`extractTypeInfo`/`collectRouteSchemaSources` 等），`@faapi/schema` 组合这些能力生成路由 schema，不依赖主包内部模块。
 
@@ -102,7 +105,7 @@ node dist/main                 # 启动生产服务器（main.js 内部调 creat
 
 配置分两类：
 
-- **应用行为配置**（CORS、responseFormat、lifecycle、middlewares、业务配置等）从 `faapi.config.ts` 读取
+- **应用行为配置**（CORS、lifecycle、middlewares、业务配置等）从 `faapi.config.ts` 读取
 - **框架元信息**（appDir、port、outDir）通过环境变量传入，不放在 config 内：
   - `FAAPI_APP_DIR`：源码目录前缀，默认 'src'，设为 '.' 表示源码在项目根目录
   - `PORT`：服务端口，默认 3000
@@ -221,29 +224,40 @@ export const injectors: InjectorMap = {
 
 ### 5.5 配置文件（faapi.config.ts）
 
-在项目根目录创建 `faapi.config.ts`，支持统一响应格式、全局错误处理、生命周期钩子、自定义业务配置等。
+在项目根目录创建 `faapi.config.ts`，支持生命周期钩子、自定义业务配置、全局中间件等。
+
+**统一响应格式与错误处理**:框架不内置统一响应包装/错误格式化配置(避免 handler 返回类型与实际响应类型断裂)。推荐业务方通过辅助函数 + 全局中间件模式实现:
+
+```ts
+// src/utils/response.ts(业务自定义辅助函数)
+export function ok<T>(data: T) {
+  return { code: 0, data, message: 'success' } as const;
+}
+
+// api/user/handler.ts(handler 直接返回完整结构,类型一致)
+export interface User { id: number; name: string }
+export function GET(): ReturnType<typeof ok<User>> {
+  return ok({ id: 1, name: 'Alice' });
+}
+
+// faapi.config.ts(全局错误中间件捕获 handler 抛错)
+import type { FaapiMiddleware } from '@faapi/faapi';
+const errorHandler: FaapiMiddleware = async (ctx, next) => {
+  try { await next(); } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    ctx.json({ code: 500, data: null, message }, 500);
+  }
+};
+export default { middlewares: [errorHandler] } satisfies FaapiConfig;
+```
+
+完整配置示例:
 
 ```ts
 // faapi.config.ts
 import type { FaapiConfig } from '@faapi/faapi';
 
 export default {
-  // 统一响应格式：handler 返回的对象自动包装
-  responseFormat(data) {
-    return { code: 0, data, message: 'success' };
-  },
-
-  // 全局错误格式：优先于内置 formatErrorResponse 处理错误
-  // 返回 Response 表示已处理；返回 null/undefined 表示不处理，由内置 formatErrorResponse 兜底
-  errorFormat(err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const status = (err as any)?.statusCode ?? 500;
-    return new Response(
-      JSON.stringify({ code: status, data: null, message }),
-      { status, headers: { 'Content-Type': 'application/json' } },
-    );
-  },
-
   // 生命周期钩子
   lifecycle: {
     async onReady({ rootDir, routes, server }) {
@@ -254,9 +268,9 @@ export default {
       // 清理资源、优雅关闭
       console.log('Server shutting down');
     },
-    // 请求错误已被 errorFormat 处理为响应、响应发出后触发（参考 Fastify onError 语义）
+    // 请求错误已被处理为响应、响应发出后触发（参考 Fastify onError 语义）
     // 用于副作用：日志/告警/链路追踪，不修改已发出的响应；自身抛错被忽略
-    // 错误兜底链：errorFormat 返回 null/未处理或抛错 → 内置 formatErrorResponse 兜底 → 仍失败则最简 500
+    // 错误兜底链：全局中间件 try/catch → 内置 formatErrorResponse 兜底 → 仍失败则最简 500
     onError(error, ctx) {
       console.error(`[onError] ${ctx.method} ${ctx.path}`, error);
     },
@@ -338,9 +352,9 @@ export function GET(ctx) {
 | `ctx.redirect(url, status?)` | 返回重定向响应 | `return ctx.redirect('/login')` |
 | `ctx.sse()` | 创建 SSE writer，流式推送事件 | `const sse = ctx.sse(); sse.send({data:'chunk'}); sse.close()` |
 
-`ctx.sse()` 返回 `SseWriter`，handler 通过 `sse.send({ data, event?, id?, retry? })` 推送事件，`sse.close()` 关闭流。框架自动构造 `text/event-stream` Response，与 `ctx.json`/`ctx.html` 互斥。`responseFormat` 不包装 SSE 响应。`SseWriter` 提供 `aborted` 属性检测客户端断开；handler 返回或抛错时框架自动 close 兜底，避免连接泄漏。详见 `src/runtime/sse.md`。
+`ctx.sse()` 返回 `SseWriter`，handler 通过 `sse.send({ data, event?, id?, retry? })` 推送事件，`sse.close()` 关闭流。框架自动构造 `text/event-stream` Response，与 `ctx.json`/`ctx.html` 互斥。`SseWriter` 提供 `aborted` 属性检测客户端断开；handler 返回或抛错时框架自动 close 兜底，避免连接泄漏。详见 `src/runtime/sse.md`。
 
-不配置时保持现有行为（直接返回原始数据、使用内置错误格式）。
+handler 返回值直接序列化为响应(原始数据);错误响应由内置 `formatErrorResponse` 兜底(参考 `src/errors/formatErrorResponse.ts`)。
 
 ### 5.6 设计决策
 

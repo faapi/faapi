@@ -170,4 +170,188 @@ export function POST(body: POSTBody) { return body; }\n`,
     expect(props[1]!.required).toBe(false);
     expect(props[2]!.type).toBe('"admin" | "user"');
   });
+
+  // ─── 响应类型提取 ─────────────────────────────────────
+
+  it('响应类型:Promise<命名类型> 解包并提取结构', () => {
+    mkdirSync(join(tempDir, 'api/user'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/user/handler.ts'),
+      `export interface GetUserResponse { id: number; name: string; }
+export interface GETQuery { id: number; }
+export async function GET(query: GETQuery): Promise<GetUserResponse> { return { id: query.id, name: 'Alice' }; }\n`,
+      'utf-8',
+    );
+
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/user',
+        filePath: 'api/user/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+    const schemas = buildRouteSchemas(routes, tempDir);
+
+    const output = schemas[0]!.output;
+    expect(output).not.toBeNull();
+    expect(output!.schemaName).toBe('GetUserResponse');
+    expect(output!.properties).toHaveLength(2);
+    expect(output!.properties[0]).toEqual({ name: 'id', type: 'number', required: true });
+    expect(output!.properties[1]).toEqual({ name: 'name', type: 'string', required: true });
+  });
+
+  it('响应类型:Promise<内联对象> 解包并提取 properties', () => {
+    mkdirSync(join(tempDir, 'api/health'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/health/handler.ts'),
+      `export async function GET(): Promise<{ ok: boolean; count: number }> { return { ok: true, count: 1 }; }\n`,
+      'utf-8',
+    );
+
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/health',
+        filePath: 'api/health/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+    const schemas = buildRouteSchemas(routes, tempDir);
+
+    const output = schemas[0]!.output;
+    expect(output).not.toBeNull();
+    expect(output!.schemaName).toBeNull();
+    expect(output!.properties).toHaveLength(2);
+    expect(output!.properties[0]!.name).toBe('ok');
+    expect(output!.properties[0]!.type).toBe('boolean');
+    expect(output!.properties[1]!.name).toBe('count');
+    expect(output!.properties[1]!.type).toBe('number');
+  });
+
+  it('响应类型:同步返回命名类型(非 Promise)', () => {
+    mkdirSync(join(tempDir, 'api/sync'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/sync/handler.ts'),
+      `export interface SyncResponse { value: string; }
+export function GET(): SyncResponse { return { value: 'ok' }; }\n`,
+      'utf-8',
+    );
+
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/sync',
+        filePath: 'api/sync/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+    const schemas = buildRouteSchemas(routes, tempDir);
+
+    const output = schemas[0]!.output;
+    expect(output).not.toBeNull();
+    expect(output!.schemaName).toBe('SyncResponse');
+    expect(output!.properties).toHaveLength(1);
+    expect(output!.properties[0]).toEqual({ name: 'value', type: 'string', required: true });
+  });
+
+  it('响应类型:Promise<void> 返回 null output', () => {
+    mkdirSync(join(tempDir, 'api/void'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/void/handler.ts'),
+      `export async function GET(): Promise<void> { return; }\n`,
+      'utf-8',
+    );
+
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/void',
+        filePath: 'api/void/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+    const schemas = buildRouteSchemas(routes, tempDir);
+
+    expect(schemas[0]!.output).toBeNull();
+  });
+
+  it('响应类型:无返回类型注解返回 null output', () => {
+    mkdirSync(join(tempDir, 'api/inferred'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/inferred/handler.ts'),
+      `export function GET() { return { ok: true }; }\n`,
+      'utf-8',
+    );
+
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/inferred',
+        filePath: 'api/inferred/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+    const schemas = buildRouteSchemas(routes, tempDir);
+
+    expect(schemas[0]!.output).toBeNull();
+  });
+
+  it('响应类型:Promise<基础类型 string>', () => {
+    mkdirSync(join(tempDir, 'api/str'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/str/handler.ts'),
+      `export async function GET(): Promise<string> { return 'hello'; }\n`,
+      'utf-8',
+    );
+
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/str',
+        filePath: 'api/str/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+    const schemas = buildRouteSchemas(routes, tempDir);
+
+    const output = schemas[0]!.output;
+    expect(output).not.toBeNull();
+    expect(output!.schemaName).toBeNull();
+    expect(output!.properties).toEqual([]);
+  });
+
+  it('响应类型:Promise<数组类型>', () => {
+    mkdirSync(join(tempDir, 'api/list'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'api/list/handler.ts'),
+      `export interface UserItem { id: number; }
+export async function GET(): Promise<UserItem[]> { return [{ id: 1 }]; }\n`,
+      'utf-8',
+    );
+
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/list',
+        filePath: 'api/list/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+    const schemas = buildRouteSchemas(routes, tempDir);
+
+    const output = schemas[0]!.output;
+    expect(output).not.toBeNull();
+    // UserItem[] 是 TypeReference,schemaName 取数组元素类型名
+    expect(output!.schemaName).toBe('UserItem');
+    expect(output!.properties).toHaveLength(1);
+    expect(output!.properties[0]).toEqual({ name: 'id', type: 'number', required: true });
+  });
 });

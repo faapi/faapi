@@ -20,14 +20,39 @@ HTTP 视角：JSON 只能传输 string/number/boolean/null/array/object，无法
 | 基础 | `string` / `number` / `boolean` / `null` / `undefined` | JSON 原生支持 |
 | 不校验 | `unknown` | 用户显式声明不校验 |
 | 字面量 | `'foo'` / `42` / `true` | |
-| 数组 | `T[]` / `Array<T>` | |
-| 元组 | `[string, number]` / `[string, number?]` / `[string, ...number[]]` | 按位置校验 |
-| 对象 | `{ name: string }` / `interface` | |
+| 数组 | `T[]` / `Array<T>` / `ReadonlyArray<T>` / `readonly T[]` | readonly 修饰符在运行时无意义,按底层类型解析 |
+| 元组 | `[string, number]` / `[string, number?]` / `[string, ...number[]]` / `readonly [T, U]` | 按位置校验,readonly 修饰符忽略 |
+| 对象 | `{ name: string }` / `interface` / `readonly` 字段修饰符 | 字段 readonly 修饰符忽略 |
 | 联合 | `string \| null` | |
 | 交叉 | `A & B` | 按对象合并 |
 | 引用 | `Date` / 自定义 interface | Date 允许 Date 实例或 ISO 8601 字符串 |
 | 工具 | `Record<K,V>` / `Partial<T>` / `Pick<T,K>` / `Omit<T,K>` | |
 | 枚举 | `enum Role { Admin = 'admin' }` | 转为字面量联合 |
+
+完整类型支持清单与 JSDoc 约束标签说明详见 [supported-types.md](./supported-types.md)。
+
+## JSDoc 约束标签
+
+字段级 JSDoc 注释中的约束标签会被提取为 `TypeConstraint[]`,挂在 `PropertyType.constraints` 上,由 `generateZodSchema` 转为 zod 链式方法。
+
+| 标签类别 | 标签 | 适用类型 | zod 方法 |
+|---------|------|---------|---------|
+| 数值约束 | `@max N` `@min N` `@int` `@positive` `@negative` `@nonnegative` `@nonpositive` | number | `.max(N)` `.min(N)` `.int()` `.positive()` 等 |
+| 长度约束 | `@maxLength N` `@minLength N` `@length N` | string / array | `.max(N)` `.min(N)` `.length(N)` |
+| 字符串格式 | `@regex /pattern/flags` `@email` `@url` `@uuid` | string | `.regex()` `.email()` 等 |
+
+约束与字段类型不匹配时（如 `@max` 用于 string 字段）直接抛 `SchemaExtractionError`,不降级放行。
+
+## 导出
+
+| 导出 | 说明 |
+|------|------|
+| `SchemaExtractionError` | 类型提取错误类 |
+| `resolveTypeNode(typeNode, checker, visited?)` | 解析类型节点为 RuntimeType |
+| `RuntimeType` | 运行时类型描述（discriminated union） |
+| `PropertyType` | 字段类型（含 `name` / `type` / `optional` / `constraints?`） |
+| `TupleElement` | 元组元素类型 |
+| `TypeConstraint` | JSDoc 约束标签的运行时描述（14 种 kind） |
 
 ## 错误策略
 

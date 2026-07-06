@@ -52,7 +52,7 @@ src/api/**/handler.ts
 
 ### 配置文件 `faapi.config.ts`
 
-应用行为配置：`cors`/`responseFormat`/`errorFormat`/`lifecycle`/`middlewares`/`injectors`/`extendContext`/`plugins` + 自定义业务配置（通过 `ctx.config` 访问）。
+应用行为配置：`cors`/`lifecycle`/`middlewares`/`injectors`/`extendContext`/`plugins`/`helmet`/`bodyLimit`/`logger`/`http2` + 自定义业务配置（通过 `ctx.config` 访问）。统一响应格式与错误处理通过辅助函数 + 全局中间件实现（框架不内置统一响应包装/错误格式化配置）。
 
 多环境配置：`faapi.config.{env}.ts` 深度合并（`FAAPI_ENV` 或 `NODE_ENV` 选择环境）。
 
@@ -116,9 +116,7 @@ import { createDevApp, createProdApp, createApp } from '@faapi/faapi';
 - `get_route_schema`：获取单个路由的详细 schema
 - `get_api_schema`：获取完整 API schema（类似 OpenAPI）
 
-`FAAPI_SCHEMA` 环境变量控制开关，dev 默认开启、production 默认关闭。
-
-在 `faapi.config.ts` 的 `plugins` 字段声明即可加载。
+在 `faapi.config.ts` 的 `plugins` 字段声明即可加载，不声明即不启用。
 
 ## @faapi/next（Next.js 集成包）
 

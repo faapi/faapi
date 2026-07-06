@@ -49,6 +49,7 @@ function createMockContext(options?: unknown): {
   const ctx = {
     rootDir: '/tmp/test',
     routes: [],
+    getRoutes: () => [],
     server: new http.Server(),
     config: {},
     options,

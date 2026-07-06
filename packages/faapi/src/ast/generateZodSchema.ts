@@ -1,4 +1,4 @@
-import type { RuntimeType, TupleElement, PropertyType } from './resolveTypeNode';
+import type { RuntimeType, TupleElement, PropertyType, TypeConstraint } from './resolveTypeNode';
 import type { HandlerTypeInfo } from './extractHandlerTypes';
 
 /**
@@ -98,15 +98,90 @@ export function collectNamedTypes(type: RuntimeType, ctx: CodeGenContext): void 
 
 /**
  * RuntimeType → zod 表达式字符串（不含声明）
+ *
+ * @param type 类型描述
+ * @param ctx 代码生成上下文
+ * @param constraints 字段级约束（仅 object 字段传入，影响最外层 zod 链）
  */
-export function runtimeTypeToZodExpression(type: RuntimeType, ctx: CodeGenContext): string {
+export function runtimeTypeToZodExpression(
+  type: RuntimeType,
+  ctx: CodeGenContext,
+  constraints?: TypeConstraint[],
+): string {
   const expr = baseExpression(type, ctx);
+  // 字段级约束链（@max/@min/@regex 等）追加到基础表达式后
+  // coerce 模式下约束需作用在 preprocess 内部的 z.X() 上，故先应用约束再包裹 preprocess
+  const withConstraints =
+    constraints && constraints.length > 0 ? applyConstraints(expr, constraints, type.kind) : expr;
   // coerce 模式下，number/boolean 在外层包 z.preprocess
   // 嵌套类型（array/object/tuple/union 等）内部已递归处理，外层不再包裹
   if (ctx.coerce && (type.kind === 'number' || type.kind === 'boolean')) {
-    return wrapCoercePreprocess(type.kind, expr);
+    return wrapCoercePreprocess(type.kind, withConstraints);
   }
-  return expr;
+  return withConstraints;
+}
+
+/**
+ * 在 zod 表达式上追加约束链
+ *
+ * 约束与字段类型的匹配在 AST 提取阶段已校验，这里直接生成链式调用。
+ *
+ * coerce 模式下调用方应先 applyConstraints 再 wrapCoercePreprocess，
+ * 使约束作用在 preprocess 内部的 z.X() 上，而非 preprocess 外壳。
+ *
+ * @param baseExpr 基础 zod 表达式（未包裹 preprocess）
+ * @param constraints 约束数组
+ * @param typeKind 字段类型 kind
+ */
+function applyConstraints(
+  baseExpr: string,
+  constraints: TypeConstraint[],
+  typeKind: RuntimeType['kind'],
+): string {
+  const suffix = constraints.map((c) => constraintToZodChain(c, typeKind)).join('');
+  return `${baseExpr}${suffix}`;
+}
+
+/**
+ * 单个约束 → zod 链式方法字符串
+ *
+ * @param constraint 约束
+ * @param typeKind 字段类型 kind（用于区分 string/array 的 max/min 含义）
+ */
+function constraintToZodChain(constraint: TypeConstraint, _typeKind: RuntimeType['kind']): string {
+  switch (constraint.kind) {
+    case 'max':
+      return `.max(${constraint.value})`;
+    case 'min':
+      return `.min(${constraint.value})`;
+    case 'int':
+      return '.int()';
+    case 'positive':
+      return '.positive()';
+    case 'negative':
+      return '.negative()';
+    case 'nonnegative':
+      return '.nonnegative()';
+    case 'nonpositive':
+      return '.nonpositive()';
+    case 'maxLength':
+      return `.max(${constraint.value})`;
+    case 'minLength':
+      return `.min(${constraint.value})`;
+    case 'length':
+      return `.length(${constraint.value})`;
+    case 'regex': {
+      const flags = constraint.flags ?? '';
+      // 用 new RegExp 构造，避免 pattern 中含 / 字符导致的字面量语法错误
+      return `.regex(new RegExp(${JSON.stringify(constraint.pattern)}${flags ? `, ${JSON.stringify(flags)}` : ''}))`;
+    }
+    case 'email':
+      return '.email()';
+    case 'url':
+      return '.url()';
+    case 'uuid':
+      return '.uuid()';
+  }
 }
 
 /**
@@ -286,12 +361,13 @@ function generateTupleExpression(elements: TupleElement[], ctx: CodeGenContext):
 /**
  * 生成对象 zod 表达式
  *
- * 可选字段用 .optional()
+ * 可选字段用 .optional()，约束链在 .optional() 之前生成
  */
 function generateObjectExpression(properties: PropertyType[], ctx: CodeGenContext): string {
   const fields = properties.map((prop) => {
-    const expr = runtimeTypeToZodExpression(prop.type, ctx);
-    return `${JSON.stringify(prop.name)}: ${prop.optional ? `${expr}.optional()` : expr}`;
+    const expr = runtimeTypeToZodExpression(prop.type, ctx, prop.constraints);
+    const finalExpr = prop.optional ? `${expr}.optional()` : expr;
+    return `${JSON.stringify(prop.name)}: ${finalExpr}`;
   });
   return `z.object({ ${fields.join(', ')} })`;
 }

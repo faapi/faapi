@@ -67,6 +67,19 @@ export interface RouteInputSchema {
 }
 
 /**
+ * 路由响应类型的 schema 描述
+ *
+ * 由 @faapi/schema 扩展包的 buildRouteSchemas 生成。
+ * output 为 null 表示无显式返回类型注解、void/Promise<void>、或解析失败降级。
+ */
+export interface RouteOutputSchema {
+  /** 命名类型名(如 'UserResponse'),内联类型为 null */
+  schemaName: string | null;
+  /** 顶层属性列表 */
+  properties: RouteParamSchema[];
+}
+
+/**
  * 路由的完整 schema 描述
  *
  * 由 @faapi/schema 扩展包的 buildRouteSchemas 生成。
@@ -78,6 +91,8 @@ export interface RouteInfo {
   filePath: string;
   isDynamic: boolean;
   inputs: RouteInputSchema[];
+  /** 响应类型描述(null 表示无返回类型注解/void/解析失败) */
+  output: RouteOutputSchema | null;
 }
 
 export interface RouteMatch {

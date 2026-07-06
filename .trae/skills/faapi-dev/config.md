@@ -16,10 +16,6 @@
 import type { FaapiConfig } from '@faapi/faapi';
 
 export default {
-  // 统一响应格式 → [response-format.md]
-  responseFormat(data) { ... },
-  // 全局错误格式 → [response-format.md]
-  errorFormat(err) { ... },
   // 生命周期钩子 → [lifecycle.md]
   lifecycle: { onReady, onClose, onError },
   // 扩展 ctx → [extend-context.md]
@@ -27,6 +23,7 @@ export default {
   // CORS → [cors.md]
   cors: { origin, credentials },
   // 全局中间件 → [middleware.md]
+  // 统一响应格式 / 自定义错误响应 → [response.md]
   middlewares: [...],
   // 全局注入器 → [injection.md]
   injectors: { ... },
@@ -48,7 +45,9 @@ export default {
 } satisfies FaapiConfig;
 ```
 
-框架内置 key：`cors` / `responseFormat` / `errorFormat` / `lifecycle` / `middlewares` / `injectors` / `extendContext` / `plugins` / `helmet` / `bodyLimit` / `logger` / `http2`。业务配置用其他 key（db、redis 等），不与框架 key 冲突。
+框架内置 key：`cors` / `lifecycle` / `middlewares` / `injectors` / `extendContext` / `plugins` / `helmet` / `bodyLimit` / `logger` / `http2`。业务配置用其他 key（db、redis 等），不与框架 key 冲突。
+
+> 统一响应格式与自定义错误响应通过辅助函数 + 全局中间件实现,详见 [response.md](./response.md)。
 
 ## helmet — 安全头
 
@@ -128,18 +127,18 @@ faapi 不内置 compression / rateLimit / timeout / cluster 等。详见 [recipe
 
 ## 常见坑点
 
-### 1. responseFormat 不包装 Response
+### 1. handler 返回 Response 原样透传
 
 ```ts
 export function GET() {
   return new Response('Not found', { status: 404 });
-  // responseFormat 不包装,原样透传
+  // 框架不包装,原样透传
 }
 ```
 
-### 2. errorFormat 未处理有兜底
+### 2. 自定义错误响应走全局中间件
 
-`errorFormat` 返回 `null`/`undefined` 或自身抛错,框架用内置 `formatErrorResponse` 兜底。
+handler 抛错未被全局中间件 `try/catch` 捕获时,框架用内置 `formatErrorResponse` 兜底。自定义错误响应在全局中间件中 `try/catch next()` 后 `return ctx.json(...)` 拦截,详见 [response.md](./response.md)。
 
 ### 3. 自定义配置 key 与框架 key 冲突
 
@@ -150,7 +149,7 @@ export default {
 };
 ```
 
-框架内置 key:`cors`/`responseFormat`/`errorFormat`/`lifecycle`/`middlewares`/`injectors`/`extendContext`/`plugins`/`helmet`/`bodyLimit`/`logger`/`http2`。业务配置用其他 key。
+框架内置 key:`cors`/`lifecycle`/`middlewares`/`injectors`/`extendContext`/`plugins`/`helmet`/`bodyLimit`/`logger`/`http2`。业务配置用其他 key。
 
 ## 检查清单
 

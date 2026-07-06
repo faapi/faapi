@@ -16,7 +16,7 @@
 
 - 合法 JSON：返回 `{ success: true, data }`
 - 非法 JSON：返回 `{ success: false, error: 'Invalid JSON body' }`
-- 保持纯函数语义,不抛异常,不调用 errorFormat
+- 保持纯函数语义,不抛异常,不调用错误处理逻辑
 
 ## 相关模块
 

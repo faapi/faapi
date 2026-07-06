@@ -27,7 +27,7 @@
 
 详见 [runtime/sse.md](../runtime/sse.md)。
 
-**与 responseFormat 的关系**：responseFormat 只对 `application/json` 响应生效，SSE 是 `text/event-stream`，天然跳过，不会被包装。
+> 框架不内置统一响应格式配置,业务方如需统一包装,使用 `ok()` 辅助函数或全局中间件(详见 `.trae/skills/faapi-dev/response.md`)。
 
 ## meta 合并
 

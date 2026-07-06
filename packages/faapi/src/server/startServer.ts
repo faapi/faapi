@@ -1,7 +1,6 @@
 import type { Server } from 'node:http';
 import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
 import type { CorsOptions } from '../middleware/cors';
-import type { ResponseFormatFn, ErrorFormatFn } from '../config/configTypes';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
@@ -17,10 +16,6 @@ export interface StartOptions {
   /** 产物输出目录（如 '.faapi/dev' 或 'dist'），用于计算 schema 路径 */
   outDir: string;
   cors?: CorsOptions | boolean;
-  /** 统一响应格式化函数 */
-  responseFormat?: ResponseFormatFn;
-  /** 错误响应格式化函数（优先于内置 formatErrorResponse 处理；返回 null/undefined 表示不处理） */
-  errorFormat?: ErrorFormatFn;
   /** 请求错误钩子（在错误响应生成后调用，用于副作用，不修改已发出的响应） */
   onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
   /** 自定义业务配置（来自 faapi.config.ts，注入到 ctx.config） */
@@ -52,8 +47,6 @@ export function startServer(options: StartOptions): Promise<Server> {
     appDir,
     outDir,
     cors,
-    responseFormat,
-    errorFormat,
     onError,
     config,
     wsRoutes,
@@ -67,8 +60,6 @@ export function startServer(options: StartOptions): Promise<Server> {
     appDir,
     outDir,
     cors,
-    responseFormat,
-    errorFormat,
     onError,
     config,
     wsRoutes,

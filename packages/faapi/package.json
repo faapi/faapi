@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "vitest run --passWithNoTests",
+    "test": "NODE_OPTIONS=--max-old-space-size=8192 vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -30,7 +30,7 @@
     "fast-glob": "^3.3.3",
     "typescript": "^5.7.0",
     "ws": "^8.21.0",
-    "zod": "^3.25.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

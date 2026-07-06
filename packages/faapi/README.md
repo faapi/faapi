@@ -12,7 +12,7 @@ pnpm add @faapi/faapi
 npm install @faapi/faapi
 ```
 
-要求 Node.js >= 22。
+要求 Node.js >= 24。faapi 仅支持 ESM（`type: "module"`），不提供 CJS 产物。
 
 ## 快速开始
 
@@ -34,6 +34,12 @@ npx faapi
 ```
 
 访问 `http://localhost:3000/api/user?page=1&pageSize=10` 即可。
+
+```bash
+# 生产部署
+faapi build                # 编译 .ts → dist/，生成路由清单 + schema + dist/main.js
+node dist/main             # 启动生产服务器
+```
 
 ## 核心能力
 

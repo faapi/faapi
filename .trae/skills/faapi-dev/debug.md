@@ -103,7 +103,7 @@ api/user/[id]/handler.ts → /api/user/123
 
 3. **检查启动参数**
 
-在 `faapi.config.ts` 中检查 `appDir` 字段（默认 `src`，设为 `.` 表示根目录）。
+通过环境变量 `FAAPI_APP_DIR` 检查源码目录前缀（默认 `src`，设为 `.` 表示源码在项目根目录）。框架元信息（appDir/port/outDir）通过环境变量传入,不在 `faapi.config.ts` 中配置。
 
 4. **查看启动日志**
 
@@ -160,16 +160,22 @@ export function GET(ctx) {
 }
 ```
 
-配置 `errorFormat` 自定义错误响应,配置 `lifecycle.onError` 记录日志:
+配置全局错误中间件自定义错误响应,配置 `lifecycle.onError` 记录日志:
 
 ```ts
+import type { FaapiMiddleware } from '@faapi/faapi';
+
+const errorHandler: FaapiMiddleware = async (ctx, next) => {
+  try {
+    await next();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    return ctx.json({ error: message }, 500);
+  }
+};
+
 export default {
-  errorFormat(err) {
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  },
+  middlewares: [errorHandler],
   lifecycle: {
     onError(error, ctx) {
       console.error(`[onError] ${ctx.method} ${ctx.path}`, error);
@@ -385,7 +391,7 @@ import type { User } from '../../types.ts';
 - [ ] 不用 `Map`/`Set`/`any` 等 AST 不支持的类型
 
 ### 错误处理
-- [ ] 配置 `errorFormat` 自定义错误响应
+- [ ] 配置全局错误中间件 `try/catch next()` 自定义错误响应
 - [ ] 配置 `lifecycle.onError` 记录日志
 - [ ] 查看终端服务端日志
 
@@ -393,4 +399,5 @@ import type { User } from '../../types.ts';
 
 - [init.md](./init.md) — 项目结构、CLI 参数
 - [route.md](./route.md) — 路由约定、类型校验
-- [config.md](./config.md) — errorFormat、onError
+- [config.md](./config.md) — 全局中间件、onError
+- [response.md](./response.md) — 全局错误中间件模式

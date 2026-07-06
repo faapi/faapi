@@ -8,9 +8,10 @@ export default defineConfig({
   resolve: {
     alias: {
       // 测试时直接加载主包 src 源码，无需先构建
-      // 注意：@faapi/faapi/src/* 需要放在前面（更精确的规则优先）
+      // 注意：更精确的规则（含 /src）需放在前面
       '@faapi/faapi/src': path.resolve(__dirname, '../faapi/src'),
       '@faapi/faapi': path.resolve(__dirname, '../faapi/src/index.ts'),
+      '@faapi/mcp': path.resolve(__dirname, '../mcp/src/index.ts'),
     },
   },
   test: {

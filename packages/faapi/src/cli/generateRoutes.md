@@ -27,6 +27,6 @@ build 时把路由元数据序列化为 `dist/faapi-routes.js`，生产 `createA
 ## 相关模块
 
 - `buildCommand.ts` - build 时调用序列化与写入
-- `createApp.ts` - 生产启动时调用读取与水合
+- `createAppCore.ts` - 生产启动时调 `createAppBase` 读取与水合
 - `scanRoutes.ts` - dev 模式扫描路由（水合逻辑与之对齐）
 - `loadMiddlewares.ts` - 中间件加载与缓存

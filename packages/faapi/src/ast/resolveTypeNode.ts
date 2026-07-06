@@ -57,7 +57,39 @@ export interface PropertyType {
   name: string;
   type: RuntimeType;
   optional: boolean;
+  /**
+   * 字段级 JSDoc 约束标签（@max/@min/@maxLength 等）
+   *
+   * 来自字段 JSDoc 注释，由 generateZodSchema 转为 zod 链式调用。
+   * 约束与字段类型不匹配时在提取阶段抛 SchemaExtractionError。
+   */
+  constraints?: TypeConstraint[];
 }
+
+/**
+ * JSDoc 约束标签的运行时描述
+ *
+ * 由字段 JSDoc 注释提取，对应 zod schema 的链式约束方法。
+ * 仅在 PropertyType.constraints 中出现，不挂在嵌套类型（array 元素、tuple 元素等）上。
+ */
+export type TypeConstraint =
+  // 数值约束（仅 number 字段）
+  | { kind: 'max'; value: number }
+  | { kind: 'min'; value: number }
+  | { kind: 'int' }
+  | { kind: 'positive' }
+  | { kind: 'negative' }
+  | { kind: 'nonnegative' }
+  | { kind: 'nonpositive' }
+  // 长度约束（string 或 array 字段）
+  | { kind: 'maxLength'; value: number }
+  | { kind: 'minLength'; value: number }
+  | { kind: 'length'; value: number }
+  // 字符串格式约束（仅 string 字段）
+  | { kind: 'regex'; pattern: string; flags?: string }
+  | { kind: 'email' }
+  | { kind: 'url' }
+  | { kind: 'uuid' };
 
 /**
  * 将 TypeScript 类型节点解析为运行时类型描述
@@ -66,14 +98,16 @@ export interface PropertyType {
  * - 基础类型：string / number / boolean / null / undefined / any / unknown / void
  * - bigint：不支持（HTTP/JSON 不能传输），AST 提取阶段抛 SchemaExtractionError
  * - 字面量类型：'foo' / 42 / true
- * - 数组类型：T[] / Array<T>
- * - 元组类型：[string, number] / [string, number?] / [string, ...number[]]（按位置校验）
- * - 对象类型：{ name: string; age?: number }
+ * - 数组类型：T[] / Array<T> / ReadonlyArray<T> / readonly T[]
+ * - 元组类型：[string, number] / [string, number?] / [string, ...number[]] / readonly [T, U]（按位置校验）
+ * - 对象类型：{ name: string; age?: number }（含 readonly 字段修饰符，忽略 readonly）
  * - 联合类型：string | null
  * - 交叉类型：A & B（按对象合并处理）
  * - 引用类型：Date / 其他 interface（递归解析）
- * - 工具类型：Record<K, V> / Partial<T>（best effort）
+ * - 工具类型：Record<K, V> / Partial<T> / Readonly<T>（best effort）
  * - Pick<T, K> / Omit<T, K>：K 支持字面量联合、类型别名、keyof T
+ *
+ * readonly 是编译期约束，运行时不产生校验语义，所有 readonly 修饰符统一忽略。
  *
  * @param typeNode TypeScript 类型节点
  * @param checker  类型 checker（用于解析引用类型）
@@ -219,6 +253,12 @@ export function resolveTypeNode(
     return resolveKeyOf(typeNode, checker);
   }
 
+  // readonly T（如 readonly string[] / readonly [T, U]）— 编译期约束，运行时不校验
+  // 递归解析内部类型即可，等同于去掉 readonly 修饰符
+  if (ts.isTypeOperatorNode(typeNode) && typeNode.operator === ts.SyntaxKind.ReadonlyKeyword) {
+    return resolveTypeNode(typeNode.type, checker, visited);
+  }
+
   // 引用类型：Date / 自定义 interface / Array<T> / Record<K,V> / Partial<T> 等
   if (ts.isTypeReferenceNode(typeNode)) {
     return resolveTypeReference(typeNode, checker, visited);
@@ -246,7 +286,11 @@ function resolveTypeLiteral(
       const type = member.type
         ? resolveTypeNode(member.type, checker, visited)
         : { kind: 'any' as const };
-      properties.push({ name, type, optional });
+      const constraints = extractConstraintsFromJsDoc(member, name);
+      validateConstraints(constraints, type, name);
+      properties.push(
+        constraints.length > 0 ? { name, type, optional, constraints } : { name, type, optional },
+      );
     }
     // 索引签名：[key: string]: T → 转为 record
     if (ts.isIndexSignatureDeclaration(member)) {
@@ -374,8 +418,11 @@ function resolveTypeReference(
     return { kind: 'date' };
   }
 
-  // Array<T>
-  if (typeName === 'Array' && typeNode.typeArguments?.length === 1) {
+  // Array<T> / ReadonlyArray<T> — 等同处理，readonly 是编译期约束
+  if (
+    (typeName === 'Array' || typeName === 'ReadonlyArray') &&
+    typeNode.typeArguments?.length === 1
+  ) {
     return {
       kind: 'array',
       element: resolveTypeNode(typeNode.typeArguments[0], checker, visited),
@@ -567,7 +614,12 @@ export function resolveInterfaceDeclaration(
       const type = member.type
         ? resolveTypeNode(member.type, checker, visited)
         : { kind: 'any' as const };
-      propMap.set(name, { name, type, optional });
+      const constraints = extractConstraintsFromJsDoc(member, name);
+      validateConstraints(constraints, type, name);
+      propMap.set(
+        name,
+        constraints.length > 0 ? { name, type, optional, constraints } : { name, type, optional },
+      );
     }
     // 索引签名 → record
     if (ts.isIndexSignatureDeclaration(member)) {
@@ -586,4 +638,230 @@ export function resolveInterfaceDeclaration(
   }
 
   return { kind: 'object', properties };
+}
+
+/**
+ * 数值约束标签集合（仅 number 字段）
+ */
+const NUMBER_CONSTRAINT_KINDS = new Set<TypeConstraint['kind']>([
+  'max',
+  'min',
+  'int',
+  'positive',
+  'negative',
+  'nonnegative',
+  'nonpositive',
+]);
+
+/**
+ * 长度约束标签集合（string 或 array 字段）
+ */
+const LENGTH_CONSTRAINT_KINDS = new Set<TypeConstraint['kind']>([
+  'maxLength',
+  'minLength',
+  'length',
+]);
+
+/**
+ * 字符串格式约束标签集合（仅 string 字段）
+ */
+const STRING_FORMAT_CONSTRAINT_KINDS = new Set<TypeConstraint['kind']>([
+  'regex',
+  'email',
+  'url',
+  'uuid',
+]);
+
+/**
+ * 从字段的 JSDoc 注释中提取约束标签
+ *
+ * 解析 `/** ... *\/` 块注释中的 `@max`/`@min`/`@maxLength` 等标签。
+ * 行内注释 `// @max 100` 不识别。
+ *
+ * @param node 字段节点（PropertySignature）
+ * @param fieldName 字段名，用于错误信息
+ * @returns 约束数组（无约束时返回空数组）
+ */
+function extractConstraintsFromJsDoc(
+  node: ts.PropertySignature,
+  fieldName: string,
+): TypeConstraint[] {
+  // ts.getJSDocCommentsAndTags 返回 JSDoc/JsDocTag 数组
+  const jsDocs = ts
+    .getJSDocCommentsAndTags(node)
+    .filter((entry): entry is ts.JSDoc => ts.isJSDoc(entry));
+
+  if (jsDocs.length === 0) return [];
+
+  const constraints: TypeConstraint[] = [];
+
+  for (const jsDoc of jsDocs) {
+    if (!jsDoc.tags) continue;
+    for (const tag of jsDoc.tags) {
+      const constraint = parseJsDocTag(tag, fieldName);
+      if (constraint) constraints.push(constraint);
+    }
+  }
+
+  return constraints;
+}
+
+/**
+ * 提取 JSDoc 标签后的文本注释
+ *
+ * `tag.comment` 类型为 `string | NodeArray<JSDocComment> | undefined`，
+ * 此处仅取纯文本形式（约束标签后跟的均为字面量值，不会包含 JSDocLink 等节点）。
+ *
+ * @returns 标签后的文本；无文本或非纯字符串时返回 undefined
+ */
+function getTagCommentText(tag: ts.JSDocTag): string | undefined {
+  const comment = tag.comment;
+  if (typeof comment === 'string') return comment;
+  return undefined;
+}
+
+/**
+ * 解析单个 JSDoc 标签为约束
+ *
+ * @param tag JSDocTag 节点
+ * @param fieldName 字段名，用于错误信息
+ * @returns 约束对象；非约束标签返回 null
+ */
+function parseJsDocTag(tag: ts.JSDocTag, fieldName: string): TypeConstraint | null {
+  const tagName = tag.tagName.text;
+
+  switch (tagName) {
+    // 数值约束（带值）
+    case 'max':
+    case 'min': {
+      const value = parseNumberValue(tag, fieldName, tagName);
+      return { kind: tagName, value };
+    }
+
+    // 长度约束（带值）
+    case 'maxLength':
+    case 'minLength':
+    case 'length': {
+      const value = parseNumberValue(tag, fieldName, tagName);
+      return { kind: tagName, value };
+    }
+
+    // 正则约束（带 /pattern/flags 值）
+    case 'regex':
+    case 'pattern': {
+      const text = getTagCommentText(tag);
+      if (!text) {
+        throw new SchemaExtractionError(fieldName, `@${tagName} 标签需要 /pattern/flags 形式的值`);
+      }
+      const regex = parseRegexLiteral(text.trim(), fieldName);
+      return { kind: 'regex', pattern: regex.pattern, flags: regex.flags };
+    }
+
+    // 数值约束（无值）
+    case 'int':
+    case 'positive':
+    case 'negative':
+    case 'nonnegative':
+    case 'nonpositive':
+      return { kind: tagName };
+
+    // 字符串格式约束（无值）
+    case 'email':
+    case 'url':
+    case 'uuid':
+      return { kind: tagName };
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * 解析标签后的数字值
+ *
+ * @param tag JSDocTag 节点
+ * @param fieldName 字段名，用于错误信息
+ * @param tagName 标签名，用于错误信息
+ */
+function parseNumberValue(tag: ts.JSDocTag, fieldName: string, tagName: string): number {
+  const text = getTagCommentText(tag);
+  if (!text) {
+    throw new SchemaExtractionError(fieldName, `@${tagName} 标签需要一个数字值`);
+  }
+  const trimmed = text.trim();
+  const num = Number(trimmed);
+  if (!Number.isFinite(num)) {
+    throw new SchemaExtractionError(fieldName, `@${tagName} 标签的值 "${trimmed}" 不是有效数字`);
+  }
+  return num;
+}
+
+/**
+ * 解析 /pattern/flags 形式的正则字面量
+ *
+ * @param text 标签后的文本，如 "/^[a-z]+$/i"
+ * @param fieldName 字段名，用于错误信息
+ */
+function parseRegexLiteral(text: string, fieldName: string): { pattern: string; flags?: string } {
+  // 必须以 / 开头，匹配结尾的 / 和可选 flags
+  const match = /^\/(.+)\/([gimsuy]*)$/.exec(text);
+  if (!match) {
+    throw new SchemaExtractionError(fieldName, `正则值 "${text}" 不是 /pattern/flags 形式`);
+  }
+  const [, pattern, flags] = match;
+  if (!pattern) {
+    throw new SchemaExtractionError(fieldName, `正则值 "${text}" 的 pattern 部分为空`);
+  }
+  return flags ? { pattern, flags } : { pattern };
+}
+
+/**
+ * 校验约束与字段类型是否匹配
+ *
+ * 不匹配时抛 SchemaExtractionError（复用现有错误类型）。
+ *
+ * @param constraints 约束数组
+ * @param type 字段类型
+ * @param fieldName 字段名，用于错误信息
+ */
+function validateConstraints(
+  constraints: TypeConstraint[],
+  type: RuntimeType,
+  fieldName: string,
+): void {
+  if (constraints.length === 0) return;
+
+  for (const constraint of constraints) {
+    const kind = constraint.kind;
+
+    if (NUMBER_CONSTRAINT_KINDS.has(kind)) {
+      if (type.kind !== 'number') {
+        throw new SchemaExtractionError(
+          fieldName,
+          `@${kind} 约束仅适用于 number 字段，实际为 ${type.kind}`,
+        );
+      }
+      continue;
+    }
+
+    if (LENGTH_CONSTRAINT_KINDS.has(kind)) {
+      if (type.kind !== 'string' && type.kind !== 'array') {
+        throw new SchemaExtractionError(
+          fieldName,
+          `@${kind} 约束仅适用于 string 或 array 字段，实际为 ${type.kind}`,
+        );
+      }
+      continue;
+    }
+
+    if (STRING_FORMAT_CONSTRAINT_KINDS.has(kind)) {
+      if (type.kind !== 'string') {
+        throw new SchemaExtractionError(
+          fieldName,
+          `@${kind} 约束仅适用于 string 字段，实际为 ${type.kind}`,
+        );
+      }
+      continue;
+    }
+  }
 }

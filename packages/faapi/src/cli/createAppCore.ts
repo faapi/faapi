@@ -39,8 +39,6 @@ const ROUTES_FILE = 'faapi-routes.js';
 /** FaapiConfig 的内置 key 集合（排除自定义业务配置） */
 const FAAPI_CONFIG_KEYS = new Set([
   'cors',
-  'responseFormat',
-  'errorFormat',
   'lifecycle',
   'middlewares',
   'injectors',
@@ -180,8 +178,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     appDir,
     outDir,
     cors: config?.cors ?? true,
-    responseFormat: config?.responseFormat,
-    errorFormat: config?.errorFormat,
     onError: config?.lifecycle?.onError,
     config: (config as Record<string, unknown> | null) ?? undefined,
     wsRoutes,
@@ -196,6 +192,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   const { handlerWrappers, upgradeWrappers } = await loadPlugins(config?.plugins, {
     rootDir,
     routes: sorted,
+    getRoutes: () => sorted,
     server,
     config: pluginConfig,
   });
@@ -278,6 +275,11 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           setHeader(name: string, value: string) {
             this._headers[name.toLowerCase()] = value;
           },
+          appendHeader(name: string, value: string) {
+            const key = name.toLowerCase();
+            const existing = this._headers[key];
+            this._headers[key] = existing ? `${existing}, ${value}` : value;
+          },
           writeHead(status: number, headers?: Record<string, string>) {
             this.statusCode = status;
             if (headers) {
@@ -313,6 +315,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           method?: string;
           url?: string;
           headers?: Record<string, string | undefined>;
+          socket?: { remoteAddress?: string };
         } = new PassThrough({
           read() {
             this.push(null);
@@ -325,6 +328,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           host: 'localhost',
           'content-type': body !== undefined ? 'application/json' : undefined,
         };
+        mockReq.socket = { remoteAddress: '127.0.0.1' };
         if (body !== undefined) {
           mockReq.push(JSON.stringify(body));
         }
@@ -340,9 +344,14 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       if (closed) return;
       closed = true;
 
-      // 停止接受新连接
-      server.closeIdleConnections?.();
-      server.closeAllConnections?.();
+      // 停止接受新连接（HTTP/2 server 支持，HTTP/1.1 无此方法）
+      const s = server as unknown as Record<string, unknown>;
+      if (typeof s.closeIdleConnections === 'function') {
+        (s.closeIdleConnections as () => void)();
+      }
+      if (typeof s.closeAllConnections === 'function') {
+        (s.closeAllConnections as () => void)();
+      }
 
       if (config?.lifecycle?.onClose) {
         await config.lifecycle.onClose({ rootDir, routes: sorted, server });

@@ -1,151 +1,166 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
+/**
+ * faapi Schema Server — 通过 MCP 协议以 resource 形式暴露路由 schema 供 AI 助手查询
+ *
+ * 基于 @faapi/mcp（纯手写 MCP Server SDK），不依赖 @modelcontextprotocol/sdk。
+ * 通过 faapi 插件机制挂载到 /mcp 端点，AI 助手通过 Streamable HTTP 连接。
+ *
+ * 提供两种 MCP 能力:
+ * - resources: 每个路由注册为静态 resource + by-method resourceTemplate
+ * - completion: 为 resource template 的 method 参数提供补全
+ *
+ * 不注册 tool——查 schema 是读数据(resource 语义),不是执行动作(tool 语义)。
+ * resource 还有 AI 客户端原生 UI、可缓存、支持 subscription 等 tool 做不到的优势。
+ */
+
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createMcpServer, createMcpNodeHandler, type McpServer } from '@faapi/mcp';
 import type { RouteManifest, RouteInfo, FaapiPlugin, PluginContext } from '@faapi/faapi';
 import { buildRouteSchemas } from './routeSchema';
 
+/** MCP 端点路径 */
+const MCP_PATH = '/mcp';
+
+/** 合法 HTTP 方法集合(用于 template read 校验 + completion 候选值) */
+const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'] as const;
+
 /**
- * 判断 schema server 是否应该启用
- * - FAAPI_SCHEMA=1 强制开启
- * - FAAPI_SCHEMA=0 强制关闭
- * - 未设置时：开发环境默认开启，生产环境默认关闭
+ * 从 package.json 读取版本号
+ *
+ * 通过 import.meta.url 解析 ../package.json，dev 模式下指向源文件所在包根目录，
+ * prod 模式下指向 dist/ 同级的包根目录。模块加载时一次性读取。
  */
-export function isSchemaEnabled(): boolean {
-  const envValue = process.env.FAAPI_SCHEMA;
-  if (envValue === '1' || envValue === 'true') return true;
-  if (envValue === '0' || envValue === 'false') return false;
-  // 未设置时根据 NODE_ENV 判断
-  return process.env.NODE_ENV !== 'production';
+function readPackageVersion(): string {
+  const pkgPath = fileURLToPath(new URL('../package.json', import.meta.url));
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version?: string };
+  return pkg.version ?? '0.0.0';
+}
+
+/** 构造路由 resource 的 URI */
+function routeToUri(route: { method: string; path: string }): string {
+  return `faapi://route/${route.method}${route.path}`;
 }
 
 /**
- * 创建 faapi Schema Server
- * 通过 MCP 协议暴露路由信息供 LLM 查询
+ * 创建 Schema MCP Server
  *
- * @param routes 路由清单
+ * 注册:
+ * - 每个路由一个静态 resource(URI: faapi://route/{METHOD}{PATH})
+ * - 1 个 resourceTemplate(faapi://routes/by-method/{method},按方法过滤)
+ * - 1 个 completion(为 template 的 method 参数提供候选值)
+ *
+ * @param getRoutes 返回最新路由清单的 getter（dev reloadRoutes 后返回更新后的数组）
  * @param rootDir 项目根目录（用于 AST 分析解析源文件）
  */
-export function createSchemaServer(routes: RouteManifest, rootDir: string): McpServer {
-  const server = new McpServer({
+export function createSchemaServer(getRoutes: () => RouteManifest, rootDir: string): McpServer {
+  const mcp = createMcpServer({
     name: 'faapi-schema',
-    version: '0.0.1',
+    version: readPackageVersion(),
+    // 路由变化时主动推送 notifications/resources/list_changed
+    resourcesListChanged: true,
   });
 
-  // 缓存 route schemas
+  // 缓存 route schemas：通过路由数组引用比较检测变更
+  let cachedRoutes: RouteManifest | null = null;
   let cachedSchemas: RouteInfo[] | null = null;
+  // 已注册的 resource URI 集合(变更时先 remove 再注册,避免重复注册抛错)
+  const registeredUris = new Set<string>();
+  // 标记是否已首次注册(首次无需推送 list_changed,因为没有 session)
+  let resourceRegistered = false;
 
   function getSchemas(): RouteInfo[] {
-    if (!cachedSchemas) {
-      cachedSchemas = buildRouteSchemas(routes, rootDir);
+    const currentRoutes = getRoutes();
+    if (currentRoutes !== cachedRoutes || !cachedSchemas) {
+      cachedRoutes = currentRoutes;
+      cachedSchemas = buildRouteSchemas(currentRoutes, rootDir);
+      registerResources(cachedSchemas);
+      // 非首次注册时通知客户端列表变更
+      if (resourceRegistered) {
+        mcp.notifyResourcesListChanged();
+      }
+      resourceRegistered = true;
     }
     return cachedSchemas;
   }
 
-  // Tool: 列出所有路由
-  server.tool(
-    'list_routes',
-    '列出当前 faapi 应用的所有 API 路由，包括方法、路径、是否动态路由',
-    {},
-    () => {
-      const schemas = getSchemas();
-      const routesList = schemas.map((r) => ({
-        method: r.method,
-        path: r.path,
-        isDynamic: r.isDynamic,
-        filePath: r.filePath,
-      }));
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(routesList, null, 2),
-          },
-        ],
-      };
-    },
-  );
+  /** 重新注册所有静态 resource(先清空旧的,再注册新的) */
+  function registerResources(schemas: RouteInfo[]): void {
+    // 清空旧 resource
+    for (const uri of registeredUris) {
+      mcp.removeResource(uri);
+    }
+    registeredUris.clear();
 
-  // Tool: 获取单个路由的详细 schema
-  server.tool(
-    'get_route_schema',
-    '获取指定路由的详细接口信息，包括输入参数的名称、类型、是否必填',
-    {
-      method: z.string().describe('HTTP 方法，如 GET、POST'),
-      path: z.string().describe('路由路径，如 /auth/login'),
-    },
-    ({ method, path }) => {
-      const schemas = getSchemas();
-      const route = schemas.find((r) => r.method === method.toUpperCase() && r.path === path);
-
-      if (!route) {
-        return {
-          content: [
+    // 注册新 resource
+    for (const route of schemas) {
+      const uri = routeToUri(route);
+      // 闭包捕获当前 route,避免循环变量引用问题
+      const captured = route;
+      mcp.resource(uri, {
+        name: `${route.method} ${route.path}`,
+        mimeType: 'application/json',
+        read: async () => ({
+          contents: [
             {
-              type: 'text' as const,
-              text: JSON.stringify({ error: `未找到路由 ${method.toUpperCase()} ${path}` }),
+              uri,
+              mimeType: 'application/json',
+              text: JSON.stringify(captured, null, 2),
+            },
+          ],
+        }),
+      });
+      registeredUris.add(uri);
+    }
+  }
+
+  // ─── ResourceTemplate: 按方法过滤路由 ─────────────────
+  mcp.resourceTemplate('faapi://routes/by-method/{method}', {
+    name: 'routes-by-method',
+    description: '按 HTTP 方法过滤路由,返回该方法的所有路由列表',
+    read: async (uri, params) => {
+      const method = (params.method ?? '').toUpperCase();
+      // 不合法的方法返回空数组(不抛错,避免 InternalError;客户端拿不到路由自然知道方法无效)
+      if (!HTTP_METHODS.includes(method as (typeof HTTP_METHODS)[number])) {
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: 'application/json',
+              text: '[]',
             },
           ],
         };
       }
-
+      const schemas = getSchemas().filter((r) => r.method === method);
       return {
-        content: [
+        contents: [
           {
-            type: 'text' as const,
-            text: JSON.stringify(route, null, 2),
+            uri,
+            mimeType: 'application/json',
+            text: JSON.stringify(schemas, null, 2),
           },
         ],
       };
     },
-  );
+  });
 
-  // Tool: 获取所有路由的完整 schema（类似 OpenAPI）
-  server.tool(
-    'get_api_schema',
-    '获取当前应用所有接口的完整 schema，类似 OpenAPI 规范，包含每个路由的输入参数定义',
-    {},
-    () => {
-      const schemas = getSchemas();
-      const apiSchema: Record<string, unknown> = {};
-
-      for (const route of schemas) {
-        const key = `${route.method} ${route.path}`;
-        apiSchema[key] = {
-          method: route.method,
-          path: route.path,
-          isDynamic: route.isDynamic,
-          inputs: route.inputs.map((input) => ({
-            source: input.source,
-            schemaName: input.schemaName,
-            properties: input.properties,
-          })),
-        };
-      }
-
+  // ─── Completion: method 参数补全 ──────────────────────
+  mcp.completion(
+    { type: 'ref/resource', uri: 'faapi://routes/by-method/{method}' },
+    'method',
+    (value) => {
+      const upper = value.toUpperCase();
       return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(apiSchema, null, 2),
-          },
-        ],
+        values: HTTP_METHODS.filter((m) => m.startsWith(upper)),
       };
     },
   );
 
-  return server;
-}
+  // 触发首次 schemas 构建 + resource 注册
+  // 必须在返回前调用,否则 resources/list 会返回空(懒加载不会在 list 时触发)
+  getSchemas();
 
-/**
- * 启动 Schema Server（stdio 模式）
- *
- * @param routes 路由清单
- * @param rootDir 项目根目录（用于 AST 分析解析源文件）
- */
-export async function startSchemaServer(routes: RouteManifest, rootDir: string): Promise<void> {
-  const server = createSchemaServer(routes, rootDir);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return mcp;
 }
 
 /**
@@ -157,16 +172,24 @@ export async function startSchemaServer(routes: RouteManifest, rootDir: string):
  *   plugins: ['@faapi/schema'],
  * } satisfies FaapiConfig;
  * ```
+ *
+ * 插件在 /mcp 路径挂载 MCP 端点，AI 助手通过 Streamable HTTP 连接。
  */
 export default {
   name: '@faapi/schema',
   setup(ctx: PluginContext) {
-    if (!isSchemaEnabled()) {
-      console.log('- Schema server disabled (FAAPI_SCHEMA=0 or production mode)');
-      return;
-    }
-    console.log('- Schema server enabled (stdio)');
-    // startSchemaServer 是异步的，但不阻塞启动流程
-    void startSchemaServer(ctx.routes, ctx.rootDir);
+    const mcp = createSchemaServer(ctx.getRoutes, ctx.rootDir);
+    const nodeHandler = createMcpNodeHandler(mcp);
+
+    // 拦截 /mcp 路径的请求，交给 MCP handler 处理
+    ctx.wrapHandler?.((original) => (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if (url.pathname === MCP_PATH) {
+        return nodeHandler(req, res);
+      }
+      return original(req, res);
+    });
+
+    console.log(`- Schema server enabled at ${MCP_PATH} (Streamable HTTP)`);
   },
 } satisfies FaapiPlugin;

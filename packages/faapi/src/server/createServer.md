@@ -13,7 +13,7 @@
 - 错误处理和响应发送
 - CORS 作为标准中间件走洋葱模型（preflight 拦截、非 preflight 附加头后放行）
 - onError 钩子：错误响应发出后触发，用于副作用（日志/告警），不修改已发出的响应（参考 Fastify onError 语义）
-- 错误兜底链：errorFormat 返回 null/未处理或抛错 → 内置 formatErrorResponse 兜底 → 仍失败则最简 500 JSON
+- 错误兜底链：全局错误中间件 try/catch 未拦截 → 内置 formatErrorResponse 兜底 → 仍失败则最简 500 JSON
 
 ## 相关模块
 

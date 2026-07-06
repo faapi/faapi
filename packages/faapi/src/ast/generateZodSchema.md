@@ -71,6 +71,7 @@ function generateZodSchemaSource(
 function runtimeTypeToZodExpression(
   type: RuntimeType,
   ctx: CodeGenContext,
+  constraints?: TypeConstraint[],
 ): string
 
 /** 从 RuntimeType 收集所有命名类型（ref） */
@@ -94,6 +95,22 @@ function generateHelpersFileSource(): string
 /** 检测代码是否引用了 coerceNumber / coerceBoolean 变量（决定是否生成 faapi-helpers.js） */
 function usesCoerceHelpers(code: string): boolean
 ```
+
+## 字段级 JSDoc 约束（TypeConstraint）
+
+`PropertyType.constraints`（来自 [resolveTypeNode](./resolveTypeNode) 提取的 JSDoc 标签）会被转为 zod 链式方法追加到字段表达式上。
+
+| 约束 kind | zod 链式方法 | 适用类型 |
+|----------|-------------|---------|
+| `max` / `min` | `.max(N)` / `.min(N)` | number |
+| `int` / `positive` / `negative` / `nonnegative` / `nonpositive` | `.int()` 等 | number |
+| `maxLength` / `minLength` / `length` | `.max(N)` / `.min(N)` / `.length(N)` | string / array |
+| `regex` | `.regex(new RegExp(pattern, flags))` | string |
+| `email` / `url` / `uuid` | `.email()` 等 | string |
+
+**coerce 与约束的组合**：coerce 模式下 number/boolean 表达式为 `z.preprocess(fn, z.X())`,约束需作用在内部的 `z.X()` 上而非 preprocess 外壳。`runtimeTypeToZodExpression` 通过 `applyConstraints` 先在基础表达式上追加约束,再由 `wrapCoercePreprocess` 包裹 preprocess,生成形如 `z.preprocess(coerceNumber, z.number().min(1).max(100))` 的代码。
+
+> 约束标签的提取与类型匹配校验在 [resolveTypeNode](./resolveTypeNode) 阶段完成,本模块只负责按 kind 生成链式调用。
 
 `exportName` 控制导出的 schema 变量名（默认用 `typeInfo.name`）。`validateInput` 按 `${schemaName}Schema` 查找导出，当接口名与 schemaName 不一致时（如接口名 `Query` 但 schemaName 为 `GETQuery`），需传入 `exportName` 保证一致。
 

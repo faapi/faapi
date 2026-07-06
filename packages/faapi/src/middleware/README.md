@@ -27,6 +27,7 @@ export type InjectorMap = Record<string, Injector>;
 | 模块 | 说明 |
 | --- | --- |
 | [cors.ts](./cors.ts) | CORS 处理，支持 origin 反射、预检请求、自定义头 |
+| [helmet.ts](./helmet.ts) | 安全响应头（CSP/X-Frame-Options/HSTS 等 13 个），通过 `faapi.config.ts` 的 `helmet` 选项配置 |
 | [logger.ts](./logger.ts) | 请求日志，格式：`GET /api/users 200 12ms` |
 
 ## middlewares.ts 文件格式
@@ -143,7 +144,7 @@ mw1(await next 之前) → mw2(await next 之前) → ... → 注入器（按需
 
 ## 注入器按需执行
 
-注入器只对 handler 声明的参数执行，避免无谓计算。内置注入类型（query、body、headers、params、context、ctx、cookies、files、fields）优先于注入器，不会被注入器覆盖。
+注入器只对 handler 声明的参数执行，避免无谓计算。内置注入类型（query、body、headers、params、context、ctx、cookies、ip、files、fields）优先于注入器，不会被注入器覆盖。
 
 ```ts
 // handler 只需要 db 参数，所以只有 db 注入器会执行
