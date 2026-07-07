@@ -16,7 +16,7 @@ const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
 
 let server: Server | null = null;
 let wsBaseUrl: string;
-let schemaOutDir: string;
+let schemaDist: string;
 
 /**
  * 消息队列：避免 once('message') 与服务端 onOpen 推送的竞态。
@@ -102,14 +102,13 @@ async function connect(pathname: string): Promise<{ ws: WebSocket; queue: Messag
 beforeAll(async () => {
   const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
-  // 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + outDir 计算 zod.js 路径）
-  schemaOutDir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-ws-schema-'));
-  await generateSchemaFiles(sorted, FIXTURES_DIR, '.', schemaOutDir);
+  // 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + dist 计算 zod.js 路径）
+  schemaDist = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-ws-schema-'));
+  await generateSchemaFiles(sorted, FIXTURES_DIR, schemaDist);
   const { server: srv } = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,
-    appDir: '.',
-    outDir: schemaOutDir,
+    dist: schemaDist,
     wsRoutes,
   });
 
@@ -141,8 +140,8 @@ afterAll(async () => {
     });
     server = null;
   }
-  if (schemaOutDir) {
-    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  if (schemaDist) {
+    await fs.rm(schemaDist, { recursive: true, force: true });
   }
   invalidateSchemaCache();
 });

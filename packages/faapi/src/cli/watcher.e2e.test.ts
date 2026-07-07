@@ -23,20 +23,20 @@ import { invalidateSchemaCache } from '../validator/validateInput';
  */
 describe('watcher 热替换', () => {
   let tempDir: string;
-  let savedOutDir: string | undefined;
+  let savedDist: string | undefined;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `faapi-watcher-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
-    savedOutDir = process.env.FAAPI_OUT_DIR;
-    process.env.FAAPI_OUT_DIR = '.faapi/dev';
+    savedDist = process.env.FAAPI_DIST;
+    process.env.FAAPI_DIST = '.faapi/dev';
     invalidateMiddlewareCache();
     invalidateProgramCache();
   });
 
   afterEach(async () => {
-    if (savedOutDir === undefined) delete process.env.FAAPI_OUT_DIR;
-    else process.env.FAAPI_OUT_DIR = savedOutDir;
+    if (savedDist === undefined) delete process.env.FAAPI_DIST;
+    else process.env.FAAPI_DIST = savedDist;
     invalidateSchemaCache();
     invalidateMiddlewareCache();
     invalidateProgramCache();
@@ -49,18 +49,13 @@ describe('watcher 热替换', () => {
     writeFileSync(handlerPath, `export function GET() { return { hello: 'world' }; }\n`, 'utf-8');
 
     // 编译产物三元组
-    await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir: '.faapi/dev' });
-    await compileConfig({ rootDir: tempDir, outDir: '.faapi/dev' });
-    const { routes, wsRoutes } = await scanRoutes(
-      tempDir,
-      ['src/api/**/*.ts'],
-      'src',
-      '.faapi/dev',
-    );
+    await compileDevRoutes({ rootDir: tempDir, dist: '.faapi/dev' });
+    await compileConfig({ rootDir: tempDir, dist: '.faapi/dev' });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi/dev');
     const sorted = sortRoutes(routes);
-    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'src', '.faapi/dev');
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, '.faapi/dev');
     await writeRoutesModule(serialized, join(tempDir, '.faapi/dev', 'faapi-routes.js'));
-    await generateSchemaFiles(sorted, tempDir, 'src', '.faapi/dev');
+    await generateSchemaFiles(sorted, tempDir, '.faapi/dev');
 
     // 启动 dev 应用
     const app: DevApp = await createDevApp({ rootDir: tempDir });
@@ -70,7 +65,7 @@ describe('watcher 热替换', () => {
     await app.listen(0);
 
     // 启动 watcher
-    startWatcher({ rootDir: tempDir, appDir: 'src', app });
+    startWatcher({ rootDir: tempDir, app, devDist: '.faapi/dev' });
 
     // 等 chokidar 初始化
     await new Promise((r) => setTimeout(r, 600));
@@ -94,24 +89,19 @@ describe('watcher 热替换', () => {
     mkdirSync(join(handlerPath, '..'), { recursive: true });
     writeFileSync(handlerPath, `export function GET() { return { ok: true }; }\n`, 'utf-8');
 
-    await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir: '.faapi/dev' });
-    await compileConfig({ rootDir: tempDir, outDir: '.faapi/dev' });
-    const { routes, wsRoutes } = await scanRoutes(
-      tempDir,
-      ['src/api/**/*.ts'],
-      'src',
-      '.faapi/dev',
-    );
+    await compileDevRoutes({ rootDir: tempDir, dist: '.faapi/dev' });
+    await compileConfig({ rootDir: tempDir, dist: '.faapi/dev' });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi/dev');
     const sorted = sortRoutes(routes);
-    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'src', '.faapi/dev');
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, '.faapi/dev');
     await writeRoutesModule(serialized, join(tempDir, '.faapi/dev', 'faapi-routes.js'));
-    await generateSchemaFiles(sorted, tempDir, 'src', '.faapi/dev');
+    await generateSchemaFiles(sorted, tempDir, '.faapi/dev');
 
     const app: DevApp = await createDevApp({ rootDir: tempDir });
     const reloadSpy = vi.spyOn(app, 'reloadRoutes').mockImplementation(async () => {});
     await app.listen(0);
 
-    startWatcher({ rootDir: tempDir, appDir: 'src', app });
+    startWatcher({ rootDir: tempDir, app, devDist: '.faapi/dev' });
     await new Promise((r) => setTimeout(r, 600));
 
     // 删除 handler.ts

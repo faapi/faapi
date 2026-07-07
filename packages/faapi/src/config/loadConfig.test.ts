@@ -46,7 +46,7 @@ describe('loadConfig', () => {
     expect(result).toBeNull();
   });
 
-  it('<outDir>/faapi-config.js 存在时直接 import 产物', async () => {
+  it('<dist>/faapi-config.js 存在时直接 import 产物', async () => {
     const dir = makeDir({
       'dist/faapi-config.js': `export default { port: 9999, db: { host: 'prod' } };\n`,
     });
@@ -57,7 +57,7 @@ describe('loadConfig', () => {
     expect(result!.db).toEqual({ host: 'prod' });
   });
 
-  it('可指定任意 outDir（如 .faapi/dev）', async () => {
+  it('可指定任意 dist（如 .faapi/dev）', async () => {
     const dir = makeDir({
       '.faapi/dev/faapi-config.js': `export default { port: 3000 };\n`,
     });

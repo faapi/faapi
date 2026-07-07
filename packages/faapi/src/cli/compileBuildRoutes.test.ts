@@ -8,7 +8,7 @@ import { compileBuildRoutes } from './compileBuildRoutes';
  * compileBuildRoutes 测试：build 模式逐文件编译（与 dev 一致）
  *
  * 覆盖：
- * - 全量编译产物结构（打平 appDir 前缀）
+ * - 全量编译产物结构（打平 src 前缀）
  * - 相对 import 加 .js 后缀（aliasPlugin 行为）
  * - utils.ts 作为独立产物存在（不 bundle inline）
  * - process.env.NODE_ENV 编译期替换为 "production" + 死分支删除（define + minifySyntax）
@@ -36,11 +36,11 @@ describe('compileBuildRoutes', () => {
     writeFileSync(abs, content, 'utf-8');
   }
 
-  it('全量编译 .ts → .js，产物打平 appDir 前缀', async () => {
+  it('全量编译 .ts → .js，产物打平 src 前缀', async () => {
     writeFile('src/api/hello/handler.ts', `export function GET() { return { ok: true }; }\n`);
     writeFile('src/api/user/handler.ts', `export function GET() { return { ok: true }; }\n`);
 
-    await compileBuildRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    await compileBuildRoutes({ rootDir: tempDir, dist: 'dist' });
 
     expect(existsSync(join(tempDir, 'dist/api/hello/handler.js'))).toBe(true);
     expect(existsSync(join(tempDir, 'dist/api/user/handler.js'))).toBe(true);
@@ -56,7 +56,7 @@ describe('compileBuildRoutes', () => {
 export function GET() { return x; }\n`,
     );
 
-    await compileBuildRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    await compileBuildRoutes({ rootDir: tempDir, dist: 'dist' });
 
     const handler = readFileSync(join(tempDir, 'dist/api/hello/handler.js'), 'utf-8');
     // 相对 import 被重写为 .js 后缀（POSIX 风格）
@@ -76,7 +76,7 @@ export function unusedHelper() { return 'unused'; }\n`,
 export function GET() { return usedHelper(); }\n`,
     );
 
-    await compileBuildRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    await compileBuildRoutes({ rootDir: tempDir, dist: 'dist' });
 
     // utils.ts 作为独立产物存在（bundle:false 不 inline）
     expect(existsSync(join(tempDir, 'dist/utils.js'))).toBe(true);
@@ -97,7 +97,7 @@ export function GET() { return usedHelper(); }\n`,
 }\n`,
     );
 
-    await compileBuildRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    await compileBuildRoutes({ rootDir: tempDir, dist: 'dist' });
 
     const handler = readFileSync(join(tempDir, 'dist/api/hello/handler.js'), 'utf-8');
     // process.env.NODE_ENV 被 define 替换为 "production"，产物中不含原始表达式
@@ -121,7 +121,7 @@ export function GET() { return shared(); }\n`,
 export function GET() { return shared(); }\n`,
     );
 
-    await compileBuildRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    await compileBuildRoutes({ rootDir: tempDir, dist: 'dist' });
 
     // 两个 handler.js 都存在
     expect(existsSync(join(tempDir, 'dist/api/a/handler.js'))).toBe(true);
@@ -140,8 +140,7 @@ export function GET() { return shared(); }\n`,
 
     await compileBuildRoutes({
       rootDir: tempDir,
-      appDir: 'src',
-      outDir: 'dist',
+      dist: 'dist',
       files: [join(tempDir, 'src/api/a/handler.ts')],
     });
 
@@ -151,7 +150,7 @@ export function GET() { return shared(); }\n`,
   });
 
   it('无 .ts 文件时返回空结果', async () => {
-    const result = await compileBuildRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    const result = await compileBuildRoutes({ rootDir: tempDir, dist: 'dist' });
     expect(result.compiledFiles).toEqual([]);
   });
 });

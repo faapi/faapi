@@ -20,7 +20,7 @@ import type { LoadedMiddlewareBundle } from '../middleware/loadMiddlewares';
  * 序列化路由记录（可写入 JS 模块，无函数引用）
  *
  * build 时生成，start 时读取。filePath/middlewarePaths 已转为 prd 形式
- * （打平 appDir 前缀 + prodDir 前缀 + .js）。
+ * （打平 src/ 前缀 + dist 前缀 + .js）。
  */
 export interface SerializedRouteRecord {
   method: HttpMethod;
@@ -48,49 +48,46 @@ export interface SerializedRouteManifest {
 }
 
 /**
- * 把源码 filePath（src/api/hello/handler.ts）转为产物路径（dist/api/hello/handler.js）
+ * 把源码 filePath（src/api/hello/handler.ts）转为产物路径（.faapi/build/api/hello/handler.js）
  *
- * 产物结构打平 appDir 前缀：去掉 `src/`，加 prodDir 前缀，.ts → .js。
+ * 产物结构打平 src/ 前缀：去掉 `src/`，加 dist 前缀，.ts → .js。
  *
  * @param filePath 源码相对路径
- * @param appDir app 目录前缀（如 src，'.' 表示无前缀）
- * @param prodDir 产物目录（dist 或 .faapi/dev）
+ * @param dist 产物目录（.faapi/build 或 .faapi/dev）
  */
-function toProdFilePath(filePath: string, appDir: string, prodDir: string): string {
+function toProdFilePath(filePath: string, dist: string): string {
   let rel = filePath.replace(/\\/g, '/');
-  // 去掉 appDir 前缀（打平产物结构）
-  if (appDir !== '.' && rel.startsWith(`${appDir}/`)) {
-    rel = rel.slice(appDir.length + 1);
+  // 去掉 src/ 前缀（打平产物结构）
+  if (rel.startsWith('src/')) {
+    rel = rel.slice(4);
   }
   const jsPath = rel.replace(/\.ts$/, '.js');
-  return jsPath.startsWith(`${prodDir}/`) ? jsPath : `${prodDir}/${jsPath}`;
+  return jsPath.startsWith(`${dist}/`) ? jsPath : `${dist}/${jsPath}`;
 }
 
 /**
  * 序列化路由清单为可写入 JS 模块的结构
  *
- * - filePath 转为产物路径（打平 appDir 前缀 + prodDir 前缀 + .js）
+ * - filePath 转为产物路径（打平 src/ 前缀 + dist 前缀 + .js）
  * - middlewares/injectors 不序列化（函数无法序列化），改为 middlewarePaths（中间件文件绝对路径列表）
  * - middlewarePaths 已排序（根在前，路由目录在后），start 时按序加载即可还原洋葱模型
  *
  * @param rootDir 项目根目录
- * @param appDir app 目录前缀（如 src，'.' 表示无前缀）
- * @param prodDir 产物目录（dist 或 .faapi/dev），用于转换 filePath 和查找中间件
+ * @param dist 产物目录（.faapi/build 或 .faapi/dev），用于转换 filePath 和查找中间件
  */
 export function serializeRoutes(
   routes: RouteManifest,
   wsRoutes: WsRouteManifest,
   rootDir: string,
-  appDir: string = 'src',
-  prodDir: string = 'dist',
+  dist: string = '.faapi/build',
 ): SerializedRouteManifest {
   const serialize = <T extends RouteRecord | WsRouteRecord>(
     route: T,
   ): T extends RouteRecord ? SerializedRouteRecord : SerializedWsRouteRecord => {
-    const middlewarePaths = extractMiddlewarePaths(route.filePath, rootDir, appDir, prodDir);
+    const middlewarePaths = extractMiddlewarePaths(route.filePath, rootDir, dist);
     const serialized = {
       urlPath: route.urlPath,
-      filePath: toProdFilePath(route.filePath, appDir, prodDir),
+      filePath: toProdFilePath(route.filePath, dist),
       paramNames: route.paramNames,
       isDynamic: route.isDynamic,
       isCatchAll: route.isCatchAll,
@@ -116,15 +113,9 @@ export function serializeRoutes(
  *
  * @param routeFilePath 源码相对路径（如 src/api/hello/handler.ts）
  * @param rootDir 项目根目录
- * @param appDir app 目录前缀（如 src，'.' 表示无前缀）
- * @param prodDir 产物目录（dist 或 .faapi/dev）
+ * @param dist 产物目录（.faapi/build 或 .faapi/dev）
  */
-function extractMiddlewarePaths(
-  routeFilePath: string,
-  rootDir: string,
-  appDir: string,
-  prodDir: string,
-): string[] {
+function extractMiddlewarePaths(routeFilePath: string, rootDir: string, dist: string): string[] {
   const routeDir = path.dirname(routeFilePath);
   const resolvedRoot = path.resolve(rootDir);
 
@@ -142,14 +133,14 @@ function extractMiddlewarePaths(
         ? absJsPath
         : null;
     if (absMwPath) {
-      // 转为产物形式绝对路径（打平 appDir 前缀）
+      // 转为产物形式绝对路径（打平 src/ 前缀）
       const relMwPath = path.relative(rootDir, absMwPath);
-      const prodAbsPath = path.resolve(rootDir, toProdFilePath(relMwPath, appDir, prodDir));
+      const prodAbsPath = path.resolve(rootDir, toProdFilePath(relMwPath, dist));
       paths.push(prodAbsPath);
     }
     if (currentDir === resolvedRoot) break;
-    // 不超出 appDir 目录（避免向上查到非源码目录）
-    // appDir 通常是 src，到达 src 的父目录（rootDir）时停止
+    // 不超出 src 目录（避免向上查到非源码目录）
+    // 到达 src 的父目录（rootDir）时停止
     const parentDir = path.dirname(currentDir);
     if (parentDir === currentDir) break;
     currentDir = parentDir;

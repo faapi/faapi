@@ -183,7 +183,7 @@ describe('Injection E2E', () => {
 
   describe('完整流程：扫描 → 分析 → 注入', () => {
     it('扫描路由并分析所有 handler', async () => {
-      const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts'], 'app');
+      const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
 
       expect(sorted.length).toBeGreaterThan(0);

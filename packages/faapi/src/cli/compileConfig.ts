@@ -97,14 +97,7 @@ export interface CompileConfigOptions {
   /** 项目根目录 */
   rootDir: string;
   /** 输出目录（如 dist） */
-  outDir: string;
-  /**
-   * app 目录前缀（如 'src'），默认 'src'。
-   *
-   * 用于 config 引用项目模块时的 appDir 前缀剥离：config 文件（位于 rootDir）引用
-   * appDir 内模块时，重写为剥离前缀的产物路径，使 config 与 routes 共享同一份模块产物。
-   */
-  appDir?: string;
+  dist: string;
 }
 
 export interface CompileConfigResult {
@@ -122,7 +115,7 @@ const SPEC_RE = /(\bfrom\s*|import\s*\(\s*)(['"])([^'"]+)\2/g;
 /**
  * 从源文件内容中提取所有相对 specifier（./xxx 或 ../xxx）
  *
- * 用于递归收集 config 引用的项目模块，确保它们被编译到 outDir，
+ * 用于递归收集 config 引用的项目模块，确保它们被编译到 dist，
  * 使 config 产物的 import 在运行时能解析到实际文件。
  */
 function extractRelativeSpecifiers(source: string): string[] {
@@ -139,24 +132,22 @@ function extractRelativeSpecifiers(source: string): string[] {
 }
 
 /**
- * 递归收集文件的所有相对 import（含传递依赖），分类为 appDir 内 / appDir 外
+ * 递归收集文件的所有相对 import（含传递依赖），分类为 src 内 / src 外
  *
- * 用于 compileConfig 步骤 1：编译 config 源 + 其引用的项目模块到 outDir。
- * - appDir 内文件：用 outbase=rootDir/appDir 编译（打平前缀，与 compileDevRoutes 一致）
- * - appDir 外文件：用 outbase=rootDir 编译（保留相对 rootDir 的结构）
+ * 用于 compileConfig 步骤 1：编译 config 源 + 其引用的项目模块到 dist。
+ * - src 内文件：用 outbase=rootDir/src 编译（打平前缀，与 compileDevRoutes 一致）
+ * - src 外文件：用 outbase=rootDir 编译（保留相对 rootDir 的结构）
  *
  * @param entryFiles 起始文件（绝对路径）
  * @param rootDir 项目根目录
- * @param appDir app 目录前缀
- * @returns 收集到的文件，分为 appDir 内和 appDir 外两组（绝对路径，去重）
+ * @returns 收集到的文件，分为 src 内和 src 外两组（绝对路径，去重）
  */
 async function collectRelativeImports(
   entryFiles: string[],
   rootDir: string,
-  appDir: string,
 ): Promise<{ appDirFiles: string[]; nonAppDirFiles: string[] }> {
-  // 用 realpath 规范化 appDirAbs，兼容 macOS 符号链接（esbuild 传入的路径已是 realpath）
-  const appDirAbs = toRealPath(path.resolve(rootDir, appDir));
+  // 用 realpath 规范化 src 绝对路径，兼容 macOS 符号链接（esbuild 传入的路径已是 realpath）
+  const appDirAbs = toRealPath(path.resolve(rootDir, 'src'));
   const visited = new Set<string>();
   const appDirFiles = new Set<string>();
   const nonAppDirFiles = new Set<string>();
@@ -228,17 +219,17 @@ function createExternalRelativePlugin(): Plugin {
  * 采用两步编译，使 config 引用的项目模块与 routes 共享同一份运行时对象（instanceof 跨边界生效）：
  *
  * **步骤 1：逐文件编译 config 源文件（`bundle: false`）**
- * - 编译 `faapi.config.ts`（和 `faapi.config.{env}.ts`）→ `outDir/faapi.config.js`
- * - 递归收集 config 引用的项目模块，按 appDir 内/外分别编译：
- *   - appDir 内：outbase=rootDir/appDir（打平前缀，与 compileDevRoutes 一致）→ `outDir/lib/errors.js`
- *   - appDir 外：outbase=rootDir → `outDir/base.js`
- * - aliasPlugin 重写 specifier：相对路径加 .js 后缀；config 引用 appDir 内模块时剥离前缀
+ * - 编译 `faapi.config.ts`（和 `faapi.config.{env}.ts`）→ `dist/faapi.config.js`
+ * - 递归收集 config 引用的项目模块，按 src 内/外分别编译：
+ *   - src 内：outbase=rootDir/src（打平前缀，与 compileDevRoutes 一致）→ `dist/lib/errors.js`
+ *   - src 外：outbase=rootDir → `dist/base.js`
+ * - aliasPlugin 重写 specifier：相对路径加 .js 后缀；config 引用 src 内模块时剥离前缀
  *
  * **步骤 2：编译合并入口（`bundle: true` + external 相对路径）**
  * - 生成虚拟入口源码（import 已编译的 config 产物 + 内联 deepMerge + export 合并结果）
  * - 相对路径 import 标记为 external（不 inline config 产物）
  * - 第三方依赖（`packages: 'external'`）也保持 external
- * - 产物 `outDir/faapi-config.js` 保留 `import base from './faapi.config.js'`
+ * - 产物 `dist/faapi-config.js` 保留 `import base from './faapi.config.js'`
  *
  * 产物由 `loadConfig` 在运行时统一 import。env 在编译阶段固化，运行时不读源码、不现场编译、
  * 不按 env 合并。配置文件中的 `process.env.*` 表达式保留（不传 define），运行时读取环境变量。
@@ -247,7 +238,7 @@ function createExternalRelativePlugin(): Plugin {
  * 确保与 `loadConfig.deepMerge` 运行时实现完全一致。
  */
 export async function compileConfig(options: CompileConfigOptions): Promise<CompileConfigResult> {
-  const { rootDir, outDir, appDir = 'src' } = options;
+  const { rootDir, dist } = options;
 
   const baseConfigName = findBaseConfig(rootDir);
   if (!baseConfigName) {
@@ -258,8 +249,8 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
   const env = getEnv();
   const envConfigName = findEnvConfig(rootDir, env);
 
-  const absOutDir = path.resolve(rootDir, outDir);
-  await fs.promises.mkdir(absOutDir, { recursive: true });
+  const absDist = path.resolve(rootDir, dist);
+  await fs.promises.mkdir(absDist, { recursive: true });
 
   // 收集 config 入口文件（绝对路径）
   const configEntryPoints: string[] = [path.resolve(rootDir, baseConfigName)];
@@ -269,22 +260,18 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
 
   // 步骤 1：逐文件编译 config 源 + 项目模块
   // 递归收集 config 引用的项目模块
-  const { appDirFiles, nonAppDirFiles } = await collectRelativeImports(
-    configEntryPoints,
-    rootDir,
-    appDir,
-  );
+  const { appDirFiles, nonAppDirFiles } = await collectRelativeImports(configEntryPoints, rootDir);
 
   const esbuild = await import('esbuild');
-  const aliasPlugins = buildAliasPlugins(rootDir, appDir);
+  const aliasPlugins = buildAliasPlugins(rootDir);
 
-  // 步骤 1a：编译 config 源 + appDir 外文件（outbase=rootDir）
-  // config 文件位于 rootDir，产物位于 outDir 根（如 outDir/faapi.config.js）
-  // appDir 外文件（如 rootDir/base.ts）产物位于 outDir/base.js
+  // 步骤 1a：编译 config 源 + src 外文件（outbase=rootDir）
+  // config 文件位于 rootDir，产物位于 dist 根（如 dist/faapi.config.js）
+  // src 外文件（如 rootDir/base.ts）产物位于 dist/base.js
   const step1aEntries = [...configEntryPoints, ...nonAppDirFiles];
   await esbuild.build({
     entryPoints: step1aEntries,
-    outdir: absOutDir,
+    outdir: absDist,
     outbase: rootDir,
     bundle: false,
     platform: 'node',
@@ -295,13 +282,13 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
     logLevel: 'silent',
   });
 
-  // 步骤 1b：编译 appDir 内文件（outbase=rootDir/appDir，打平前缀）
-  // 与 compileDevRoutes 一致的 outbase，确保产物路径相同（如 outDir/lib/errors.js）
+  // 步骤 1b：编译 src 内文件（outbase=rootDir/src，打平前缀）
+  // 与 compileDevRoutes 一致的 outbase，确保产物路径相同（如 dist/lib/errors.js）
   if (appDirFiles.length > 0) {
-    const appOutbase = appDir === '.' ? rootDir : path.resolve(rootDir, appDir);
+    const appOutbase = path.resolve(rootDir, 'src');
     await esbuild.build({
       entryPoints: appDirFiles,
-      outdir: absOutDir,
+      outdir: absDist,
       outbase: appOutbase,
       bundle: false,
       platform: 'node',
@@ -330,9 +317,9 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
 
   const entryCode = [...imports, DEEP_MERGE_SOURCE, exportDefault].join('\n');
 
-  const outputFile = path.resolve(absOutDir, 'faapi-config.js');
+  const outputFile = path.resolve(absDist, 'faapi-config.js');
   await esbuild.build({
-    stdin: { contents: entryCode, resolveDir: absOutDir, loader: 'ts' },
+    stdin: { contents: entryCode, resolveDir: absDist, loader: 'ts' },
     outfile: outputFile,
     bundle: true,
     format: 'esm',

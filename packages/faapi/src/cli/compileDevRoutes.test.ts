@@ -8,7 +8,7 @@ import { compileDevRoutes } from './compileDevRoutes';
  * compileDevRoutes 测试：dev 模式逐文件编译
  *
  * 覆盖：
- * - 默认全量编译产物结构（打平 appDir 前缀）
+ * - 默认全量编译产物结构（打平 src 前缀）
  * - files 选项增量编译
  */
 describe('compileDevRoutes', () => {
@@ -33,11 +33,11 @@ describe('compileDevRoutes', () => {
     writeFileSync(abs, content, 'utf-8');
   }
 
-  it('全量编译 .ts → .js，产物打平 appDir 前缀', async () => {
+  it('全量编译 .ts → .js，产物打平 src 前缀', async () => {
     writeFile('src/api/hello/handler.ts', `export function GET() { return { ok: true }; }\n`);
     writeFile('src/api/user/handler.ts', `export function GET() { return { ok: true }; }\n`);
 
-    await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
 
     expect(existsSync(join(tempDir, 'dist/api/hello/handler.js'))).toBe(true);
     expect(existsSync(join(tempDir, 'dist/api/user/handler.js'))).toBe(true);
@@ -51,8 +51,7 @@ describe('compileDevRoutes', () => {
 
     await compileDevRoutes({
       rootDir: tempDir,
-      appDir: 'src',
-      outDir: 'dist',
+      dist: 'dist',
       files: [join(tempDir, 'src/api/a/handler.ts')],
     });
 
@@ -62,7 +61,7 @@ describe('compileDevRoutes', () => {
   });
 
   it('无 .ts 文件时返回空结果', async () => {
-    const result = await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    const result = await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
     expect(result.compiledFiles).toEqual([]);
   });
 });

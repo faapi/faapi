@@ -27,14 +27,14 @@ export interface InjectResponse {
   body: unknown;
 }
 
-/** 默认产物目录（prod 模式） */
-const DEFAULT_OUT_DIR = 'dist';
-/** 默认源码目录前缀 */
-const DEFAULT_APP_DIR = 'src';
+/** 默认产物目录（prod 模式，对应 `faapi build` 默认输出到 `.faapi/build`） */
+const DEFAULT_DIST = '.faapi/build';
 /** 默认端口 */
 const DEFAULT_PORT = 3000;
 /** 路由清单文件名（build/dev 启动时生成） */
 const ROUTES_FILE = 'faapi-routes.js';
+/** 路由源码目录（写死为 src，路由 .ts 文件位于 src/api/ 下） */
+const PATTERNS = ['src/api/**/*.ts'];
 
 /** FaapiConfig 的内置 key 集合（排除自定义业务配置） */
 const FAAPI_CONFIG_KEYS = new Set([
@@ -57,10 +57,8 @@ function isFaapiConfigKey(key: string): boolean {
 export interface CreateAppOptions {
   /** 项目根目录，默认 process.cwd() */
   rootDir?: string;
-  /** 源码目录前缀，覆盖环境变量 FAAPI_APP_DIR，默认 'src' */
-  appDir?: string;
-  /** 产物输出目录，覆盖环境变量 FAAPI_OUT_DIR，默认 'dist' */
-  outDir?: string;
+  /** 产物输出目录（实际目录，如 .faapi/build 或 .faapi/dev），覆盖环境变量 FAAPI_DIST，默认 '.faapi/build' */
+  dist?: string;
   /** 端口号，也可在 listen() 时传入；默认环境变量 PORT 或 3000 */
   port?: number;
 }
@@ -96,10 +94,8 @@ export interface AppBase {
 export interface AppContext {
   /** 项目根目录 */
   rootDir: string;
-  /** 源码目录前缀 */
-  appDir: string;
   /** 产物目录 */
-  outDir: string;
+  dist: string;
   /** 扫描 patterns（scanRoutes 用） */
   patterns: string[];
   /** Node.js Server 实例（未 listen） */
@@ -122,11 +118,11 @@ export interface AppContext {
  * 完成：配置加载 → 路由清单水合 → 创建 server → 插件加载。
  * 返回 AppBase（listen/close）+ AppContext（供 dev 扩展 reloadRoutes）。
  *
- * outDir 由 `process.env.FAAPI_OUT_DIR` 决定：
- * - `faapi dev` 启动时设为 `.faapi/dev` → 读 dev 产物
- * - `node dist/main` 不设 → 默认 `dist`，读 prod 产物
+ * dist 由 `process.env.FAAPI_DIST` 决定：
+ * - `faapi dev` 启动时设为 `<rootDist>/dev`（默认 `.faapi/dev`）→ 读 dev 产物
+ * - `node <rootDist>/build/main` 不设 → 默认 `.faapi/build`，读 prod 产物
  *
- * 不负责编译 TypeScript——编译由 `faapi dev`（esbuild → .faapi/dev/）和 `faapi build`（→ dist/）负责。
+ * 不负责编译 TypeScript——编译由 `faapi dev`（esbuild → `<rootDist>/dev/`）和 `faapi build`（→ `<rootDist>/build/`）负责。
  * 不负责生成路由清单——`faapi dev`/`faapi build` 启动时生成 `faapi-routes.js`，createAppBase 直接水合。
  */
 export async function createAppBase(options?: CreateAppOptions): Promise<{
@@ -134,22 +130,18 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   ctx: AppContext;
 }> {
   const rootDir = options?.rootDir ?? process.cwd();
-  const outDir = options?.outDir ?? process.env.FAAPI_OUT_DIR ?? DEFAULT_OUT_DIR;
+  const dist = options?.dist ?? process.env.FAAPI_DIST ?? DEFAULT_DIST;
 
   // 校验产物存在性
-  const routesPath = path.resolve(rootDir, outDir, ROUTES_FILE);
+  const routesPath = path.resolve(rootDir, dist, ROUTES_FILE);
   if (!fs.existsSync(routesPath)) {
     throw new Error(
-      `[faapi] ${outDir}/${ROUTES_FILE} 不存在，请先执行 \`faapi build\`（或 \`faapi dev\`）生成产物。`,
+      `[faapi] ${dist}/${ROUTES_FILE} 不存在，请先执行 \`faapi build\`（或 \`faapi dev\`）生成产物。`,
     );
   }
 
-  // 加载配置（统一读 <outDir>/faapi-config.js）
-  const config = await loadConfig(rootDir, outDir);
-
-  // appDir：options 优先（编程式覆盖），其次环境变量 FAAPI_APP_DIR，默认 'src'
-  const appDir = options?.appDir ?? process.env.FAAPI_APP_DIR ?? DEFAULT_APP_DIR;
-  const patterns = appDir === '.' ? ['api/**/*.ts'] : [`${appDir}/api/**/*.ts`];
+  // 加载配置（统一读 <dist>/faapi-config.js）
+  const config = await loadConfig(rootDir, dist);
 
   // 水合路由清单（统一路径，无 dev/prod 分支）
   const serialized = (await importWithCacheBust(routesPath)) as unknown as SerializedRouteManifest;
@@ -177,8 +169,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   const { server, routesRef } = createServer({
     routes: sorted,
     rootDir,
-    appDir,
-    outDir,
+    dist,
     cors: config?.cors ?? true,
     onError: config?.lifecycle?.onError,
     config: (config as Record<string, unknown> | null) ?? undefined,
@@ -373,9 +364,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   /** 更新路由引用（app + routesRef + 闭包变量） */
   const ctx: AppContext = {
     rootDir,
-    appDir,
-    outDir,
-    patterns,
+    dist,
+    patterns: PATTERNS,
     server,
     routesRef,
     config,

@@ -3,19 +3,20 @@ import fs from 'node:fs';
 import fg from 'fast-glob';
 import { buildAliasPlugins } from './aliasPlugin';
 
+/** 路由源码目录（写死为 src） */
+const APP_DIR = 'src';
+
 /**
  * dev 编译选项
  */
 export interface CompileDevOptions {
   /** 项目根目录 */
   rootDir: string;
-  /** app 目录前缀（如 src） */
-  appDir: string;
   /** 输出目录（dev 模式为 `.faapi/dev`） */
-  outDir: string;
+  dist: string;
   /**
    * 增量编译：传入要编译的文件列表（绝对路径）。
-   * 不传则全量编译 appDir 下所有 .ts（排除测试文件和声明文件）。
+   * 不传则全量编译 src 下所有 .ts（排除测试文件和声明文件）。
    */
   files?: string[];
   /** 是否输出 esbuild 日志（dev 模式默认静默） */
@@ -34,8 +35,8 @@ export interface CompileResult {
  * dev 模式编译 TypeScript：逐文件编译，启动快、增量编译友好
  *
  * 每个 `.ts` 独立编译为 `.js`，不分析 import 关系（`bundle: false`）。
- * 产物**打平 appDir 前缀**：
- * - `src/api/hello/handler.ts` → `<outDir>/api/hello/handler.js`
+ * 产物**打平 src/ 前缀**：
+ * - `src/api/hello/handler.ts` → `<dist>/api/hello/handler.js`
  *
  * 别名在编译时重写为相对路径，运行时无需 loader。
  *
@@ -43,17 +44,17 @@ export interface CompileResult {
  *
  * @example
  * // 全量编译
- * await compileDevRoutes({ rootDir, appDir: 'src', outDir: '.faapi/dev' });
+ * await compileDevRoutes({ rootDir, dist: '.faapi/dev' });
  * // watch 增量：只编译变化的文件
- * await compileDevRoutes({ rootDir, appDir: 'src', outDir: '.faapi/dev', files: changedFiles });
+ * await compileDevRoutes({ rootDir, dist: '.faapi/dev', files: changedFiles });
  */
 export async function compileDevRoutes(options: CompileDevOptions): Promise<CompileResult> {
-  const { rootDir, appDir, outDir, files, logLevel = 'silent' } = options;
+  const { rootDir, dist, files, logLevel = 'silent' } = options;
 
-  // 收集要编译的文件：files 优先，否则全量扫描 appDir 下所有 .ts
+  // 收集要编译的文件：files 优先，否则全量扫描 src 下所有 .ts
   const entryPoints =
     files ??
-    (await fg([`${appDir}/**/*.ts`], {
+    (await fg([`${APP_DIR}/**/*.ts`], {
       cwd: rootDir,
       onlyFiles: true,
       absolute: true,
@@ -65,20 +66,19 @@ export async function compileDevRoutes(options: CompileDevOptions): Promise<Comp
   }
 
   // 确保输出目录存在
-  const absOutDir = path.resolve(rootDir, outDir);
-  await fs.promises.mkdir(absOutDir, { recursive: true });
+  const absDist = path.resolve(rootDir, dist);
+  await fs.promises.mkdir(absDist, { recursive: true });
 
   // 构造别名重写插件（无 tsconfig/paths 时为空）
   const plugins = buildAliasPlugins(rootDir);
 
-  // 逐文件编译，outbase 设为 appDir 以打平产物结构：
-  // `src/api/hello/handler.ts` → `<outDir>/api/hello/handler.js`（去掉 src/ 前缀）
-  // appDir='.' 时 outbase=rootDir，保留原结构（源码在根目录的场景）
+  // 逐文件编译，outbase 设为 src 以打平产物结构：
+  // `src/api/hello/handler.ts` → `<dist>/api/hello/handler.js`（去掉 src/ 前缀）
   const esbuild = await import('esbuild');
-  const outbase = appDir === '.' ? rootDir : path.resolve(rootDir, appDir);
+  const outbase = path.resolve(rootDir, APP_DIR);
   await esbuild.build({
     entryPoints,
-    outdir: absOutDir,
+    outdir: absDist,
     outbase,
     bundle: false,
     platform: 'node',
@@ -93,12 +93,12 @@ export async function compileDevRoutes(options: CompileDevOptions): Promise<Comp
 }
 
 /**
- * 扫描 appDir 下的所有 .ts 文件（排除测试文件和声明文件）
+ * 扫描 src 下的所有 .ts 文件（排除测试文件和声明文件）
  *
  * 用于全量编译和 watch 监听。
  */
-export async function collectSourceFiles(rootDir: string, appDir: string): Promise<string[]> {
-  return fg([`${appDir}/**/*.ts`], {
+export async function collectSourceFiles(rootDir: string): Promise<string[]> {
+  return fg([`${APP_DIR}/**/*.ts`], {
     cwd: rootDir,
     onlyFiles: true,
     absolute: true,

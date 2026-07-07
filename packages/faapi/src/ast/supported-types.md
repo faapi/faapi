@@ -105,7 +105,7 @@ query/params 来自 URL 值均为 string，类型转换在代码生成阶段用 
 
 判定规则：schemaName 以 `Query` 或 `Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）。
 
-公用 `coerceNumber` / `coerceBoolean` 提取到 outDir 根部的 `faapi-helpers.js`（仅一份，ESM export），各 `zod.js` 通过相对路径 import 复用。无 coerce schema 时不生成该文件。
+公用 `coerceNumber` / `coerceBoolean` 提取到 dist 根部的 `faapi-helpers.js`（仅一份，ESM export），各 `zod.js` 通过相对路径 import 复用。无 coerce schema 时不生成该文件。
 
 ### Map/Set 的 coerce
 

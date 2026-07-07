@@ -14,7 +14,7 @@ import { importWithCacheBust } from '../utils/importWithCacheBust';
  * - 仅基础配置：编译并输出 dist/faapi-config.js
  * - 基础 + env 配置：深度合并
  * - .ts / .js 配置文件
- * - 配置文件相对 import 保留为 external（不 inline，运行时从 outDir 加载）
+ * - 配置文件相对 import 保留为 external（不 inline，运行时从 dist 加载）
  * - 配置文件 bare import 保留 external
  * - 函数型配置保留（middlewares/extendContext 等）
  * - deepMerge 特殊对象直接替换（数组/Date 等）
@@ -58,7 +58,7 @@ describe('compileConfig', () => {
   }
 
   it('无配置文件时不生成产物', async () => {
-    const result = await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    const result = await compileConfig({ rootDir: tempDir, dist: 'dist' });
     expect(result.generated).toBe(false);
     expect(existsSync(join(tempDir, 'dist', 'faapi-config.js'))).toBe(false);
   });
@@ -69,7 +69,7 @@ describe('compileConfig', () => {
       `export default { port: 3000, db: { host: 'localhost', port: 5432 } };\n`,
     );
 
-    const result = await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    const result = await compileConfig({ rootDir: tempDir, dist: 'dist' });
     expect(result.generated).toBe(true);
     expect(existsSync(join(tempDir, 'dist', 'faapi-config.js'))).toBe(true);
 
@@ -95,7 +95,7 @@ describe('compileConfig', () => {
     );
     process.env.NODE_ENV = 'production';
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     const config = await importProduct<{
       port: number;
@@ -120,7 +120,7 @@ describe('compileConfig', () => {
     process.env.NODE_ENV = 'production';
     process.env.FAAPI_ENV = 'staging';
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     const config = await importProduct<{ db: { host: string } }>();
     expect(config.db.host).toBe('staging.db.com');
@@ -131,7 +131,7 @@ describe('compileConfig', () => {
     process.env.NODE_ENV = 'production';
     // 无 faapi.config.production.ts
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     const config = await importProduct<{ port: number }>();
     expect(config.port).toBe(8080);
@@ -140,13 +140,13 @@ describe('compileConfig', () => {
   it('支持 .js 配置文件', async () => {
     writeFile('faapi.config.js', `export default { port: 9090 };\n`);
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     const config = await importProduct<{ port: number }>();
     expect(config.port).toBe(9090);
   });
 
-  it('配置文件的相对 import 保留为 external（运行时从 outDir 加载）', async () => {
+  it('配置文件的相对 import 保留为 external（运行时从 dist 加载）', async () => {
     writeFile(
       'faapi.config.ts',
       `import { baseConfig } from './base';
@@ -154,7 +154,7 @@ export default { ...baseConfig, port: 7070 };\n`,
     );
     writeFile('base.ts', `export const baseConfig = { db: { host: 'from-base' } };\n`);
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     // faapi-config.js（入口产物）应保留 import './faapi.config.js'（不 inline）
     const entryProduct = readFileSync(join(tempDir, 'dist', 'faapi-config.js'), 'utf-8');
@@ -196,7 +196,7 @@ export default { port: 5555 };\n`,
 writeFileSync('${sideEffectFlag}', 'loaded');\n`,
     );
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     // faapi.config.js（config 源编译产物）应保留 bare import
     const configProduct = readFileSync(join(tempDir, 'dist', 'faapi.config.js'), 'utf-8');
@@ -220,7 +220,7 @@ writeFileSync('${sideEffectFlag}', 'loaded');\n`,
 };\n`,
     );
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     const config = await importProduct<{
       extendContext: (ctx: unknown) => void;
@@ -242,7 +242,7 @@ writeFileSync('${sideEffectFlag}', 'loaded');\n`,
     writeFile('faapi.config.production.ts', `export default { roles: ['admin'] };\n`);
     process.env.NODE_ENV = 'production';
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     const config = await importProduct<{ roles: string[] }>();
     expect(config.roles).toEqual(['admin']);
@@ -251,7 +251,7 @@ writeFileSync('${sideEffectFlag}', 'loaded');\n`,
   it('配置文件中的 process.env 表达式保留（运行时读取）', async () => {
     writeFile('faapi.config.ts', `export default { dbPassword: process.env.DB_PASSWORD };\n`);
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     // 入口产物 faapi-config.js 仅 re-export config 源产物，process.env 表达式在 config 源产物中
     const entryProduct = readFileSync(join(tempDir, 'dist', 'faapi-config.js'), 'utf-8');
@@ -316,10 +316,10 @@ export default {
     );
 
     // 编译 config（步骤 1 编译 faapi.config.ts + src/lib/errors.ts；步骤 2 编译入口）
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     // 编译 routes（编译 handler.ts；src/lib/errors.ts 已编译，覆盖为同一文件）
-    await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
+    await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
 
     // 验证产物存在
     expect(existsSync(join(tempDir, 'dist', 'faapi-config.js'))).toBe(true);
@@ -364,7 +364,7 @@ export default {
   it('仅基础配置无 env 时入口直接 export base（不调 deepMerge）', async () => {
     writeFile('faapi.config.ts', `export default { port: 1234 };\n`);
 
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
     // 入口产物应直接 export base（不包含 deepMerge 函数）
     const product = readFileSync(join(tempDir, 'dist', 'faapi-config.js'), 'utf-8');

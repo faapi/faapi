@@ -6,7 +6,7 @@
 
 `compileConfig` 在编译阶段（dev 启动时 / build 时）把基础配置 `faapi.config.ts` 与环境配置 `faapi.config.{env}.ts` 深度合并——后者覆盖前者同名 key，普通对象递归合并，特殊类型（数组/Date/RegExp/Map/Set/函数）直接替换。合并结果固化为 `faapi-config.js` 产物,`loadConfig` 运行时零合并,只读产物。
 
-`compileConfig` 在 build 时把同样的合并预编译到 `dist/faapi-config.js`，运行时零合并。为避免两处独立实现导致逻辑不一致，统一从本模块导出：
+`compileConfig` 在 build 时把同样的合并预编译到 `.faapi/build/faapi-config.js`，运行时零合并。为避免两处独立实现导致逻辑不一致，统一从本模块导出：
 
 - `deepMerge` 函数：`compileConfig` 编译期使用
 - `DEEP_MERGE_SOURCE` 字符串常量：通过 `deepMerge.toString()` 序列化函数源码，供 `compileConfig` 内联到 esbuild 入口源码
@@ -30,7 +30,7 @@
 
 `DEEP_MERGE_SOURCE = `const deepMerge = ${deepMerge.toString()};``
 
-通过 `Function.prototype.toString()` 自动序列化函数源码，无需手动维护字符串副本。`compileConfig` 内联此字符串到 esbuild 入口源码后，`dist/faapi-config.js` 自包含 `deepMerge` 函数，运行时不依赖 `@faapi/faapi` 内部模块。
+通过 `Function.prototype.toString()` 自动序列化函数源码，无需手动维护字符串副本。`compileConfig` 内联此字符串到 esbuild 入口源码后，`.faapi/build/faapi-config.js` 自包含 `deepMerge` 函数，运行时不依赖 `@faapi/faapi` 内部模块。
 
 ## 相关模块
 

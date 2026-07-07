@@ -11,10 +11,8 @@ export interface StartOptions {
   port: number;
   routes: RouteManifest;
   rootDir: string;
-  /** app 目录前缀（如 'src' 或 '.'），用于计算 schema 路径 */
-  appDir: string;
-  /** 产物输出目录（如 '.faapi/dev' 或 'dist'），用于计算 schema 路径 */
-  outDir: string;
+  /** 产物输出目录（如 '.faapi/dev' 或 '.faapi/build'），用于计算 schema 路径 */
+  dist: string;
   cors?: CorsOptions | boolean;
   /** 请求错误钩子（在错误响应生成后调用，用于副作用，不修改已发出的响应） */
   onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
@@ -44,8 +42,7 @@ export function startServer(options: StartOptions): Promise<Server> {
     port,
     routes,
     rootDir,
-    appDir,
-    outDir,
+    dist,
     cors,
     onError,
     config,
@@ -57,8 +54,7 @@ export function startServer(options: StartOptions): Promise<Server> {
   const { server } = createServer({
     routes,
     rootDir,
-    appDir,
-    outDir,
+    dist,
     cors,
     onError,
     config,

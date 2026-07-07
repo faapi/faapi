@@ -8,7 +8,7 @@ import type { RouteManifest } from '../router/routeTypes';
 
 describe('validateInput', () => {
   let tempDir: string;
-  let schemaOutDir: string;
+  let schemaDist: string;
 
   beforeEach(async () => {
     invalidateSchemaCache();
@@ -53,8 +53,8 @@ export function GET(query: GETQuery) { return query; }
     ];
 
     // 生成 zod.js 到 tempDir/schema-out/
-    schemaOutDir = 'schema-out';
-    await generateSchemaFiles(routes, tempDir, '.', schemaOutDir);
+    schemaDist = 'schema-out';
+    await generateSchemaFiles(routes, tempDir, schemaDist);
   });
 
   afterEach(() => {
@@ -64,7 +64,7 @@ export function GET(query: GETQuery) { return query; }
 
   /** 计算 route/route.ts 对应的 zod.js 绝对路径 */
   function schemaPathFor(file: string): string {
-    return getRuntimeSchemaPath(file, '.', schemaOutDir, tempDir);
+    return getRuntimeSchemaPath(file, schemaDist, tempDir);
   }
 
   it('有类型声明时校验通过（已是正确类型）', async () => {

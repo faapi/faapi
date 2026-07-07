@@ -20,7 +20,6 @@ const FIXTURES_DIR = path.resolve(__dirname, '../fixtures/with-nextjs');
 
 // fixture 路由在 api/ 下（与 Next.js 的 app/ 目录分离），测试中显式传 patterns
 const PATTERNS = ['api/**/*.ts'];
-const APP_DIR = '.';
 
 /** FaapiConfig 的内置 key 集合（排除自定义业务配置） */
 const FAAPI_CONFIG_KEYS = new Set([
@@ -44,18 +43,18 @@ function isFaapiConfigKey(key: string): boolean {
 let server: Server;
 let baseUrl: string;
 let wsBaseUrl: string;
-let schemaOutDir: string;
+let schemaDist: string;
 
 beforeAll(async () => {
   // E2E 从源码生成配置产物（与 faapi dev 行为一致）
   // 1. 编译配置文件 → fixtures/.faapi-e2e-schema/faapi-config.js
-  schemaOutDir = path.join(FIXTURES_DIR, '.faapi-e2e-schema');
-  await fs.mkdir(schemaOutDir, { recursive: true });
-  await compileConfig({ rootDir: FIXTURES_DIR, outDir: schemaOutDir });
-  const config = await loadConfig(FIXTURES_DIR, schemaOutDir);
+  schemaDist = path.join(FIXTURES_DIR, '.faapi-e2e-schema');
+  await fs.mkdir(schemaDist, { recursive: true });
+  await compileConfig({ rootDir: FIXTURES_DIR, dist: schemaDist });
+  const config = await loadConfig(FIXTURES_DIR, schemaDist);
 
   // 2. 扫描路由（HTTP + WebSocket）
-  const { routes: rawRoutes, wsRoutes } = await scanRoutes(FIXTURES_DIR, PATTERNS, APP_DIR);
+  const { routes: rawRoutes, wsRoutes } = await scanRoutes(FIXTURES_DIR, PATTERNS);
   const routes = sortRoutes(rawRoutes);
 
   // 3. 路由冲突检测（仅警告）
@@ -67,15 +66,14 @@ beforeAll(async () => {
   // 4. 生成 zod.js 到 fixtures 内的临时目录（每个 handler 一个 schema 文件，与 faapi build 行为一致）
   //    放在 fixtures 内是为了让 zod.js 能解析到 node_modules 中的 zod 包
   if (routes.length > 0) {
-    await generateSchemaFiles(routes, FIXTURES_DIR, APP_DIR, schemaOutDir);
+    await generateSchemaFiles(routes, FIXTURES_DIR, schemaDist);
   }
 
   // 5. 创建 server（不 listen）
   server = createServer({
     routes,
     rootDir: FIXTURES_DIR,
-    appDir: APP_DIR,
-    outDir: schemaOutDir,
+    dist: schemaDist,
     cors: config?.cors,
     onError: config?.lifecycle?.onError,
     config: config ?? undefined,
@@ -115,8 +113,8 @@ afterAll(async () => {
     (server as any).closeAllConnections();
   }
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  if (schemaOutDir) {
-    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  if (schemaDist) {
+    await fs.rm(schemaDist, { recursive: true, force: true });
   }
   invalidateSchemaCache();
 }, 30000);

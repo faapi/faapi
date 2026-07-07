@@ -43,13 +43,13 @@ describe('createProdApp', () => {
   }
 
   async function compileArtifacts() {
-    await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir: 'dist' });
-    await compileConfig({ rootDir: tempDir, outDir: 'dist' });
-    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], 'src', 'dist');
+    await compileDevRoutes({ rootDir: tempDir, dist: '.faapi/build' });
+    await compileConfig({ rootDir: tempDir, dist: '.faapi/build' });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi/build');
     const sorted = sortRoutes(routes);
-    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'src', 'dist');
-    await writeRoutesModule(serialized, join(tempDir, 'dist', 'faapi-routes.js'));
-    await generateSchemaFiles(sorted, tempDir, 'src', 'dist');
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, '.faapi/build');
+    await writeRoutesModule(serialized, join(tempDir, '.faapi/build', 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, '.faapi/build');
   }
 
   function options(): CreateAppOptions {

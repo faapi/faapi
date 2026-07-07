@@ -94,7 +94,7 @@ const COERCE_MAP_HELPER: string
 /** coerceSet 公用函数源码（ESM export 格式，写入 faapi-helpers.js） */
 const COERCE_SET_HELPER: string
 
-/** faapi-helpers.js 文件名（生成在 outDir 根部，供各 zod.js 共享复用） */
+/** faapi-helpers.js 文件名（生成在 dist 根部，供各 zod.js 共享复用） */
 const HELPERS_FILENAME: string
 
 /** 生成 faapi-helpers.js 文件源码（包含 coerceNumber / coerceBoolean / coerceMap / coerceSet 四个 ESM export） */
@@ -122,7 +122,7 @@ function usesCoerceHelpers(code: string): boolean
 
 `exportName` 控制导出的 schema 变量名（默认用 `typeInfo.name`）。`validateInput` 按 `${schemaName}Schema` 查找导出，当接口名与 schemaName 不一致时（如接口名 `Query` 但 schemaName 为 `GETQuery`），需传入 `exportName` 保证一致。
 
-`COERCE_NUMBER_HELPER` / `COERCE_BOOLEAN_HELPER` / `COERCE_MAP_HELPER` / `COERCE_SET_HELPER` 是 coerce 公用函数的字符串源码常量，采用 ESM export 格式（`export const coerceNumber = ...` / `export const coerceBoolean = ...` / `export const coerceMap = ...` / `export const coerceSet = ...`），由 `generateSchemaFiles` 写入 outDir 根部的 `faapi-helpers.js`（文件名由 `HELPERS_FILENAME` 指定）。`generateHelpersFileSource()` 拼装该文件完整源码（含注释头 + 四个 export）。各 `zod.js` 通过相对路径 `import { coerceNumber, coerceBoolean, coerceMap, coerceSet } from '<相对路径>/faapi-helpers.js'` 复用同一份声明，而非每个文件内联。`usesCoerceHelpers(code)` 通过字符串包含检测代码是否引用了 `coerceNumber` / `coerceBoolean` / `coerceMap` / `coerceSet`，由 `generateSchemaFiles` 决定是否生成 `faapi-helpers.js`、由 `generateSchemaFileSource` 决定是否注入 import 语句。
+`COERCE_NUMBER_HELPER` / `COERCE_BOOLEAN_HELPER` / `COERCE_MAP_HELPER` / `COERCE_SET_HELPER` 是 coerce 公用函数的字符串源码常量，采用 ESM export 格式（`export const coerceNumber = ...` / `export const coerceBoolean = ...` / `export const coerceMap = ...` / `export const coerceSet = ...`），由 `generateSchemaFiles` 写入 dist 根部的 `faapi-helpers.js`（文件名由 `HELPERS_FILENAME` 指定）。`generateHelpersFileSource()` 拼装该文件完整源码（含注释头 + 四个 export）。各 `zod.js` 通过相对路径 `import { coerceNumber, coerceBoolean, coerceMap, coerceSet } from '<相对路径>/faapi-helpers.js'` 复用同一份声明，而非每个文件内联。`usesCoerceHelpers(code)` 通过字符串包含检测代码是否引用了 `coerceNumber` / `coerceBoolean` / `coerceMap` / `coerceSet`，由 `generateSchemaFiles` 决定是否生成 `faapi-helpers.js`、由 `generateSchemaFileSource` 决定是否注入 import 语句。
 
 ## coerce 参数
 
@@ -131,7 +131,7 @@ function usesCoerceHelpers(code: string): boolean
 - `coerce=true`：为 `number`/`boolean` 字段（含嵌套元素，如数组元素、对象属性、元组元素）在外层包 `z.preprocess`，引用从 `faapi-helpers.js` import 的公用变量 `coerceNumber` / `coerceBoolean` 做字符串转换
 - `coerce=false`：直接生成 `z.number()`/`z.boolean()`，不做字符串转换（body 场景，JSON 解析已是天然 JS 类型）
 
-生成的 schema 通过 `z.preprocess(coerceNumber, z.number())` 引用外部公用变量，而非每个字段内联一长串函数。公用变量声明（`COERCE_NUMBER_HELPER` / `COERCE_BOOLEAN_HELPER`，ESM export 格式）由 `generateSchemaFiles` 写入 outDir 根部的 `faapi-helpers.js`（仅一份，通过 `usesCoerceHelpers` 检测是否需要生成）。`generateSchemaFileSource` 检测到 schema 引用这些变量时，在 `zod.js` 顶部注入 `import { coerceNumber, coerceBoolean } from '<相对路径>/faapi-helpers.js'`（相对路径由 `getHelpersImportPath` 按目录深度计算）。无 coerce schema 时既不生成 `faapi-helpers.js`，也不注入 import。
+生成的 schema 通过 `z.preprocess(coerceNumber, z.number())` 引用外部公用变量，而非每个字段内联一长串函数。公用变量声明（`COERCE_NUMBER_HELPER` / `COERCE_BOOLEAN_HELPER`，ESM export 格式）由 `generateSchemaFiles` 写入 dist 根部的 `faapi-helpers.js`（仅一份，通过 `usesCoerceHelpers` 检测是否需要生成）。`generateSchemaFileSource` 检测到 schema 引用这些变量时，在 `zod.js` 顶部注入 `import { coerceNumber, coerceBoolean } from '<相对路径>/faapi-helpers.js'`（相对路径由 `getHelpersImportPath` 按目录深度计算）。无 coerce schema 时既不生成 `faapi-helpers.js`，也不注入 import。
 
 转换规则（公用变量实现）：
 
@@ -195,7 +195,7 @@ interface GETQuery {
 }
 ```
 
-输出（schema 中引用公用变量，由 `generateSchemaFileSource` 在文件顶部注入 import 语句，声明在 outDir 根部的 `faapi-helpers.js`）：
+输出（schema 中引用公用变量，由 `generateSchemaFileSource` 在文件顶部注入 import 语句，声明在 dist 根部的 `faapi-helpers.js`）：
 ```js
 import { z } from 'zod';
 import { coerceNumber, coerceBoolean } from '../../faapi-helpers.js';
@@ -206,7 +206,7 @@ export const GETQuerySchema = z.object({
 });
 ```
 
-> 注：`generateZodSchemaSource` 只生成 schema 表达式（含 `z.preprocess(coerceNumber, ...)` 引用），不生成 `const coerceNumber = ...` 声明，也不生成 import 语句。`faapi-helpers.js` 的生成由 `generateSchemaFiles` 通过 `usesCoerceHelpers` 检测后调用 `generateHelpersFileSource()` 完成（仅一份，写在 outDir 根部）；import 语句由 `generateSchemaFileSource` 检测到引用后注入（相对路径由 `getHelpersImportPath` 计算）。`coerce=false` 的 schema 不引用公用变量，也不会触发 helpers 文件生成或 import 注入。
+> 注：`generateZodSchemaSource` 只生成 schema 表达式（含 `z.preprocess(coerceNumber, ...)` 引用），不生成 `const coerceNumber = ...` 声明，也不生成 import 语句。`faapi-helpers.js` 的生成由 `generateSchemaFiles` 通过 `usesCoerceHelpers` 检测后调用 `generateHelpersFileSource()` 完成（仅一份，写在 dist 根部）；import 语句由 `generateSchemaFileSource` 检测到引用后注入（相对路径由 `getHelpersImportPath` 计算）。`coerce=false` 的 schema 不引用公用变量，也不会触发 helpers 文件生成或 import 注入。
 
 ## 相关模块
 

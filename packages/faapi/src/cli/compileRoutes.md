@@ -13,7 +13,7 @@
 ## 使用场景
 
 - `faapi dev`：调 `compileDevRoutes` 编译 `src/**/*.ts` → `.faapi/dev/**/*.js`（打平 `src/` 前缀）。**逐文件编译**（`bundle: false`），启动快、增量编译。
-- `faapi build`：调 `compileBuildRoutes` 做**逐文件编译**（`bundle: false`），与 dev 模式一致，扫描 `appDir/**/*.ts` → `dist/**/*.js`。不再使用 bundle 模式,以保证 `instanceof` 跨 config/routes 边界生效（详见 `compileConfig.md`）。
+- `faapi build`：调 `compileBuildRoutes` 做**逐文件编译**（`bundle: false`），与 dev 模式一致，扫描 `src/**/*.ts` → `.faapi/build/**/*.js`。不再使用 bundle 模式,以保证 `instanceof` 跨 config/routes 边界生效（详见 `compileConfig.md`）。
 - watch 增量编译：watcher 调 `compileDevRoutes` 只传入变化的文件列表。
 
 ## 统一编译模式：逐文件编译（`bundle: false`）
@@ -24,7 +24,7 @@ dev 和 build 都采用 `bundle: false` 逐文件编译，每个 `.ts` 独立编
 
 ### dev 与 build 的差异
 
-dev 和 build 编译逻辑一致,仅 `outDir` 不同。build 模式额外启用两个 esbuild 选项:
+dev 和 build 编译逻辑一致,仅 `dist` 不同。build 模式额外启用两个 esbuild 选项:
 
 - **`define: { 'process.env.NODE_ENV': '"production"' }`**：编译期把 `process.env.NODE_ENV` 替换为 `"production"` 字面量
 - **`minifySyntax: true`**：语法简化（`if (cond) { expr }` → `cond && expr`）+ 死分支删除（`if (false) {...}` 被移除）
@@ -43,19 +43,19 @@ if (process.env.NODE_ENV !== 'production') {
 
 **tree shaking 不可用**：`bundle: false` 不分析跨文件引用图,未引用的 export 不会被删除。这符合设计意图——保留所有 export,让 config 和 routes 共享同一运行时对象。
 
-### 产物结构打平 appDir 前缀
+### 产物结构打平 src 前缀
 
-esbuild 的 `outbase` 设为 `appDir`（通常是 `src`），使产物去掉 appDir 前缀：
+esbuild 的 `outbase` 设为 `src`，使产物去掉 src 前缀：
 
-- `src/api/hello/handler.ts` → `<outDir>/api/hello/handler.js`
+- `src/api/hello/handler.ts` → `<dist>/api/hello/handler.js`
 
 不再生成 `chunk-<hash>.js`（无 splitting,每个文件独立编译）。
 
 ## 相关模块
 
 - `compileDevRoutes.ts` - dev 逐文件编译
-- `compileBuildRoutes.ts` - build 逐文件编译（与 dev 一致,仅 outDir 不同）
-- `buildCommand.ts` - build 命令调 compileBuildRoutes 编译到 dist/
+- `compileBuildRoutes.ts` - build 逐文件编译（与 dev 一致,仅 dist 不同）
+- `buildCommand.ts` - build 命令调 compileBuildRoutes 编译到 .faapi/build/
 - `devCommand.ts` - dev 命令调 compileDevRoutes 编译到 .faapi/dev/
 - `watcher.ts` - watch 时调 compileDevRoutes 重编译变化文件
 - `readTsconfig.ts` - 读取 tsconfig paths 配置

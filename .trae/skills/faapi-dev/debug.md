@@ -91,7 +91,7 @@ export interface Anything {
 1. **检查文件位置**
 
 ```
-❌ api/user/handler.ts      ← appDir 默认是 src，扫描 src/api/ 不是 api/
+❌ api/user/handler.ts      ← 路由根目录固定为 src/，扫描 src/api/ 不是 api/
 ❌ app/user/handler.ts          ← 必须在 api/ 下
 ✅ src/api/user/handler.ts
 ```
@@ -105,7 +105,7 @@ api/user/[id]/handler.ts → /api/user/123
 
 3. **检查启动参数**
 
-通过环境变量 `FAAPI_APP_DIR` 检查源码目录前缀（默认 `src`，设为 `.` 表示源码在项目根目录）。框架元信息（appDir/port/outDir）通过环境变量传入,不在 `faapi.config.ts` 中配置。
+路由源码目录固定为 `src/`，需将路由放在 `src/api/` 下。框架元信息（port/dist）通过环境变量传入,不在 `faapi.config.ts` 中配置。
 
 4. **查看启动日志**
 
@@ -213,9 +213,8 @@ Error loading config: Unexpected token }
 **原因**:
 - `api/` 下没有 `handler.ts`
 - patterns 不匹配
-- appDir 配置错误
 
-**解决**:检查文件位置和启动参数。
+**解决**:检查文件位置。
 
 ### 4. 模块加载失败
 

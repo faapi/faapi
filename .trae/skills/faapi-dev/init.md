@@ -170,12 +170,11 @@ CLI 选项（优先于环境变量）：
 | 选项 | 命令 | 说明 | 对应环境变量 |
 |------|------|------|-------------|
 | `--port <number>` | dev / build | dev: dev 服务器端口；build: 写入 `dist/main.js` 的 `listen()` | `PORT` |
-| `--appDir <dir>` | dev / build | 源码目录前缀，默认 `src` | `FAAPI_APP_DIR` |
-| `--outDir <dir>` | build | 产物输出目录，默认 `dist` | `FAAPI_OUT_DIR` |
+| `--dist <dir>` | build | 产物输出目录，默认 `dist` | `FAAPI_DIST` |
 
 ```bash
-faapi dev --port 8080 --appDir app    # dev: 8080 端口，源码在 app/
-faapi build --port 8080 --outDir build # build: 产物到 build/，prod 端口 8080
+faapi dev --port 8080                 # dev: 8080 端口
+faapi build --port 8080 --dist build # build: 产物到 build/，prod 端口 8080
 PORT=3000 faapi dev                    # 也可继续用环境变量
 ```
 
@@ -198,10 +197,10 @@ node dist/main
 pnpm start
 ```
 
-`createProdApp()` 自动水合 `dist/faapi-routes.js` 路由清单 + 加载 `dist/faapi-config.js` 配置,运行时按需 import 各 handler 的 `zod.js` 做类型校验。框架元信息(appDir/port/outDir)通过环境变量传入,应用行为配置由 `faapi.config.ts` 统一管理。
+`createProdApp()` 自动水合 `dist/faapi-routes.js` 路由清单 + 加载 `dist/faapi-config.js` 配置,运行时按需 import 各 handler 的 `zod.js` 做类型校验。框架元信息(port/dist)通过环境变量传入,应用行为配置由 `faapi.config.ts` 统一管理。
 
 **prod 模式行为**:
-- 读 `FAAPI_OUT_DIR`(未设置时默认 `dist`)定位产物目录
+- 读 `FAAPI_DIST`(未设置时默认 `dist`)定位产物目录
 - 读 `dist/faapi-routes.js` 路由清单 + 水合中间件(不扫描文件系统)
 - 读 `dist/faapi-config.js` 配置(运行时零编译、零合并)
 - 按需 import 各 handler 的 `zod.js` 做 zod safeParse 校验(不跑 AST 提取)
@@ -287,12 +286,12 @@ node dist/main    # 启动(读 dist 产物,NODE_ENV 自动兜底为 production)
 ### 1. handler 文件位置错误
 
 ```
-❌ api/user/handler.ts     ← 默认扫描 src/api/，根目录 api/ 需设环境变量 FAAPI_APP_DIR=.
-❌ user/handler.ts             ← 必须在 api/ 下
+❌ api/user/handler.ts             ← 路由根目录固定为 src/，扫描 src/api/ 不是 api/
+❌ user/handler.ts                 ← 必须在 api/ 下
 ✅ src/api/user/handler.ts
 ```
 
-如需用根目录 `api/`,设置 `FAAPI_APP_DIR=.` 或 `faapi dev --appDir .`(默认 `src`)。
+路由源码目录固定为 `src/`，需将路由放在 `src/api/` 下。
 
 ### 2. handler 没导出方法
 

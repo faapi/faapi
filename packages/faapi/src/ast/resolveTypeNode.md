@@ -98,7 +98,7 @@ HTTP 视角：JSON 只能传输 string/number/boolean/null/array/object，无法
 - `Map<K,V>` → `z.preprocess(coerceMap, z.map(keySchema, valueSchema))`
 - `Set<T>` → `z.preprocess(coerceSet, z.set(elementSchema))`
 
-`coerceMap` / `coerceSet` 与 `coerceNumber` / `coerceBoolean` 同文件，写在 outDir 根部的 `faapi-helpers.js`，按需生成（任意 zod.js 引用即生成）。
+`coerceMap` / `coerceSet` 与 `coerceNumber` / `coerceBoolean` 同文件，写在 dist 根部的 `faapi-helpers.js`，按需生成（任意 zod.js 引用即生成）。
 
 ### 类型参数要求
 

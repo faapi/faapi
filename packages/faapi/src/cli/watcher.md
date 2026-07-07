@@ -23,19 +23,18 @@
 | 字段 | 说明 |
 |------|------|
 | `rootDir` | 项目根目录 |
-| `appDir` | app 目录路径（chokidar 监听此目录） |
 | `app` | dev 应用实例（`DevApp`，调用 `app.reloadRoutes()` 热替换） |
 
 ## 监听范围
 
-chokidar v4 移除了 glob 模式支持，改为监听整个 `appDir` 目录 + `ignored` 函数过滤。
+chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ignored` 函数过滤。
 
 监听范围：
 
-- `appDir` 目录（递归监听整个源码目录，含 handler.ts 引用的 util.ts）
+- `src` 目录（递归监听整个源码目录，含 handler.ts 引用的 util.ts）
 - 根目录的 `faapi.config.{ts,js}`、`faapi.config.production.{ts,js}`（配置变化时重生成 `faapi-config.js`）
 
-监听整个 appDir 比 glob 更合理：handler.ts 引用的 util.ts 变化也能触发重建。
+监听整个 src 比 glob 更合理：handler.ts 引用的 util.ts 变化也能触发重建。
 
 `ignored` 函数逻辑：
 

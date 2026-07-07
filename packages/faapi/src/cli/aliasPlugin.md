@@ -19,8 +19,8 @@
 ## 使用场景
 
 - `compileDevRoutes` 编译 `.ts` → `.faapi/dev/**/*.js`（逐文件，`bundle: false`）时挂载本插件
-- `compileBuildRoutes` 编译 `.ts` → `dist/**/*.js`（逐文件，`bundle: false`）时挂载本插件
-- `compileConfig` 步骤 1 编译 `faapi.config.ts` → `outDir/faapi.config.js`（逐文件，`bundle: false`）时挂载本插件
+- `compileBuildRoutes` 编译 `.ts` → `.faapi/build/**/*.js`（逐文件，`bundle: false`）时挂载本插件
+- `compileConfig` 步骤 1 编译 `faapi.config.ts` → `dist/faapi.config.js`（逐文件，`bundle: false`）时挂载本插件
 - 无 tsconfig 或 tsconfig 无 `paths` 时，`buildAliasPlugins` 仍返回含本插件的数组（相对路径重写不依赖 tsconfig）
 
 ## 覆盖的 import 形式

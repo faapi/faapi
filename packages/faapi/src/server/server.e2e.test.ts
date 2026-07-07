@@ -17,13 +17,13 @@ const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
 
 let server: Server | null = null;
 let baseUrl: string;
-let schemaOutDir: string;
+let schemaDist: string;
 
-/** 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + outDir 计算 zod.js 路径） */
+/** 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + dist 计算 zod.js 路径） */
 async function ensureSchemaLoaded(routes: RouteManifest, rootDir: string): Promise<void> {
-  if (schemaOutDir) return;
-  schemaOutDir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-schema-'));
-  await generateSchemaFiles(routes, rootDir, '.', schemaOutDir);
+  if (schemaDist) return;
+  schemaDist = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-schema-'));
+  await generateSchemaFiles(routes, rootDir, schemaDist);
 }
 
 async function setupServer(): Promise<{ server: Server; baseUrl: string }> {
@@ -33,8 +33,7 @@ async function setupServer(): Promise<{ server: Server; baseUrl: string }> {
   const { server: srv } = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,
-    appDir: '.',
-    outDir: schemaOutDir,
+    dist: schemaDist,
   });
 
   return new Promise((resolve, reject) => {
@@ -59,7 +58,7 @@ async function fetchFromServer(path: string, init?: RequestInit): Promise<Respon
   return fetch(`${baseUrl}${path}`, init);
 }
 
-/** 顶层 beforeAll：预生成 zod.js，确保所有 createServer 调用时 schemaOutDir 已就绪 */
+/** 顶层 beforeAll：预生成 zod.js，确保所有 createServer 调用时 schemaDist 已就绪 */
 beforeAll(async () => {
   const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
@@ -78,8 +77,7 @@ async function setupServerWithOptions(
   const { server: srv } = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,
-    appDir: '.',
-    outDir: schemaOutDir,
+    dist: schemaDist,
     ...options,
   });
   return new Promise((resolve, reject) => {
@@ -110,8 +108,8 @@ afterAll(async () => {
     });
     server = null;
   }
-  if (schemaOutDir) {
-    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  if (schemaDist) {
+    await fs.rm(schemaDist, { recursive: true, force: true });
   }
   invalidateSchemaCache();
 });
@@ -508,8 +506,7 @@ describe('HTTP Server E2E', () => {
       const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
-        appDir: '.',
-        outDir: schemaOutDir,
+        dist: schemaDist,
       });
 
       await new Promise<void>((resolve, reject) => {
@@ -564,8 +561,7 @@ describe('HTTP Server E2E', () => {
       const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
-        appDir: '.',
-        outDir: schemaOutDir,
+        dist: schemaDist,
         onError: (error, ctx) => {
           capturedError = error;
           capturedPath = ctx.path;
@@ -618,8 +614,7 @@ describe('HTTP Server E2E', () => {
       const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
-        appDir: '.',
-        outDir: schemaOutDir,
+        dist: schemaDist,
         middlewares: [errorHandler],
       });
       const { server: customSrv, baseUrl: customUrl } = await new Promise<{

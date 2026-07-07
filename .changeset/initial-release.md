@@ -60,7 +60,6 @@ src/api/**/handler.ts
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `FAAPI_APP_DIR` | `'src'` | 源码目录（`.` = 根目录） |
 | `PORT` | `3000` | 服务端口 |
 | `FAAPI_OUT_DIR` | dev 固定 `.faapi/dev`，prod 默认 `dist` | 产物目录 |
 | `FAAPI_ENV` | — | 环境选择（高于 `NODE_ENV`） |

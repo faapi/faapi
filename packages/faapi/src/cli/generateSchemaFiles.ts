@@ -15,29 +15,24 @@ import {
  * 源文件路径 → 产物 zod.js 路径
  *
  * 每个 handler 目录下生成一个 `zod.js`（与 handler.js 同级，文件名固定为 zod.js）：
- * - `src/api/hello/handler.ts` → `<outDir>/api/hello/zod.js`
- * - appDir='.' 时保留原结构（源码在根目录的场景）
+ * - `src/api/hello/handler.ts` → `<dist>/api/hello/zod.js`
+ *
+ * 路由源码目录写死为 src，剥离 `src/` 前缀。
  *
  * @param sourceFile 源文件相对路径（相对 rootDir，如 'src/api/hello/handler.ts'）
- * @param appDir app 目录前缀（如 'src' 或 '.'）
- * @param outDir 输出目录（如 'dist' 或 '.faapi/dev'）
+ * @param dist 输出目录（如 'dist' 或 '.faapi/dev'）
  * @param rootDir 项目根目录
  */
-export function getSchemaOutputPath(
-  sourceFile: string,
-  appDir: string,
-  outDir: string,
-  rootDir: string,
-): string {
+export function getSchemaOutputPath(sourceFile: string, dist: string, rootDir: string): string {
   let rel = sourceFile.replace(/\\/g, '/');
-  // 去掉 appDir 前缀（打平产物结构）
-  if (appDir !== '.' && rel.startsWith(`${appDir}/`)) {
-    rel = rel.slice(appDir.length + 1);
+  // 去掉 src/ 前缀（打平产物结构）
+  if (rel.startsWith('src/')) {
+    rel = rel.slice(4);
   }
   // 取目录部分，basename 固定为 zod.js（每个 handler 目录一个 zod.js）
   const idx = rel.lastIndexOf('/');
   const relDir = idx >= 0 ? rel.slice(0, idx) : '';
-  return path.resolve(rootDir, outDir, relDir, 'zod.js');
+  return path.resolve(rootDir, dist, relDir, 'zod.js');
 }
 
 /**
@@ -45,50 +40,44 @@ export function getSchemaOutputPath(
  *
  * 每个 handler 目录下的 zod.js（文件名固定为 zod.js，与 handler.js 同级）：
  * - dev 模式：route.filePath 是源码路径（如 'src/api/hello/handler.ts'），
- *   zod.js 在 `<rootDir>/<outDir>/api/hello/zod.js`
+ *   zod.js 在 `<rootDir>/<dist>/api/hello/zod.js`
  * - prod 模式：route.filePath 是产物路径（如 'dist/api/hello/handler.js'），
  *   zod.js 在 `<rootDir>/dist/api/hello/zod.js`（与 handler.js 同级）
  *
- * 通过同时检查 appDir 和 outDir 前缀，统一处理两种模式：
- * - dev：strip 'src/' 前缀，join outDir
- * - prod：strip 'dist/' 前缀，join outDir（outDir='dist'，结果与 rootDir 一致）
+ * 通过同时检查 src 和 dist 前缀，统一处理两种模式：
+ * - dev：strip 'src/' 前缀，join dist
+ * - prod：strip 'dist/' 前缀，join dist（dist='dist'，结果与 rootDir 一致）
  *
  * @param filePath route.filePath（dev 为源码路径，prod 为产物路径）
- * @param appDir app 目录前缀（如 'src' 或 '.'）
- * @param outDir 输出目录（如 'dist' 或 '.faapi/dev'）
+ * @param dist 输出目录（如 'dist' 或 '.faapi/dev'）
  * @param rootDir 项目根目录
  */
-export function getRuntimeSchemaPath(
-  filePath: string,
-  appDir: string,
-  outDir: string,
-  rootDir: string,
-): string {
+export function getRuntimeSchemaPath(filePath: string, dist: string, rootDir: string): string {
   let rel = filePath.replace(/\\/g, '/');
-  // strip appDir 前缀（dev 模式：filePath = 'src/...'）
-  if (appDir !== '.' && rel.startsWith(`${appDir}/`)) {
-    rel = rel.slice(appDir.length + 1);
+  // strip src/ 前缀（dev 模式：filePath = 'src/...'）
+  if (rel.startsWith('src/')) {
+    rel = rel.slice(4);
   }
-  // strip outDir 前缀（prod 模式：filePath = 'dist/...'）
-  else if (rel.startsWith(`${outDir}/`)) {
-    rel = rel.slice(outDir.length + 1);
+  // strip dist 前缀（prod 模式：filePath = 'dist/...'）
+  else if (rel.startsWith(`${dist}/`)) {
+    rel = rel.slice(dist.length + 1);
   }
   // 取目录部分，basename 固定为 zod.js
   const idx = rel.lastIndexOf('/');
   const relDir = idx >= 0 ? rel.slice(0, idx) : '';
-  return path.resolve(rootDir, outDir, relDir, 'zod.js');
+  return path.resolve(rootDir, dist, relDir, 'zod.js');
 }
 
 /**
  * 计算 zod.js 到 faapi-helpers.js 的相对 import 路径
  *
- * faapi-helpers.js 固定在 outDir 根部，zod.js 可能在子目录（如 'api/hello/zod.js'）。
+ * faapi-helpers.js 固定在 dist 根部，zod.js 可能在子目录（如 'api/hello/zod.js'）。
  * 根据子目录深度计算 `../` 数量：
  * - zod.js 在 `api/hello/`（深度 2）→ `../../faapi-helpers.js`
  * - zod.js 在 `api/`（深度 1）→ `../faapi-helpers.js`
- * - zod.js 在 outDir 根（深度 0，理论不会发生）→ `./faapi-helpers.js`
+ * - zod.js 在 dist 根（深度 0，理论不会发生）→ `./faapi-helpers.js`
  *
- * @param relDir zod.js 所在目录相对 outDir 的路径（如 'api/hello' 或 ''）
+ * @param relDir zod.js 所在目录相对 dist 的路径（如 'api/hello' 或 ''）
  * @returns ESM import 路径（如 '../../faapi-helpers.js'）
  */
 export function getHelpersImportPath(relDir: string): string {
@@ -115,7 +104,7 @@ export function getHelpersImportPath(relDir: string): string {
  * Map/Set 字段在两种场景下都生成 z.preprocess 包裹（JSON.parse 出来的是数组/对象，需还原为 Map/Set 实例）。
  *
  * 公用函数复用：schema 引用 coerceNumber / coerceBoolean / coerceMap / coerceSet 变量时，
- * 这些变量从 outDir 根部的 faapi-helpers.js import（跨文件复用，仅一份声明）。
+ * 这些变量从 dist 根部的 faapi-helpers.js import（跨文件复用，仅一份声明）。
  *
  * @param sources 同一文件的 schema 提取结果（含多个方法，如 GETQuery + POSTBody）
  * @param allTypes 该文件的所有命名类型（用于解析循环引用中的 ref）
@@ -181,7 +170,7 @@ export function generateSchemaFileSource(
  * - prod：`dist/api/hello/zod.js`
  *
  * 公用函数复用：若项目中存在 coerce schema（query/params）或 Map/Set 字段，
- * 在 outDir 根部生成 `faapi-helpers.js`（导出 coerceNumber / coerceBoolean / coerceMap / coerceSet），
+ * 在 dist 根部生成 `faapi-helpers.js`（导出 coerceNumber / coerceBoolean / coerceMap / coerceSet），
  * 各 zod.js 通过相对路径 import。
  *
  * 内部流程：
@@ -193,14 +182,12 @@ export function generateSchemaFileSource(
  *
  * @param routes 排序后的路由清单
  * @param rootDir 项目根目录
- * @param appDir app 目录前缀（如 'src' 或 '.'）
- * @param outDir 输出目录（如 '.faapi/dev' 或 'dist'）
+ * @param dist 输出目录（如 '.faapi/dev' 或 'dist'）
  */
 export async function generateSchemaFiles(
   routes: RouteManifest,
   rootDir: string,
-  appDir: string,
-  outDir: string,
+  dist: string,
 ): Promise<void> {
   if (routes.length === 0) return;
 
@@ -222,14 +209,14 @@ export async function generateSchemaFiles(
   for (const [filePath, fileSources] of sourcesByFile) {
     // filePath 是绝对路径，转为相对 rootDir 的路径用于计算输出路径
     const relFile = path.relative(rootDir, filePath).replace(/\\/g, '/');
-    const outputPath = getSchemaOutputPath(relFile, appDir, outDir, rootDir);
+    const outputPath = getSchemaOutputPath(relFile, dist, rootDir);
     const allTypes = allTypesByFile.get(filePath) ?? new Map();
 
-    // 计算 zod.js 所在目录相对 outDir 的路径（用于 import helpers）
-    // 与 getSchemaOutputPath 的目录计算逻辑一致：strip appDir 前缀后取目录部分
+    // 计算 zod.js 所在目录相对 dist 的路径（用于 import helpers）
+    // 与 getSchemaOutputPath 的目录计算逻辑一致：strip src/ 前缀后取目录部分
     let relForDir = relFile;
-    if (appDir !== '.' && relForDir.startsWith(`${appDir}/`)) {
-      relForDir = relForDir.slice(appDir.length + 1);
+    if (relForDir.startsWith('src/')) {
+      relForDir = relForDir.slice(4);
     }
     const dirIdx = relForDir.lastIndexOf('/');
     const zodRelDir = dirIdx >= 0 ? relForDir.slice(0, dirIdx) : '';
@@ -242,7 +229,7 @@ export async function generateSchemaFiles(
   // 检测是否需要生成 faapi-helpers.js
   const allSourceCode = fileEntries.map((e) => e.source).join('\n');
   if (usesCoerceHelpers(allSourceCode)) {
-    const helpersPath = path.resolve(rootDir, outDir, HELPERS_FILENAME);
+    const helpersPath = path.resolve(rootDir, dist, HELPERS_FILENAME);
     await writeSchemaFile(helpersPath, generateHelpersFileSource());
   }
 

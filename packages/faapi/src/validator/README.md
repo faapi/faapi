@@ -20,7 +20,7 @@ AST 提取 → RuntimeType → generateZodSchema(coerce) → zod schema 源码
                                                               ↓
                                                每个 handler 一个 zod.js（与 handler.js 同级）
                                                dev: .faapi/dev/api/.../zod.js
-                                               prd: dist/api/.../zod.js
+                                               prd: .faapi/build/api/.../zod.js
                                                               ↓
                                                    validateInput import + safeParse
 ```
@@ -32,7 +32,7 @@ dev 和 prd 都通过 `generateSchemaFiles` 为每个 handler 生成 `zod.js`，
 | 模式 | schema 来源 | 生成时机 |
 | --- | --- | --- |
 | dev | `generateSchemaFiles` 生成 `.faapi/dev/**/zod.js` | 启动时全量，watch 时全量重建 |
-| prd | `generateSchemaFiles` 生成 `dist/**/zod.js` | `faapi build` 时生成 |
+| prd | `generateSchemaFiles` 生成 `.faapi/build/**/zod.js` | `faapi build` 时生成 |
 
 三种状态：
 - zod schema 存在：执行 `safeParse` 校验

@@ -13,7 +13,7 @@
 
 ## FaapiConfig 字段
 
-应用行为配置（CORS、lifecycle、middlewares、业务配置等）从 `faapi.config.ts` 读取；框架元信息（appDir/port/outDir）通过环境变量传入,不放在 config 内。
+应用行为配置（CORS、lifecycle、middlewares、业务配置等）从 `faapi.config.ts` 读取；框架元信息（port/dist）通过环境变量传入,不放在 config 内。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -28,6 +28,6 @@
 | `plugins` | `PluginDeclaration[]` | 插件声明数组 |
 | `extendContext` | `(ctx) => void` | 扩展 ctx 方法/属性 |
 
-> 框架元信息通过环境变量传入：`FAAPI_APP_DIR`（源码目录,默认 `src`）、`PORT`（端口,默认 3000）、`FAAPI_OUT_DIR`（产物目录,dev 固定 `.faapi/dev`,prod 默认 `dist`）。
+> 框架元信息通过环境变量传入：`PORT`（端口,默认 3000）、`FAAPI_DIST`（产物目录（实际目录）,dev 为 <dist>/dev（默认 `.faapi/dev`）,prod 为 <dist>/build（默认 `.faapi/build`））。
 
 业务自定义 key（如 `db`/`redis`）通过 `ctx.config` 访问,详见 [configTypes.md](./configTypes.md)。

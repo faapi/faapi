@@ -65,14 +65,14 @@ describe('generateRoutes', () => {
   describe('serializeRoutes', () => {
     it('filePath 由 dev 形式转为 prd 形式（.ts → .js，加 dist/ 前缀）', () => {
       const routes = makeRoutes('api/user/handler.ts');
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       expect(manifest.routes[0].filePath).toBe('dist/api/user/handler.js');
     });
 
     it('已是 dist/ 前缀的 filePath 不重复添加前缀', () => {
       const routes = makeRoutes('dist/api/user/handler.js');
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       expect(manifest.routes[0].filePath).toBe('dist/api/user/handler.js');
     });
@@ -88,7 +88,7 @@ describe('generateRoutes', () => {
           isCatchAll: true,
         },
       ];
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       expect(manifest.routes[0]).toMatchObject({
         method: 'GET',
@@ -101,7 +101,7 @@ describe('generateRoutes', () => {
 
     it('无中间件时 middlewarePaths 为空数组', () => {
       const routes = makeRoutes('api/user/handler.ts');
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       expect(manifest.routes[0].middlewarePaths).toEqual([]);
     });
@@ -119,7 +119,7 @@ describe('generateRoutes', () => {
       writeFileSync(join(tempDir, 'api/user/handler.ts'), `export function GET() {}\n`);
 
       const routes = makeRoutes('api/user/handler.ts');
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       // 根在前，路由目录在后；路径为 prd 形式绝对路径（dist 前缀 + .js）
       expect(manifest.routes[0].middlewarePaths).toEqual([
@@ -137,7 +137,7 @@ describe('generateRoutes', () => {
       writeFileSync(join(tempDir, 'api/handler.ts'), `export function GET() {}\n`);
 
       const routes = makeRoutes('api/handler.ts');
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       // .ts 被选中，但输出仍为 prd 形式（.js）
       expect(manifest.routes[0].middlewarePaths).toEqual([
@@ -151,7 +151,7 @@ describe('generateRoutes', () => {
       writeFileSync(join(tempDir, 'api/handler.ts'), `export function GET() {}\n`);
 
       const routes = makeRoutes('api/handler.ts');
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       expect(manifest.routes[0].middlewarePaths).toEqual([
         join(tempDir, 'dist/api/middlewares.js'),
@@ -160,7 +160,7 @@ describe('generateRoutes', () => {
 
     it('序列化 WS 路由（无 method 字段）', () => {
       const wsRoutes = makeWsRoutes('api/chat/handler.ts');
-      const manifest = serializeRoutes([], wsRoutes, tempDir);
+      const manifest = serializeRoutes([], wsRoutes, tempDir, 'dist');
 
       expect(manifest.wsRoutes[0].filePath).toBe('dist/api/chat/handler.js');
       expect(manifest.wsRoutes[0].urlPath).toBe('/api/chat');
@@ -176,10 +176,10 @@ describe('generateRoutes', () => {
           paramNames: [],
           isDynamic: false,
           middlewares: [async (_ctx, next) => next()],
-          injectors: { db: () => ({} as never) },
+          injectors: { db: () => ({}) as never },
         },
       ];
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       // 函数引用不进入序列化结果，仅保留 middlewarePaths
       expect('middlewares' in manifest.routes[0]).toBe(false);
@@ -220,7 +220,7 @@ describe('generateRoutes', () => {
 
     it('往返数据一致（serialize → write → import）', async () => {
       const routes = makeRoutes('api/user/handler.ts');
-      const manifest = serializeRoutes(routes, [], tempDir);
+      const manifest = serializeRoutes(routes, [], tempDir, 'dist');
 
       const outputPath = join(tempDir, 'faapi-routes.js');
       await writeRoutesModule(manifest, outputPath);
@@ -368,7 +368,7 @@ describe('generateRoutes', () => {
 
       // 1. serialize（build 时，检查 dev .ts 文件，输出 prd 路径）
       const routes = makeRoutes('api/user/handler.ts');
-      const serialized = serializeRoutes(routes, [], tempDir);
+      const serialized = serializeRoutes(routes, [], tempDir, 'dist');
 
       // 2. write 模块
       const outputPath = join(tempDir, 'dist/faapi-routes.js');
@@ -377,10 +377,7 @@ describe('generateRoutes', () => {
       // 3. 模拟 esbuild 编译：把 dev .ts 中间件编译为 dist/ 下 .js
       //    （测试中直接复制为 .js，内容已是合法 ESM）
       mkdirSync(join(tempDir, 'dist/api'), { recursive: true });
-      writeFileSync(
-        join(tempDir, 'dist/middlewares.js'),
-        `export default [];\n`,
-      );
+      writeFileSync(join(tempDir, 'dist/middlewares.js'), `export default [];\n`);
       writeFileSync(
         join(tempDir, 'dist/api/middlewares.js'),
         `export default [async (ctx, next) => { await next(); }];\nexport const injectors = { db: () => 'prd-db' };\n`,

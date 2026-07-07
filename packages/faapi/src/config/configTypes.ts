@@ -66,9 +66,8 @@ export interface LifecycleContext {
  * 环境覆盖通过 faapi.config.{NODE_ENV}.ts 实现（如 faapi.config.production.ts）
  *
  * 框架元信息通过环境变量配置（不放在 config 内）：
- * - `FAAPI_APP_DIR`：源码目录前缀，默认 'src'，设为 '.' 表示源码在项目根目录
  * - `PORT`：服务端口，默认 3000
- * - `FAAPI_OUT_DIR`：产物输出目录，dev 固定为 '.faapi/dev'，prod 默认 'dist'
+ * - `FAAPI_DIST`：产物输出目录（实际目录），dev 为 <dist>/dev（默认 .faapi/dev），prod 为 <dist>/build（默认 .faapi/build）
  */
 export interface FaapiConfig {
   /** CORS 配置，false 禁用 */

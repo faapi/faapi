@@ -9,17 +9,16 @@
 | 约定 | 说明 |
 |------|------|
 | 文件名 | `handler.ts`(固定) |
-| 位置 | `src/api/<路径>/handler.ts`(默认在 src/ 下) |
+| 位置 | `src/api/<路径>/handler.ts`(固定在 src/ 下) |
 | 导出 | HTTP 方法名(`GET`/`POST`/`PUT`/`DELETE`/`PATCH` 等) |
 | URL | 由文件路径推导，`api/user/handler.ts` → `/api/user` |
 
-默认扫描 `src/api/**/*.ts`，通过 `FAAPI_APP_DIR` 环境变量指定子目录（设为 `.` 回退到根目录扫描 `api/**/*.ts`）。
+路由源码目录固定为 `src/`，扫描 `src/api/**/*.ts`。
 
 ## URL 推导规则
 
 ```
 文件路径:  api/user/handler.ts
-appDir:    src  (默认)
 路由路径:  /api/user  (文件路径去掉文件名)
 URL:       /api/user
 ```

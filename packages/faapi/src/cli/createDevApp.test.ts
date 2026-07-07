@@ -28,7 +28,7 @@ import { invalidateSchemaCache } from '../validator/validateInput';
  */
 describe('createDevApp', () => {
   let tempDir: string;
-  let savedOutDir: string | undefined;
+  let savedDist: string | undefined;
 
   beforeEach(() => {
     tempDir = join(
@@ -36,14 +36,16 @@ describe('createDevApp', () => {
       `faapi-createdevapp-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
     mkdirSync(tempDir, { recursive: true });
-    savedOutDir = process.env.FAAPI_OUT_DIR;
+    savedDist = process.env.FAAPI_DIST;
+    // dev 模式由 devCommand 设 FAAPI_DIST=<rootDist>/dev，这里模拟该行为
+    process.env.FAAPI_DIST = '.faapi/dev';
     invalidateMiddlewareCache();
     invalidateProgramCache();
   });
 
   afterEach(async () => {
-    if (savedOutDir === undefined) delete process.env.FAAPI_OUT_DIR;
-    else process.env.FAAPI_OUT_DIR = savedOutDir;
+    if (savedDist === undefined) delete process.env.FAAPI_DIST;
+    else process.env.FAAPI_DIST = savedDist;
     invalidateSchemaCache();
     invalidateMiddlewareCache();
     invalidateProgramCache();
@@ -60,19 +62,19 @@ describe('createDevApp', () => {
     );
   }
 
-  async function compileArtifacts(outDir: 'dist' | '.faapi/dev') {
-    await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir });
-    await compileConfig({ rootDir: tempDir, outDir });
-    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], 'src', outDir);
+  async function compileArtifacts(dist: '.faapi/dev') {
+    await compileDevRoutes({ rootDir: tempDir, dist });
+    await compileConfig({ rootDir: tempDir, dist });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], dist);
     const sorted = sortRoutes(routes);
-    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'src', outDir);
-    await writeRoutesModule(serialized, join(tempDir, outDir, 'faapi-routes.js'));
-    await generateSchemaFiles(sorted, tempDir, 'src', outDir);
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, dist);
+    await writeRoutesModule(serialized, join(tempDir, dist, 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, dist);
   }
 
   it('水合路由清单', async () => {
     writeHandler();
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/dev');
 
     const app = await createDevApp({ rootDir: tempDir });
     expect(app.routes.length).toBeGreaterThan(0);
@@ -83,7 +85,7 @@ describe('createDevApp', () => {
 
   it('listen 启动 server，close 关闭', async () => {
     writeHandler();
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/dev');
 
     const app = await createDevApp({ rootDir: tempDir });
     const server = await app.listen(0);
@@ -94,14 +96,14 @@ describe('createDevApp', () => {
 
   it('reloadRoutes 重新扫描路由（新增 handler 后生效）', async () => {
     writeHandler();
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/dev');
 
     const app = await createDevApp({ rootDir: tempDir });
     const initialCount = app.routes.length;
 
     // 新增路由 + 重新编译产物（watcher 触发时的行为模拟）
     writeHandler('api/user/handler.ts');
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/dev');
 
     await app.reloadRoutes();
     expect(app.routes.length).toBe(initialCount + 1);
@@ -119,7 +121,7 @@ describe('createDevApp', () => {
       `export default { db: { host: 'localhost', port: 5432 } };\n`,
       'utf-8',
     );
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/dev');
 
     const app = await createDevApp({ rootDir: tempDir });
     expect(app.routes.length).toBeGreaterThan(0);

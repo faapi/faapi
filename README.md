@@ -46,7 +46,7 @@ graph TD
     RT --> RESP
 ```
 
-dev/prod 走完全一致的读产物代码路径（`createAppBase`），差异仅由 `FAAPI_OUT_DIR` 环境变量驱动，无 `if (isDev)` 控制流分支。产物三元组：`faapi-config.js`（配置）+ `faapi-routes.js`（路由清单）+ 各 handler 的 `zod.js`（schema 校验）。
+dev/prod 走完全一致的读产物代码路径（`createAppBase`），差异仅由 `FAAPI_DIST` 环境变量驱动，无 `if (isDev)` 控制流分支。产物三元组：`faapi-config.js`（配置）+ `faapi-routes.js`（路由清单）+ 各 handler 的 `zod.js`（schema 校验）。
 
 ## 快速开始
 
@@ -101,7 +101,7 @@ node dist/main             # 启动生产服务器（dist/main.js 内部调 crea
 `dist/main.js` 由 `faapi build` 自动生成，内部 `import { createProdApp } from '@faapi/faapi'` 并 `listen`。框架元信息通过环境变量传入：
 
 ```bash
-FAAPI_APP_DIR=src PORT=8080 node dist/main
+PORT=8080 node dist/main
 ```
 
 多环境配置通过 `faapi.config.{env}.ts` 覆盖（`FAAPI_ENV` > `NODE_ENV` > `development` 优先级），build 时按环境深度合并到 `dist/faapi-config.js`，运行时零编译。
@@ -115,7 +115,7 @@ faapi build                # 构建（编译 .ts → dist/，生成路由清单 
 node dist/main             # 启动生产服务器（需先 build，运行 dist/main.js）
 ```
 
-应用行为配置（CORS、middlewares、lifecycle 等）通过 `faapi.config.ts` 配置。框架元信息（appDir、port 等）通过环境变量（`FAAPI_APP_DIR`、`PORT`）控制。
+应用行为配置（CORS、middlewares、lifecycle 等）通过 `faapi.config.ts` 配置。框架元信息（port 等）通过环境变量（`PORT`）控制。
 
 ## 文档
 

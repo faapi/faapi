@@ -12,25 +12,23 @@ faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为
 - 根据 glob pattern 过滤路由文件
 - 将文件路径转换为 URL 路径
 
-## 文件类型与 prodDir 参数
+## 文件类型与 dist 参数
 
-`scanRoutes` 接受可选的 `prodDir` 参数（`dist` 或 `.faapi/dev`）：
+`scanRoutes` 接受可选的 `dist` 参数（`.faapi/build` 或 `.faapi/dev`）：
 
-- **传入 prodDir（dev/build 模式）**：扫描源码 `.ts` 文件列表，但 import 产物 `.js` 拿方法名。`filePath` 保持源码路径（如 `src/api/hello/handler.ts`），AST schema 提取需要 `.ts`。
-- **不传 prodDir（旧模式，CLI 不再使用）**：扫描并 import 源码 `.ts`（依赖 esbuild 即时转译，仅 e2e/测试保留）。
+- **传入 dist（dev/build 模式）**：扫描源码 `.ts` 文件列表，但 import 产物 `.js` 拿方法名。`filePath` 保持源码路径（如 `src/api/hello/handler.ts`），AST schema 提取需要 `.ts`。
+- **不传 dist（旧模式，CLI 不再使用）**：扫描并 import 源码 `.ts`（依赖 esbuild 即时转译，仅 e2e/测试保留）。
 
 中间件文件查找逻辑：
-- 传入 prodDir：查找产物 `middlewares.js`（已编译）
-- 不传 prodDir：优先 `.ts`，回退 `.js`
+- 传入 dist：查找产物 `middlewares.js`（已编译）
+- 不传 dist：优先 `.ts`，回退 `.js`
 
-### 产物路径打平 appDir 前缀
+### 产物路径打平 src 前缀
 
-`toProdAbsPath` 将源码绝对路径转为产物绝对路径时，会剥离 `appDir` 前缀（如 `src/`），与 `compileDevRoutes` / `compileBuildRoutes` 的 `outbase` 设置一致：
+`toProdAbsPath` 将源码绝对路径转为产物绝对路径时，会剥离 `src/` 前缀，与 `compileDevRoutes` / `compileBuildRoutes` 的 `outbase` 设置一致：
 
 - 源码：`<rootDir>/src/api/hello/handler.ts`
-- 产物：`<rootDir>/dist/api/hello/handler.js`（去掉 `src/` 前缀）
-
-`appDir='.'` 时不剥离前缀（源码在根目录的场景）。
+- 产物：`<rootDir>/.faapi/build/api/hello/handler.js`（去掉 `src/` 前缀）
 
 ## 相关模块
 

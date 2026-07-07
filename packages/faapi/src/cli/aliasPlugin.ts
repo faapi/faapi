@@ -52,22 +52,32 @@ function isInsideDir(filePath: string, dir: string): boolean {
 }
 
 /**
- * 把 appDir 下的源文件路径转为剥离 appDir 前缀的产物 import 路径（POSIX 风格，带 .js 后缀）
+ * 路由源码目录（写死为 src）
  *
- * 用于 config 文件（位于 rootDir，不在 appDir 下）引用 appDir 内模块的场景：
- * - 源文件 `<rootDir>/src/lib/errors.ts` → 产物 `outDir/lib/errors.js`
- * - config 产物位于 `outDir/faapi.config.js`（outDir 根）
- * - import 路径相对 outDir 根：`./lib/errors.js`
+ * 用于 config 文件（位于 rootDir，不在 src 下）引用 src 内模块时的前缀剥离：
+ * - 源文件 `<rootDir>/src/lib/errors.ts` → 产物 `dist/lib/errors.js`
+ * - config 产物位于 `dist/faapi.config.js`（dist 根）
+ * - import 路径相对 dist 根：`./lib/errors.js`
+ */
+const APP_DIR = 'src';
+
+/**
+ * 把 src 下的源文件路径转为剥离 src/ 前缀的产物 import 路径（POSIX 风格，带 .js 后缀）
  *
- * 与 `toProdImportPath` 的区别：后者相对 importer 目录（适用于 importer 也在 appDir 内的场景，
- * outbase 打平后相对结构不变）；本函数相对 appDir 根（适用于 importer 在 appDir 外的场景，
- * 需要剥离 appDir 前缀以匹配 compileDevRoutes 的打平产物结构）。
+ * 用于 config 文件（位于 rootDir，不在 src 下）引用 src 内模块的场景：
+ * - 源文件 `<rootDir>/src/lib/errors.ts` → 产物 `dist/lib/errors.js`
+ * - config 产物位于 `dist/faapi.config.js`（dist 根）
+ * - import 路径相对 dist 根：`./lib/errors.js`
+ *
+ * 与 `toProdImportPath` 的区别：后者相对 importer 目录（适用于 importer 也在 src 内的场景，
+ * outbase 打平后相对结构不变）；本函数相对 src 根（适用于 importer 在 src 外的场景，
+ * 需要剥离 src/ 前缀以匹配 compileDevRoutes 的打平产物结构）。
  *
  * 内部用 `toRealPath` 规范化 appDirAbs，兼容 macOS 符号链接（esbuild onLoad 传入的
  * args.path 已是 realpath，未规范化的 appDirAbs 会导致前缀比较失败）。
  */
-function toStrippedProdImportPath(sourceFile: string, rootDir: string, appDir: string): string {
-  const appDirAbs = toRealPath(path.resolve(rootDir, appDir));
+function toStrippedProdImportPath(sourceFile: string, rootDir: string): string {
+  const appDirAbs = toRealPath(path.resolve(rootDir, APP_DIR));
   const sourceReal = toRealPath(sourceFile);
   let rel = path.relative(appDirAbs, sourceReal);
   rel = rel.split(path.sep).join('/');
@@ -78,15 +88,13 @@ function toStrippedProdImportPath(sourceFile: string, rootDir: string, appDir: s
 /**
  * aliasPlugin 扩展选项
  *
- * - `rootDir` + `appDir`：启用 appDir 前缀剥离。当 importer 不在 appDir 下（如 config 文件）
- *   且引用的源文件在 appDir 下时，重写为剥离前缀的产物路径（相对 outDir 根），以匹配
+ * - `rootDir`：启用 src/ 前缀剥离。当 importer 不在 src 下（如 config 文件）
+ *   且引用的源文件在 src 下时，重写为剥离前缀的产物路径（相对 dist 根），以匹配
  *   `compileDevRoutes`/`compileBuildRoutes` 的打平产物结构。
  */
 export interface AliasPluginOptions {
   /** 项目根目录（启用剥离时必填） */
   rootDir?: string;
-  /** app 目录前缀，如 'src'（启用剥离时必填） */
-  appDir?: string;
 }
 
 /**
@@ -169,9 +177,9 @@ export function resolveRelativeSpecifier(importer: string, specifier: string): s
  * 保留到产物 `.js`，运行时 Node.js ESM loader 无法解析（无后缀推断）。本插件通过
  * `onLoad` 介入，确保产物中所有相对 import 都带 `.js` 后缀。
  *
- * **appDir 前缀剥离**（可选，通过 `options.rootDir` + `options.appDir` 启用）：
- * 当 importer 不在 appDir 下（如 `faapi.config.ts` 位于 rootDir）且引用的源文件在 appDir 下时，
- * 重写为剥离 appDir 前缀的产物路径（相对 outDir 根），以匹配 `compileDevRoutes`/`compileBuildRoutes`
+ * **src/ 前缀剥离**（可选，通过 `options.rootDir` 启用）：
+ * 当 importer 不在 src 下（如 `faapi.config.ts` 位于 rootDir）且引用的源文件在 src 下时，
+ * 重写为剥离 src/ 前缀的产物路径（相对 dist 根），以匹配 `compileDevRoutes`/`compileBuildRoutes`
  * 的打平产物结构。典型场景：config 引用项目模块（如 `./src/lib/errors` → `./lib/errors.js`），
  * 使 config 与 routes 共享同一份模块产物，`instanceof` 跨边界生效。
  *
@@ -188,13 +196,10 @@ export function createAliasPlugin(
 ): Plugin {
   // 匹配 from '...' / from "..." 和 import('...') / import("...")
   const SPEC_RE = /(\bfrom\s*|import\s*\(\s*)(['"])([^'"]+)\2/g;
-  // 预计算 appDir 绝对路径（realpath 规范化，用于判断 importer 和 resolved 是否在 appDir 内）
+  // 预计算 src 绝对路径（realpath 规范化，用于判断 importer 和 resolved 是否在 src 内）
   // 规范化是为了兼容 macOS 符号链接：esbuild onLoad 传入的 args.path 是 realpath，
   // 未规范化的 appDirAbs 会导致 isInsideDir 比较失败（/var/folders vs /private/var/folders）
-  const appDirAbs =
-    options?.rootDir && options?.appDir
-      ? toRealPath(path.resolve(options.rootDir, options.appDir))
-      : null;
+  const appDirAbs = options?.rootDir ? toRealPath(path.resolve(options.rootDir, APP_DIR)) : null;
   return {
     name: 'faapi-alias',
     setup(build) {
@@ -206,7 +211,7 @@ export function createAliasPlugin(
           return undefined;
         }
         const importer = args.path;
-        // importer 是否在 appDir 外（启用剥离时才计算，用 isInsideDir 兼容符号链接）
+        // importer 是否在 src 外（启用剥离时才计算，用 isInsideDir 兼容符号链接）
         const importerOutsideAppDir = appDirAbs ? !isInsideDir(importer, appDirAbs) : false;
         let modified = false;
         const newSource = source.replace(SPEC_RE, (full, prefix, quote, specifier) => {
@@ -227,14 +232,13 @@ export function createAliasPlugin(
               if (PROD_EXTS.some((ext) => specifier.endsWith(ext))) {
                 return full;
               }
-              // appDir 前缀剥离：importer 在 appDir 外、resolved 在 appDir 内
-              // → 重写为剥离前缀的产物路径（相对 outDir 根）
+              // src 前缀剥离：importer 在 src 外、resolved 在 src 内
+              // → 重写为剥离前缀的产物路径（相对 dist 根）
               if (appDirAbs && importerOutsideAppDir && isInsideDir(resolved, appDirAbs)) {
                 modified = true;
                 return `${prefix}${quote}${toStrippedProdImportPath(
                   resolved,
                   options!.rootDir!,
-                  options!.appDir!,
                 )}${quote}`;
               }
               modified = true;
@@ -250,12 +254,11 @@ export function createAliasPlugin(
               const file = candidate + ext;
               if (fs.existsSync(file)) {
                 modified = true;
-                // 别名解析到的文件如果在 appDir 内且 importer 在 appDir 外，同样剥离前缀
+                // 别名解析到的文件如果在 src 内且 importer 在 src 外，同样剥离前缀
                 if (appDirAbs && importerOutsideAppDir && isInsideDir(file, appDirAbs)) {
                   return `${prefix}${quote}${toStrippedProdImportPath(
                     file,
                     options!.rootDir!,
-                    options!.appDir!,
                   )}${quote}`;
                 }
                 return `${prefix}${quote}${toProdImportPath(file, importer)}${quote}`;
@@ -269,7 +272,6 @@ export function createAliasPlugin(
                   return `${prefix}${quote}${toStrippedProdImportPath(
                     file,
                     options!.rootDir!,
-                    options!.appDir!,
                   )}${quote}`;
                 }
                 return `${prefix}${quote}${toProdImportPath(file, importer)}${quote}`;
@@ -291,17 +293,11 @@ export function createAliasPlugin(
  * 始终返回含本插件的数组：相对路径重写不依赖 tsconfig（`bundle: false` 下 Node ESM 必需），
  * 别名重写依赖 tsconfig.paths（无 paths 时别名不重写）。
  *
- * @param rootDir 项目根目录
- * @param appDir app 目录前缀（如 'src'）。传入时启用 appDir 前缀剥离：importer 在 appDir 外
- *               且引用 appDir 内文件时，重写为剥离前缀的产物路径。主要用于 compileConfig
- *               编译 config 文件（位于 rootDir）引用项目模块（位于 appDir）的场景。
+ * @param rootDir 项目根目录。传入时启用 src/ 前缀剥离：importer 在 src 外
+ *               且引用 src 内文件时，重写为剥离前缀的产物路径。主要用于 compileConfig
+ *               编译 config 文件（位于 rootDir）引用项目模块（位于 src）的场景。
  */
-export function buildAliasPlugins(rootDir: string, appDir?: string): Plugin[] {
+export function buildAliasPlugins(rootDir: string): Plugin[] {
   const tsconfig = readTsconfig(rootDir);
-  return [
-    createAliasPlugin(
-      tsconfig ?? { baseUrl: '.', paths: {} },
-      appDir ? { rootDir, appDir } : undefined,
-    ),
-  ];
+  return [createAliasPlugin(tsconfig ?? { baseUrl: '.', paths: {} }, { rootDir })];
 }

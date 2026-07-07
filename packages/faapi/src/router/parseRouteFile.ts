@@ -55,24 +55,22 @@ export function isRouteGroup(segment: string): boolean {
 
 /**
  * 将路由文件路径转换为 URL 路径
- * 输入: 相对于项目根目录的文件路径，如 'api/auth/login/handler.ts'
+ * 输入: 相对于项目根目录的文件路径，如 'src/api/auth/login/handler.ts'
  * 输出: URL 路径，如 '/api/auth/login'
  *
  * 规则:
- * - 去掉 appDir 前缀（默认 '.'，即项目根目录，不剥离）
+ * - 去掉 src/ 前缀（路由源码目录写死为 src）
  * - 去掉文件名（handler.ts 等）
  * - 将 [id] 转换为 :id
  * - 忽略路由分组 (groupName) — 不影响 URL
  * - 标准化路径
  *
- * 说明：CLI 默认扫描 src/api/（appDir='src'），底层 API 默认 '.'。
- * 无论 appDir 是 'src' 还是 '.'，api/ 前缀都保留在 URL 中，因此 URL 始终带 /api 前缀。
+ * 说明：路由源码目录写死为 src/api/，src/ 前缀剥离后 api/ 前缀保留在 URL 中，
+ * 因此 URL 始终带 /api 前缀。
  */
-export function filePathToUrlPath(filePath: string, appDir: string = '.'): string {
-  // 去掉 appDir 前缀（appDir='.' 时不剥离）
-  const withoutPrefix = filePath.startsWith(appDir + '/')
-    ? filePath.slice(appDir.length + 1)
-    : filePath;
+export function filePathToUrlPath(filePath: string): string {
+  // 去掉 src/ 前缀（路由源码目录写死为 src）
+  const withoutPrefix = filePath.startsWith('src/') ? filePath.slice(4) : filePath;
 
   // 去掉文件名（最后一个路径段）
   const lastSlashIndex = withoutPrefix.lastIndexOf('/');

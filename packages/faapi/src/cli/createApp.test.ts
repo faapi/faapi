@@ -16,11 +16,11 @@ import { invalidateSchemaCache } from '../validator/validateInput';
 /**
  * createApp 测试：prod 模式启动 API（createApp 为 createProdApp 的别名）
  *
- * createApp 读 <outDir>/faapi-routes.js + <outDir>/faapi-config.js，无 reloadRoutes。
- * outDir 由 process.env.FAAPI_OUT_DIR 决定（默认 'dist'）。
+ * createApp 读 <dist>/faapi-routes.js + <dist>/faapi-config.js，无 reloadRoutes。
+ * dist 由 process.env.FAAPI_DIST 决定（默认 '.faapi/build'）。
  *
  * 覆盖：
- * - 统一水合路由清单（默认 dist / FAAPI_OUT_DIR 指向 .faapi/dev）
+ * - 统一水合路由清单（默认 .faapi/build / FAAPI_DIST 指向 .faapi/dev）
  * - listen/close 生命周期
  * - 配置自动加载
  * - 缺失产物的错误处理
@@ -29,7 +29,7 @@ import { invalidateSchemaCache } from '../validator/validateInput';
  */
 describe('createApp', () => {
   let tempDir: string;
-  let savedOutDir: string | undefined;
+  let savedDist: string | undefined;
 
   beforeEach(() => {
     tempDir = join(
@@ -37,14 +37,14 @@ describe('createApp', () => {
       `faapi-createapp-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
     mkdirSync(tempDir, { recursive: true });
-    savedOutDir = process.env.FAAPI_OUT_DIR;
+    savedDist = process.env.FAAPI_DIST;
     invalidateMiddlewareCache();
     invalidateProgramCache();
   });
 
   afterEach(async () => {
-    if (savedOutDir === undefined) delete process.env.FAAPI_OUT_DIR;
-    else process.env.FAAPI_OUT_DIR = savedOutDir;
+    if (savedDist === undefined) delete process.env.FAAPI_DIST;
+    else process.env.FAAPI_DIST = savedDist;
     invalidateSchemaCache();
     invalidateMiddlewareCache();
     invalidateProgramCache();
@@ -62,24 +62,24 @@ describe('createApp', () => {
     );
   }
 
-  /** 编译产物三元组到指定 outDir：.js + faapi-config.js + faapi-routes.js + zod.js */
-  async function compileArtifacts(outDir: 'dist' | '.faapi/dev') {
-    await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir });
-    await compileConfig({ rootDir: tempDir, outDir });
-    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], 'src', outDir);
+  /** 编译产物三元组到指定 dist：.js + faapi-config.js + faapi-routes.js + zod.js */
+  async function compileArtifacts(dist: '.faapi/build' | '.faapi/dev') {
+    await compileDevRoutes({ rootDir: tempDir, dist });
+    await compileConfig({ rootDir: tempDir, dist });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], dist);
     const sorted = sortRoutes(routes);
-    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'src', outDir);
-    await writeRoutesModule(serialized, join(tempDir, outDir, 'faapi-routes.js'));
-    await generateSchemaFiles(sorted, tempDir, 'src', outDir);
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, dist);
+    await writeRoutesModule(serialized, join(tempDir, dist, 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, dist);
   }
 
   function options(): CreateAppOptions {
     return { rootDir: tempDir };
   }
 
-  it('统一水合路由清单（默认 outDir=dist）', async () => {
+  it('统一水合路由清单（默认 dist=.faapi/build）', async () => {
     writeHandler();
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/build');
 
     const app = await createApp(options());
     expect(app.routes.length).toBeGreaterThan(0);
@@ -88,10 +88,10 @@ describe('createApp', () => {
     await app.close();
   });
 
-  it('通过 FAAPI_OUT_DIR 指向 .faapi/dev', async () => {
+  it('通过 FAAPI_DIST 指向 .faapi/dev', async () => {
     writeHandler();
     await compileArtifacts('.faapi/dev');
-    process.env.FAAPI_OUT_DIR = '.faapi/dev';
+    process.env.FAAPI_DIST = '.faapi/dev';
 
     const app = await createApp(options());
     expect(app.routes.length).toBeGreaterThan(0);
@@ -101,7 +101,7 @@ describe('createApp', () => {
 
   it('listen 启动 server，close 关闭', async () => {
     writeHandler();
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/build');
 
     const app = await createApp(options());
     expect(app.server).toBeNull();
@@ -125,7 +125,7 @@ describe('createApp', () => {
       `export default { db: { host: 'localhost', port: 5432 } };\n`,
       'utf-8',
     );
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/build');
 
     const app = await createApp(options());
     expect(app.routes.length).toBeGreaterThan(0);

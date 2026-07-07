@@ -18,7 +18,7 @@ import type { RouteSchemaSource } from './collectRouteSchemaSources';
  *
  * 覆盖：
  * - generateSchemaFileSource：生成单个 handler 文件的 zod.js 源码
- * - generateSchemaFiles：批量生成 zod.js 到 outDir
+ * - generateSchemaFiles：批量生成 zod.js 到 dist
  * - getSchemaOutputPath：源码路径 → 产物 zod.js 路径
  * - 端到端：生成的 zod.js 可被 import 并用于 zod safeParse
  */
@@ -55,18 +55,13 @@ describe('generateSchemaFiles', () => {
   }
 
   describe('getSchemaOutputPath', () => {
-    it('打平 appDir 前缀（src/api/hello/handler.ts → outDir/api/hello/zod.js）', () => {
-      const result = getSchemaOutputPath('src/api/hello/handler.ts', 'src', 'dist', '/root');
-      expect(result).toBe(join('/root', 'dist', 'api', 'hello', 'zod.js'));
-    });
-
-    it('appDir=. 时保留原结构', () => {
-      const result = getSchemaOutputPath('api/hello/handler.ts', '.', 'dist', '/root');
+    it('打平 src 前缀（src/api/hello/handler.ts → dist/api/hello/zod.js）', () => {
+      const result = getSchemaOutputPath('src/api/hello/handler.ts', 'dist', '/root');
       expect(result).toBe(join('/root', 'dist', 'api', 'hello', 'zod.js'));
     });
 
     it('dev 模式输出到 .faapi/dev', () => {
-      const result = getSchemaOutputPath('src/api/user/handler.ts', 'src', '.faapi/dev', '/root');
+      const result = getSchemaOutputPath('src/api/user/handler.ts', '.faapi/dev', '/root');
       expect(result).toBe(join('/root', '.faapi', 'dev', 'api', 'user', 'zod.js'));
     });
   });
@@ -336,10 +331,10 @@ export function GET(query: GETQuery) { return query; }
       );
 
       const routes = singleFileRoutes('src/api/user/handler.ts', ['GET'], '/api/user');
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
 
-      const expectedPath = join(outDir, 'api', 'user', 'zod.js');
+      const expectedPath = join(dist, 'api', 'user', 'zod.js');
       expect(existsSync(expectedPath)).toBe(true);
 
       const content = readFileSync(expectedPath, 'utf-8');
@@ -376,10 +371,10 @@ export function POST(body: POSTBody) { return body; }
           isDynamic: false,
         },
       ];
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
 
-      const schemaPath = join(outDir, 'api', 'user', 'zod.js');
+      const schemaPath = join(dist, 'api', 'user', 'zod.js');
       const content = readFileSync(schemaPath, 'utf-8');
       expect(content).toContain('export const GETQuerySchema');
       expect(content).toContain('export const POSTBodySchema');
@@ -416,16 +411,16 @@ export function GET(query: GETQuery) { return query; }
           isDynamic: false,
         },
       ];
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
 
-      expect(existsSync(join(outDir, 'api', 'user', 'zod.js'))).toBe(true);
-      expect(existsSync(join(outDir, 'api', 'health', 'zod.js'))).toBe(true);
+      expect(existsSync(join(dist, 'api', 'user', 'zod.js'))).toBe(true);
+      expect(existsSync(join(dist, 'api', 'health', 'zod.js'))).toBe(true);
 
-      const userContent = readFileSync(join(outDir, 'api', 'user', 'zod.js'), 'utf-8');
+      const userContent = readFileSync(join(dist, 'api', 'user', 'zod.js'), 'utf-8');
       expect(userContent).toContain('export const GETQuerySchema');
 
-      const healthContent = readFileSync(join(outDir, 'api', 'health', 'zod.js'), 'utf-8');
+      const healthContent = readFileSync(join(dist, 'api', 'health', 'zod.js'), 'utf-8');
       // 无类型声明，不导出 Schema
       expect(healthContent).toContain("import { z } from 'zod'");
       expect(healthContent).not.toContain('export const GETQuerySchema');
@@ -445,10 +440,10 @@ export function GET(query: GETQuery) { return query; }
       );
 
       const routes = singleFileRoutes('src/api/user/handler.ts', ['GET'], '/api/user');
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
 
-      const schemaPath = join(outDir, 'api', 'user', 'zod.js');
+      const schemaPath = join(dist, 'api', 'user', 'zod.js');
       const mod = (await importWithCacheBust(schemaPath)) as {
         GETQuerySchema: { safeParse: (v: unknown) => { success: boolean } };
         [key: string]: unknown;
@@ -492,10 +487,10 @@ export function GET(query: GETQuery) { return query; }
       );
 
       const routes = singleFileRoutes('src/api/tree/handler.ts', ['GET'], '/api/tree');
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
 
-      const schemaPath = join(outDir, 'api', 'tree', 'zod.js');
+      const schemaPath = join(dist, 'api', 'tree', 'zod.js');
       const mod = (await importWithCacheBust(schemaPath)) as {
         GETQuerySchema: { safeParse: (v: unknown) => { success: boolean } };
       };
@@ -515,10 +510,10 @@ export function GET(query: GETQuery) { return query; }
     });
 
     it('无路由时不报错', async () => {
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles([], tempDir, 'src', outDir);
-      // outDir 可能不存在（无文件需要写）
-      expect(existsSync(outDir)).toBe(false);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles([], tempDir, dist);
+      // dist 可能不存在（无文件需要写）
+      expect(existsSync(dist)).toBe(false);
     });
 
     it('dev 模式输出到 .faapi/dev', async () => {
@@ -532,10 +527,10 @@ export function GET(query: GETQuery) { return query; }
       );
 
       const routes = singleFileRoutes('src/api/user/handler.ts', ['GET'], '/api/user');
-      const outDir = join(tempDir, '.faapi', 'dev');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, '.faapi', 'dev');
+      await generateSchemaFiles(routes, tempDir, dist);
 
-      expect(existsSync(join(outDir, 'api', 'user', 'zod.js'))).toBe(true);
+      expect(existsSync(join(dist, 'api', 'user', 'zod.js'))).toBe(true);
     });
 
     it('含 coerce schema 时生成 faapi-helpers.js 并通过 import 复用', async () => {
@@ -549,18 +544,18 @@ export function GET(query: GETQuery) { return query; }
       );
 
       const routes = singleFileRoutes('src/api/user/handler.ts', ['GET'], '/api/user');
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
 
-      // faapi-helpers.js 生成在 outDir 根部
-      const helpersPath = join(outDir, 'faapi-helpers.js');
+      // faapi-helpers.js 生成在 dist 根部
+      const helpersPath = join(dist, 'faapi-helpers.js');
       expect(existsSync(helpersPath)).toBe(true);
       const helpersContent = readFileSync(helpersPath, 'utf-8');
       expect(helpersContent).toContain('export const coerceNumber');
       expect(helpersContent).toContain('export const coerceBoolean');
 
       // zod.js 通过相对路径 import helpers
-      const zodPath = join(outDir, 'api', 'user', 'zod.js');
+      const zodPath = join(dist, 'api', 'user', 'zod.js');
       const zodContent = readFileSync(zodPath, 'utf-8');
       // zod.js 在 dist/api/user/，helpers 在 dist/，相对路径为 ../../faapi-helpers.js
       expect(zodContent).toContain("from '../../faapi-helpers.js'");
@@ -587,13 +582,13 @@ export function POST(body: POSTBody) { return body; }
           isDynamic: false,
         },
       ];
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
 
       // 无 coerce schema（POSTBody 不以 Query/Params 结尾），不生成 helpers
-      expect(existsSync(join(outDir, 'faapi-helpers.js'))).toBe(false);
+      expect(existsSync(join(dist, 'faapi-helpers.js'))).toBe(false);
 
-      const zodPath = join(outDir, 'api', 'user', 'zod.js');
+      const zodPath = join(dist, 'api', 'user', 'zod.js');
       const zodContent = readFileSync(zodPath, 'utf-8');
       expect(zodContent).not.toContain('faapi-helpers.js');
     });
@@ -621,17 +616,17 @@ export function POST(form: LoginForm) { return form; }
           isDynamic: false,
         },
       ];
-      const outDir = join(tempDir, 'dist');
-      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
 
-      const schemaPath = join(outDir, 'api', 'login', 'zod.js');
+      const schemaPath = join(dist, 'api', 'login', 'zod.js');
       const content = readFileSync(schemaPath, 'utf-8');
       // schema 名为 POSTBodySchema（运行时 validateInput 用此 key 查找）
       expect(content).toContain('export const POSTBodySchema');
       // coerce=true：含 z.preprocess
       expect(content).toContain('z.preprocess');
       // 因含 coerce schema，应生成 faapi-helpers.js
-      expect(existsSync(join(outDir, 'faapi-helpers.js'))).toBe(true);
+      expect(existsSync(join(dist, 'faapi-helpers.js'))).toBe(true);
 
       // 端到端 safeParse：form-urlencoded 值（string）能被 coerce 转换通过
       const mod = (await importWithCacheBust(schemaPath)) as {

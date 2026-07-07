@@ -124,10 +124,8 @@ function findAllowedMethods(routes: RouteManifest, path: string): string[] {
 export interface CreateServerOptions {
   routes: RouteManifest;
   rootDir: string;
-  /** app 目录前缀（如 'src' 或 '.'），用于计算 schema 路径 */
-  appDir: string;
-  /** 产物输出目录（如 '.faapi/dev' 或 'dist'），用于计算 schema 路径 */
-  outDir: string;
+  /** 产物输出目录（如 '.faapi/dev' 或 '.faapi/build'），用于计算 schema 路径 */
+  dist: string;
   cors?: CorsOptions | boolean;
   /** 请求错误钩子（在错误响应生成后调用，用于副作用；不修改已发出的响应） */
   onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
@@ -167,8 +165,7 @@ export function createServer(options: CreateServerOptions): {
   const {
     routes,
     rootDir,
-    appDir,
-    outDir,
+    dist,
     cors: corsOption,
     onError,
     config,
@@ -230,8 +227,7 @@ export function createServer(options: CreateServerOptions): {
     handleRequest(
       currentRoutes,
       rootDir,
-      appDir,
-      outDir,
+      dist,
       req,
       res,
       configMiddlewares,
@@ -257,8 +253,7 @@ export function createServer(options: CreateServerOptions): {
 async function handleRequest(
   routes: RouteManifest,
   rootDir: string,
-  appDir: string,
-  outDir: string,
+  dist: string,
   req: IncomingMessage,
   res: ServerResponse,
   configMiddlewares: FaapiMiddleware[],
@@ -302,7 +297,7 @@ async function handleRequest(
 
     // 参数校验（运行时按 route.filePath 计算 zod.js 路径，import 并 safeParse）
     const inputType = getInputTypeForMethod(route.method);
-    const schemaPath = getRuntimeSchemaPath(route.filePath, appDir, outDir, rootDir);
+    const schemaPath = getRuntimeSchemaPath(route.filePath, dist, rootDir);
     const result = await validateInput(schemaPath, route.method, inputType, input);
     if (!result.valid) {
       throw new ValidationError('参数校验失败', result.issues);

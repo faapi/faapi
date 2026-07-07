@@ -16,7 +16,7 @@ const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');
 
 let server: Server | null = null;
 let baseUrl: string;
-let schemaOutDir: string;
+let schemaDist: string;
 
 /**
  * 全局注入器：db 返回固定 rows，globalUser 返回全局用户
@@ -33,14 +33,13 @@ const globalInjectors: InjectorMap = {
 beforeAll(async () => {
   const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
   const sorted = sortRoutes(routes);
-  // 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + outDir 计算 zod.js 路径）
-  schemaOutDir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-inj-schema-'));
-  await generateSchemaFiles(sorted, FIXTURES_DIR, '.', schemaOutDir);
+  // 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + dist 计算 zod.js 路径）
+  schemaDist = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-inj-schema-'));
+  await generateSchemaFiles(sorted, FIXTURES_DIR, schemaDist);
   const { server: srv } = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,
-    appDir: '.',
-    outDir: schemaOutDir,
+    dist: schemaDist,
     injectors: globalInjectors,
   });
 
@@ -70,8 +69,8 @@ afterAll(async () => {
     });
     server = null;
   }
-  if (schemaOutDir) {
-    await fs.rm(schemaOutDir, { recursive: true, force: true });
+  if (schemaDist) {
+    await fs.rm(schemaDist, { recursive: true, force: true });
   }
   invalidateSchemaCache();
 });
@@ -113,8 +112,7 @@ describe('全局注入器与目录注入器同名覆盖', () => {
     const { server: srv } = createServer({
       routes: sorted,
       rootDir: FIXTURES_DIR,
-      appDir: '.',
-      outDir: schemaOutDir,
+      dist: schemaDist,
       injectors: {
         user: () => ({ name: 'global-alice', role: 'global-admin' }),
       },

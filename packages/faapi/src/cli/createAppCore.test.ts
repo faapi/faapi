@@ -25,19 +25,19 @@ import { invalidateSchemaCache } from '../validator/validateInput';
  */
 describe('createAppBase', () => {
   let tempDir: string;
-  let savedOutDir: string | undefined;
+  let savedDist: string | undefined;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `faapi-appcore-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
-    savedOutDir = process.env.FAAPI_OUT_DIR;
+    savedDist = process.env.FAAPI_DIST;
     invalidateMiddlewareCache();
     invalidateProgramCache();
   });
 
   afterEach(async () => {
-    if (savedOutDir === undefined) delete process.env.FAAPI_OUT_DIR;
-    else process.env.FAAPI_OUT_DIR = savedOutDir;
+    if (savedDist === undefined) delete process.env.FAAPI_DIST;
+    else process.env.FAAPI_DIST = savedDist;
     invalidateSchemaCache();
     invalidateMiddlewareCache();
     invalidateProgramCache();
@@ -54,14 +54,14 @@ describe('createAppBase', () => {
     );
   }
 
-  async function compileArtifacts(outDir: 'dist' | '.faapi/dev') {
-    await compileDevRoutes({ rootDir: tempDir, appDir: 'src', outDir });
-    await compileConfig({ rootDir: tempDir, outDir });
-    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], 'src', outDir);
+  async function compileArtifacts(dist: '.faapi/build' | '.faapi/dev') {
+    await compileDevRoutes({ rootDir: tempDir, dist });
+    await compileConfig({ rootDir: tempDir, dist });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], dist);
     const sorted = sortRoutes(routes);
-    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'src', outDir);
-    await writeRoutesModule(serialized, join(tempDir, outDir, 'faapi-routes.js'));
-    await generateSchemaFiles(sorted, tempDir, 'src', outDir);
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, dist);
+    await writeRoutesModule(serialized, join(tempDir, dist, 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, dist);
   }
 
   function options(): CreateAppOptions {
@@ -70,12 +70,12 @@ describe('createAppBase', () => {
 
   it('返回 { app, ctx } 双值', async () => {
     writeHandler();
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/build');
     const { app, ctx } = await createAppBase(options());
     expect(app).toBeDefined();
     expect(ctx).toBeDefined();
     expect(ctx.rootDir).toBe(tempDir);
-    expect(ctx.outDir).toBe('dist');
+    expect(ctx.dist).toBe('.faapi/build');
     expect(ctx.server).toBeDefined();
     expect(ctx.routesRef).toBeDefined();
     await app.close();
@@ -87,7 +87,7 @@ describe('createAppBase', () => {
 
   it('ctx.updateRoutes 同步更新 app.routes 和 routesRef', async () => {
     writeHandler();
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/build');
     const { app, ctx } = await createAppBase(options());
     const originalRoutes = app.routes;
     expect(originalRoutes.length).toBeGreaterThan(0);
@@ -106,7 +106,7 @@ describe('createAppBase', () => {
     // handler 返回 null → 204 无 body → sendNodeResponse 走 res.end() 不走 pipe
     // （inject 的 mockRes 非 Writable，不支持 pipe）
     writeHandler(`export function GET() { return null; }\n`);
-    await compileArtifacts('dist');
+    await compileArtifacts('.faapi/build');
     const { app } = await createAppBase(options());
 
     const res = await app.inject({ method: 'GET', path: '/api/hello' });
@@ -115,25 +115,25 @@ describe('createAppBase', () => {
     await app.close();
   });
 
-  it('FAAPI_OUT_DIR 指向 .faapi/dev 时读 dev 产物', async () => {
+  it('FAAPI_DIST 指向 .faapi/dev 时读 dev 产物', async () => {
     writeHandler();
     await compileArtifacts('.faapi/dev');
-    process.env.FAAPI_OUT_DIR = '.faapi/dev';
+    process.env.FAAPI_DIST = '.faapi/dev';
 
     const { app, ctx } = await createAppBase(options());
-    expect(ctx.outDir).toBe('.faapi/dev');
+    expect(ctx.dist).toBe('.faapi/dev');
     expect(app.routes.length).toBeGreaterThan(0);
     await app.close();
   });
 
-  it('options.outDir 覆盖环境变量 FAAPI_OUT_DIR', async () => {
+  it('options.dist 覆盖环境变量 FAAPI_DIST', async () => {
     writeHandler();
     await compileArtifacts('.faapi/dev');
-    // 环境变量指向 dist，options 指向 .faapi/dev —— options 应优先
-    process.env.FAAPI_OUT_DIR = 'dist';
+    // 环境变量指向 .faapi/build，options 指向 .faapi/dev —— options 应优先
+    process.env.FAAPI_DIST = '.faapi/build';
 
-    const { app, ctx } = await createAppBase({ rootDir: tempDir, outDir: '.faapi/dev' });
-    expect(ctx.outDir).toBe('.faapi/dev');
+    const { app, ctx } = await createAppBase({ rootDir: tempDir, dist: '.faapi/dev' });
+    expect(ctx.dist).toBe('.faapi/dev');
     expect(app.routes.length).toBeGreaterThan(0);
     await app.close();
   });

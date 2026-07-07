@@ -30,7 +30,7 @@ export interface DevApp extends AppBase {
  * // devCommand 内部
  * const app = await createDevApp();
  * await app.listen();
- * startWatcher({ rootDir, appDir, app });
+ * startWatcher({ rootDir, app, devDist });
  * ```
  */
 export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> {
@@ -47,9 +47,9 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     invalidateSchemaCache();
     // 重新扫描路由 + 重新生成 schema
     // 不走 faapi-routes.js 重新 import——ESM 模块缓存难以可靠绕过，直接 scanRoutes 更稳定
-    const reScanned = await scanRoutes(ctx.rootDir, ctx.patterns, ctx.appDir, ctx.outDir);
+    const reScanned = await scanRoutes(ctx.rootDir, ctx.patterns, ctx.dist);
     const sorted = sortRoutes(reScanned.routes);
-    await generateSchemaFiles(sorted, ctx.rootDir, ctx.appDir, ctx.outDir);
+    await generateSchemaFiles(sorted, ctx.rootDir, ctx.dist);
     // 更新 app 和 server 路由引用
     ctx.updateRoutes(sorted, reScanned.wsRoutes);
   };

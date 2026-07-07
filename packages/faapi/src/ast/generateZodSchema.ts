@@ -256,7 +256,7 @@ function baseExpression(type: RuntimeType, ctx: CodeGenContext): string {
  * - 合法数字字符串（"1"、"3.14"）转为 number
  * - 空串/NaN 保留原值，让 z.number() 报错（避免 Number("") = 0 的陷阱）
  *
- * 写入 outDir 根部的 faapi-helpers.js，各 zod.js 通过相对路径 import 复用。
+ * 写入 dist 根部的 faapi-helpers.js，各 zod.js 通过相对路径 import 复用。
  */
 export const COERCE_NUMBER_HELPER =
   'export const coerceNumber = (v) => typeof v === "string" && v.trim() !== "" && !isNaN(Number(v)) ? Number(v) : v;';
@@ -269,7 +269,7 @@ export const COERCE_NUMBER_HELPER =
  * - 'false'/'0' → false
  * - 其他值保留原值，让 z.boolean() 报错
  *
- * 写入 outDir 根部的 faapi-helpers.js，各 zod.js 通过相对路径 import 复用。
+ * 写入 dist 根部的 faapi-helpers.js，各 zod.js 通过相对路径 import 复用。
  */
 export const COERCE_BOOLEAN_HELPER =
   'export const coerceBoolean = (v) => v === "true" || v === "1" ? true : v === "false" || v === "0" ? false : v;';
@@ -304,7 +304,7 @@ export const COERCE_SET_HELPER =
   'export const coerceSet = (v) => v instanceof Set ? v : (Array.isArray(v) ? new Set(v) : v);';
 
 /**
- * faapi-helpers.js 文件名（生成在 outDir 根部）
+ * faapi-helpers.js 文件名（生成在 dist 根部）
  */
 export const HELPERS_FILENAME = 'faapi-helpers.js';
 
