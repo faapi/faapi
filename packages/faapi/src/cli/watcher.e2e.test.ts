@@ -29,7 +29,7 @@ describe('watcher 热替换', () => {
     tempDir = join(tmpdir(), `faapi-watcher-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
     savedDist = process.env.FAAPI_DIST;
-    process.env.FAAPI_DIST = '.faapi/dev';
+    process.env.FAAPI_DIST = '.faapi';
     invalidateMiddlewareCache();
     invalidateProgramCache();
   });
@@ -49,13 +49,13 @@ describe('watcher 热替换', () => {
     writeFileSync(handlerPath, `export function GET() { return { hello: 'world' }; }\n`, 'utf-8');
 
     // 编译产物三元组
-    await compileDevRoutes({ rootDir: tempDir, dist: '.faapi/dev' });
-    await compileConfig({ rootDir: tempDir, dist: '.faapi/dev' });
-    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi/dev');
+    await compileDevRoutes({ rootDir: tempDir, dist: '.faapi' });
+    await compileConfig({ rootDir: tempDir, dist: '.faapi' });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi');
     const sorted = sortRoutes(routes);
-    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, '.faapi/dev');
-    await writeRoutesModule(serialized, join(tempDir, '.faapi/dev', 'faapi-routes.js'));
-    await generateSchemaFiles(sorted, tempDir, '.faapi/dev');
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, '.faapi');
+    await writeRoutesModule(serialized, join(tempDir, '.faapi', 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, '.faapi');
 
     // 启动 dev 应用
     const app: DevApp = await createDevApp({ rootDir: tempDir });
@@ -65,7 +65,7 @@ describe('watcher 热替换', () => {
     await app.listen(0);
 
     // 启动 watcher
-    startWatcher({ rootDir: tempDir, app, devDist: '.faapi/dev' });
+    startWatcher({ rootDir: tempDir, app, devDist: '.faapi' });
 
     // 等 chokidar 初始化
     await new Promise((r) => setTimeout(r, 600));
@@ -89,19 +89,19 @@ describe('watcher 热替换', () => {
     mkdirSync(join(handlerPath, '..'), { recursive: true });
     writeFileSync(handlerPath, `export function GET() { return { ok: true }; }\n`, 'utf-8');
 
-    await compileDevRoutes({ rootDir: tempDir, dist: '.faapi/dev' });
-    await compileConfig({ rootDir: tempDir, dist: '.faapi/dev' });
-    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi/dev');
+    await compileDevRoutes({ rootDir: tempDir, dist: '.faapi' });
+    await compileConfig({ rootDir: tempDir, dist: '.faapi' });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi');
     const sorted = sortRoutes(routes);
-    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, '.faapi/dev');
-    await writeRoutesModule(serialized, join(tempDir, '.faapi/dev', 'faapi-routes.js'));
-    await generateSchemaFiles(sorted, tempDir, '.faapi/dev');
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, '.faapi');
+    await writeRoutesModule(serialized, join(tempDir, '.faapi', 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, '.faapi');
 
     const app: DevApp = await createDevApp({ rootDir: tempDir });
     const reloadSpy = vi.spyOn(app, 'reloadRoutes').mockImplementation(async () => {});
     await app.listen(0);
 
-    startWatcher({ rootDir: tempDir, app, devDist: '.faapi/dev' });
+    startWatcher({ rootDir: tempDir, app, devDist: '.faapi' });
     await new Promise((r) => setTimeout(r, 600));
 
     // 删除 handler.ts

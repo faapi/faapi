@@ -67,7 +67,7 @@ export interface LifecycleContext {
  *
  * 框架元信息通过环境变量配置（不放在 config 内）：
  * - `PORT`：服务端口，默认 3000
- * - `FAAPI_DIST`：产物输出目录（实际目录），dev 为 <dist>/dev（默认 .faapi/dev），prod 为 <dist>/build（默认 .faapi/build）
+ * - `FAAPI_DIST`：产物输出目录，dev 固定为 `.faapi`（不可修改），prod 默认为 `dist`（可通过 `--dist` 修改）
  */
 export interface FaapiConfig {
   /** CORS 配置，false 禁用 */

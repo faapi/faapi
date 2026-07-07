@@ -37,8 +37,8 @@ describe('createDevApp', () => {
     );
     mkdirSync(tempDir, { recursive: true });
     savedDist = process.env.FAAPI_DIST;
-    // dev 模式由 devCommand 设 FAAPI_DIST=<rootDist>/dev，这里模拟该行为
-    process.env.FAAPI_DIST = '.faapi/dev';
+    // dev 模式由 devCommand 设 FAAPI_DIST=.faapi，这里模拟该行为
+    process.env.FAAPI_DIST = '.faapi';
     invalidateMiddlewareCache();
     invalidateProgramCache();
   });
@@ -62,7 +62,7 @@ describe('createDevApp', () => {
     );
   }
 
-  async function compileArtifacts(dist: '.faapi/dev') {
+  async function compileArtifacts(dist: '.faapi') {
     await compileDevRoutes({ rootDir: tempDir, dist });
     await compileConfig({ rootDir: tempDir, dist });
     const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], dist);
@@ -74,7 +74,7 @@ describe('createDevApp', () => {
 
   it('水合路由清单', async () => {
     writeHandler();
-    await compileArtifacts('.faapi/dev');
+    await compileArtifacts('.faapi');
 
     const app = await createDevApp({ rootDir: tempDir });
     expect(app.routes.length).toBeGreaterThan(0);
@@ -85,7 +85,7 @@ describe('createDevApp', () => {
 
   it('listen 启动 server，close 关闭', async () => {
     writeHandler();
-    await compileArtifacts('.faapi/dev');
+    await compileArtifacts('.faapi');
 
     const app = await createDevApp({ rootDir: tempDir });
     const server = await app.listen(0);
@@ -96,14 +96,14 @@ describe('createDevApp', () => {
 
   it('reloadRoutes 重新扫描路由（新增 handler 后生效）', async () => {
     writeHandler();
-    await compileArtifacts('.faapi/dev');
+    await compileArtifacts('.faapi');
 
     const app = await createDevApp({ rootDir: tempDir });
     const initialCount = app.routes.length;
 
     // 新增路由 + 重新编译产物（watcher 触发时的行为模拟）
     writeHandler('api/user/handler.ts');
-    await compileArtifacts('.faapi/dev');
+    await compileArtifacts('.faapi');
 
     await app.reloadRoutes();
     expect(app.routes.length).toBe(initialCount + 1);
@@ -121,7 +121,7 @@ describe('createDevApp', () => {
       `export default { db: { host: 'localhost', port: 5432 } };\n`,
       'utf-8',
     );
-    await compileArtifacts('.faapi/dev');
+    await compileArtifacts('.faapi');
 
     const app = await createDevApp({ rootDir: tempDir });
     expect(app.routes.length).toBeGreaterThan(0);

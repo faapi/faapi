@@ -124,7 +124,7 @@ function findAllowedMethods(routes: RouteManifest, path: string): string[] {
 export interface CreateServerOptions {
   routes: RouteManifest;
   rootDir: string;
-  /** 产物输出目录（如 '.faapi/dev' 或 '.faapi/build'），用于计算 schema 路径 */
+  /** 产物输出目录（如 '.faapi' 或 'dist'），用于计算 schema 路径 */
   dist: string;
   cors?: CorsOptions | boolean;
   /** 请求错误钩子（在错误响应生成后调用，用于副作用；不修改已发出的响应） */

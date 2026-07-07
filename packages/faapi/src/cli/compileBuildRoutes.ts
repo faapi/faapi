@@ -13,7 +13,7 @@ const APP_DIR = 'src';
 export interface CompileBuildOptions {
   /** 项目根目录 */
   rootDir: string;
-  /** 输出目录（build 模式为 `.faapi/build`） */
+  /** 输出目录（build 模式为 `dist`） */
   dist: string;
   /**
    * 增量编译：传入要编译的文件列表（绝对路径）。
@@ -48,7 +48,7 @@ export interface CompileBuildOptions {
  * 框架采用零入口设计——用户无需编写 main.ts，dev/prod 启动由 CLI 内部编排。
  *
  * @example
- * await compileBuildRoutes({ rootDir, dist: '.faapi/build' });
+ * await compileBuildRoutes({ rootDir, dist: 'dist' });
  */
 export async function compileBuildRoutes(options: CompileBuildOptions): Promise<CompileResult> {
   const { rootDir, dist, files, logLevel = 'silent' } = options;

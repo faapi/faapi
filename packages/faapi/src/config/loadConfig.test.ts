@@ -57,12 +57,12 @@ describe('loadConfig', () => {
     expect(result!.db).toEqual({ host: 'prod' });
   });
 
-  it('可指定任意 dist（如 .faapi/dev）', async () => {
+  it('可指定任意 dist（如 .faapi）', async () => {
     const dir = makeDir({
-      '.faapi/dev/faapi-config.js': `export default { port: 3000 };\n`,
+      '.faapi/faapi-config.js': `export default { port: 3000 };\n`,
     });
 
-    const result = await loadConfig(dir, '.faapi/dev');
+    const result = await loadConfig(dir, '.faapi');
     expect(result).not.toBeNull();
     expect(result!.port).toBe(3000);
   });

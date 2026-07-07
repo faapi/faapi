@@ -170,11 +170,11 @@ CLI 选项（优先于环境变量）：
 | 选项 | 命令 | 说明 | 对应环境变量 |
 |------|------|------|-------------|
 | `--port <number>` | dev / build | dev: dev 服务器端口；build: 写入 `dist/main.js` 的 `listen()` | `PORT` |
-| `--dist <dir>` | build | 产物输出目录，默认 `dist` | `FAAPI_DIST` |
+| `--dist <dir>` | build | 产物输出目录（默认 `dist`） | `FAAPI_DIST` |
 
 ```bash
 faapi dev --port 8080                 # dev: 8080 端口
-faapi build --port 8080 --dist build # build: 产物到 build/，prod 端口 8080
+faapi build --port 8080 --dist build # build: 产物输出目录为 build/，端口 8080
 PORT=3000 faapi dev                    # 也可继续用环境变量
 ```
 
@@ -311,7 +311,6 @@ export function GET() { ... }
 
 ```
 Error: dist/faapi-routes.js 不存在
-```
 
 **原因**:没跑 `faapi build` 就用 `node dist/main` 启动。
 

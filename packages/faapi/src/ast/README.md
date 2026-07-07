@@ -70,7 +70,7 @@ filePath
 
 - 每个命名类型生成一个 `NameSchema` 声明（循环引用用 `z.lazy(() => schema)` 包裹）
 - 循环引用通过 `z.lazy` 延迟求值，天然支持递归
-- `generateSchemaFiles` 为每个 handler 生成 `zod.js`（与 handler.js 同级），dev 模式写入 `.faapi/dev/`，prd 模式写入 `.faapi/build/`
+- `generateSchemaFiles` 为每个 handler 生成 `zod.js`（与 handler.js 同级），dev 模式写入 `.faapi/`，prd 模式写入 `dist/`
 
 ## 相关模块
 

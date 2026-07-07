@@ -20,7 +20,7 @@ import {
  * 路由源码目录写死为 src，剥离 `src/` 前缀。
  *
  * @param sourceFile 源文件相对路径（相对 rootDir，如 'src/api/hello/handler.ts'）
- * @param dist 输出目录（如 'dist' 或 '.faapi/dev'）
+ * @param dist 输出目录（如 'dist' 或 '.faapi'）
  * @param rootDir 项目根目录
  */
 export function getSchemaOutputPath(sourceFile: string, dist: string, rootDir: string): string {
@@ -49,7 +49,7 @@ export function getSchemaOutputPath(sourceFile: string, dist: string, rootDir: s
  * - prod：strip 'dist/' 前缀，join dist（dist='dist'，结果与 rootDir 一致）
  *
  * @param filePath route.filePath（dev 为源码路径，prod 为产物路径）
- * @param dist 输出目录（如 'dist' 或 '.faapi/dev'）
+ * @param dist 输出目录（如 'dist' 或 '.faapi'）
  * @param rootDir 项目根目录
  */
 export function getRuntimeSchemaPath(filePath: string, dist: string, rootDir: string): string {
@@ -166,7 +166,7 @@ export function generateSchemaFileSource(
  * 为路由清单中每个 handler 生成 zod.js
  *
  * 输出路径与 handler.js 同级（文件名固定为 zod.js）：
- * - dev：`.faapi/dev/api/hello/zod.js`
+ * - dev：`.faapi/api/hello/zod.js`
  * - prod：`dist/api/hello/zod.js`
  *
  * 公用函数复用：若项目中存在 coerce schema（query/params）或 Map/Set 字段，
@@ -182,7 +182,7 @@ export function generateSchemaFileSource(
  *
  * @param routes 排序后的路由清单
  * @param rootDir 项目根目录
- * @param dist 输出目录（如 '.faapi/dev' 或 'dist'）
+ * @param dist 输出目录（如 '.faapi' 或 'dist'）
  */
 export async function generateSchemaFiles(
   routes: RouteManifest,

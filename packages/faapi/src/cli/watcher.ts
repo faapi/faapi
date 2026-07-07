@@ -9,7 +9,7 @@ export interface WatchOptions {
   rootDir: string;
   /** dev 应用实例（调用 app.reloadRoutes 热替换） */
   app: DevApp;
-  /** dev 产物目录（如 .faapi/dev），用于增量编译与配置重生成 */
+  /** dev 产物目录（如 .faapi），用于增量编译与配置重生成 */
   devDist: string;
 }
 

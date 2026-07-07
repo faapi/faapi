@@ -40,7 +40,7 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 
 ## 核心约定(所有场景通用)
 
-- **路由根目录**:默认 `src/api/`,文件名 `handler.ts`
+- **路由根目录**:固定为 `src/api/`,文件名 `handler.ts`
 - **中间件文件**:`middlewares.ts`,与 `handler.ts` 同目录或父目录
 - **包管理器**:pnpm
 - **模块系统**:ESM,`moduleResolution: Bundler`,本地相对导入路径不写后缀

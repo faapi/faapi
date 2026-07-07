@@ -5,7 +5,7 @@
 ## 为什么需要
 
 替代原 `generateSchema.ts` 的统一 manifest 方案：
-- **原方案**：所有 handler 的 schema 打包到 `.faapi/build/faapi-schema.js`，运行时加载到 schemaRegistry
+- **原方案**：所有 handler 的 schema 打包到 `dist/faapi-schema.js`，运行时加载到 schemaRegistry
 - **新方案**：每个 handler 一个 `zod.js`，与 `handler.js` 同级，运行时按需 import
 
 好处：
@@ -15,13 +15,13 @@
 
 ## 使用场景
 
-- `faapi dev`：生成 `.faapi/dev/api/hello/zod.js`
-- `faapi build`：生成 `.faapi/build/api/hello/zod.js`
+- `faapi dev`：生成 `.faapi/api/hello/zod.js`
+- `faapi build`：生成 `dist/api/hello/zod.js`
 - 运行时 `validateInput` 按 route 的 schemaPath import 对应 zod.js
 
 ## 文件命名与路径
 
-- `src/api/hello/handler.ts` → `.faapi/build/api/hello/zod.js`（与 handler.js 同级）
+- `src/api/hello/handler.ts` → `dist/api/hello/zod.js`（与 handler.js 同级）
 - 产物路径打平 src 前缀（与 compileDevRoutes / compileBuildRoutes 一致）
 
 ## zod.js 导出格式
@@ -63,7 +63,7 @@ coerce 公用函数（`coerceNumber` / `coerceBoolean`）提取到独立的 `faa
 
 **文件结构**：
 ```
-.faapi/build/
+dist/
 ├── faapi-helpers.js     ← 公用函数（仅一份，含 coerceNumber/coerceBoolean ESM export）
 ├── api/
 │   ├── hello/

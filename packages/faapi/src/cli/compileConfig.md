@@ -15,14 +15,14 @@ dev 和 prod 都调用 `compileConfig`，只是 dist 不同：
 
 | 模式 | 调用时机 | dist | 产物 |
 |------|---------|--------|------|
-| dev | `devCommand` 启动时 + watcher 文件变化时 | `.faapi/dev` | `.faapi/dev/faapi-config.js` |
-| prod | `buildCommand` 构建时 | `.faapi/build` | `.faapi/build/faapi-config.js` |
+| dev | `devCommand` 启动时 + watcher 文件变化时 | `.faapi` | `.faapi/faapi-config.js` |
+| prod | `buildCommand` 构建时 | `dist` | `dist/faapi-config.js` |
 
 ## 使用场景
 
-- `faapi dev` 启动时：`devCommand` 调 `compileConfig({ rootDir, dist: '.faapi/dev' })`
+- `faapi dev` 启动时：`devCommand` 调 `compileConfig({ rootDir, dist: '.faapi' })`
 - `faapi dev` watcher 文件变化时：`watcher` 调 `compileConfig`（如 `faapi.config.ts` 变化）
-- `faapi build` 构建时：`buildCommand` 调 `compileConfig({ rootDir, dist: '.faapi/build' })`
+- `faapi build` 构建时：`buildCommand` 调 `compileConfig({ rootDir, dist: 'dist' })`
 
 产物由 `loadConfig(rootDir, dist)` 在运行时统一 import。
 
@@ -99,8 +99,8 @@ export default deepMerge(base, env);
 
 - [config/deepMerge.ts](../config/deepMerge.ts) - `deepMerge` 函数与 `DEEP_MERGE_SOURCE` 字符串常量
 - [config/loadConfig.ts](../config/loadConfig.ts) - 运行时配置加载（统一读 `faapi-config.js` 产物）
-- [cli/buildCommand.ts](./buildCommand.ts) - 构建命令，调用 `compileConfig` 生成 `.faapi/build/faapi-config.js`
-- [cli/devCommand.ts](./devCommand.ts) - dev 命令，启动时调 `compileConfig` 生成 `.faapi/dev/faapi-config.js`
+- [cli/buildCommand.ts](./buildCommand.ts) - 构建命令，调用 `compileConfig` 生成 `dist/faapi-config.js`
+- [cli/devCommand.ts](./devCommand.ts) - dev 命令，启动时调 `compileConfig` 生成 `.faapi/faapi-config.js`
 - [cli/watcher.ts](./watcher.ts) - watcher 文件变化时调 `compileConfig` 重生成产物
 - [cli/aliasPlugin.ts](./aliasPlugin.ts) - specifier 重写插件（相对 + 别名），步骤 1 编译时挂载
 - [cli/compileDevRoutes.ts](./compileDevRoutes.ts) - 路由逐文件编译（与 config 编译一致）

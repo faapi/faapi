@@ -26,7 +26,7 @@ const APP_DIR = 'src';
  *
  * @param sourceAbsPath 源码绝对路径（如 /root/src/api/hello/handler.ts）
  * @param rootDir 项目根目录
- * @param dist 产物目录（.faapi/build 或 .faapi/dev）
+ * @param dist 产物目录（dist 或 .faapi）
  */
 function toProdAbsPath(sourceAbsPath: string, rootDir: string, dist: string): string {
   let rel = path.relative(rootDir, sourceAbsPath).replace(/\\/g, '/');
@@ -49,7 +49,7 @@ function toProdAbsPath(sourceAbsPath: string, rootDir: string, dist: string): st
  *
  * @param routeFilePath 源码相对路径（如 src/api/hello/handler.ts）
  * @param rootDir 项目根目录
- * @param dist 产物目录（.faapi/build 或 .faapi/dev），不传则加载源码
+ * @param dist 产物目录（dist 或 .faapi），不传则加载源码
  */
 async function findMergedMiddlewares(
   routeFilePath: string,
@@ -179,7 +179,7 @@ export async function hasWsExport(absPath: string): Promise<boolean> {
  *
  * @param rootDir 项目根目录
  * @param patterns glob patterns（源码 .ts 路径，如 src/api 下所有 .ts）
- * @param dist 产物目录（.faapi/build 或 .faapi/dev）。传入时 import 产物 .js（不依赖 tsx）；
+ * @param dist 产物目录（dist 或 .faapi）。传入时 import 产物 .js（不依赖 tsx）；
  *                不传时 import 源码 .ts（旧模式，需要 tsx）。
  */
 export async function scanRoutes(

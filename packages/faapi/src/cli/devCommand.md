@@ -4,17 +4,17 @@
 
 ## 为什么需要
 
-dev 模式与 `faapi build`（产线构建）为两套独立代码路径，仅共享工具级函数（`compileDevRoutes`/`compileConfig` 等）。dev 模式调用 `createDevApp`（含 `reloadRoutes` 热替换），prod 模式由 `node .faapi/build/main`（运行 `faapi build` 生成的启动入口）调用 `createProdApp`（精简），dev/prod 入口完全分离。
+dev 模式与 `faapi build`（产线构建）为两套独立代码路径，仅共享工具级函数（`compileDevRoutes`/`compileConfig` 等）。dev 模式调用 `createDevApp`（含 `reloadRoutes` 热替换），prod 模式由 `node dist/main`（运行 `faapi build` 生成的启动入口）调用 `createProdApp`（精简），dev/prod 入口完全分离。
 
-框架采用零入口设计——用户无需编写 `main.ts`：dev 由 `faapi dev` 内部编排，prod 由 `faapi build` 自动生成 `.faapi/build/main.js` 启动入口。
+框架采用零入口设计——用户无需编写 `main.ts`：dev 由 `faapi dev` 内部编排，prod 由 `faapi build` 自动生成 `dist/main.js` 启动入口。
 
-`devCommand` 是 CLI 端的薄编排层，负责生成与 `faapi build` 一致的产物三元组（只是 dist 为 `.faapi/dev`），让 `createDevApp` 走完全统一的读产物路径：
+`devCommand` 是 CLI 端的薄编排层，负责生成与 `faapi build` 一致的产物三元组（只是 dist 为 `.faapi`），让 `createDevApp` 走完全统一的读产物路径：
 
-1. 设置 `FAAPI_DIST=.faapi/dev` + `NODE_ENV=development`（仅未显式设置时兜底）
-2. `compileConfig` 编译配置源码 → `.faapi/dev/faapi-config.js`
-3. `loadConfig(rootDir, '.faapi/dev')` 读应用行为配置
-4. `compileDevRoutes` 编译 `.ts` → `.faapi/dev/**/*.js`（esbuild 逐文件，含别名重写）
-5. `generateRouteArtifacts` 生成 `.faapi/dev/faapi-routes.js` + 各 handler 的 `zod.js`
+1. 设置 `FAAPI_DIST=.faapi` + `NODE_ENV=development`（仅未显式设置时兜底）
+2. `compileConfig` 编译配置源码 → `.faapi/faapi-config.js`
+3. `loadConfig(rootDir, '.faapi')` 读应用行为配置
+4. `compileDevRoutes` 编译 `.ts` → `.faapi/**/*.js`（esbuild 逐文件，含别名重写）
+5. `generateRouteArtifacts` 生成 `.faapi/faapi-routes.js` + 各 handler 的 `zod.js`
 6. `createDevApp({ rootDir, port })` + `app.listen()` 启动 dev 应用（含 reloadRoutes 热替换能力）
 7. `startWatcher({ rootDir, app })`（文件变化时增量编译 + 重生成 config + 调 `app.reloadRoutes()`）
 
@@ -40,14 +40,14 @@ CLI 选项（`--port`）优先于环境变量（`PORT`）。
 3. `serializeRoutes` + `writeRoutesModule` 生成 `faapi-routes.js`
 4. `generateSchemaFiles` 生成各 handler 的 `zod.js`
 
-与 `buildCommand` 的对应步骤一致，只是 dist 为 `.faapi/dev`。
+与 `buildCommand` 的对应步骤一致，只是 dist 为 `.faapi`。
 
 ## 相关模块
 
 - `createDevApp.ts` - `devCommand` 直接调用，启动 dev 应用（含 reloadRoutes）
 - `createAppCore.ts` - `createDevApp` 的共享编排核心（createAppBase）
-- `compileDevRoutes.ts` - `devCommand` 编译 TypeScript 到 `.faapi/dev/`
-- `compileConfig.ts` - 编译配置源码为 `.faapi/dev/faapi-config.js`
+- `compileDevRoutes.ts` - `devCommand` 编译 TypeScript 到 `.faapi/`
+- `compileConfig.ts` - 编译配置源码为 `.faapi/faapi-config.js`
 - `generateRoutes.ts` - `generateRouteArtifacts` 生成 `faapi-routes.js`
 - `generateSchemaFiles.ts` - `generateRouteArtifacts` 生成 `zod.js`
 - `watcher.ts` - `devCommand` 启动的文件 watcher，接收 app 引用，调 `app.reloadRoutes()`

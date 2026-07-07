@@ -27,8 +27,8 @@ export interface InjectResponse {
   body: unknown;
 }
 
-/** 默认产物目录（prod 模式，对应 `faapi build` 默认输出到 `.faapi/build`） */
-const DEFAULT_DIST = '.faapi/build';
+/** 默认产物目录（prod 模式，对应 `faapi build` 默认输出到 `dist`） */
+const DEFAULT_DIST = 'dist';
 /** 默认端口 */
 const DEFAULT_PORT = 3000;
 /** 路由清单文件名（build/dev 启动时生成） */
@@ -57,7 +57,7 @@ function isFaapiConfigKey(key: string): boolean {
 export interface CreateAppOptions {
   /** 项目根目录，默认 process.cwd() */
   rootDir?: string;
-  /** 产物输出目录（实际目录，如 .faapi/build 或 .faapi/dev），覆盖环境变量 FAAPI_DIST，默认 '.faapi/build' */
+  /** 产物输出目录（如 dist 或 .faapi），覆盖环境变量 FAAPI_DIST，默认 'dist' */
   dist?: string;
   /** 端口号，也可在 listen() 时传入；默认环境变量 PORT 或 3000 */
   port?: number;
@@ -119,10 +119,10 @@ export interface AppContext {
  * 返回 AppBase（listen/close）+ AppContext（供 dev 扩展 reloadRoutes）。
  *
  * dist 由 `process.env.FAAPI_DIST` 决定：
- * - `faapi dev` 启动时设为 `<rootDist>/dev`（默认 `.faapi/dev`）→ 读 dev 产物
- * - `node <rootDist>/build/main` 不设 → 默认 `.faapi/build`，读 prod 产物
+ * - `faapi dev` 启动时固定设为 `.faapi` → 读 dev 产物
+ * - `node <dist>/main` 不设 → 默认 `dist`，读 prod 产物
  *
- * 不负责编译 TypeScript——编译由 `faapi dev`（esbuild → `<rootDist>/dev/`）和 `faapi build`（→ `<rootDist>/build/`）负责。
+ * 不负责编译 TypeScript——编译由 `faapi dev`（esbuild → `.faapi/`）和 `faapi build`（→ `dist/`）负责。
  * 不负责生成路由清单——`faapi dev`/`faapi build` 启动时生成 `faapi-routes.js`，createAppBase 直接水合。
  */
 export async function createAppBase(options?: CreateAppOptions): Promise<{

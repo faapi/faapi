@@ -23,12 +23,12 @@ faapi 是一个 Node.js 框架，核心理念是"函数即接口"。编写普通
 graph TD
     subgraph dev["dev 模式（faapi dev）"]
         A1["CLI faapi dev"] --> B1["compileDevRoutes 逐文件编译"]
-        B1 --> C1[".faapi/dev/ 产物"]
+        B1 --> C1[".faapi/ 产物"]
         C1 --> D1["createDevApp() + watcher"]
         D1 -.->|"reloadRoutes 热替换"| C1
     end
     subgraph build["build 模式（faapi build）"]
-        A2["CLI faapi build"] --> B2["compileBuildRoutes bundle 编译"]
+        A2["CLI faapi build"] --> B2["compileBuildRoutes 逐文件编译（bundle: false）"]
         B2 --> C2["dist/ + dist/main.js"]
     end
     subgraph prod["prod 模式（node dist/main）"]
@@ -84,7 +84,7 @@ export function POST(body: CreateUserBody) {
 ### 启动开发服务器
 
 ```bash
-faapi                      # 编译 src/ → .faapi/dev/，启动 dev server + watcher
+faapi                      # 编译 src/ → .faapi/，启动 dev server + watcher
 ```
 
 访问 `http://localhost:3000/api/user?page=1&pageSize=10` 即可获取数据。
@@ -109,7 +109,7 @@ PORT=8080 node dist/main
 ## CLI 命令
 
 ```bash
-faapi                      # 启动 dev server（编译 src/ → .faapi/dev/ 并 watch）
+faapi                      # 启动 dev server（编译 src/ → .faapi/ 并 watch）
 faapi dev                  # 同上
 faapi build                # 构建（编译 .ts → dist/，生成路由清单 + schema）
 node dist/main             # 启动生产服务器（需先 build，运行 dist/main.js）

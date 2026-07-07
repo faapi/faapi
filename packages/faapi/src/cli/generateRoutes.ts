@@ -48,12 +48,12 @@ export interface SerializedRouteManifest {
 }
 
 /**
- * 把源码 filePath（src/api/hello/handler.ts）转为产物路径（.faapi/build/api/hello/handler.js）
+ * 把源码 filePath（src/api/hello/handler.ts）转为产物路径（dist/api/hello/handler.js）
  *
  * 产物结构打平 src/ 前缀：去掉 `src/`，加 dist 前缀，.ts → .js。
  *
  * @param filePath 源码相对路径
- * @param dist 产物目录（.faapi/build 或 .faapi/dev）
+ * @param dist 产物目录（dist 或 .faapi）
  */
 function toProdFilePath(filePath: string, dist: string): string {
   let rel = filePath.replace(/\\/g, '/');
@@ -73,13 +73,13 @@ function toProdFilePath(filePath: string, dist: string): string {
  * - middlewarePaths 已排序（根在前，路由目录在后），start 时按序加载即可还原洋葱模型
  *
  * @param rootDir 项目根目录
- * @param dist 产物目录（.faapi/build 或 .faapi/dev），用于转换 filePath 和查找中间件
+ * @param dist 产物目录（dist 或 .faapi），用于转换 filePath 和查找中间件
  */
 export function serializeRoutes(
   routes: RouteManifest,
   wsRoutes: WsRouteManifest,
   rootDir: string,
-  dist: string = '.faapi/build',
+  dist: string = 'dist',
 ): SerializedRouteManifest {
   const serialize = <T extends RouteRecord | WsRouteRecord>(
     route: T,
@@ -113,7 +113,7 @@ export function serializeRoutes(
  *
  * @param routeFilePath 源码相对路径（如 src/api/hello/handler.ts）
  * @param rootDir 项目根目录
- * @param dist 产物目录（.faapi/build 或 .faapi/dev）
+ * @param dist 产物目录（dist 或 .faapi）
  */
 function extractMiddlewarePaths(routeFilePath: string, rootDir: string, dist: string): string[] {
   const routeDir = path.dirname(routeFilePath);

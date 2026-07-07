@@ -60,9 +60,9 @@ describe('generateSchemaFiles', () => {
       expect(result).toBe(join('/root', 'dist', 'api', 'hello', 'zod.js'));
     });
 
-    it('dev 模式输出到 .faapi/dev', () => {
-      const result = getSchemaOutputPath('src/api/user/handler.ts', '.faapi/dev', '/root');
-      expect(result).toBe(join('/root', '.faapi', 'dev', 'api', 'user', 'zod.js'));
+    it('dev 模式输出到 .faapi', () => {
+      const result = getSchemaOutputPath('src/api/user/handler.ts', '.faapi', '/root');
+      expect(result).toBe(join('/root', '.faapi', 'api', 'user', 'zod.js'));
     });
   });
 
@@ -516,7 +516,7 @@ export function GET(query: GETQuery) { return query; }
       expect(existsSync(dist)).toBe(false);
     });
 
-    it('dev 模式输出到 .faapi/dev', async () => {
+    it('dev 模式输出到 .faapi', async () => {
       const filePath = join(tempDir, 'src', 'api', 'user', 'handler.ts');
       mkdirSync(join(tempDir, 'src', 'api', 'user'), { recursive: true });
       writeFileSync(
@@ -527,7 +527,7 @@ export function GET(query: GETQuery) { return query; }
       );
 
       const routes = singleFileRoutes('src/api/user/handler.ts', ['GET'], '/api/user');
-      const dist = join(tempDir, '.faapi', 'dev');
+      const dist = join(tempDir, '.faapi');
       await generateSchemaFiles(routes, tempDir, dist);
 
       expect(existsSync(join(dist, 'api', 'user', 'zod.js'))).toBe(true);

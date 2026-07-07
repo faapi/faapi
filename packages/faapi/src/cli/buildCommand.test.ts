@@ -13,7 +13,7 @@ import { buildCommand } from './buildCommand';
  * - 产物结构（handler.js / middlewares.js / faapi-routes.js / faapi-config.js / zod.js）
  * - utils.ts 作为独立产物存在（不 bundle inline）
  *
- * 默认产物根目录为 .faapi，prod 产物输出到 .faapi/build/。
+ * 默认产物目录为 dist。
  */
 describe('buildCommand', () => {
   let tempDir: string;
@@ -32,8 +32,8 @@ describe('buildCommand', () => {
     else process.env.NODE_ENV = savedNodeEnv;
   });
 
-  /** 默认 prod 产物目录（.faapi/build） */
-  const OUT = '.faapi/build';
+  /** 默认 prod 产物目录（dist） */
+  const OUT = 'dist';
 
   /** 写文件到 tempDir 下指定相对路径 */
   function writeFile(relPath: string, content: string) {
@@ -99,7 +99,7 @@ export default [
 
     await buildCommand({ rootDir: tempDir });
 
-    // 1. 产物文件存在（默认输出到 .faapi/build/）
+    // 1. 产物文件存在（默认输出到 dist/）
     expect(existsSync(join(tempDir, OUT, 'api/hello/handler.js'))).toBe(true);
     expect(existsSync(join(tempDir, OUT, 'api/hello/middlewares.js'))).toBe(true);
     expect(existsSync(join(tempDir, OUT, 'faapi-routes.js'))).toBe(true);
@@ -131,7 +131,7 @@ export default [
     expect(routes).toContain('GET');
 
     // 5. main.js 启动入口内容（零入口设计：build 阶段自动生成）
-    //    默认 dist 不写入 createProdApp 参数（用默认 .faapi/build）
+    //    默认 dist 不写入 createProdApp 参数（用默认 dist）
     const mainContent = readFileSync(join(tempDir, OUT, 'main.js'), 'utf-8');
     expect(mainContent).toContain("import { createProdApp } from '@faapi/faapi'");
     expect(mainContent).toContain('await createProdApp()');
@@ -176,17 +176,17 @@ export default [
       `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
     );
 
-    // --dist 是产物根目录，prod 实际产物输出到 <dist>/build
+    // --dist 是产物输出目录
     await buildCommand({ rootDir: tempDir, dist: 'build-output' });
 
-    // 产物写入 build-output/build/ 而非默认 .faapi/build/
-    expect(existsSync(join(tempDir, 'build-output/build/main.js'))).toBe(true);
-    expect(existsSync(join(tempDir, 'build-output/build/faapi-routes.js'))).toBe(true);
+    // 产物写入 build-output/ 而非默认 dist/
+    expect(existsSync(join(tempDir, 'build-output/main.js'))).toBe(true);
+    expect(existsSync(join(tempDir, 'build-output/faapi-routes.js'))).toBe(true);
     expect(existsSync(join(tempDir, OUT, 'main.js'))).toBe(false);
 
-    // main.js 包含实际产物目录参数（<dist>/build）
-    const mainContent = readFileSync(join(tempDir, 'build-output/build/main.js'), 'utf-8');
-    expect(mainContent).toContain("createProdApp({ dist: 'build-output/build' })");
+    // main.js 包含实际产物目录参数（<dist>）
+    const mainContent = readFileSync(join(tempDir, 'build-output/main.js'), 'utf-8');
+    expect(mainContent).toContain("createProdApp({ dist: 'build-output' })");
   }, 15000);
 
   it('CLI 选项：--port + --dist 同时使用', async () => {
@@ -198,8 +198,8 @@ export default [
 
     await buildCommand({ rootDir: tempDir, port: 9090, dist: 'custom' });
 
-    const mainContent = readFileSync(join(tempDir, 'custom/build/main.js'), 'utf-8');
-    expect(mainContent).toContain("createProdApp({ dist: 'custom/build' })");
+    const mainContent = readFileSync(join(tempDir, 'custom/main.js'), 'utf-8');
+    expect(mainContent).toContain("createProdApp({ dist: 'custom' })");
     expect(mainContent).toContain('await app.listen(9090)');
   }, 15000);
 });

@@ -9,8 +9,8 @@ import { loadConfig } from '../config/loadConfig';
 import path from 'node:path';
 import fs from 'node:fs';
 
-/** build 模式默认产物根目录（prod 产物输出到 <dist>/build） */
-const DEFAULT_BUILD_ROOT_DIST = '.faapi';
+/** build 模式默认产物目录 */
+const DEFAULT_DIST = 'dist';
 /** 路由源码目录（写死为 src，路由 .ts 文件位于 src/api/ 下） */
 const PATTERNS = ['src/api/**/*.ts'];
 
@@ -20,31 +20,31 @@ const PATTERNS = ['src/api/**/*.ts'];
 export interface BuildOptions {
   /** 项目根目录，默认 process.cwd() */
   rootDir?: string;
-  /** prod 服务端口，写入 <dist>/build/main.js */
+  /** prod 服务端口，写入 <dist>/main.js */
   port?: number;
-  /** 产物根目录（默认 .faapi，prod 产物输出到 <dist>/build） */
+  /** 产物输出目录，默认 dist */
   dist?: string;
 }
 
 /**
  * 执行构建命令
  *
- * 参考 Next.js 的 `distDir` 模式：`--dist` 是产物根目录（默认 `.faapi`），prod 实际产物输出到 `<dist>/build`。
+ * `--dist` 直接作为产物输出目录（默认 `dist`），与 Next.js `distDir` 语义一致。
  * 运行时只加载 .js 产物，不依赖 tsx。
  *
  * 应用行为配置从 faapi.config.ts 读取。
  *
- * 框架采用零入口设计——用户无需编写 main.ts，build 阶段自动生成 `<dist>/build/main.js` 启动入口，
- * 运行时 `node <dist>/build/main` 直接启动服务，无需 `faapi start` 命令。
+ * 框架采用零入口设计——用户无需编写 main.ts，build 阶段自动生成 `<dist>/main.js` 启动入口，
+ * 运行时 `node <dist>/main` 直接启动服务，无需 `faapi start` 命令。
  *
  * 流程：
  * 0. 编译配置产物（compileConfig）→ loadConfig 读应用行为配置
  * 1. 编译 TypeScript（逐文件编译，与 dev 一致，打平 src/ 前缀）
  * 2. 重新编译并合并配置文件（确保使用最新源码）
- * 3. 扫描路由（从 <dist>/build 产物，import .js 拿方法名）
+ * 3. 扫描路由（从 <dist> 产物，import .js 拿方法名）
  * 4. 生成 schema 模块（AST 从源码 .ts）
  * 5. 生成路由清单
- * 6. 生成启动入口 <dist>/build/main.js（import createProdApp + listen）
+ * 6. 生成启动入口 <dist>/main.js（import createProdApp + listen）
  *
  * **统一编译模式**：build 与 dev 都采用 `bundle: false` 逐文件编译，差异仅由 `dist` 驱动，
  * 不存在 `if (isDev)` 控制流分支。逐文件编译保证每个源文件对应唯一一份产物，
@@ -52,8 +52,7 @@ export interface BuildOptions {
  */
 export async function buildCommand(options?: BuildOptions): Promise<void> {
   const rootDir = options?.rootDir ?? process.cwd();
-  const rootDist = options?.dist ?? DEFAULT_BUILD_ROOT_DIST;
-  const outdir = path.join(rootDist, 'build');
+  const outdir = options?.dist ?? DEFAULT_DIST;
 
   // 加载 config
   // build 时无产物，先 compileConfig 生成临时产物到 outdir，再用 loadConfig 读
@@ -78,7 +77,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
     return;
   }
 
-  // 2. 编译并合并配置文件（faapi.config.ts + env 配置 → <dist>/build/faapi-config.js）
+  // 2. 编译并合并配置文件（faapi.config.ts + env 配置 → <dist>/faapi-config.js）
   //    重新编译以确保使用最新源码（步骤 0 的编译是为了读 config，可能未含最新 env 文件）
   console.log('\n[2/6] Compiling config...');
   const configResult = await compileConfig({ rootDir, dist: outdir });
@@ -119,13 +118,13 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   console.log(`  Written to ${routesPath}`);
 
   // 6. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
-  //    内部 import @faapi/faapi 的 createProdApp + listen，运行时 `node <dist>/build/main` 直接启动
+  //    内部 import @faapi/faapi 的 createProdApp + listen，运行时 `node <dist>/main` 直接启动
   //    --port / --dist 选项写入 main.js，prod 启动时无需再设环境变量
   console.log('\n[6/6] Generating entry file...');
   const mainPath = path.resolve(rootDir, outdir, 'main.js');
   // 非默认 dist 时写入 createProdApp 参数，让 prod 启动时能定位到产物目录
   const createProdAppArgs =
-    options?.dist && options.dist !== DEFAULT_BUILD_ROOT_DIST ? `{ dist: '${outdir}' }` : '';
+    options?.dist && options.dist !== DEFAULT_DIST ? `{ dist: '${outdir}' }` : '';
   const listenArgs = options?.port ? String(options.port) : '';
   const mainContent = `// 由 faapi build 自动生成，请勿手动编辑
 import { createProdApp } from '@faapi/faapi';

@@ -28,6 +28,6 @@
 | `plugins` | `PluginDeclaration[]` | 插件声明数组 |
 | `extendContext` | `(ctx) => void` | 扩展 ctx 方法/属性 |
 
-> 框架元信息通过环境变量传入：`PORT`（端口,默认 3000）、`FAAPI_DIST`（产物目录（实际目录）,dev 为 <dist>/dev（默认 `.faapi/dev`）,prod 为 <dist>/build（默认 `.faapi/build`））。
+> 框架元信息通过环境变量传入：`PORT`（端口,默认 3000）、`FAAPI_DIST`（产物目录,dev 固定 `.faapi`,prod 默认 `dist`（可通过 `--dist` 修改））。
 
 业务自定义 key（如 `db`/`redis`）通过 `ctx.config` 访问,详见 [configTypes.md](./configTypes.md)。

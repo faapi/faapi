@@ -17,10 +17,10 @@ import { invalidateSchemaCache } from '../validator/validateInput';
  * createApp 测试：prod 模式启动 API（createApp 为 createProdApp 的别名）
  *
  * createApp 读 <dist>/faapi-routes.js + <dist>/faapi-config.js，无 reloadRoutes。
- * dist 由 process.env.FAAPI_DIST 决定（默认 '.faapi/build'）。
+ * dist 由 process.env.FAAPI_DIST 决定（默认 'dist'）。
  *
  * 覆盖：
- * - 统一水合路由清单（默认 .faapi/build / FAAPI_DIST 指向 .faapi/dev）
+ * - 统一水合路由清单（默认 dist / FAAPI_DIST 指向 .faapi）
  * - listen/close 生命周期
  * - 配置自动加载
  * - 缺失产物的错误处理
@@ -63,7 +63,7 @@ describe('createApp', () => {
   }
 
   /** 编译产物三元组到指定 dist：.js + faapi-config.js + faapi-routes.js + zod.js */
-  async function compileArtifacts(dist: '.faapi/build' | '.faapi/dev') {
+  async function compileArtifacts(dist: 'dist' | '.faapi') {
     await compileDevRoutes({ rootDir: tempDir, dist });
     await compileConfig({ rootDir: tempDir, dist });
     const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], dist);
@@ -77,9 +77,9 @@ describe('createApp', () => {
     return { rootDir: tempDir };
   }
 
-  it('统一水合路由清单（默认 dist=.faapi/build）', async () => {
+  it('统一水合路由清单（默认 dist）', async () => {
     writeHandler();
-    await compileArtifacts('.faapi/build');
+    await compileArtifacts('dist');
 
     const app = await createApp(options());
     expect(app.routes.length).toBeGreaterThan(0);
@@ -88,10 +88,10 @@ describe('createApp', () => {
     await app.close();
   });
 
-  it('通过 FAAPI_DIST 指向 .faapi/dev', async () => {
+  it('通过 FAAPI_DIST 指向 .faapi', async () => {
     writeHandler();
-    await compileArtifacts('.faapi/dev');
-    process.env.FAAPI_DIST = '.faapi/dev';
+    await compileArtifacts('.faapi');
+    process.env.FAAPI_DIST = '.faapi';
 
     const app = await createApp(options());
     expect(app.routes.length).toBeGreaterThan(0);
@@ -101,7 +101,7 @@ describe('createApp', () => {
 
   it('listen 启动 server，close 关闭', async () => {
     writeHandler();
-    await compileArtifacts('.faapi/build');
+    await compileArtifacts('dist');
 
     const app = await createApp(options());
     expect(app.server).toBeNull();
@@ -125,7 +125,7 @@ describe('createApp', () => {
       `export default { db: { host: 'localhost', port: 5432 } };\n`,
       'utf-8',
     );
-    await compileArtifacts('.faapi/build');
+    await compileArtifacts('dist');
 
     const app = await createApp(options());
     expect(app.routes.length).toBeGreaterThan(0);

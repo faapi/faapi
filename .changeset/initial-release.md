@@ -1,5 +1,6 @@
 ---
 '@faapi/faapi': major
+'@faapi/mcp': major
 '@faapi/schema': major
 '@faapi/next': major
 ---
@@ -42,7 +43,9 @@ src/api/**/handler.ts
 
 单一 async 函数 `(ctx, next) => {}`，`await next()` 前后衔接前置/后置逻辑。两层叠加：全局中间件（`faapi.config.ts`）→ 目录中间件（`middlewares.ts`）→ handler。
 
-执行顺序：CORS → 全局中间件 → 目录中间件（从根到路由）→ handler。
+执行顺序：CORS → helmet → logger → 全局中间件 → 目录中间件（从根到路由）→ handler。
+
+logger 中间件默认启用（与 cors 一致）：`config.logger` 未设置 / `true` → 启用内置 `logger()`（`console.log`）；`false` → 禁用；`LoggerOptions` → 启用并自定义。logger 中间件的 `log` 函数每次请求读取，运行时替换 `console.log` 会生效。完全自定义日志中间件：`logger: false` + `middlewares: [myCustomLogger]`。
 
 ### 依赖注入
 
@@ -61,7 +64,7 @@ src/api/**/handler.ts
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `PORT` | `3000` | 服务端口 |
-| `FAAPI_OUT_DIR` | dev 固定 `.faapi/dev`，prod 默认 `dist` | 产物目录 |
+| `FAAPI_DIST` | dev 固定 `.faapi`，prod 默认 `dist`（可通过 `--dist` 修改） | 产物目录 |
 | `FAAPI_ENV` | — | 环境选择（高于 `NODE_ENV`） |
 | `NODE_ENV` | dev 兜底 `development` | 环境选择 + 运行时读取 |
 
@@ -69,7 +72,7 @@ src/api/**/handler.ts
 
 ```
 faapi / faapi dev    开发模式（编译 → 产物生成 → 启动 → watcher 热替换）
-faapi build          生产构建（编译 → bundle + tree shaking → 自动生成 dist/main.js）
+faapi build          生产构建（编译 → 自动生成 dist/main.js）
 node dist/main       生产运行
 ```
 
@@ -82,21 +85,21 @@ node dist/main       生产运行
 - **文件上传**：`multipart/form-data` 解析
 - **IP 注入**：`ip` 参数（`x-forwarded-for` 优先）
 - **tsconfig paths 别名**：编译时 esbuild 插件自动重写，三种模式均无需额外配置
-- **插件系统**：`FaapiPlugin { name, setup(ctx) }`，支持 `wrapHandler`/`wrapUpgradeHandler`
+- **插件系统**：`FaapiPlugin { name, setup(ctx) }`，支持 `wrapHandler`/`wrapUpgradeHandler`；`PluginContext` 提供 `getRoutes()` 方法返回最新路由清单（`reloadRoutes` 后更新）
 
 ### 产物驱动架构
 
-dev 和 prod 生成完全一致的产物三元组，`createAppBase` 内部无 `if (isDev)` 分支，差异仅由 `FAAPI_OUT_DIR` 驱动：
+dev 和 prod 生成完全一致的产物三元组，`createAppBase` 内部无 `if (isDev)` 分支，差异仅由 `FAAPI_DIST` 驱动：
 
 | 产物 | dev | prod |
 |------|-----|------|
-| 路由/middleware `.js` | `.faapi/dev/**/*.js` | `dist/**/*.js` |
-| `faapi-config.js` | `.faapi/dev/faapi-config.js` | `dist/faapi-config.js` |
-| `faapi-routes.js` | `.faapi/dev/faapi-routes.js` | `dist/faapi-routes.js` |
-| `zod.js` | `.faapi/dev/**/zod.js` | `dist/**/zod.js` |
+| 路由/middleware `.js` | `.faapi/**/*.js` | `dist/**/*.js` |
+| `faapi-config.js` | `.faapi/faapi-config.js` | `dist/faapi-config.js` |
+| `faapi-routes.js` | `.faapi/faapi-routes.js` | `dist/faapi-routes.js` |
+| `zod.js` | `.faapi/**/zod.js` | `dist/**/zod.js` |
 
 Dev 编译：`bundle: false` 逐文件编译，启动快、增量友好。
-Build 编译：`bundle: true` + `splitting: true` + `minifySyntax: true` + `define: { 'process.env.NODE_ENV': '"production"' }`，tree shaking + 死分支删除。
+Build 编译：`bundle: false` 逐文件编译（与 dev 一致，保证 `instanceof` 跨边界生效）。
 
 ### 编程式 API
 
@@ -107,13 +110,29 @@ import { createDevApp, createProdApp, createApp } from '@faapi/faapi';
 // createApp: createProdApp 的向后兼容别名
 ```
 
+## @faapi/mcp（MCP Server SDK）
+
+纯手写 MCP Server SDK，不依赖 @modelcontextprotocol/sdk。
+
+- Streamable HTTP transport（POST JSON-RPC / GET 405 / DELETE 销毁会话）
+- zod-native tool 定义（通过 zod v4 内置 toJSONSchema 转 JSON Schema）
+- MCP 协议核心方法：initialize / tools/list / tools/call / ping / notifications/initialized
+- Session 管理（Mcp-Session-Id header，内存 Map + TTL 过期机制，默认 30 分钟惰性清理）
+- faapi 适配器（createMcpHandler 返回 POST/GET/DELETE handler；createMcpNodeHandler 一次性读取响应体避免多 chunk bug）
+- capabilities 声明 `listChanged: false`（v1 无 SSE 推送）
+
 ## @faapi/schema（schema 扩展包）
 
-通过 MCP 协议（stdio transport）暴露路由 schema 给 AI 助手，提供三个 tool：
+基于 `@faapi/mcp` 实现，通过 MCP 协议（Streamable HTTP transport）暴露路由 schema 给 AI 助手，不依赖 `@modelcontextprotocol/sdk`。
 
-- `list_routes`：列出所有路由
-- `get_route_schema`：获取单个路由的详细 schema
-- `get_api_schema`：获取完整 API schema（类似 OpenAPI）
+- 传输方式为 Streamable HTTP（MCP 2025-06-18 规范），插件在 `/mcp` 路径挂载端点
+- AI 助手通过 HTTP 连接 `http://localhost:3000/mcp`，不再需要独立 stdio 进程
+- 插件通过 `ctx.wrapHandler` 拦截 `/mcp` 路径，与 faapi 路由系统原生集成
+- `createSchemaServer` 通过 `getRoutes` getter 替代路由快照，dev 热替换后 schema 自动刷新
+- 提供三个 tool：
+  - `list_routes`：列出所有路由
+  - `get_route_schema`：获取单个路由的详细 schema
+  - `get_api_schema`：获取完整 API schema（类似 OpenAPI）
 
 在 `faapi.config.ts` 的 `plugins` 字段声明即可加载，不声明即不启用。
 

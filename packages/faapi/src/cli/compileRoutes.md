@@ -12,8 +12,8 @@
 
 ## 使用场景
 
-- `faapi dev`：调 `compileDevRoutes` 编译 `src/**/*.ts` → `.faapi/dev/**/*.js`（打平 `src/` 前缀）。**逐文件编译**（`bundle: false`），启动快、增量编译。
-- `faapi build`：调 `compileBuildRoutes` 做**逐文件编译**（`bundle: false`），与 dev 模式一致，扫描 `src/**/*.ts` → `.faapi/build/**/*.js`。不再使用 bundle 模式,以保证 `instanceof` 跨 config/routes 边界生效（详见 `compileConfig.md`）。
+- `faapi dev`：调 `compileDevRoutes` 编译 `src/**/*.ts` → `.faapi/**/*.js`（打平 `src/` 前缀）。**逐文件编译**（`bundle: false`），启动快、增量编译。
+- `faapi build`：调 `compileBuildRoutes` 做**逐文件编译**（`bundle: false`），与 dev 模式一致，扫描 `src/**/*.ts` → `dist/**/*.js`。不再使用 bundle 模式,以保证 `instanceof` 跨 config/routes 边界生效（详见 `compileConfig.md`）。
 - watch 增量编译：watcher 调 `compileDevRoutes` 只传入变化的文件列表。
 
 ## 统一编译模式：逐文件编译（`bundle: false`）
@@ -55,8 +55,8 @@ esbuild 的 `outbase` 设为 `src`，使产物去掉 src 前缀：
 
 - `compileDevRoutes.ts` - dev 逐文件编译
 - `compileBuildRoutes.ts` - build 逐文件编译（与 dev 一致,仅 dist 不同）
-- `buildCommand.ts` - build 命令调 compileBuildRoutes 编译到 .faapi/build/
-- `devCommand.ts` - dev 命令调 compileDevRoutes 编译到 .faapi/dev/
+- `buildCommand.ts` - build 命令调 compileBuildRoutes 编译到 dist/
+- `devCommand.ts` - dev 命令调 compileDevRoutes 编译到 .faapi/
 - `watcher.ts` - watch 时调 compileDevRoutes 重编译变化文件
 - `readTsconfig.ts` - 读取 tsconfig paths 配置
 - `resolveAlias.ts` - 别名解析（编译时调用）

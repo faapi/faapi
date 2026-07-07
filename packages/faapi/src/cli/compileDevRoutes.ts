@@ -12,7 +12,7 @@ const APP_DIR = 'src';
 export interface CompileDevOptions {
   /** 项目根目录 */
   rootDir: string;
-  /** 输出目录（dev 模式为 `.faapi/dev`） */
+  /** 输出目录（dev 模式为 `.faapi`） */
   dist: string;
   /**
    * 增量编译：传入要编译的文件列表（绝对路径）。
@@ -44,9 +44,9 @@ export interface CompileResult {
  *
  * @example
  * // 全量编译
- * await compileDevRoutes({ rootDir, dist: '.faapi/dev' });
+ * await compileDevRoutes({ rootDir, dist: '.faapi' });
  * // watch 增量：只编译变化的文件
- * await compileDevRoutes({ rootDir, dist: '.faapi/dev', files: changedFiles });
+ * await compileDevRoutes({ rootDir, dist: '.faapi', files: changedFiles });
  */
 export async function compileDevRoutes(options: CompileDevOptions): Promise<CompileResult> {
   const { rootDir, dist, files, logLevel = 'silent' } = options;

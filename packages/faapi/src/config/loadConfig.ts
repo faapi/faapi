@@ -12,8 +12,8 @@ const CONFIG_PRODUCT_FILE = 'faapi-config.js';
  * 加载 faapi 配置文件
  *
  * 统一读取 `<dist>/faapi-config.js` 产物：
- * - dev 模式：`faapi dev` 启动时由 `compileConfig` 生成 `.faapi/dev/faapi-config.js`
- * - prod 模式：`faapi build` 时由 `compileConfig` 生成 `.faapi/build/faapi-config.js`
+ * - dev 模式：`faapi dev` 启动时由 `compileConfig` 生成 `.faapi/faapi-config.js`
+ * - prod 模式：`faapi build` 时由 `compileConfig` 生成 `dist/faapi-config.js`
  *
  * 产物由 `compileConfig` 在构建阶段合并 env 后固化，运行时不读源码、不现场编译、不按 env 合并。
  *
@@ -22,7 +22,7 @@ const CONFIG_PRODUCT_FILE = 'faapi-config.js';
  * - 源码也无配置文件 → 返回 `null`（配置可选）
  *
  * @param rootDir 项目根目录
- * @param dist 产物目录（如 '.faapi/build' 或 '.faapi/dev'）
+ * @param dist 产物目录（如 'dist' 或 '.faapi'）
  * @returns 配置对象，无配置文件时返回 null
  */
 export async function loadConfig(

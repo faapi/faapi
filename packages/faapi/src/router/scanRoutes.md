@@ -14,7 +14,7 @@ faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为
 
 ## 文件类型与 dist 参数
 
-`scanRoutes` 接受可选的 `dist` 参数（`.faapi/build` 或 `.faapi/dev`）：
+`scanRoutes` 接受可选的 `dist` 参数（`dist` 或 `.faapi`）：
 
 - **传入 dist（dev/build 模式）**：扫描源码 `.ts` 文件列表，但 import 产物 `.js` 拿方法名。`filePath` 保持源码路径（如 `src/api/hello/handler.ts`），AST schema 提取需要 `.ts`。
 - **不传 dist（旧模式，CLI 不再使用）**：扫描并 import 源码 `.ts`（依赖 esbuild 即时转译，仅 e2e/测试保留）。
@@ -28,7 +28,7 @@ faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为
 `toProdAbsPath` 将源码绝对路径转为产物绝对路径时，会剥离 `src/` 前缀，与 `compileDevRoutes` / `compileBuildRoutes` 的 `outbase` 设置一致：
 
 - 源码：`<rootDir>/src/api/hello/handler.ts`
-- 产物：`<rootDir>/.faapi/build/api/hello/handler.js`（去掉 `src/` 前缀）
+- 产物：`<rootDir>/dist/api/hello/handler.js`（去掉 `src/` 前缀）
 
 ## 相关模块
 
