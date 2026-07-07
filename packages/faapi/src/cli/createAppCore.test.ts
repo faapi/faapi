@@ -125,4 +125,16 @@ describe('createAppBase', () => {
     expect(app.routes.length).toBeGreaterThan(0);
     await app.close();
   });
+
+  it('options.outDir 覆盖环境变量 FAAPI_OUT_DIR', async () => {
+    writeHandler();
+    await compileArtifacts('.faapi/dev');
+    // 环境变量指向 dist，options 指向 .faapi/dev —— options 应优先
+    process.env.FAAPI_OUT_DIR = 'dist';
+
+    const { app, ctx } = await createAppBase({ rootDir: tempDir, outDir: '.faapi/dev' });
+    expect(ctx.outDir).toBe('.faapi/dev');
+    expect(app.routes.length).toBeGreaterThan(0);
+    await app.close();
+  });
 });

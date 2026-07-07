@@ -44,6 +44,41 @@ describe('collectRouteSchemaSources', () => {
     expect(sources[0].typeInfo!.name).toBe('Query');
   });
 
+  it('handler 声明 form 参数时提取 schema 并标记 coerce=true（schema 名仍为 POSTBody）', () => {
+    const filePath = writeHandler(
+      'login.ts',
+      `export interface LoginForm { username: string; age: number; }\nexport function POST(form: LoginForm) { return form; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'POST', urlPath: '/api/login', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources).toHaveLength(1);
+    // schema 名仍为 POSTBody（与 body 共享运行时 schema key）
+    expect(sources[0].schemaName).toBe('POSTBody');
+    expect(sources[0].typeInfo).not.toBeNull();
+    expect(sources[0].typeInfo!.name).toBe('LoginForm');
+    // form 声明时显式标记 coerce=true
+    expect(sources[0].coerce).toBe(true);
+  });
+
+  it('handler 声明 body 参数时 coerce 为 undefined（回退到 schemaName 正则）', () => {
+    const filePath = writeHandler(
+      'user.ts',
+      `export interface CreateUserBody { name: string; age: number; }\nexport function POST(body: CreateUserBody) { return body; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'POST', urlPath: '/api/user', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources[0].schemaName).toBe('POSTBody');
+    expect(sources[0].typeInfo!.name).toBe('CreateUserBody');
+    // body 声明时不设置 coerce（回退到正则推断为 false）
+    expect(sources[0].coerce).toBeUndefined();
+  });
+
   it('无 input 类型参数的 handler typeInfo 为 null', () => {
     const filePath = writeHandler('ping.ts', `export function GET() { return { ok: true }; }\n`);
     const routes: RouteManifest = [

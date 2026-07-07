@@ -7,6 +7,7 @@ import { extractAllTypes } from './extractHandlerTypes';
 import {
   generateZodSchemaSource,
   generateHelpersFileSource,
+  usesCoerceHelpers,
   type TypeResolver,
 } from './generateZodSchema';
 
@@ -45,9 +46,11 @@ function makeZodSchemaObject(source: string, typeName: string, coerce = false) {
     .replace(/^import.*$/gm, '')
     .replace(/export const/g, 'const')
     .replace(/: z\.ZodType<[^>]+>/g, '');
-  // coerce 模式下，生成的代码引用了 coerceNumber / coerceBoolean 公用变量
-  // 需要注入这两个函数的声明（模拟 faapi-helpers.js 的内容，但用 const 而非 export const）
-  const helpers = coerce
+  // 生成的代码可能引用 coerceNumber / coerceBoolean / coerceMap / coerceSet 公用变量
+  // 检测代码是否引用任意 helper，引用则注入全部声明（模拟 faapi-helpers.js，但用 const 而非 export const）
+  // 注意：Map/Set 在 coerce=false（body 场景）下也会引用 coerceMap/coerceSet，故不能仅靠 coerce 标志判断
+  const needsHelpers = coerce || usesCoerceHelpers(execCode);
+  const helpers = needsHelpers
     ? `${generateHelpersFileSource()
         .replace(/^\/\/.*$/gm, '')
         .replace(/export const/g, 'const')
@@ -731,6 +734,240 @@ describe('generateZodSchema', () => {
         const r = schema.safeParse({ meta: { count: '5' } });
         expect(r.success).toBe(true);
         if (r.success) expect(r.data.meta.count).toBe(5);
+      });
+    });
+  });
+
+  describe('Map / Set 类型', () => {
+    describe('代码生成', () => {
+      it('Map<string, number> 生成 z.preprocess(coerceMap, z.map(z.string(), z.number()))', () => {
+        const code = makeZodSchema(`export interface Q { data: Map<string, number>; }`, 'Q');
+        expect(code).toMatch(/z\.preprocess\(coerceMap, z\.map\(z\.string\(\), z\.number\(\)\)\)/);
+      });
+
+      it('Set<string> 生成 z.preprocess(coerceSet, z.set(z.string()))', () => {
+        const code = makeZodSchema(`export interface Q { data: Set<string>; }`, 'Q');
+        expect(code).toMatch(/z\.preprocess\(coerceSet, z\.set\(z\.string\(\)\)\)/);
+      });
+
+      it('Map 嵌套数组：Map<string, number[]> 内部数组元素不被 coerce 包裹', () => {
+        const code = makeZodSchema(`export interface Q { data: Map<string, number[]>; }`, 'Q');
+        expect(code).toMatch(/z\.map\(z\.string\(\), z\.array\(z\.number\(\)\)\)/);
+        // body 场景（coerce=false）下 number 元素不应有 coerceNumber 包裹
+        expect(code).not.toContain('coerceNumber');
+      });
+
+      it('Set<User> 引用命名类型时内联为对象', () => {
+        const code = makeZodSchema(
+          `export interface User { id: number; name: string; }
+           export interface Q { data: Set<User>; }`,
+          'Q',
+        );
+        // User 被 checker 内联，应出现 z.set(z.object({
+        expect(code).toContain('z.set(z.object({');
+        expect(code).toMatch(/z\.preprocess\(coerceSet, /);
+      });
+
+      it('Map 嵌套 Set：Map<string, Set<number>>', () => {
+        const code = makeZodSchema(`export interface Q { data: Map<string, Set<number>>; }`, 'Q');
+        // 外层 coerceMap，内层 coerceSet
+        expect(code).toMatch(
+          /z\.preprocess\(coerceMap, z\.map\(z\.string\(\), z\.preprocess\(coerceSet, z\.set\(z\.number\(\)\)\)\)\)/,
+        );
+      });
+    });
+
+    describe('coerce=false（body 场景）实际校验', () => {
+      it('Map<string, number> entries 数组通过校验并还原为 Map 实例', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { data: Map<string, number>; }`,
+          'Q',
+        );
+        const r = schema.safeParse({
+          data: [
+            ['a', 1],
+            ['b', 2],
+          ],
+        });
+        expect(r.success).toBe(true);
+        if (r.success) {
+          expect(r.data.data).toBeInstanceOf(Map);
+          expect(r.data.data.get('a')).toBe(1);
+          expect(r.data.data.get('b')).toBe(2);
+        }
+      });
+
+      it('Map<string, number> 普通对象通过校验（Object.entries 还原）', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { data: Map<string, number>; }`,
+          'Q',
+        );
+        const r = schema.safeParse({ data: { a: 1, b: 2 } });
+        expect(r.success).toBe(true);
+        if (r.success) {
+          expect(r.data.data).toBeInstanceOf(Map);
+          expect(r.data.data.get('a')).toBe(1);
+        }
+      });
+
+      it('Map<string, number> 已有 Map 实例直接通过', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { data: Map<string, number>; }`,
+          'Q',
+        );
+        const r = schema.safeParse({ data: new Map([['a', 1]]) });
+        expect(r.success).toBe(true);
+        if (r.success) expect(r.data.data.get('a')).toBe(1);
+      });
+
+      it('Map<string, number> value 类型不匹配时校验失败', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { data: Map<string, number>; }`,
+          'Q',
+        );
+        expect(schema.safeParse({ data: [['a', 'not-a-number']] }).success).toBe(false);
+      });
+
+      it('Map<string, number> key 类型不匹配时校验失败', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { data: Map<string, number>; }`,
+          'Q',
+        );
+        expect(schema.safeParse({ data: [[123, 1]] }).success).toBe(false);
+      });
+
+      it('Set<string> 数组通过校验并还原为 Set 实例', () => {
+        const schema = makeZodSchemaObject(`export interface Q { data: Set<string>; }`, 'Q');
+        const r = schema.safeParse({ data: ['a', 'b', 'c'] });
+        expect(r.success).toBe(true);
+        if (r.success) {
+          expect(r.data.data).toBeInstanceOf(Set);
+          expect(Array.from(r.data.data)).toEqual(['a', 'b', 'c']);
+        }
+      });
+
+      it('Set<string> 已有 Set 实例直接通过', () => {
+        const schema = makeZodSchemaObject(`export interface Q { data: Set<string>; }`, 'Q');
+        const r = schema.safeParse({ data: new Set(['a', 'b']) });
+        expect(r.success).toBe(true);
+      });
+
+      it('Set<string> 元素类型不匹配时校验失败', () => {
+        const schema = makeZodSchemaObject(`export interface Q { data: Set<string>; }`, 'Q');
+        expect(schema.safeParse({ data: ['a', 123] }).success).toBe(false);
+      });
+
+      it('Map<string, number[]> 嵌套数组校验', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { data: Map<string, number[]>; }`,
+          'Q',
+        );
+        const r = schema.safeParse({
+          data: [
+            ['a', [1, 2]],
+            ['b', [3]],
+          ],
+        });
+        expect(r.success).toBe(true);
+        if (r.success) {
+          expect(r.data.data.get('a')).toEqual([1, 2]);
+          expect(r.data.data.get('b')).toEqual([3]);
+        }
+      });
+
+      it('Set<User> 命名类型元素校验', () => {
+        const schema = makeZodSchemaObject(
+          `export interface User { id: number; name: string; }
+           export interface Q { data: Set<User>; }`,
+          'Q',
+        );
+        const r = schema.safeParse({
+          data: [
+            { id: 1, name: 'alice' },
+            { id: 2, name: 'bob' },
+          ],
+        });
+        expect(r.success).toBe(true);
+        if (r.success) {
+          expect(r.data.data).toBeInstanceOf(Set);
+          expect(Array.from(r.data.data)).toHaveLength(2);
+        }
+      });
+
+      it('Map 嵌套 Set：Map<string, Set<number>>', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { data: Map<string, Set<number>>; }`,
+          'Q',
+        );
+        const r = schema.safeParse({
+          data: [
+            ['a', [1, 2]],
+            ['b', [3]],
+          ],
+        });
+        expect(r.success).toBe(true);
+        if (r.success) {
+          expect(r.data.data.get('a')).toBeInstanceOf(Set);
+          expect(Array.from(r.data.data.get('a'))).toEqual([1, 2]);
+        }
+      });
+
+      it('Map/Set 字段非数组/对象/Map/Set 时校验失败', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { m: Map<string, number>; s: Set<string>; }`,
+          'Q',
+        );
+        // 字符串既不是数组也不是 Map/对象，coerceMap 原样返回，z.map 报错
+        expect(schema.safeParse({ m: 'not-a-map', s: ['a'] }).success).toBe(false);
+        expect(schema.safeParse({ m: [['a', 1]], s: 'not-a-set' }).success).toBe(false);
+      });
+
+      it('可选 Map/Set 字段缺失时通过', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { m?: Map<string, number>; s?: Set<string>; }`,
+          'Q',
+        );
+        expect(schema.safeParse({}).success).toBe(true);
+      });
+    });
+
+    describe('coerce=true（query 场景）', () => {
+      it('Map<string, number> 内部 number value 被 coerce：[["a","1"]] → [["a",1]]', () => {
+        const schema = makeZodSchemaObject(
+          `export interface Q { data: Map<string, number>; }`,
+          'Q',
+          true,
+        );
+        const r = schema.safeParse({
+          data: [
+            ['a', '1'],
+            ['b', '2'],
+          ],
+        });
+        expect(r.success).toBe(true);
+        if (r.success) {
+          expect(r.data.data.get('a')).toBe(1);
+          expect(r.data.data.get('b')).toBe(2);
+        }
+      });
+
+      it('Set<number> 元素 number 被 coerce：["1","2"] → [1,2]', () => {
+        const schema = makeZodSchemaObject(`export interface Q { data: Set<number>; }`, 'Q', true);
+        const r = schema.safeParse({ data: ['1', '2', '3'] });
+        expect(r.success).toBe(true);
+        if (r.success) {
+          expect(Array.from(r.data.data)).toEqual([1, 2, 3]);
+        }
+      });
+
+      it('coerce=true 时 Map 生成代码同时包含 coerceMap（外层）和 coerceNumber（内部）', () => {
+        const code = makeZodSchema(`export interface Q { data: Map<string, number>; }`, 'Q', true);
+        expect(code).toContain('coerceMap');
+        expect(code).toContain('coerceNumber');
+        // value 应为 z.preprocess(coerceNumber, z.number())
+        expect(code).toMatch(
+          /z\.preprocess\(coerceMap, z\.map\(z\.string\(\), z\.preprocess\(coerceNumber, z\.number\(\)\)\)\)/,
+        );
       });
     });
   });

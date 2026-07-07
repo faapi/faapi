@@ -627,14 +627,26 @@ export type GETQuery = Omit<User, OnlyEmail>;
       return () => extractTypeInfo(program, file, typeName);
     }
 
-    it('Map<K, V> 抛错', () => {
-      const fn = extractFrom(`export interface GETQuery { data: Map<string, number>; }`);
+    it('WeakMap 抛错（运行时无法枚举校验）', () => {
+      const fn = extractFrom(`export interface GETQuery { data: WeakMap<string, number>; }`);
+      expect(fn).toThrow(SchemaExtractionError);
+      expect(fn).toThrow(/WeakMap/);
+    });
+
+    it('WeakSet 抛错（运行时无法枚举校验）', () => {
+      const fn = extractFrom(`export interface GETQuery { data: WeakSet<string>; }`);
+      expect(fn).toThrow(SchemaExtractionError);
+      expect(fn).toThrow(/WeakSet/);
+    });
+
+    it('裸 Map（无类型参数）抛错', () => {
+      const fn = extractFrom(`export interface GETQuery { data: Map; }`);
       expect(fn).toThrow(SchemaExtractionError);
       expect(fn).toThrow(/Map/);
     });
 
-    it('Set<T> 抛错', () => {
-      const fn = extractFrom(`export interface GETQuery { data: Set<string>; }`);
+    it('裸 Set（无类型参数）抛错', () => {
+      const fn = extractFrom(`export interface GETQuery { data: Set; }`);
       expect(fn).toThrow(SchemaExtractionError);
       expect(fn).toThrow(/Set/);
     });
@@ -697,7 +709,7 @@ export type GETQuery = Pick<User, number>;`,
 
     it('错误信息包含文件路径（上层 catch 补充）', () => {
       const file = join(unsupportedDir, 'has-path.ts');
-      writeFileSync(file, `export interface GETQuery { data: Map<string, number>; }`);
+      writeFileSync(file, `export interface GETQuery { data: WeakMap<string, number>; }`);
       const program = createProgram(file);
       try {
         extractTypeInfo(program, file, 'GETQuery');
@@ -706,6 +718,119 @@ export type GETQuery = Pick<User, number>;`,
         expect(err).toBeInstanceOf(SchemaExtractionError);
         expect((err as Error).message).toContain('has-path.ts');
       }
+    });
+  });
+
+  describe('Map / Set 类型', () => {
+    let mapSetDir: string;
+
+    beforeEach(() => {
+      mapSetDir = join(tmpdir(), `faapi-mapset-${Date.now()}`);
+      mkdirSync(mapSetDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(mapSetDir, { recursive: true, force: true });
+    });
+
+    function extractFrom(content: string, typeName = 'GETQuery') {
+      const file = join(mapSetDir, `${Date.now()}-${Math.random().toString(36).slice(2)}.ts`);
+      writeFileSync(file, content);
+      const program = createProgram(file);
+      return () => extractTypeInfo(program, file, typeName);
+    }
+
+    it('Map<string, number> 提取为 { kind: "map", key, value }', () => {
+      const fn = extractFrom(`export interface GETQuery { data: Map<string, number>; }`);
+      const info = fn();
+
+      expect(info).not.toBeNull();
+      const data = info!.properties.find((p) => p.name === 'data');
+      expect(data).toEqual({
+        name: 'data',
+        type: {
+          kind: 'map',
+          key: { kind: 'string' },
+          value: { kind: 'number' },
+        },
+        optional: false,
+      });
+    });
+
+    it('Set<string> 提取为 { kind: "set", element }', () => {
+      const fn = extractFrom(`export interface GETQuery { data: Set<string>; }`);
+      const info = fn();
+
+      expect(info).not.toBeNull();
+      const data = info!.properties.find((p) => p.name === 'data');
+      expect(data).toEqual({
+        name: 'data',
+        type: {
+          kind: 'set',
+          element: { kind: 'string' },
+        },
+        optional: false,
+      });
+    });
+
+    it('Map<string, number[]> 嵌套数组元素类型', () => {
+      const fn = extractFrom(`export interface GETQuery { data: Map<string, number[]>; }`);
+      const info = fn();
+
+      expect(info).not.toBeNull();
+      const data = info!.properties.find((p) => p.name === 'data');
+      expect(data!.type).toEqual({
+        kind: 'map',
+        key: { kind: 'string' },
+        value: { kind: 'array', element: { kind: 'number' } },
+      });
+    });
+
+    it('Set<User> 引用命名类型', () => {
+      const fn = extractFrom(
+        `export interface User { id: number; name: string; }
+         export interface GETQuery { data: Set<User>; }`,
+      );
+      const info = fn();
+
+      expect(info).not.toBeNull();
+      const data = info!.properties.find((p) => p.name === 'data');
+      expect(data!.type).toEqual({
+        kind: 'set',
+        element: {
+          kind: 'object',
+          properties: [
+            { name: 'id', type: { kind: 'number' }, optional: false },
+            { name: 'name', type: { kind: 'string' }, optional: false },
+          ],
+        },
+      });
+    });
+
+    it('Map 嵌套 Set：Map<string, Set<number>>', () => {
+      const fn = extractFrom(`export interface GETQuery { data: Map<string, Set<number>>; }`);
+      const info = fn();
+
+      expect(info).not.toBeNull();
+      const data = info!.properties.find((p) => p.name === 'data');
+      expect(data!.type).toEqual({
+        kind: 'map',
+        key: { kind: 'string' },
+        value: { kind: 'set', element: { kind: 'number' } },
+      });
+    });
+
+    it('可选 Map/Set 字段', () => {
+      const fn = extractFrom(
+        `export interface GETQuery { data?: Map<string, number>; tags?: Set<string>; }`,
+      );
+      const info = fn();
+
+      expect(info).not.toBeNull();
+      const data = info!.properties.find((p) => p.name === 'data');
+      expect(data!.optional).toBe(true);
+      const tags = info!.properties.find((p) => p.name === 'tags');
+      expect(tags!.optional).toBe(true);
     });
   });
 });

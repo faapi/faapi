@@ -91,6 +91,44 @@ export default {
 };
 ```
 
+> 上例中 `ValidationError` 来自 `@faapi/faapi`,可直接 `instanceof`。
+
+### 项目自定义错误类
+
+业务自定义错误类(如 `AuthError`/`AdminError`),由注入器或 handler 抛出,全局中间件捕获后转 HTTP 响应。直接 `import` 项目错误类并用 `instanceof` 判断:
+
+```ts
+// src/lib/auth/errors.ts
+export class AuthError extends Error {
+  constructor(message = '未登录') {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+```
+
+```ts
+// faapi.config.ts
+import type { FaapiMiddleware } from '@faapi/faapi';
+import { AuthError, AdminError } from './src/lib/auth/errors';
+
+const authErrorHandler: FaapiMiddleware = async (ctx, next) => {
+  try {
+    await next();
+  } catch (err) {
+    if (err instanceof AuthError) return ctx.json({ error: err.message }, 401);
+    if (err instanceof AdminError) return ctx.json({ error: err.message }, 403);
+    throw err; // 其余错误走框架兜底
+  }
+};
+
+export default {
+  middlewares: [authErrorHandler],
+} satisfies FaapiConfig;
+```
+
+config 与 routes 共享同一份编译产物,`instanceof` 跨边界生效。
+
 ## 错误兜底链
 
 ```

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import fg from 'fast-glob';
 import { buildAliasPlugins } from './aliasPlugin';
 import type { CompileResult } from './compileDevRoutes';
 
@@ -14,71 +15,54 @@ export interface CompileBuildOptions {
   /** 输出目录（build 模式为 `dist`） */
   outDir: string;
   /**
-   * bundle 模式入口文件列表（绝对路径）。
-   * esbuild 从 entries 出发跟随 import 链分析依赖树。
+   * 增量编译：传入要编译的文件列表（绝对路径）。
+   * 不传则全量编译 appDir 下所有 .ts（排除测试文件和声明文件）。
    */
-  entries: string[];
-  /**
-   * 是否启用代码分割（共享依赖提取为 chunk）。
-   * 默认 true。
-   */
-  splitting?: boolean;
-  /**
-   * 编译时常量替换（配合 bundle 做常量折叠 + dead code elimination）。
-   * 例：{ 'process.env.NODE_ENV': '"production"' }
-   * esbuild 会在编译时把匹配的表达式替换为给定字面量，
-   * 随后的常量折叠会删除 `if (false) {...}` 等死分支。
-   */
-  define?: Record<string, string>;
-  /**
-   * 是否启用语法压缩（删除死分支、合并变量声明等，不缩短变量名、不压缩空白）。
-   * 默认 true。
-   * 配合 define 使用：define 把 `process.env.NODE_ENV` 替换为 'production' 后，
-   * minifySyntax 会删除 `if (false) {...}` 块内的死代码。
-   * 不影响产物可读性（变量名和格式保留），便于调试。
-   */
-  minifySyntax?: boolean;
+  files?: string[];
   /** 是否输出 esbuild 日志（build 模式默认静默） */
   logLevel?: 'silent' | 'info';
 }
 
 /**
- * build 模式编译 TypeScript：bundle 模式 + tree shaking + 死分支删除
+ * build 模式编译 TypeScript：逐文件编译 + 编译期常量替换 + 死分支删除
  *
- * esbuild 从 entries 出发跟随 import 链分析依赖树：
- * - `bundle: true`：跟随 import 链，未引用的 export 被删除（tree shaking）
- * - `splitting`：共享依赖（如 `utils.ts` 被多个 handler 引用）提取为 `chunk-<hash>.js`
- * - `define` + `minifySyntax`：编译时替换 `process.env.NODE_ENV` 并删除 `if (false) {...}` 死分支
- *
+ * 每个 `.ts` 独立编译为 `.js`，不分析 import 关系（`bundle: false`）。
  * 产物**打平 appDir 前缀**：
  * - `src/api/hello/handler.ts` → `<outDir>/api/hello/handler.js`
  *
  * 别名在编译时重写为相对路径，运行时无需 loader。
  *
+ * **与 dev 模式的差异**：build 模式额外启用 `define` + `minifySyntax`，
+ * 在编译期把 `process.env.NODE_ENV` 替换为 `"production"` 并删除 `if (false) {...}` 死分支。
+ * 两者在 `bundle: false` 下均生效（单文件级别优化，不需要跨文件分析）。
+ *
+ * **为什么不用 bundle 模式**：bundle 模式会把 import 的项目模块 inline 进产物,
+ * 导致 `faapi.config.ts` 中的 `instanceof` 对项目自定义错误类失效
+ * （config 和 routes 各自打包出独立的项目类副本）。
+ * 逐文件编译保证每个源文件对应唯一一份产物,config 和 routes 共享同一运行时对象。
+ *
+ * **tree shaking 不可用**：`bundle: false` 不分析跨文件引用图，未引用的 export 不会被删除。
+ * 这恰好符合设计意图——保留所有 export，让 config 和 routes 共享同一运行时对象。
+ *
  * 框架采用零入口设计——用户无需编写 main.ts，dev/prod 启动由 CLI 内部编排。
  *
  * @example
- * await compileBuildRoutes({
- *   rootDir, appDir: 'src', outDir: 'dist',
- *   entries: [...handlerFiles, ...middlewareFiles, mainFile],
- *   splitting: true,
- *   define: { 'process.env.NODE_ENV': '"production"' },
- *   minifySyntax: true,
- * });
+ * await compileBuildRoutes({ rootDir, appDir: 'src', outDir: 'dist' });
  */
 export async function compileBuildRoutes(options: CompileBuildOptions): Promise<CompileResult> {
-  const {
-    rootDir,
-    appDir,
-    outDir,
-    entries,
-    splitting = true,
-    define,
-    minifySyntax = true,
-    logLevel = 'silent',
-  } = options;
+  const { rootDir, appDir, outDir, files, logLevel = 'silent' } = options;
 
-  if (entries.length === 0) {
+  // 收集要编译的文件：files 优先，否则全量扫描 appDir 下所有 .ts
+  const entryPoints =
+    files ??
+    (await fg([`${appDir}/**/*.ts`], {
+      cwd: rootDir,
+      onlyFiles: true,
+      absolute: true,
+      ignore: ['**/*.test.ts', '**/*.e2e.test.ts', '**/*.d.ts'],
+    }));
+
+  if (entryPoints.length === 0) {
     return { compiledFiles: [] };
   }
 
@@ -86,27 +70,31 @@ export async function compileBuildRoutes(options: CompileBuildOptions): Promise<
   const absOutDir = path.resolve(rootDir, outDir);
   await fs.promises.mkdir(absOutDir, { recursive: true });
 
-  // 构造别名重写插件（无 tsconfig/paths 时为空）
+  // 构造别名重写插件（无 tsconfig/paths 时为空，相对路径重写仍生效）
   const plugins = buildAliasPlugins(rootDir);
 
-  // bundle 模式，outbase 设为 appDir 以打平产物结构
+  // 逐文件编译，outbase 设为 appDir 以打平产物结构：
+  // `src/api/hello/handler.ts` → `<outDir>/api/hello/handler.js`（去掉 src/ 前缀）
+  // appDir='.' 时 outbase=rootDir，保留原结构（源码在根目录的场景）
+  //
+  // define + minifySyntax：编译期把 process.env.NODE_ENV 替换为 "production"，
+  // 删除 if (false) {...} 死分支。两者在 bundle:false 下均生效（单文件级别优化）。
   const esbuild = await import('esbuild');
   const outbase = appDir === '.' ? rootDir : path.resolve(rootDir, appDir);
   await esbuild.build({
-    entryPoints: entries,
+    entryPoints,
     outdir: absOutDir,
     outbase,
-    bundle: true,
-    splitting,
+    bundle: false,
     platform: 'node',
     format: 'esm',
     sourcemap: true,
     packages: 'external',
     plugins,
-    define,
-    minifySyntax,
+    define: { 'process.env.NODE_ENV': '"production"' },
+    minifySyntax: true,
     logLevel,
   });
 
-  return { compiledFiles: entries };
+  return { compiledFiles: entryPoints };
 }

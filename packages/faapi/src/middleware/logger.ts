@@ -24,11 +24,12 @@ export interface LoggerOptions {
  * before/after 一体，闭包变量共享开始时间，无需污染 ctx。
  * 错误用 try/catch 捕获，记录后重新抛出（让上层处理）。
  * 成功时从 next() 返回的 Response 读取状态码。
+ *
+ * log 函数每次请求时读取（options.log ?? console.log），运行时替换 console.log 会生效。
  */
 export function logger(options: LoggerOptions = {}): FaapiMiddleware {
-  const { log = console.log } = options;
-
   return async (ctx, next) => {
+    const log = options.log ?? console.log;
     const start = Date.now();
     try {
       const response = await next();

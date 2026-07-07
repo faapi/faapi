@@ -28,6 +28,7 @@ HTTP 视角：JSON 只能传输 string/number/boolean/null/array/object，无法
 | 引用 | `Date` / 自定义 interface | Date 允许 Date 实例或 ISO 8601 字符串 |
 | 工具 | `Record<K,V>` / `Partial<T>` / `Pick<T,K>` / `Omit<T,K>` | |
 | 枚举 | `enum Role { Admin = 'admin' }` | 转为字面量联合 |
+| 集合 | `Map<K,V>` / `Set<T>` | JSON 序列化约定见下文"Map/Set 类型"章节 |
 
 完整类型支持清单与 JSDoc 约束标签说明详见 [supported-types.md](./supported-types.md)。
 
@@ -65,7 +66,8 @@ HTTP 视角：JSON 只能传输 string/number/boolean/null/array/object，无法
 - `Function` — HTTP/JSON 不能传输
 - Pick/Omit 的 T 不是 object 类型
 - Pick/Omit 的 K 无法解析为字面量集合
-- Map / Set / WeakMap / WeakSet（运行时无法校验）
+- 裸 `Map` / `Set`（无类型参数，如 `Map` 而非 `Map<K,V>`）
+- `WeakMap` / `WeakSet`（运行时无法校验，Map/Set 不复用其语义）
 - Promise（运行时无法校验异步值）
 - checker 无法解析的引用类型
 
@@ -77,6 +79,36 @@ HTTP 视角：JSON 只能传输 string/number/boolean/null/array/object，无法
 循环引用通过 `ref` kind 支持（不抛错），由 `generateZodSchema` 用 `z.lazy` 处理。
 
 上层 `extractTypeInfo` / `extractAllTypes` 会 catch 并补充文件路径信息后重新抛出，方便用户定位问题。
+
+## Map/Set 类型
+
+`Map<K,V>` 与 `Set<T>` 在 `RuntimeType` 中分别表示为 `{ kind: 'map', key, value }` 与 `{ kind: 'set', element }`，递归解析类型参数。
+
+### JSON 序列化约定
+
+`Map` 与 `Set` 通过 `JSON.stringify` 会丢失数据（Map 输出 `"{}"`，Set 输出 `"[]"` 但元素信息丢失）。faapi 约定客户端按以下形式发送：
+
+- **Map<K,V>**：以 entries 数组形式发送 `[["key", value], ...]`（与 `new Map(entries)` 兼容）
+- **Set<T>**：以普通数组形式发送 `[item, ...]`（与 `new Set(array)` 兼容）
+
+### z.preprocess 转换
+
+生成的 zod schema 用 `z.preprocess` 在校验前把数组/对象转回 Map/Set 实例：
+
+- `Map<K,V>` → `z.preprocess(coerceMap, z.map(keySchema, valueSchema))`
+- `Set<T>` → `z.preprocess(coerceSet, z.set(elementSchema))`
+
+`coerceMap` / `coerceSet` 与 `coerceNumber` / `coerceBoolean` 同文件，写在 outDir 根部的 `faapi-helpers.js`，按需生成（任意 zod.js 引用即生成）。
+
+### 类型参数要求
+
+- `Map<K,V>` 必须有 2 个类型参数；`Set<T>` 必须有 1 个类型参数
+- 裸 `Map` / `Set`（无 `<...>`）抛 `SchemaExtractionError`
+- `WeakMap` / `WeakSet` 仍然抛错（运行时无法枚举校验）
+
+### coerce 模式
+
+Map/Set 在 query/params 与 body 场景都需要 `z.preprocess`（JSON.parse 出来的是数组/对象，不是 Map/Set 实例）。`coerce=true`/`false` 均生成 preprocess 包裹，差异仅在内部 number/boolean 字段是否再包一层 coerceNumber/coerceBoolean。
 
 ## 相关模块
 

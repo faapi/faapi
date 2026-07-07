@@ -46,7 +46,7 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 - **模块系统**:ESM,`moduleResolution: Bundler`,本地相对导入路径不写后缀
 - **dev 启动**:`faapi` / `faapi dev`
 - **prod 构建**:`faapi build` → `node dist/main`
-- **类型校验**:dev 不自动跑 tsc,用户需自己跑 `pnpm typecheck`
+- **类型校验**:dev 和 build 都不做类型检查（esbuild 只编译不检查类型），用户需自己跑 `pnpm typecheck`
 
 ## 使用形态
 

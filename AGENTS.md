@@ -138,25 +138,33 @@ dev 和 prod 生成完全一致的产物三元组（`faapi-config.js` + `faapi-r
 
 | 产物 | dev 模式 | prod 模式 |
 |------|---------|----------|
-| `*.js`（路由/middleware 编译） | `.faapi/dev/**/*.js` | `dist/**/*.js` |
-| `faapi-config.js`（配置合并产物） | `.faapi/dev/faapi-config.js` | `dist/faapi-config.js` |
+| `*.js`（路由/middleware/项目模块编译） | `.faapi/dev/**/*.js` | `dist/**/*.js` |
+| `faapi-config.js`（配置入口产物，import config 源产物 + 内联 deepMerge） | `.faapi/dev/faapi-config.js` | `dist/faapi-config.js` |
+| `faapi.config.js`（config 源编译产物，保留相对 import 指向项目模块） | `.faapi/dev/faapi.config.js` | `dist/faapi.config.js` |
 | `faapi-routes.js`（路由清单） | `.faapi/dev/faapi-routes.js` | `dist/faapi-routes.js` |
 | `zod.js`（schema 模块） | `.faapi/dev/**/zod.js` | `dist/**/zod.js` |
+| `faapi-helpers.js`（coerce 公用函数，仅有 number/boolean 字段时生成） | `.faapi/dev/faapi-helpers.js` | `dist/faapi-helpers.js` |
 | `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
 
-- `faapi` / `faapi dev`：dev 模式，`devCommand` 设 `FAAPI_OUT_DIR=.faapi/dev`，`compileDevRoutes` 逐文件编译 `.ts` → `.faapi/dev/*.js`（`bundle: false`，启动快、增量编译），调 `compileConfig` 生成 `.faapi/dev/faapi-config.js`，调 `generateRouteArtifacts` 生成 `faapi-routes.js` + `zod.js`，调 `createDevApp()` + `listen()`（含 `reloadRoutes` 热替换能力），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` 热替换路由）
-- `faapi build`：构建，`compileBuildRoutes` bundle 模式编译（`bundle: true` + `splitting` + `define: { 'process.env.NODE_ENV': '"production"' }` + `minifySyntax`，tree shaking + 死分支删除）→ `dist/*.js` + `compileConfig` 预编译合并配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 每个 handler 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `listen`），不启动服务器
+- `faapi` / `faapi dev`：dev 模式，`devCommand` 设 `FAAPI_OUT_DIR=.faapi/dev`，`compileDevRoutes` 逐文件编译 `.ts` → `.faapi/dev/*.js`（`bundle: false`，启动快、增量编译），调 `compileConfig` 两步编译生成 `.faapi/dev/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js` + `zod.js`，调 `createDevApp()` + `listen()`（含 `reloadRoutes` 热替换能力），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` 热替换路由）
+- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 appDir 前缀）→ `dist/*.js` + `compileConfig` 两步编译合并配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 每个 handler 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `listen`），不启动服务器
 - `node dist/main`：生产模式，直接运行 `dist/main.js`，`createProdApp()` 读 `FAAPI_OUT_DIR`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
 
 `FAAPI_OUT_DIR` 是路径参数而非模式标志——`createAppBase` 内部无 `if (isDev)` 分支，统一水合 `faapi-routes.js`、统一 `loadConfig(outDir)` 读配置、统一按需 import `zod.js`。dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`，prod 的 `createProdApp` 直接返回 `createAppBase` 结果。
 
-**编译模式差异**：
-- dev：`bundle: false` 逐文件编译，每个 `.ts` 独立转 `.js`，不分析 import 关系，启动快、增量编译友好。配置文件由 `compileConfig` 编译源码 + 按 env 合并到 `.faapi/dev/faapi-config.js`（与 build 行为一致，env 在编译阶段固化，运行时不现场编译、不现场合并）。
-- build：`bundle: true` 从 entries（handler.ts + middlewares.ts）出发跟随 import 链分析依赖树，`splitting` 提取共享依赖为 chunk，`define` + `minifySyntax` 编译时替换 `process.env.NODE_ENV` 并删除 `if (false) {...}` 死分支，跨文件 tree shaking 删除未引用的 export。配置文件由 `compileConfig` 在 build 时按 `NODE_ENV`/`FAAPI_ENV` 合并 env 后输出为单个 `dist/faapi-config.js`，运行时零编译、零合并。
+**统一编译模式（dev/prod 一致，bundle: false 逐文件编译）**：
+
+dev 和 build 都采用 `bundle: false` 逐文件编译，每个 `.ts` 独立编译为 `.js`，不分析 import 关系。差异仅由 `outDir`（路径参数）驱动，编译逻辑完全一致。
+
+- **为什么不用 bundle 模式**：bundle 模式（`bundle: true`）会把 import 的项目模块 inline 进产物，导致 `faapi.config.ts` 中的 `instanceof` 对项目自定义错误类失效——config 和 routes 各自打包出独立的项目类副本，运行时对象不同一。逐文件编译保证每个源文件对应唯一一份产物，config 和 routes 共享同一运行时对象，`instanceof` 跨边界生效。
+- **`compileConfig` 两步编译**（确保 config 引用的项目模块与 routes 共享）：
+  - 步骤 1：`bundle: false` 逐文件编译 config 源（`faapi.config.ts` + `faapi.config.{env}.ts`）+ 递归收集 config 引用的项目模块（按 appDir 内/外分别用 outbase 打平前缀），aliasPlugin 重写 specifier（相对路径加 `.js` 后缀；config 引用 appDir 内模块时剥离前缀，使 config 产物 import `./lib/errors.js` 而非 `./src/lib/errors.js`）
+  - 步骤 2：`bundle: true` + 相对路径 external 编译入口源码（`import base from './faapi.config.js'` + 内联 `deepMerge` + `export default`），避免 inline config 产物，保留 `import './faapi.config.js'` 语句
+- **`process.env.NODE_ENV` 处理**：不再用 `define` 在编译时替换。业务代码中的 `process.env.NODE_ENV` 表达式保留，运行时读取环境变量。dev 时 `devCommand` 兜底设为 `'development'`，build 产物由部署环境注入（或启动 `NODE_ENV=production node dist/main` 显式设置）。
 
 `NODE_ENV`/`FAAPI_ENV` 仅用于 `compileConfig` 选择环境配置文件（按 `FAAPI_ENV > NODE_ENV > 'development'` 优先级选择 `faapi.config.{env}.ts` 与基础配置深度合并到 `faapi-config.js`），不再用于运行时配置合并。
 
-启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`node dist/main` → 由用户自行设置。build 时 `define` 已编译时替换业务代码中的 `process.env.NODE_ENV` 为 `'production'`，运行时业务代码直接拿到字面量。配置中的 `process.env.NODE_ENV` 在 `compileConfig` 阶段已固化（保留为运行时表达式，运行时读取环境变量）。如果业务配置中有运行时读取 `process.env.NODE_ENV` 的逻辑（如 `onReady` 钩子），仍需启动时显式设置或由部署环境注入。
+启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`node dist/main` → 由用户自行设置。业务代码中的 `process.env.NODE_ENV` 表达式在编译阶段保留（不传 `define`），运行时读取环境变量。如果业务配置中有运行时读取 `process.env.NODE_ENV` 的逻辑（如 `onReady` 钩子），需启动时显式设置或由部署环境注入。
 
 CORS 等运行时配置通过 `faapi.config.ts` 配置；框架元信息（appDir/port/outDir）通过环境变量传入。
 
@@ -285,7 +293,8 @@ export default {
   cors: { origin: ['https://example.com'], credentials: true },
 
   // 全局中间件：对所有路由（HTTP + WebSocket 握手）生效，最外层
-  // 顺序：CORS → 全局 → 目录（根→路由）→ handler
+  // 顺序：CORS → helmet → logger → 全局 → 目录（根→路由）→ handler
+  // CORS/logger 默认启用（config.cors/config.logger 配置），helmet 显式启用（config.helmet）
   middlewares: [
     async (ctx, next) => {
       ctx.requestId = crypto.randomUUID(); // 塞值，handler/目录中间件可读
@@ -368,6 +377,7 @@ TypeScript 的 `interface` 在运行时会被擦除。第一版通过 TypeScript
 |--------|---------|------|
 | `query` | URL 查询参数对象 | `GET(query: Query)` |
 | `body` | 请求体（JSON） | `POST(body: CreateUserBody)` |
+| `form` | `application/x-www-form-urlencoded` 表单请求体（`Record<string, string>`，coerce=true，与 body 互斥） | `POST(form: LoginForm)` |
 | `params` | 动态路由参数 | `GET(params: { id: string })` |
 | `headers` | 请求头 Headers 对象 | `GET(headers)` |
 | `context` / `ctx` | 完整请求上下文 | `GET(context)` |
@@ -375,6 +385,8 @@ TypeScript 的 `interface` 在运行时会被擦除。第一版通过 TypeScript
 | `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
+
+`form` 与 `body` 互斥：handler 声明其一即可。`form` 共享 `body` 的解析结果（`resolveInput` 已按 Content-Type 解析 form-urlencoded 为 `Record<string, string>`），差异仅在 schema 校验——`form` 的 schema coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串），`body` 的 schema coerce=false。schema 名仍为 `POSTBody`（form 共享 body 的 schema key），通过 `RouteSchemaSource.coerce=true` 显式覆盖。
 
 自定义业务配置通过 `ctx.config` 访问：`GET(ctx) { return ctx.config.db }`，不作为参数名注入。
 

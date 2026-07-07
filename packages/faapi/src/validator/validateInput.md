@@ -27,6 +27,7 @@
 query/params 来自 URL，值均为 string。类型转换（string→number/boolean）已在代码生成阶段用 `z.preprocess` 内联到 zod schema（见 `generateZodSchema` 的 `coerce` 参数），运行时直接 `safeParse` 即可，无需单独的类型转换步骤。
 
 - `generateSchemaFileSource` 根据 schemaName 推断 inputType：以 `Query`/`Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）
+- `form` 注入的 schema 名仍为 `POSTBody`（与 `body` 共享 schema key，运行时无需感知 form/body 差异），但 `RouteSchemaSource.coerce=true` 显式覆盖（form 值均为 string，需 coerce）
 - body schema 不含 preprocess
 
 zod v4 issue code → 框架 `ValidationErrorCode` 映射：`invalid_type`/`invalid_union` → `TYPE_MISMATCH`；`unrecognized_keys` → `INVALID_FORMAT`；`invalid_value`/`invalid_string`/`too_small`/`too_big`/`custom` → `INVALID_VALUE`。

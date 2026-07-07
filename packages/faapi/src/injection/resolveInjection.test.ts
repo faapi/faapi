@@ -15,6 +15,12 @@ describe('resolveInjection', () => {
       expect(result).toEqual([{ name: 'body', type: 'body', hasType: false }]);
     });
 
+    it('识别 form 参数', () => {
+      const fn = eval('(form) => {}');
+      const result = resolveInjection(fn);
+      expect(result).toEqual([{ name: 'form', type: 'form', hasType: false }]);
+    });
+
     it('识别 headers 参数', () => {
       const fn = eval('(headers) => {}');
       const result = resolveInjection(fn);

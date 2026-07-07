@@ -73,7 +73,29 @@ export function POST(body: CreateUserBody) {
 }
 ```
 
-请求体必须是 JSON,Content-Type: application/json。
+请求体支持两种格式：
+
+- **JSON**（默认）：`Content-Type: application/json`，handler 用 `body: Body` 接收，schema coerce=false（JSON 解析已是天然 JS 类型）。
+- **form-urlencoded**：`Content-Type: application/x-www-form-urlencoded`，handler 用 `form: Form` 接收，schema coerce=true（form 值均为 string，number/boolean 字段自动转换，与 query/params 一致）。
+
+`body` 与 `form` 互斥，handler 声明其一即可。
+
+```ts
+// JSON body
+export interface CreateUserBody { name: string; age?: number; }
+export function POST(body: CreateUserBody) {
+  return { name: body.name, age: body.age };
+}
+
+// form-urlencoded
+export interface LoginForm { username: string; remember?: boolean; }
+export function POST(form: LoginForm) {
+  // Content-Type: application/x-www-form-urlencoded
+  // body: username=alice&remember=true
+  // form.username === 'alice', form.remember === true
+  return { user: form.username };
+}
+```
 
 ### 动态路由参数
 
@@ -119,6 +141,7 @@ export function PUT(params: Params, body: UpdateBody) {
 |--------|---------|------|
 | `query` | URL 查询参数对象 | `GET(query: Query)` |
 | `body` | 请求体(JSON) | `POST(body: Body)` |
+| `form` | 表单请求体(`application/x-www-form-urlencoded`，coerce=true) | `POST(form: Form)` |
 | `params` | 动态路由参数 | `GET(params: { id: string })` |
 | `headers` | Headers 对象 | `GET(headers)` |
 | `context` / `ctx` | 完整请求上下文 | `GET(ctx)` |
@@ -245,17 +268,17 @@ export interface Query {
 
 ### 3. 类型校验失败不降级
 
-AST 不支持的类型(如 `Map`/`Set`/`Promise`/`any`/`void`/`never`/`object`)直接抛 `SchemaExtractionError`,不降级为 `any`。
+AST 不支持的类型(如 `Promise`/`any`/`void`/`never`/`object`/`WeakMap`/`WeakSet`)直接抛 `SchemaExtractionError`,不降级为 `any`。
 
 ```ts
-// ❌ 抛错:Map 不支持
+// ❌ 抛错:WeakMap 不支持
 export interface Bad {
-  data: Map<string, number>;
+  data: WeakMap<string, number>;
 }
 
-// ✅ 用对象或数组
+// ✅ 用 Map<K,V> / Set<T> 或对象
 export interface Good {
-  data: Record<string, number>;
+  data: Map<string, number>;
 }
 ```
 
@@ -267,16 +290,41 @@ export interface Anything {
 }
 ```
 
-### 4. handler 内部类型错误不会被 dev 捕获
+### Map / Set 类型
+
+`Map<K,V>` 与 `Set<T>` 已支持，但 JSON 序列化会丢失数据（`JSON.stringify(new Map())` 输出 `"{}"`），客户端必须按以下形式发送：
+
+- **Map<K,V>**：entries 数组 `[["key", value], ...]`（与 `new Map(entries)` 兼容）
+- **Set<T>**：普通数组 `[item, ...]`（与 `new Set(array)` 兼容）
+
+```ts
+// ✅ 支持:Map<K,V>
+export interface POSTBody {
+  data: Map<string, number>;
+}
+// 客户端发送 body: { "data": [["a", 1], ["b", 2]] }
+// handler 收到的是 Map 实例:body.data.get('a') === 1
+
+// ✅ 支持:Set<T>
+export interface POSTBody {
+  tags: Set<string>;
+}
+// 客户端发送 body: { "tags": ["a", "b", "c"] }
+// handler 收到的是 Set 实例:body.tags.has('a') === true
+```
+
+注意：裸 `Map` / `Set`（无类型参数）和 `WeakMap` / `WeakSet` 仍然抛错。
+
+### 4. handler 内部类型错误不会被 dev/build 捕获
 
 ```ts
 export interface Query { page: number; }
 export function GET(query: Query) {
-  return query.unknownProp;  // dev 不报错,运行时返回 undefined
+  return query.unknownProp;  // dev/build 都不报错,运行时返回 undefined
 }
 ```
 
-**需要用户自己跑** `pnpm typecheck`(`tsc --noEmit`)。框架用 esbuild 编译,不跑 tsc。
+dev 和 build 都用 esbuild 编译，只编译不检查类型。**需要用户自己跑** `pnpm typecheck`(`tsc --noEmit`)。
 
 ### 5. 跨文件类型引用
 
@@ -299,9 +347,10 @@ faapi 支持跨文件类型引用,dev 和 prod 都会合并所有文件的类型
 - [ ] 文件名是 `handler.ts`
 - [ ] 在 `api/` 下(CLI 默认)
 - [ ] 导出 HTTP 方法名(`GET`/`POST` 等)
-- [ ] 类型声明用 `interface`(不是 type alias)
+- [ ] 类型声明用 `interface` 或 `type alias` 均可
 - [ ] 可选字段加 `?`
-- [ ] 不用 `Map`/`Set`/`Promise`/`any`/`void`/`never`/`object`
+- [ ] 不用 `any`/`void`/`never`/`object`/`WeakMap`/`WeakSet`（用 `unknown` 表示不校验；`Map<K,V>`/`Set<T>` 已支持）
+- [ ] 用 `Map<K,V>` / `Set<T>` 时客户端以 entries 数组 / 数组形式发送
 - [ ] 返回对象或 Response
 - [ ] `pnpm typecheck` 通过
 

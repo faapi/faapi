@@ -27,59 +27,28 @@ export async function GET(ctx) {
 
 > **为什么不自动做 304？** 框架在 handler 执行前不知道内容是否变化——必须 handler 自己告知（如上面先查 version）。框架级自动 ETag（读 body 算 hash）在动态 API 场景下 handler 已经全跑完了，304 只省带宽不省计算，收益有限。
 
-## 响应压缩
-
-```ts
-// middlewares/compression.ts
-import { gzip } from 'node:zlib';
-import { promisify } from 'node:util';
-import type { FaapiMiddleware } from '@faapi/faapi';
-
-const gzipAsync = promisify(gzip);
-
-export function compression(): FaapiMiddleware {
-  return async (_ctx, next) => {
-    const response = await next();
-    const body = await response.arrayBuffer();
-    if (body.byteLength < 1024) return response;
-
-    const compressed = await gzipAsync(new Uint8Array(body));
-    return new Response(compressed, {
-      status: response.status,
-      headers: { ...Object.fromEntries(response.headers), 'content-encoding': 'gzip' },
-    });
-  };
-}
-
-// faapi.config.ts
-export default {
-  middlewares: [compression()],
-} satisfies FaapiConfig;
-```
-
-> **注意**：`arrayBuffer()` 会破坏流式响应。如果业务需要压缩大文件/流式响应，建议用反向代理（nginx/Caddy）处理。
-
 ## 限流
+
+生产环境推荐用 Redis 存储，兼容 cluster 多进程：
 
 ```ts
 // middlewares/rateLimit.ts
 import type { FaapiMiddleware } from '@faapi/faapi';
+import { Redis } from 'ioredis';
+
+const redis = new Redis(process.env.REDIS_URL!);
 
 export function rateLimit(opts: { max?: number; windowMs?: number } = {}): FaapiMiddleware {
   const { max = 60, windowMs = 60_000 } = opts;
-  const store = new Map<string, { count: number; resetTime: number }>();
 
   return async (ctx, next) => {
-    const key = ctx.ip;
-    const now = Date.now();
-    let rec = store.get(key);
-    if (!rec || now >= rec.resetTime) rec = { count: 0, resetTime: now + windowMs };
+    const key = `ratelimit:${ctx.ip}`;
+    const count = await redis.incr(key);
+    if (count === 1) await redis.pexpire(key, windowMs);
 
-    rec.count++;
-    if (rec.count > max) {
+    if (count > max) {
       return new Response(JSON.stringify({ error: 'Too many requests' }), { status: 429 });
     }
-    store.set(key, rec);
     return await next();
   };
 }
@@ -89,8 +58,6 @@ export default {
   middlewares: [rateLimit({ max: 100, windowMs: 60_000 })],
 } satisfies FaapiConfig;
 ```
-
-> **注意**：内存存储与 cluster 多进程冲突（每个 worker 独立计数）。生产环境请改用 Redis 存储。
 
 ## 请求超时
 

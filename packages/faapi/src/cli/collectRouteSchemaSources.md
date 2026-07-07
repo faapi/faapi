@@ -45,6 +45,7 @@ function collectRouteSchemaSources(
 - `sourceFile?.text ?? ''`：sourceFile 缺失时回退空串
 - `param?.typeName ? extractTypeInfo(...) : null`：handler 无 input 类型参数时 `typeInfo` 为 null（不抛错）
 - 无 try/catch——AST 异常（如 `SchemaExtractionError`）向上传播，依赖调用方处理
+- POST/PUT/PATCH 方法下，若 handler 声明 `form` 参数（而非 `body`），`collectRouteSchemaSources` 会用 `form` 参数的类型信息填充 `typeInfo`，并在 `RouteSchemaSource` 上设置 `coerce=true`。schema 名仍为 `POSTBody`（与 `body` 共享运行时 schema key），运行时 `validateInput` 无需感知 form/body 差异。
 
 ## 相关模块
 

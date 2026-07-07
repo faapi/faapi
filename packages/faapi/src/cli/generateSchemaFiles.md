@@ -81,6 +81,9 @@ dist/
 | `Query` | query | `true` | URL 参数均为 string，number/boolean 字段需 z.preprocess 转换 |
 | `Params` | params | `true` | 动态路由参数均为 string，同 query |
 | `Body` | body | `false` | JSON 解析已是天然 JS 类型，无需转换 |
+| `Body`（form 注入） | form | `true` | handler 声明 `form` 时 `RouteSchemaSource.coerce=true` 显式覆盖，schema 名仍为 `POSTBody`（与 body 共享运行时 schema key） |
+
+`form` 与 `body` 共享 schema 名（`POSTBody`），运行时 `validateInput` 无需感知 form/body 差异。`collectRouteSchemaSources` 在提取时若发现 handler 声明 `form` 参数（而非 `body`），会在 `RouteSchemaSource` 上设置 `coerce=true`，`generateSchemaFileSource` 优先采用 `source.coerce`，回退到 schemaName 后缀正则。
 
 coerce 的具体转换规则见 [generateZodSchema](../ast/generateZodSchema) 的 `coerce` 参数。
 

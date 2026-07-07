@@ -23,6 +23,10 @@ function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?:
       return ctx.ip;
     case 'body':
       return body;
+    // form 与 body 共享解析结果（resolveInput 已按 Content-Type 解析 form-urlencoded）
+    // 差异仅在 schema 校验（form coerce=true，由 collectRouteSchemaSources 标记）
+    case 'form':
+      return body;
     case 'files':
       if (body && typeof body === 'object' && 'files' in body) {
         return (body as MultipartResult).files;

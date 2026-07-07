@@ -23,11 +23,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@faapi/faapi": "workspace:*",
-    "@faapi/mcp": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@faapi/faapi": "workspace:*",
+    "@faapi/mcp": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "3",
     "tsup": "^8.4.0",
@@ -35,6 +35,8 @@
     "vitest": "^3.1.0"
   },
   "peerDependencies": {
+    "@faapi/faapi": "workspace:*",
+    "@faapi/mcp": "workspace:*",
     "typescript": ">=5.7.0"
   },
   "peerDependenciesMeta": {

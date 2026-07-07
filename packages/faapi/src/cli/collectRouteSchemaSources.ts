@@ -19,6 +19,18 @@ export interface RouteSchemaSource {
   filePath: string;
   schemaName: string;
   typeInfo: HandlerTypeInfo | null;
+  /**
+   * 是否对 number/boolean 字段生成 z.preprocess 字符串转换（coerce）。
+   *
+   * - query/params：始终 coerce=true（URL 来源均为 string）
+   * - body：始终 coerce=false（JSON 解析已是天然 JS 类型）
+   * - form：coerce=true（form-urlencoded 来源均为 string），由本函数在提取时
+   *   检测到 handler 声明 `form` 参数时显式设置。schema 名仍为 `POSTBody`
+   *   （与 body 共享运行时 schema key），运行时 validateInput 无需感知 form/body 差异。
+   *
+   * 未设置时由 generateSchemaFileSource 回退到 schemaName 后缀正则推断（Query/Params → true）。
+   */
+  coerce?: boolean;
 }
 
 /**
@@ -81,9 +93,22 @@ export function collectRouteSchemaSources(
       const inputType = getInputTypeForMethod(method);
       const schemaName = getSchemaName(method, inputType);
       const meta = analyzeInjection(code, method);
-      const param = meta.params.find((p) => p.type === inputType);
+      // POST/PUT/PATCH（inputType='body'）：优先找 body 参数，找不到再找 form 参数。
+      // form 与 body 共享 schema 名（POSTBody），运行时 validateInput 仍按 POSTBodySchema 查找；
+      // 差异仅在校验：form 声明时通过 source.coerce=true 显式覆盖（form 值均为 string，
+      // 需 z.preprocess 转换 number/boolean 字段）。
+      const param =
+        meta.params.find((p) => p.type === inputType) ??
+        (inputType === 'body' ? meta.params.find((p) => p.type === 'form') : undefined);
+      const isForm = param?.type === 'form';
       const typeInfo = param?.typeName ? extractTypeInfo(program, filePath, param.typeName) : null;
-      sources.push({ urlPath: entry.urlPath, filePath, schemaName, typeInfo });
+      sources.push({
+        urlPath: entry.urlPath,
+        filePath,
+        schemaName,
+        typeInfo,
+        coerce: isForm || undefined,
+      });
     }
   }
 

@@ -20,7 +20,7 @@
 | `cors` | `CorsOptions` | CORS 配置 |
 | `helmet` | `HelmetOptions` | 安全头配置 |
 | `bodyLimit` | `number` | 请求体大小上限 |
-| `logger` | `LoggerOptions` | 请求日志配置 |
+| `logger` | `LoggerOptions \| boolean` | 请求日志配置,默认启用 |
 | `http2` | `boolean` | 是否启用 HTTP/2 |
 | `lifecycle` | `LifecycleHooks` | 生命周期钩子（onReady/onClose/onError） |
 | `middlewares` | `FaapiMiddleware[]` | 全局中间件（最外层） |

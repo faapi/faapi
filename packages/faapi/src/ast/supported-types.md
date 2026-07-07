@@ -64,6 +64,8 @@ readonly 是 TypeScript 的编译期约束，运行时不产生校验语义，AS
 | `Readonly<T>` | 内部类型 kind | best effort，直接返回内部类型 |
 | `Pick<T, K>` | `object` | 筛选字段；K 支持字面量联合、类型别名、`keyof T` |
 | `Omit<T, K>` | `object` | 排除字段；K 支持字面量联合、类型别名、`keyof T` |
+| `Map<K, V>` | `map` | JSON 序列化为 entries 数组 `[["k",v],...]`，运行时 `z.preprocess(coerceMap, z.map(...))` 还原 |
+| `Set<T>` | `set` | JSON 序列化为数组 `[item,...]`，运行时 `z.preprocess(coerceSet, z.set(...))` 还原 |
 | type 别名 | 递归解析 | |
 | interface（含 `extends` 继承） | `object` | 合并父接口属性 |
 | `enum`（字符串/数值枚举） | `union` | 字面量联合；隐式数值枚举递增 |
@@ -82,7 +84,8 @@ readonly 是 TypeScript 的编译期约束，运行时不产生校验语义，AS
 | `object`（关键字） | 不支持，请使用具体对象类型或 `unknown` | 改用具体 interface 或 `unknown` |
 | `bigint` | 无法通过 HTTP/JSON 传输 | 改用 `string` 或 `number` |
 | `symbol` | 无法通过 HTTP/JSON 传输 | 不要在 query/body 类型中使用 |
-| `Map<K,V>` / `Set<T>` / `WeakMap` / `WeakSet` | 运行时无法校验 | 改用对象或数组 |
+| 裸 `Map` / `Set`（无类型参数） | 必须写 `Map<K,V>` / `Set<T>` 形式 | 补上类型参数 |
+| `WeakMap` / `WeakSet` | 运行时无法枚举校验 | 改用 `Map` / `Set` 或对象 |
 | `Promise<T>` | 运行时无法校验异步值 | 不要在 query/body 类型中使用 |
 | `Function` | 无法通过 HTTP/JSON 传输 | 不要在 query/body 类型中使用 |
 | 函数类型（`() => void` 等） | 无法识别的语法节点 | 不要在 query/body 类型中使用 |
@@ -103,6 +106,15 @@ query/params 来自 URL 值均为 string，类型转换在代码生成阶段用 
 判定规则：schemaName 以 `Query` 或 `Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）。
 
 公用 `coerceNumber` / `coerceBoolean` 提取到 outDir 根部的 `faapi-helpers.js`（仅一份，ESM export），各 `zod.js` 通过相对路径 import 复用。无 coerce schema 时不生成该文件。
+
+### Map/Set 的 coerce
+
+`Map<K,V>` 与 `Set<T>` 在 query/params 与 body 场景都需要 `z.preprocess` 包裹（`JSON.parse` 出来的是数组/对象，不是 Map/Set 实例）：
+
+- `Map<K,V>` → `z.preprocess(coerceMap, z.map(keySchema, valueSchema))`，`coerceMap` 接受 entries 数组 `[["k",v],...]`、已有 Map、普通对象（`Object.entries` 转换）
+- `Set<T>` → `z.preprocess(coerceSet, z.set(elementSchema))`，`coerceSet` 接受数组或已有 Set
+
+`coerceMap` / `coerceSet` 与 `coerceNumber` / `coerceBoolean` 同文件 `faapi-helpers.js`，按需生成（任意 zod.js 引用即生成）。Map/Set 在 `coerce=true`/`false` 下都会生成 preprocess 包裹，差异仅在内部 number/boolean 字段是否再包一层 `coerceNumber`/`coerceBoolean`。
 
 ## JSDoc 约束标签
 

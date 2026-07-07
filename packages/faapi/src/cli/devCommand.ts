@@ -14,6 +14,12 @@ const DEV_OUT_DIR = '.faapi/dev';
 /** 路由清单文件名 */
 const ROUTES_FILE = 'faapi-routes.js';
 
+/** dev 命令选项（来自 CLI 参数） */
+export interface DevCommandOptions {
+  port?: number;
+  appDir?: string;
+}
+
 /**
  * `faapi dev` 命令：编译 TypeScript → 生成产物三元组 → 启动 dev 应用 → 启动 watcher
  *
@@ -22,9 +28,9 @@ const ROUTES_FILE = 'faapi-routes.js';
  * dev 模式直接调用 `createDevApp()` + `listen()`，持有 app 引用后传给 watcher。
  * prod 模式由 `node dist/main`（运行 `faapi build` 生成的启动入口）调用 `createProdApp()` + `listen()`，与 dev 完全分离。
  *
- * 框架元信息通过环境变量传入（不放在 faapi.config.ts 内）：
- * - `FAAPI_APP_DIR`：源码目录前缀，默认 'src'
- * - `PORT`：服务端口，默认 3000
+ * 框架元信息通过 CLI 选项或环境变量传入（不放在 faapi.config.ts 内）：
+ * - `--appDir` / `FAAPI_APP_DIR`：源码目录前缀，默认 'src'
+ * - `--port` / `PORT`：服务端口，默认 3000
  * - `FAAPI_OUT_DIR`：dev 模式固定为 `.faapi/dev`
  *
  * 产物三元组（与 `faapi build` 一致）：
@@ -40,7 +46,7 @@ const ROUTES_FILE = 'faapi-routes.js';
  * 4. 调用 createDevApp() + listen() 启动 dev 应用（含 reloadRoutes 热替换能力）
  * 5. 启动 watcher（增量编译 + 重生成产物 + app.reloadRoutes 热替换）
  */
-export async function devCommand(): Promise<void> {
+export async function devCommand(options?: DevCommandOptions): Promise<void> {
   const rootDir = process.cwd();
 
   // 1. 设置 dev 环境标记 + outDir
@@ -48,11 +54,11 @@ export async function devCommand(): Promise<void> {
   if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
   console.log('- Development mode');
 
-  // 2. 编译配置产物 + 读环境变量拿 appDir
+  // 2. 编译配置产物 + 拿 appDir（CLI 选项优先于环境变量）
   console.log('- Compiling config...');
   await compileConfig({ rootDir, outDir: DEV_OUT_DIR });
   const _config = await loadConfig(rootDir, DEV_OUT_DIR);
-  const appDir = process.env.FAAPI_APP_DIR ?? 'src';
+  const appDir = options?.appDir ?? process.env.FAAPI_APP_DIR ?? 'src';
   const patterns = appDir === '.' ? ['api/**/*.ts'] : [`${appDir}/api/**/*.ts`];
 
   // 3. 编译 .ts → .faapi/dev/
@@ -65,7 +71,7 @@ export async function devCommand(): Promise<void> {
 
   // 5. 启动 dev 应用（createDevApp + listen，含 reloadRoutes 热替换能力）
   console.log('- Starting dev app...');
-  const app = await createDevApp({ rootDir });
+  const app = await createDevApp({ rootDir, port: options?.port });
   await app.listen();
 
   // 6. 启动 watcher（文件变化时增量编译 + 重生成 config + 调 app.reloadRoutes）

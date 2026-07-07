@@ -117,7 +117,9 @@ api/
     └── handler.ts
 ```
 
-**执行顺序**:CORS → 全局(faapi.config.ts middlewares)→ 目录(根→路由)→ handler
+**执行顺序**:CORS → helmet → logger → 全局(faapi.config.ts middlewares)→ 目录(根→路由)→ handler
+
+CORS/logger 默认启用（`config.cors`/`config.logger`），helmet 显式启用（`config.helmet`）。`logger: false` 或 `cors: false` 可禁用内置项。
 
 ```
 请求 → 全局mw → api/middlewares.ts → api/user/middlewares.ts → handler
@@ -145,7 +147,7 @@ export default {
 };
 ```
 
-顺序:CORS → 全局 → 目录(根→路由)→ handler。详见 [config.md](./config.md)。
+顺序:CORS → helmet → logger → 全局 → 目录(根→路由)→ handler。详见 [config.md](./config.md)。
 
 ## 注入器(injectors)
 

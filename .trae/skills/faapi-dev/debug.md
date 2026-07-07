@@ -55,9 +55,9 @@ curl 'http://localhost:3000/api/user?page=1&pageSize=10'
 直接抛 `SchemaExtractionError`,不降级:
 
 ```ts
-// ❌ Map/Set/Promise 不支持
+// ❌ WeakMap/WeakSet/Promise 不支持
 export interface Bad {
-  data: Map<string, number>;
+  data: WeakMap<string, number>;
 }
 
 // ❌ any/void/never/object 抛错
@@ -65,9 +65,9 @@ export interface Bad {
   data: any;
 }
 
-// ✅ 用对象/数组
+// ✅ 用 Map<K,V> / Set<T> 或对象
 export interface Good {
-  data: Record<string, number>;
+  data: Map<string, number>;
 }
 
 // ✅ unknown 表示不校验
@@ -75,6 +75,8 @@ export interface Anything {
   data: unknown;
 }
 ```
+
+`Map<K,V>` 与 `Set<T>` 已支持,但客户端需以 entries 数组 / 数组形式发送(JSON 序列化 Map/Set 会丢失数据)。详见 [route.md](./route.md) 的 "Map / Set 类型" 章节。
 
 ## 404 — 路由不存在
 
@@ -299,7 +301,7 @@ handler 参数类型声明了,但请求传错参数也不报 400。
 
 1. 参数名不是内置注入名(`query`/`body`/`params` 等)
 2. 类型声明在函数外部,handler 没用
-3. 用了 AST 不支持的类型(降级为不校验)
+3. 用了 AST 不支持的类型(抛 `SchemaExtractionError`,不会静默降级)
 
 ### 排查
 
@@ -313,25 +315,26 @@ export function GET(query: Query) { ... }
 ```
 
 ```ts
-// ❌ 类型声明在外部,handler 没引用
+// ❌ 类型声明了但 handler 参数用 any（会抛 SchemaExtractionError,不是静默不校验）
 interface Query { page: number; }
-export function GET(query: any) { ... }  // query 是 any,不校验
+export function GET(query: any) { ... }
+// 用 unknown 表示不校验:export function GET(query: unknown) { ... }
 ```
 
-## dev 不报类型错误
+## dev/build 不报类型错误
 
 ### 现象
 
 ```ts
 export interface Query { page: number; }
 export function GET(query: Query) {
-  return query.unknownProp;  // dev 不报错,运行时 undefined
+  return query.unknownProp;  // dev/build 都不报错,运行时 undefined
 }
 ```
 
 ### 原因
 
-faapi dev 用 esbuild 编译,**只编译不检查类型**。框架不主动跑 tsc。
+dev 和 build 都用 esbuild 编译,**只编译不检查类型**。框架不主动跑 tsc。
 
 ### 解决
 
@@ -355,8 +358,7 @@ handler 引用了其他文件的类型,dev 模式校验不生效。
 
 dev 模式 watch 增量编译 + 重新生成 schema,跨文件类型引用应该自然解决。如果还有问题:
 
-1. 类型导出方式不对(用 `export interface` 不是 `export type`)
-2. 循环引用
+1. 循环引用
 
 ### 排查
 
@@ -388,7 +390,8 @@ import type { User } from '../../types.ts';
 - [ ] 参数名是内置注入名(`query`/`body`/`params`)
 - [ ] 类型用 `interface` 声明
 - [ ] 可选字段加 `?`
-- [ ] 不用 `Map`/`Set`/`any` 等 AST 不支持的类型
+- [ ] 不用 `any`/`void`/`never`/`object`/`WeakMap`/`WeakSet` 等 AST 不支持的类型
+- [ ] 用 `Map<K,V>` / `Set<T>` 时客户端以 entries 数组 / 数组形式发送
 
 ### 错误处理
 - [ ] 配置全局错误中间件 `try/catch next()` 自定义错误响应

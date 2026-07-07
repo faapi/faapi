@@ -24,6 +24,7 @@ GET(query: Query, db: Db)
 |--------|---------|------|
 | `query` | URL 查询参数对象 | `GET(query: Query)` |
 | `body` | 请求体(JSON) | `POST(body: CreateUserBody)` |
+| `form` | 表单请求体(`application/x-www-form-urlencoded`，`Record<string, string>`，coerce=true) | `POST(form: LoginForm)` |
 | `params` | 动态路由参数 | `GET(params: { id: string })` |
 | `headers` | 请求头 Headers 对象 | `GET(headers)` |
 | `context` / `ctx` | 完整请求上下文 | `GET(ctx)` |
@@ -31,6 +32,23 @@ GET(query: Query, db: Db)
 | `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
+
+**`form` 与 `body` 互斥**：handler 声明其一即可。`form` 适用于 `Content-Type: application/x-www-form-urlencoded` 的请求体，框架按 URL 表单解析为 `Record<string, string>`，schema 校验时 coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串）。`body` 适用于 JSON 请求体，coerce=false。
+
+```ts
+// src/api/login/handler.ts
+export interface LoginForm {
+  username: string;
+  password: string;
+  remember?: boolean;  // "true" / "false" 自动转 boolean
+}
+
+export function POST(form: LoginForm) {
+  // form.username: string
+  // form.remember: boolean | undefined
+  return { user: form.username };
+}
+```
 
 **自定义业务配置**通过 `ctx.config` 访问,不作为参数名注入:
 

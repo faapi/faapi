@@ -22,6 +22,7 @@ import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
 import { getClientIp } from '../utils/getClientIp';
 import { cors, type CorsOptions } from '../middleware/cors';
 import { helmet, type HelmetOptions } from '../middleware/helmet';
+import { logger as loggerMiddleware, type LoggerOptions } from '../middleware/logger';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import { attachWebSocket } from './handleWsUpgrade';
@@ -140,6 +141,8 @@ export interface CreateServerOptions {
   injectors?: InjectorMap;
   /** 安全头配置 */
   helmet?: HelmetOptions | boolean;
+  /** 请求日志配置,默认启用（与 cors 一致） */
+  logger?: LoggerOptions | boolean;
   /** 请求体大小限制（字节） */
   bodyLimit?: number;
   /** HTTP/2 配置，启用时需提供 SSL 证书路径 */
@@ -173,6 +176,7 @@ export function createServer(options: CreateServerOptions): {
     middlewares: globalMiddlewares,
     injectors: globalInjectors,
     helmet: helmetOption,
+    logger: loggerOption,
     bodyLimit = DEFAULT_BODY_LIMIT,
     http2: http2Option,
   } = options;
@@ -197,6 +201,15 @@ export function createServer(options: CreateServerOptions): {
     const helmOpts = typeof helmetOption === 'object' ? helmetOption : {};
     configMiddlewares.push(helmet(helmOpts));
   }
+
+  // Logger — 默认启用（与 cors 一致），false 禁用，LoggerOptions 自定义
+  const loggerMiddlewareInst: FaapiMiddleware | null =
+    loggerOption === false
+      ? null
+      : loggerOption === true || loggerOption === undefined
+        ? loggerMiddleware()
+        : loggerMiddleware(loggerOption);
+  if (loggerMiddlewareInst) configMiddlewares.push(loggerMiddlewareInst);
 
   const server = ((): Server => {
     if (http2Option) {
@@ -313,8 +326,8 @@ async function handleRequest(
 
   try {
     let response: Response;
-    // 外层中间件链：配置中间件（CORS/helmet）+ 全局中间件
-    // 顺序：CORS → helmet → 全局 → routePipeline（含目录中间件 + handler）
+    // 外层中间件链：配置中间件（CORS/helmet/logger）+ 全局中间件
+    // 顺序：CORS → helmet → logger → 全局 → routePipeline（含目录中间件 + handler）
     const outerMiddlewares: FaapiMiddleware[] = [];
     if (configMiddlewares.length > 0) outerMiddlewares.push(...configMiddlewares);
     if (globalMiddlewares && globalMiddlewares.length > 0) {

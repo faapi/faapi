@@ -25,6 +25,19 @@ describe('analyzeInjection', () => {
       expect(result.params[0].type).toBe('body');
     });
 
+    it('识别 form 参数', () => {
+      const code = `
+        export function POST(form: LoginForm) {
+          return form;
+        }
+      `;
+      const result = analyzeInjection(code, 'POST');
+      expect(result.params).toHaveLength(1);
+      expect(result.params[0].name).toBe('form');
+      expect(result.params[0].type).toBe('form');
+      expect(result.params[0].typeName).toBe('LoginForm');
+    });
+
     it('识别多参数', () => {
       const code = `
         export function PUT(params: Params, body: Body, headers: Headers) {

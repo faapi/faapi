@@ -46,3 +46,22 @@ interface LifecycleContext {
   server: Server;
 }
 ```
+
+## 在钩子中 import 项目模块
+
+`onReady` / `onClose` 中调用项目模块(初始化数据库、校验环境变量、预热缓存),直接静态 `import` 即可,dev/prod 行为一致:
+
+```ts
+// faapi.config.ts
+import { initDb } from './src/lib/db';
+
+export default {
+  lifecycle: {
+    async onReady() {
+      await initDb();
+    },
+  },
+} satisfies FaapiConfig;
+```
+
+不要在 config 顶层执行有副作用的代码(如 `initDb()`),在 `onReady` 中执行。

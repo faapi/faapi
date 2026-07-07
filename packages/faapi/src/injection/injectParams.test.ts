@@ -94,6 +94,31 @@ describe('injectParams', () => {
     });
   });
 
+  describe('form 注入', () => {
+    it('form 参数与 body 共享解析结果', async () => {
+      // resolveInput 对 application/x-www-form-urlencoded 解析为 Record<string, string>
+      const body = { username: 'alice', remember: 'true' };
+      const request = new Request('http://localhost:3000/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      });
+      const ctx = createMockContext({ request, method: 'POST' });
+
+      const fn = eval('(form) => form');
+      const result = await injectParamsAsync(fn, ctx, body);
+      // form 共享 body 的解析结果（同一对象引用）
+      expect(result).toEqual(body);
+      expect(result).toBe(body);
+    });
+
+    it('body 为 undefined 时 form 也为 undefined', async () => {
+      const ctx = createMockContext({ method: 'POST' });
+      const fn = eval('(form) => form');
+      const result = await injectParamsAsync(fn, ctx, undefined);
+      expect(result).toBeUndefined();
+    });
+  });
+
   describe('files 注入', () => {
     const createMultipartBody = (overrides?: Partial<MultipartResult>): MultipartResult => ({
       files: [

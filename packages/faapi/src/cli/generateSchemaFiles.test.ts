@@ -282,6 +282,43 @@ export function GET(params: GETParams) { return params; }
       expect(source).toContain('export const GETParamsSchema');
       expect(source).toContain('z.preprocess');
     });
+
+    it('form 注入的 schema 名为 POSTBody 但 coerce=true（显式覆盖正则推断）', () => {
+      // 模拟 collectRouteSchemaSources 对 form 声明的处理结果：
+      // schemaName 仍为 POSTBody（共享 body 的 schema key），但 coerce=true 显式标记
+      const file = join(tempDir, 'login.ts');
+      writeFileSync(
+        file,
+        `export interface LoginForm {
+  username: string;
+  age: number;
+  remember?: boolean;
+}
+export function POST(form: LoginForm) { return form; }
+`,
+      );
+
+      const program = createProgram(file);
+      const allTypes = extractAllTypes(program, file);
+      const sources: RouteSchemaSource[] = [
+        {
+          urlPath: '/api/login',
+          filePath: file,
+          schemaName: 'POSTBody',
+          typeInfo: allTypes.get('LoginForm') ?? null,
+          coerce: true,
+        },
+      ];
+
+      const source = generateSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+
+      // schema 名仍为 POSTBodySchema（运行时 validateInput 用此 key 查找）
+      expect(source).toContain('export const POSTBodySchema');
+      // form 的 number/boolean 字段需 z.preprocess（coerce=true）
+      expect(source).toContain('z.preprocess');
+      // 引用 faapi-helpers.js 的 coerceNumber/coerceBoolean
+      expect(source).toContain("from '../../faapi-helpers.js'");
+    });
   });
 
   describe('generateSchemaFiles', () => {
@@ -559,6 +596,67 @@ export function POST(body: POSTBody) { return body; }
       const zodPath = join(outDir, 'api', 'user', 'zod.js');
       const zodContent = readFileSync(zodPath, 'utf-8');
       expect(zodContent).not.toContain('faapi-helpers.js');
+    });
+
+    it('handler 声明 form 时端到端生成 POSTBodySchema（coerce=true，可 safeParse form-urlencoded 值）', async () => {
+      const filePath = join(tempDir, 'src', 'api', 'login', 'handler.ts');
+      mkdirSync(join(tempDir, 'src', 'api', 'login'), { recursive: true });
+      writeFileSync(
+        filePath,
+        `export interface LoginForm {
+  username: string;
+  age: number;
+  remember?: boolean;
+}
+export function POST(form: LoginForm) { return form; }
+`,
+      );
+
+      const routes: RouteManifest = [
+        {
+          method: 'POST',
+          urlPath: '/api/login',
+          filePath: 'src/api/login/handler.ts',
+          paramNames: [],
+          isDynamic: false,
+        },
+      ];
+      const outDir = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, 'src', outDir);
+
+      const schemaPath = join(outDir, 'api', 'login', 'zod.js');
+      const content = readFileSync(schemaPath, 'utf-8');
+      // schema 名为 POSTBodySchema（运行时 validateInput 用此 key 查找）
+      expect(content).toContain('export const POSTBodySchema');
+      // coerce=true：含 z.preprocess
+      expect(content).toContain('z.preprocess');
+      // 因含 coerce schema，应生成 faapi-helpers.js
+      expect(existsSync(join(outDir, 'faapi-helpers.js'))).toBe(true);
+
+      // 端到端 safeParse：form-urlencoded 值（string）能被 coerce 转换通过
+      const mod = (await importWithCacheBust(schemaPath)) as {
+        POSTBodySchema: { safeParse: (v: unknown) => { success: boolean } };
+      };
+      expect(mod.POSTBodySchema).toBeDefined();
+
+      // form 值均为 string：username=alice&age=30&remember=true
+      const ok = mod.POSTBodySchema.safeParse({
+        username: 'alice',
+        age: '30', // string → number via coerce
+        remember: 'true', // string → boolean via coerce
+      });
+      expect(ok.success).toBe(true);
+
+      // 缺必填字段
+      const missing = mod.POSTBodySchema.safeParse({ age: '30' });
+      expect(missing.success).toBe(false);
+
+      // 类型错误（"abc" 无法 coerce 为 number）
+      const wrongType = mod.POSTBodySchema.safeParse({
+        username: 'alice',
+        age: 'abc',
+      });
+      expect(wrongType.success).toBe(false);
     });
   });
 });

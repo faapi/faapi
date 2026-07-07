@@ -69,15 +69,24 @@ export default {
 
 ## logger — 日志
 
+默认启用（与 cors 一致），零配置即输出 `GET /api/users 200 12ms` 格式日志。
+
 ```ts
 import pino from 'pino';
 const pinoLogger = pino();
 
 export default {
+  // 默认启用（undefined）,使用 console.log
+  // 或自定义:
   logger: { log: pinoLogger.info.bind(pinoLogger) },
+  // 或显式启用:
+  logger: true,
+  // 或关闭:
+  logger: false,
 } satisfies FaapiConfig;
-// 或简写: logger: true（使用 console.log）
 ```
+
+完全自定义日志中间件：`logger: false` + `middlewares: [myCustomLogger]`。
 
 ## http2 — HTTP/2
 
@@ -123,7 +132,7 @@ declare module '@faapi/faapi' {
 
 ## ETag / 中间件实例
 
-faapi 不内置 compression / rateLimit / timeout / cluster 等。详见 [recipes.md](./recipes.md)。
+faapi 不内置 rateLimit / timeout / cluster 等。详见 [recipes.md](./recipes.md)。响应压缩建议通过反向代理（nginx/Caddy）处理。
 
 ## 常见坑点
 
@@ -138,7 +147,7 @@ export function GET() {
 
 ### 2. 自定义错误响应走全局中间件
 
-handler 抛错未被全局中间件 `try/catch` 捕获时,框架用内置 `formatErrorResponse` 兜底。自定义错误响应在全局中间件中 `try/catch next()` 后 `return ctx.json(...)` 拦截,详见 [response.md](./response.md)。
+handler 抛错未被全局中间件 `try/catch` 捕获时,框架用内置 `formatErrorResponse` 兜底。自定义错误响应在全局中间件中 `try/catch next()` 后 `return ctx.json(...)` 拦截,项目自定义错误类用 `instanceof` 判断,详见 [response.md](./response.md)。
 
 ### 3. 自定义配置 key 与框架 key 冲突
 

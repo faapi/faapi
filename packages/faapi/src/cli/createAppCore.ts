@@ -59,6 +59,8 @@ export interface CreateAppOptions {
   rootDir?: string;
   /** 源码目录前缀，覆盖环境变量 FAAPI_APP_DIR，默认 'src' */
   appDir?: string;
+  /** 产物输出目录，覆盖环境变量 FAAPI_OUT_DIR，默认 'dist' */
+  outDir?: string;
   /** 端口号，也可在 listen() 时传入；默认环境变量 PORT 或 3000 */
   port?: number;
 }
@@ -132,7 +134,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   ctx: AppContext;
 }> {
   const rootDir = options?.rootDir ?? process.cwd();
-  const outDir = process.env.FAAPI_OUT_DIR ?? DEFAULT_OUT_DIR;
+  const outDir = options?.outDir ?? process.env.FAAPI_OUT_DIR ?? DEFAULT_OUT_DIR;
 
   // 校验产物存在性
   const routesPath = path.resolve(rootDir, outDir, ROUTES_FILE);
@@ -184,6 +186,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     middlewares: config?.middlewares,
     injectors: config?.injectors,
     helmet: config?.helmet,
+    logger: config?.logger,
     bodyLimit: config?.bodyLimit,
     http2: config?.http2,
   });

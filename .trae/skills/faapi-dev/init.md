@@ -54,14 +54,14 @@ pnpm add @faapi/faapi
 pnpm add @faapi/schema
 ```
 
-> **版本一致性**:`@faapi/faapi`、`@faapi/schema`、`@faapi/next` 三个包采用 **fixed 模式**发布,版本号始终统一。同时安装多个时**必须保持版本一致**,否则可能出现 API 不匹配。
+> **版本一致性**:`@faapi/faapi`、`@faapi/schema`、`@faapi/next`、`@faapi/mcp` 四个包采用 **fixed 模式**发布,版本号始终统一。`@faapi/next`、`@faapi/schema`、`@faapi/mcp` 通过 `peerDependencies` 声明对 `@faapi/faapi` 的依赖,pnpm 安装时会自动约束版本一致。
 >
 > ```bash
-> # 同时安装多个包时,用 @版本号 锁定同一版本
-> pnpm add @faapi/faapi@^1.0.0 @faapi/next@^1.0.0
+> # 正常安装即可,peerDependencies 自动约束版本
+> pnpm add @faapi/faapi @faapi/next
 > ```
 >
-> 单独升级某个包时,其余 faapi 包也要一起升到同一版本。可用 `pnpm ls @faapi/faapi @faapi/schema @faapi/next` 检查版本是否一致。
+> 如果版本不一致,pnpm 会发出 peer dependencies 警告。可用 `pnpm ls @faapi/faapi @faapi/schema @faapi/next @faapi/mcp` 检查版本。
 
 ### 3. 配置 package.json scripts
 
@@ -165,7 +165,22 @@ faapi build                     # 构建(不启动服务器)
 node dist/main              # 启动生产服务器(需先 faapi build)
 ```
 
-> 框架元信息(appDir/port/outDir)通过环境变量配置,CORS 等应用行为配置通过 `faapi.config.ts` 控制,不通过 CLI 选项控制。
+CLI 选项（优先于环境变量）：
+
+| 选项 | 命令 | 说明 | 对应环境变量 |
+|------|------|------|-------------|
+| `--port <number>` | dev / build | dev: dev 服务器端口；build: 写入 `dist/main.js` 的 `listen()` | `PORT` |
+| `--appDir <dir>` | dev / build | 源码目录前缀，默认 `src` | `FAAPI_APP_DIR` |
+| `--outDir <dir>` | build | 产物输出目录，默认 `dist` | `FAAPI_OUT_DIR` |
+
+```bash
+faapi dev --port 8080 --appDir app    # dev: 8080 端口，源码在 app/
+faapi build --port 8080 --outDir build # build: 产物到 build/，prod 端口 8080
+PORT=3000 faapi dev                    # 也可继续用环境变量
+```
+
+> `--port` 对 build 写入 `main.js` 后，prod `node dist/main` 即用该端口，无需再设 `PORT`。
+> CORS 等应用行为配置通过 `faapi.config.ts` 控制。
 
 ## 构建与生产部署
 
@@ -277,7 +292,7 @@ node dist/main    # 启动(读 dist 产物,NODE_ENV 自动兜底为 production)
 ✅ src/api/user/handler.ts
 ```
 
-如需用根目录 `api/`,设置环境变量 `FAAPI_APP_DIR=.`(默认 `src`)。
+如需用根目录 `api/`,设置 `FAAPI_APP_DIR=.` 或 `faapi dev --appDir .`(默认 `src`)。
 
 ### 2. handler 没导出方法
 

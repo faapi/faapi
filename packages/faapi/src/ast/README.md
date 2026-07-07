@@ -39,6 +39,8 @@ filePath
 | `Record<K, V>` | `record` |
 | `Partial<T>` / `Required<T>` / `Readonly<T>` | 解析内部类型 |
 | `Pick<T, K>` / `Omit<T, K>` | 解析 T 的字段，按 K 筛选/排除（K 支持字面量联合、类型别名、`keyof T`） |
+| `Map<K, V>` | `map`（JSON 序列化为 entries 数组，运行时 `z.preprocess(coerceMap, z.map(...))` 还原） |
+| `Set<T>` | `set`（JSON 序列化为数组，运行时 `z.preprocess(coerceSet, z.set(...))` 还原） |
 | `enum Role { Admin = 'admin' }` | `union`（字面量联合） |
 | 自引用 / 循环引用 | `ref`（由 `generateZodSchema` 用 `z.lazy` 处理） |
 
@@ -52,7 +54,8 @@ filePath
 | `bigint` | HTTP/JSON 不能传输,请改用 `string` 或 `number` |
 | `symbol` | HTTP/JSON 不能传输 |
 | `Function` | HTTP/JSON 不能传输 |
-| `Map<K,V>` / `Set<T>` / `WeakMap` / `WeakSet` | 运行时无法校验 |
+| 裸 `Map` / `Set`（无类型参数） | 必须写 `Map<K,V>` / `Set<T>` 形式 |
+| `WeakMap` / `WeakSet` | 运行时无法枚举校验 |
 | `Promise<T>` | 运行时无法校验异步值 |
 | Pick/Omit 的 T 非 object | 无法筛选字段 |
 | Pick/Omit 的 K 无法解析 | 无法确定字段集合 |

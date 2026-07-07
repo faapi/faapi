@@ -39,6 +39,8 @@ export type RuntimeType =
   | { kind: 'union'; members: RuntimeType[] }
   | { kind: 'date' }
   | { kind: 'record'; key: RuntimeType; value: RuntimeType }
+  | { kind: 'map'; key: RuntimeType; value: RuntimeType } // Map<K,V>，JSON 序列化为 entries 数组
+  | { kind: 'set'; element: RuntimeType } // Set<T>，JSON 序列化为数组
   | { kind: 'ref'; name: string }; // 命名类型引用（支持循环引用）
 
 /**
@@ -483,16 +485,40 @@ function resolveTypeReference(
     return { kind: 'object', properties };
   }
 
-  // Map<K, V> / Set<T> — 运行时无法校验
-  if (
-    typeName === 'Map' ||
-    typeName === 'Set' ||
-    typeName === 'WeakMap' ||
-    typeName === 'WeakSet'
-  ) {
+  // Map<K, V> — JSON 序列化为 entries 数组，运行时用 z.preprocess(coerceMap, z.map(...)) 还原
+  if (typeName === 'Map') {
+    if (!typeNode.typeArguments || typeNode.typeArguments.length !== 2) {
+      throw new SchemaExtractionError(
+        typeNode.getText(),
+        'Map 必须带 2 个类型参数，如 Map<K, V>，裸 Map 不支持',
+      );
+    }
+    return {
+      kind: 'map',
+      key: resolveTypeNode(typeNode.typeArguments[0], checker, visited),
+      value: resolveTypeNode(typeNode.typeArguments[1], checker, visited),
+    };
+  }
+
+  // Set<T> — JSON 序列化为数组，运行时用 z.preprocess(coerceSet, z.set(...)) 还原
+  if (typeName === 'Set') {
+    if (!typeNode.typeArguments || typeNode.typeArguments.length !== 1) {
+      throw new SchemaExtractionError(
+        typeNode.getText(),
+        'Set 必须带 1 个类型参数，如 Set<T>，裸 Set 不支持',
+      );
+    }
+    return {
+      kind: 'set',
+      element: resolveTypeNode(typeNode.typeArguments[0], checker, visited),
+    };
+  }
+
+  // WeakMap / WeakSet — 运行时无法枚举校验，仍然抛错（Map/Set 不复用其语义）
+  if (typeName === 'WeakMap' || typeName === 'WeakSet') {
     throw new SchemaExtractionError(
       typeNode.getText(),
-      `${typeName} 运行时无法校验，请改用对象或数组`,
+      `${typeName} 运行时无法枚举校验，请改用 Map / Set 或对象`,
     );
   }
 

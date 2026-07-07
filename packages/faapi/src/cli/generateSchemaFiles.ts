@@ -110,9 +110,11 @@ export function getHelpersImportPath(relDir: string): string {
  *
  * coerce 逻辑：query/params 来源均为 string，schemaName 以 "Query" 或 "Params" 结尾时
  * 生成 coerce=true 的 schema（number/boolean 字段用 z.preprocess 包裹字符串转换）。
- * body 是 JSON 解析的天然 JS 类型，不需要 coerce。
+ * body 是 JSON 解析的天然 JS 类型，不需要 coerce。form 与 body 共享 schema 名（POSTBody），
+ * 但 `RouteSchemaSource.coerce=true` 显式覆盖（form 值均为 string，需 coerce）。
+ * Map/Set 字段在两种场景下都生成 z.preprocess 包裹（JSON.parse 出来的是数组/对象，需还原为 Map/Set 实例）。
  *
- * 公用函数复用：coerce=true 的 schema 引用 coerceNumber / coerceBoolean 变量，
+ * 公用函数复用：schema 引用 coerceNumber / coerceBoolean / coerceMap / coerceSet 变量时，
  * 这些变量从 outDir 根部的 faapi-helpers.js import（跨文件复用，仅一份声明）。
  *
  * @param sources 同一文件的 schema 提取结果（含多个方法，如 GETQuery + POSTBody）
@@ -138,8 +140,10 @@ export function generateSchemaFileSource(
       continue;
     }
 
-    // 推断 inputType：query/params 需要 coerce（URL 来源均为 string），body 不需要
-    const coerce = /(?:Query|Params)$/.test(schemaName);
+    // 推断 coerce：
+    // - source.coerce 显式设置时优先使用（form 声明时由 collectRouteSchemaSources 设置为 true）
+    // - 否则回退到 schemaName 后缀正则：query/params 需要 coerce（URL 来源均为 string），body 不需要
+    const coerce = source.coerce ?? /(?:Query|Params)$/.test(schemaName);
 
     const block = [`// ${schemaName}`];
     // generateZodSchemaSource 自带 import 语句，剥离后由本函数统一管理 import
@@ -154,9 +158,13 @@ export function generateSchemaFileSource(
   }
 
   // 检测是否有 schema 引用了 coerce 公用函数，若有则注入 import 语句
+  // 公用函数包含 coerceNumber / coerceBoolean（query/params 的 string 转换）和
+  // coerceMap / coerceSet（Map/Set 的 JSON 还原，body 场景也会引用）
   const allSchemaCode = schemaBlocks.join('\n');
   if (helpersImportPath && usesCoerceHelpers(allSchemaCode)) {
-    lines.push(`import { coerceNumber, coerceBoolean } from '${helpersImportPath}';`);
+    lines.push(
+      `import { coerceNumber, coerceBoolean, coerceMap, coerceSet } from '${helpersImportPath}';`,
+    );
   }
   lines.push('');
 
@@ -172,8 +180,9 @@ export function generateSchemaFileSource(
  * - dev：`.faapi/dev/api/hello/zod.js`
  * - prod：`dist/api/hello/zod.js`
  *
- * 公用函数复用：若项目中存在 coerce schema（query/params），在 outDir 根部生成
- * `faapi-helpers.js`（导出 coerceNumber / coerceBoolean），各 zod.js 通过相对路径 import。
+ * 公用函数复用：若项目中存在 coerce schema（query/params）或 Map/Set 字段，
+ * 在 outDir 根部生成 `faapi-helpers.js`（导出 coerceNumber / coerceBoolean / coerceMap / coerceSet），
+ * 各 zod.js 通过相对路径 import。
  *
  * 内部流程：
  * 1. collectRouteSchemaSources 从路由清单提取 schema 源数据（AST 从源码 .ts）

@@ -28,7 +28,7 @@ export type InjectorMap = Record<string, Injector>;
 | --- | --- |
 | [cors.ts](./cors.ts) | CORS 处理，支持 origin 反射、预检请求、自定义头 |
 | [helmet.ts](./helmet.ts) | 安全响应头（CSP/X-Frame-Options/HSTS 等 13 个），通过 `faapi.config.ts` 的 `helmet` 选项配置 |
-| [logger.ts](./logger.ts) | 请求日志，格式：`GET /api/users 200 12ms` |
+| [logger.ts](./logger.ts) | 请求日志，格式：`GET /api/users 200 12ms`，默认启用（与 cors 一致） |
 
 ## middlewares.ts 文件格式
 
@@ -104,7 +104,7 @@ export default {
 - 全局中间件 `await next()` 之前的代码先于目录中间件执行，之后的代码后于目录中间件执行；目录中间件不调 `next` 则全局中间件 `await next()` 之后的代码不执行
 - 全局中间件拦截（返回 Response，不调 `next`）则目录中间件和 handler 不执行
 
-**与内置中间件的关系**：CORS 走 `config.cors` 配置，logger 由用户自行通过 `middlewares` 挂载。全局中间件在 CORS 之后、目录中间件之前执行。
+**与内置中间件的关系**：CORS 和 logger 默认启用（走 `config.cors` / `config.logger` 配置），helmet 显式启用（走 `config.helmet`）。内置中间件顺序：CORS → helmet → logger → 全局中间件 → 目录中间件 → handler。`logger: false` 或 `cors: false` 可禁用内置项,改由 `middlewares` 自行挂载替代实现。
 
 **注入器**：全局中间件塞入 ctx 的值，目录注入器和 handler 注入器均可读取（共享同一个 ctx）。
 

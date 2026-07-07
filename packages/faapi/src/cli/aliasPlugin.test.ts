@@ -43,11 +43,13 @@ describe('buildAliasPlugins', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('无 tsconfig 时返回空数组', () => {
-    expect(buildAliasPlugins(tempDir)).toEqual([]);
+  it('无 tsconfig 时仍返回插件（相对路径重写不依赖 tsconfig）', () => {
+    const plugins = buildAliasPlugins(tempDir);
+    expect(plugins).toHaveLength(1);
+    expect(plugins[0].name).toBe('faapi-alias');
   });
 
-  it('有 tsconfig.paths 时返回非空插件数组', () => {
+  it('有 tsconfig.paths 时返回含别名的插件', () => {
     writeFileSync(
       join(tempDir, 'tsconfig.json'),
       JSON.stringify({
@@ -62,9 +64,11 @@ describe('buildAliasPlugins', () => {
     expect(plugins[0].name).toBe('faapi-alias');
   });
 
-  it('tsconfig 无 paths 时返回空数组', () => {
+  it('tsconfig 无 paths 时仍返回插件（相对路径重写不依赖 paths）', () => {
     writeFileSync(join(tempDir, 'tsconfig.json'), JSON.stringify({ compilerOptions: {} }), 'utf-8');
-    expect(buildAliasPlugins(tempDir)).toEqual([]);
+    const plugins = buildAliasPlugins(tempDir);
+    expect(plugins).toHaveLength(1);
+    expect(plugins[0].name).toBe('faapi-alias');
   });
 });
 
@@ -111,14 +115,76 @@ describe('createAliasPlugin onLoad', () => {
     expect(result!.contents).not.toContain('@/utils/helper');
   });
 
-  it('相对路径 specifier 不被重写', () => {
-    const importer = join(tempDir, 'src', 'handler.ts');
+  it('相对路径 specifier（无后缀）被重写为 .js 后缀', () => {
+    // 创建被 import 的源文件
     mkdirSync(join(tempDir, 'src'), { recursive: true });
+    writeFileSync(join(tempDir, 'src', 'helper.ts'), 'export const x = 1;\n', 'utf-8');
+    const importer = join(tempDir, 'src', 'handler.ts');
     writeFileSync(importer, `import { x } from './helper';\n`, 'utf-8');
 
     const config: TsconfigPathsConfig = { baseUrl: '.', paths: {} };
     const result = applyOnLoad(createAliasPlugin(config), importer);
+    expect(result).toBeDefined();
+    expect(result!.contents).toContain('./helper.js');
+    expect(result!.contents).not.toMatch(/from\s+['"]\.\/helper['"]/);
+  });
+
+  it('相对路径 specifier（.ts 后缀）被重写为 .js 后缀', () => {
+    mkdirSync(join(tempDir, 'src'), { recursive: true });
+    writeFileSync(join(tempDir, 'src', 'helper.ts'), 'export const x = 1;\n', 'utf-8');
+    const importer = join(tempDir, 'src', 'handler.ts');
+    writeFileSync(importer, `import { x } from './helper.ts';\n`, 'utf-8');
+
+    const config: TsconfigPathsConfig = { baseUrl: '.', paths: {} };
+    const result = applyOnLoad(createAliasPlugin(config), importer);
+    expect(result).toBeDefined();
+    expect(result!.contents).toContain('./helper.js');
+    expect(result!.contents).not.toContain('./helper.ts');
+  });
+
+  it('相对路径 specifier（.js 后缀）保持不变', () => {
+    mkdirSync(join(tempDir, 'src'), { recursive: true });
+    writeFileSync(join(tempDir, 'src', 'helper.js'), 'export const x = 1;\n', 'utf-8');
+    const importer = join(tempDir, 'src', 'handler.ts');
+    writeFileSync(importer, `import { x } from './helper.js';\n`, 'utf-8');
+
+    const config: TsconfigPathsConfig = { baseUrl: '.', paths: {} };
+    const result = applyOnLoad(createAliasPlugin(config), importer);
     expect(result).toBeUndefined();
+  });
+
+  it('相对路径指向目录 index 文件被解析', () => {
+    mkdirSync(join(tempDir, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(tempDir, 'src', 'lib', 'index.ts'), 'export const v = 1;\n', 'utf-8');
+    const importer = join(tempDir, 'src', 'handler.ts');
+    writeFileSync(importer, `import { v } from './lib';\n`, 'utf-8');
+
+    const config: TsconfigPathsConfig = { baseUrl: '.', paths: {} };
+    const result = applyOnLoad(createAliasPlugin(config), importer);
+    expect(result).toBeDefined();
+    expect(result!.contents).toContain('./lib/index.js');
+  });
+
+  it('相对路径文件不存在时 specifier 原样保留', () => {
+    const importer = join(tempDir, 'src', 'handler.ts');
+    mkdirSync(join(tempDir, 'src'), { recursive: true });
+    writeFileSync(importer, `import { x } from './missing';\n`, 'utf-8');
+
+    const config: TsconfigPathsConfig = { baseUrl: '.', paths: {} };
+    const result = applyOnLoad(createAliasPlugin(config), importer);
+    expect(result).toBeUndefined();
+  });
+
+  it('父目录相对路径（../）被重写为 .js 后缀', () => {
+    mkdirSync(join(tempDir, 'src', 'api'), { recursive: true });
+    writeFileSync(join(tempDir, 'src', 'utils.ts'), 'export const x = 1;\n', 'utf-8');
+    const importer = join(tempDir, 'src', 'api', 'handler.ts');
+    writeFileSync(importer, `import { x } from '../utils';\n`, 'utf-8');
+
+    const config: TsconfigPathsConfig = { baseUrl: '.', paths: {} };
+    const result = applyOnLoad(createAliasPlugin(config), importer);
+    expect(result).toBeDefined();
+    expect(result!.contents).toContain('../utils.js');
   });
 
   it('node: 协议 specifier 不被重写', () => {

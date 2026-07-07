@@ -84,13 +84,13 @@ importers:
 
   packages/mcp:
     dependencies:
-      '@faapi/faapi':
-        specifier: workspace:*
-        version: link:../faapi
       zod:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@faapi/faapi':
+        specifier: workspace:*
+        version: link:../faapi
       '@types/node':
         specifier: ^22.15.0
         version: 22.19.20
@@ -108,11 +108,10 @@ importers:
         version: 3.2.6(@types/node@22.19.20)(jiti@2.6.1)(sass@1.101.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0)
 
   packages/next:
-    dependencies:
+    devDependencies:
       '@faapi/faapi':
         specifier: workspace:*
         version: link:../faapi
-    devDependencies:
       '@types/node':
         specifier: ^22.15.0
         version: 22.19.20
@@ -152,16 +151,16 @@ importers:
 
   packages/schema:
     dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
       '@faapi/faapi':
         specifier: workspace:*
         version: link:../faapi
       '@faapi/mcp':
         specifier: workspace:*
         version: link:../mcp
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
-    devDependencies:
       '@types/node':
         specifier: ^22.15.0
         version: 22.19.20

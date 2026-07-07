@@ -22,10 +22,9 @@
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@faapi/faapi": "workspace:*"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "@faapi/faapi": "workspace:*",
     "@types/node": "^22.15.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
@@ -40,6 +39,7 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
+    "@faapi/faapi": "workspace:*",
     "next": ">=13.0.0"
   },
   "peerDependenciesMeta": {

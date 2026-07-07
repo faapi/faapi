@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, beforeEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
@@ -304,6 +304,142 @@ describe('HTTP Server E2E', () => {
         });
         // cors: false 时 CORS 中间件为 null，不处理预检
         expect(res.headers.get('Access-Control-Allow-Origin')).toBeNull();
+      });
+    });
+  });
+
+  // Logger E2E 测试
+  describe('logger', () => {
+    describe('默认启用（undefined）', () => {
+      let defaultLoggerServer: Server;
+      let defaultLoggerBaseUrl: string;
+
+      beforeAll(async () => {
+        // 不传 logger 选项 → 默认启用 logger()
+        const result = await setupServerWithOptions({});
+        defaultLoggerServer = result.server;
+        defaultLoggerBaseUrl = result.baseUrl;
+      });
+
+      afterAll(async () => {
+        await closeServer(defaultLoggerServer);
+      });
+
+      it('请求触发 console.log 输出 method/path/status/duration', async () => {
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+          const res = await fetch(`${defaultLoggerBaseUrl}/api/auth/login`);
+          expect(res.status).toBe(200);
+          expect(logSpy).toHaveBeenCalled();
+          // logger() 调用 log(entry, text),console.log 忽略第二参,只打印对象
+          const entry = logSpy.mock.calls[0][0] as Record<string, unknown>;
+          expect(entry.method).toBe('GET');
+          expect(entry.path).toBe('/api/auth/login');
+          expect(entry.status).toBe(200);
+          expect(typeof entry.durationMs).toBe('number');
+        } finally {
+          logSpy.mockRestore();
+        }
+      });
+
+      it('错误请求也被记录（500 状态码）', async () => {
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+          const res = await fetch(`${defaultLoggerBaseUrl}/api/error/throw`);
+          expect(res.status).toBe(500);
+          // handler 抛错 → buildErrorResponse 兜底返回 500,logger 从 next() 返回的 Response 拿到 500
+          expect(logSpy).toHaveBeenCalled();
+          const entry = logSpy.mock.calls[0][0] as Record<string, unknown>;
+          expect(entry.method).toBe('GET');
+          expect(entry.path).toBe('/api/error/throw');
+          expect(entry.status).toBe(500);
+        } finally {
+          logSpy.mockRestore();
+        }
+      });
+    });
+
+    describe('logger: false', () => {
+      let noLoggerServer: Server;
+      let noLoggerBaseUrl: string;
+
+      beforeAll(async () => {
+        const result = await setupServerWithOptions({ logger: false });
+        noLoggerServer = result.server;
+        noLoggerBaseUrl = result.baseUrl;
+      });
+
+      afterAll(async () => {
+        await closeServer(noLoggerServer);
+      });
+
+      it('请求不触发 console.log', async () => {
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+          const res = await fetch(`${noLoggerBaseUrl}/api/auth/login`);
+          expect(res.status).toBe(200);
+          expect(logSpy).not.toHaveBeenCalled();
+        } finally {
+          logSpy.mockRestore();
+        }
+      });
+    });
+
+    describe('logger: { log: customFn }', () => {
+      let customLoggerServer: Server;
+      let customLoggerBaseUrl: string;
+      const logs: string[] = [];
+
+      beforeAll(async () => {
+        const result = await setupServerWithOptions({
+          logger: {
+            log: (_obj: string | Record<string, unknown>, msg?: string) =>
+              logs.push(msg ?? String(_obj)),
+          },
+        });
+        customLoggerServer = result.server;
+        customLoggerBaseUrl = result.baseUrl;
+      });
+
+      afterAll(async () => {
+        await closeServer(customLoggerServer);
+      });
+
+      beforeEach(() => {
+        logs.length = 0;
+      });
+
+      it('请求触发自定义 log 函数,格式匹配', async () => {
+        const res = await fetch(`${customLoggerBaseUrl}/api/auth/login`);
+        expect(res.status).toBe(200);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]).toMatch(/^GET \/api\/auth\/login 200 \d+ms$/);
+      });
+    });
+
+    describe('logger: true', () => {
+      let trueLoggerServer: Server;
+      let trueLoggerBaseUrl: string;
+
+      beforeAll(async () => {
+        const result = await setupServerWithOptions({ logger: true });
+        trueLoggerServer = result.server;
+        trueLoggerBaseUrl = result.baseUrl;
+      });
+
+      afterAll(async () => {
+        await closeServer(trueLoggerServer);
+      });
+
+      it('等价于默认启用,触发 console.log', async () => {
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+          const res = await fetch(`${trueLoggerBaseUrl}/api/auth/login`);
+          expect(res.status).toBe(200);
+          expect(logSpy).toHaveBeenCalled();
+        } finally {
+          logSpy.mockRestore();
+        }
       });
     });
   });

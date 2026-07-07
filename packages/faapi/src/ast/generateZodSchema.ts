@@ -82,6 +82,15 @@ export function collectNamedTypes(type: RuntimeType, ctx: CodeGenContext): void 
       collectNamedTypes(type.value, ctx);
       return;
 
+    case 'map':
+      collectNamedTypes(type.key, ctx);
+      collectNamedTypes(type.value, ctx);
+      return;
+
+    case 'set':
+      collectNamedTypes(type.element, ctx);
+      return;
+
     case 'ref': {
       if (ctx.namedTypes.has(type.name)) return;
       // 先占位，防止循环引用无限递归
@@ -222,6 +231,14 @@ function baseExpression(type: RuntimeType, ctx: CodeGenContext): string {
       return 'z.preprocess((v) => (typeof v === "string" ? new Date(v) : v), z.date())';
     case 'record':
       return `z.record(${runtimeTypeToZodExpression(type.key, ctx)}, ${runtimeTypeToZodExpression(type.value, ctx)})`;
+    case 'map':
+      // Map<K,V> — JSON 序列化为 entries 数组，coerceMap 还原为 Map 实例后再交给 z.map 校验
+      // coerce=false（body）场景也需要 preprocess：JSON.parse 出来是数组，不是 Map 实例
+      return `z.preprocess(coerceMap, z.map(${runtimeTypeToZodExpression(type.key, ctx)}, ${runtimeTypeToZodExpression(type.value, ctx)}))`;
+    case 'set':
+      // Set<T> — JSON 序列化为数组，coerceSet 还原为 Set 实例后再交给 z.set 校验
+      // coerce=false（body）场景也需要 preprocess：JSON.parse 出来是数组，不是 Set 实例
+      return `z.preprocess(coerceSet, z.set(${runtimeTypeToZodExpression(type.element, ctx)}))`;
     case 'ref':
       // ref 引用命名类型，直接用 NameSchema 变量
       // 入口类型的自引用需用 exportName（exportName 可能与 typeInfo.name 不同）
@@ -258,6 +275,35 @@ export const COERCE_BOOLEAN_HELPER =
   'export const coerceBoolean = (v) => v === "true" || v === "1" ? true : v === "false" || v === "0" ? false : v;';
 
 /**
+ * coerceMap 公用函数源码（ESM export 格式）
+ *
+ * 用于 Map<K,V> 的 JSON 还原：JSON 序列化为 entries 数组，JSON.parse 后还原为 Map 实例
+ * - entries 数组 [["k",v],...] → new Map(entries)
+ * - Map 实例 → 原样返回
+ * - 普通对象 { k: v } → new Map(Object.entries(v))
+ * - 其他值保留原值，让 z.map() 报错
+ *
+ * 与 coerceNumber/coerceBoolean 不同，coerceMap 在 coerce=false（body 场景）下也使用：
+ * JSON.parse 出来的是数组/对象，不是 Map 实例，必须还原才能交给 z.map() 校验。
+ */
+export const COERCE_MAP_HELPER =
+  'export const coerceMap = (v) => Array.isArray(v) ? new Map(v) : v instanceof Map ? v : (v && typeof v === "object" ? new Map(Object.entries(v)) : v);';
+
+/**
+ * coerceSet 公用函数源码（ESM export 格式）
+ *
+ * 用于 Set<T> 的 JSON 还原：JSON 序列化为数组，JSON.parse 后还原为 Set 实例
+ * - Set 实例 → 原样返回
+ * - 数组 [item,...] → new Set(array)
+ * - 其他值保留原值，让 z.set() 报错
+ *
+ * 与 coerceNumber/coerceBoolean 不同，coerceSet 在 coerce=false（body 场景）下也使用：
+ * JSON.parse 出来的是数组，不是 Set 实例，必须还原才能交给 z.set() 校验。
+ */
+export const COERCE_SET_HELPER =
+  'export const coerceSet = (v) => v instanceof Set ? v : (Array.isArray(v) ? new Set(v) : v);';
+
+/**
  * faapi-helpers.js 文件名（生成在 outDir 根部）
  */
 export const HELPERS_FILENAME = 'faapi-helpers.js';
@@ -265,25 +311,35 @@ export const HELPERS_FILENAME = 'faapi-helpers.js';
 /**
  * 生成 faapi-helpers.js 文件源码
  *
- * 包含 coerceNumber / coerceBoolean 两个公用函数（ESM export）。
- * 仅当项目中存在 coerce schema（query/params）时由 generateSchemaFiles 生成一次。
+ * 包含 coerceNumber / coerceBoolean / coerceMap / coerceSet 四个公用函数（ESM export）。
+ * 由 generateSchemaFiles 按需生成：query/params 场景的 number/boolean 字段触发 coerceNumber/coerceBoolean；
+ * Map/Set 字段（query/params 与 body 均包含）触发 coerceMap/coerceSet。
  */
 export function generateHelpersFileSource(): string {
   return [
     '// faapi-helpers.js — faapi 自动生成的公用函数（请勿手动编辑）',
     COERCE_NUMBER_HELPER,
     COERCE_BOOLEAN_HELPER,
+    COERCE_MAP_HELPER,
+    COERCE_SET_HELPER,
     '',
   ].join('\n');
 }
 
 /**
- * 检测代码是否引用了 coerceNumber / coerceBoolean 变量
+ * 检测代码是否引用了 coerceNumber / coerceBoolean / coerceMap / coerceSet 变量
  *
  * 用于 generateSchemaFiles 判断是否需要生成 faapi-helpers.js。
+ * 注意：Map/Set 在 coerce=false（body 场景）下也会引用 coerceMap/coerceSet，
+ * 故仅凭此检测即可覆盖所有需要生成 helpers 的场景。
  */
 export function usesCoerceHelpers(code: string): boolean {
-  return code.includes('coerceNumber') || code.includes('coerceBoolean');
+  return (
+    code.includes('coerceNumber') ||
+    code.includes('coerceBoolean') ||
+    code.includes('coerceMap') ||
+    code.includes('coerceSet')
+  );
 }
 
 /**
@@ -435,6 +491,10 @@ function containsRef(type: RuntimeType, visited: Set<string>): boolean {
       return type.members.some((m) => containsRef(m, visited));
     case 'record':
       return containsRef(type.key, visited) || containsRef(type.value, visited);
+    case 'map':
+      return containsRef(type.key, visited) || containsRef(type.value, visited);
+    case 'set':
+      return containsRef(type.element, visited);
     default:
       return false;
   }

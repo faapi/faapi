@@ -6,6 +6,7 @@ import ts from 'typescript';
 export type InjectionType =
   | 'query'
   | 'body'
+  | 'form'
   | 'headers'
   | 'params'
   | 'context'
@@ -26,10 +27,15 @@ export interface InjectionItem {
 
 /**
  * 参数名到注入类型的映射（单一来源，构建期和运行时共用）
+ *
+ * `form` 与 `body` 互斥：handler 声明其一即可。`form` 适用于
+ * `application/x-www-form-urlencoded` 请求体（值均为 string，schema coerce=true）；
+ * `body` 适用于 JSON 请求体（coerce=false）。两者共享 `resolveInput` 的解析结果。
  */
 export const PARAM_TYPE_MAP: Record<string, InjectionType> = {
   query: 'query',
   body: 'body',
+  form: 'form',
   headers: 'headers',
   params: 'params',
   context: 'context',

@@ -7,7 +7,8 @@ faapi 的核心设计是"函数即接口"。框架根据 handler 参数名自动
 | 参数名 | 注入类型 | 来源 |
 | --- | --- | --- |
 | `query` / `Query` | query | URLSearchParams → plain object |
-| `body` / `Body` | body | 请求 body（仅 POST/PUT/PATCH） |
+| `body` / `Body` | body | 请求 body（仅 POST/PUT/PATCH，JSON 解析） |
+| `form` / `Form` | form | `application/x-www-form-urlencoded` body（与 body 共享解析结果，schema coerce=true） |
 | `params` | params | 动态路由参数 |
 | `headers` | headers | 请求头 |
 | `context` / `ctx` | context | 完整 FaapiContext |
@@ -32,3 +33,4 @@ faapi 的核心设计是"函数即接口"。框架根据 handler 参数名自动
 - 不支持基于参数位置而非名称的注入。
 - 无参数的 handler 直接调用，不做注入。
 - body 注入仅对 POST/PUT/PATCH 生效。
+- `form` 与 `body` 互斥：handler 声明其一即可。`form` 共享 `body` 的解析结果（`resolveInput` 已按 Content-Type 解析 form-urlencoded 为 `Record<string, string>`），差异仅在 schema 校验（`form` coerce=true，`body` coerce=false）。
