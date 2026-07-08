@@ -15,7 +15,6 @@ cli
 
 cli
   .command('build', 'Build for production')
-  .option('--port <number>', 'prod 服务端口，写入 <dist>/main.js')
   .option('--dist <dir>', '产物输出目录，默认 dist')
   .action(async (options) => {
     const { buildCommand } = await import('./buildCommand.js');

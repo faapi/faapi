@@ -169,16 +169,17 @@ CLI 选项（优先于环境变量）：
 
 | 选项 | 命令 | 说明 | 对应环境变量 |
 |------|------|------|-------------|
-| `--port <number>` | dev / build | dev: dev 服务器端口；build: 写入 `dist/main.js` 的 `listen()` | `PORT` |
+| `--port <number>` | dev | dev 服务器端口 | `PORT` |
 | `--dist <dir>` | build | 产物输出目录（默认 `dist`） | `FAAPI_DIST` |
 
 ```bash
 faapi dev --port 8080                 # dev: 8080 端口
-faapi build --port 8080 --dist build # build: 产物输出目录为 build/，端口 8080
+faapi build --dist build              # build: 产物输出目录为 build/
 PORT=3000 faapi dev                    # 也可继续用环境变量
+PORT=8080 node dist/main               # prod 启动时指定端口
 ```
 
-> `--port` 对 build 写入 `main.js` 后，prod `node dist/main` 即用该端口，无需再设 `PORT`。
+> build 不支持 `--port`——`main.js` 中 `listen()` 无参，端口由运行时 `PORT` 环境变量或默认值 3000 决定（与 `next build` 设计一致）。
 > CORS 等应用行为配置通过 `faapi.config.ts` 控制。
 
 ## 构建与生产部署

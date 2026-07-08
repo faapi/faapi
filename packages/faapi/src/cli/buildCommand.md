@@ -24,7 +24,7 @@
 4. **扫描路由**（`scanRoutes` 从产物 `.js` import 拿方法名，filePath 保持源码 `.ts`）+ 排序 + 冲突检测
 5. **生成 schema 文件**（`generateSchemaFiles` → `dist/**/zod.js`，AST 从源码 `.ts`）
 6. **生成路由清单**（`serializeRoutes` + `writeRoutesModule` → `dist/faapi-routes.js`）
-7. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp } from '@faapi/faapi'` + `createProdApp()` + `listen()`；`--port` / `--dist` 选项写入 `main.js`，prod 启动时无需再设环境变量）
+7. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp } from '@faapi/faapi'` + `createProdApp()` + `listen()`；`--dist` 选项写入 `main.js`，端口由运行时 `PORT` 环境变量决定）
 
 ## 编译模式
 
@@ -66,13 +66,15 @@ await app.listen();
 
 ### CLI 选项对 main.js 的影响
 
-`--port` 和 `--dist` 选项会写入 `main.js`，prod 启动时无需再设环境变量：
+`--dist` 选项会写入 `main.js`（非默认 `dist` 时），prod 启动时无需再设 `FAAPI_DIST` 环境变量。端口不通过 build 选项指定——`listen()` 无参，运行时由 `PORT` 环境变量或默认值 3000 决定（与 `next build` 不支持 `--port` 的设计一致）：
 
 ```bash
-faapi build --port 8080 --dist build
+faapi build --dist build
 # 生成 build/main.js:
 # const app = await createProdApp({ dist: 'build' });
-# await app.listen(8080);
+# await app.listen();
+
+PORT=8080 node dist/main    # 运行时指定端口
 ```
 
 ## tsconfig paths 别名处理

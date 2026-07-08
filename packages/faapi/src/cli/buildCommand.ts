@@ -20,8 +20,6 @@ const PATTERNS = ['src/api/**/*.ts'];
 export interface BuildOptions {
   /** 项目根目录，默认 process.cwd() */
   rootDir?: string;
-  /** prod 服务端口，写入 <dist>/main.js */
-  port?: number;
   /** 产物输出目录，默认 dist */
   dist?: string;
 }
@@ -36,6 +34,9 @@ export interface BuildOptions {
  *
  * 框架采用零入口设计——用户无需编写 main.ts，build 阶段自动生成 `<dist>/main.js` 启动入口，
  * 运行时 `node <dist>/main` 直接启动服务，无需 `faapi start` 命令。
+ *
+ * 端口不通过 build 选项指定——`main.js` 中 `listen()` 无参，运行时由 `PORT` 环境变量
+ * 或默认值 3000 决定（与 `next build` 不支持 `--port` 的设计一致）。
  *
  * 流程：
  * 0. 编译配置产物（compileConfig）→ loadConfig 读应用行为配置
@@ -119,18 +120,17 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
 
   // 6. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
   //    内部 import @faapi/faapi 的 createProdApp + listen，运行时 `node <dist>/main` 直接启动
-  //    --port / --dist 选项写入 main.js，prod 启动时无需再设环境变量
+  //    --dist 选项写入 main.js（非默认 dist 时），端口由运行时 PORT 环境变量决定
   console.log('\n[6/6] Generating entry file...');
   const mainPath = path.resolve(rootDir, outdir, 'main.js');
   // 非默认 dist 时写入 createProdApp 参数，让 prod 启动时能定位到产物目录
   const createProdAppArgs =
     options?.dist && options.dist !== DEFAULT_DIST ? `{ dist: '${outdir}' }` : '';
-  const listenArgs = options?.port ? String(options.port) : '';
   const mainContent = `// 由 faapi build 自动生成，请勿手动编辑
 import { createProdApp } from '@faapi/faapi';
 
 const app = await createProdApp(${createProdAppArgs});
-await app.listen(${listenArgs});
+await app.listen();
 `;
   await fs.promises.writeFile(mainPath, mainContent, 'utf-8');
   console.log(`  Written to ${mainPath}`);

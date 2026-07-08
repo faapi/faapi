@@ -156,19 +156,6 @@ export default [
     expect((ctx.t as (k: string) => string)('hello')).toBe('hello');
   }, 15000);
 
-  it('CLI 选项：--port 写入 main.js 的 listen() 调用', async () => {
-    writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
-    writeFile(
-      'tsconfig.json',
-      `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
-    );
-
-    await buildCommand({ rootDir: tempDir, port: 8080 });
-
-    const mainContent = readFileSync(join(tempDir, OUT, 'main.js'), 'utf-8');
-    expect(mainContent).toContain('await app.listen(8080)');
-  }, 15000);
-
   it('CLI 选项：--dist 改变产物根目录 + 写入 main.js 的 createProdApp 参数', async () => {
     writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
     writeFile(
@@ -187,19 +174,7 @@ export default [
     // main.js 包含实际产物目录参数（<dist>）
     const mainContent = readFileSync(join(tempDir, 'build-output/main.js'), 'utf-8');
     expect(mainContent).toContain("createProdApp({ dist: 'build-output' })");
-  }, 15000);
-
-  it('CLI 选项：--port + --dist 同时使用', async () => {
-    writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
-    writeFile(
-      'tsconfig.json',
-      `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
-    );
-
-    await buildCommand({ rootDir: tempDir, port: 9090, dist: 'custom' });
-
-    const mainContent = readFileSync(join(tempDir, 'custom/main.js'), 'utf-8');
-    expect(mainContent).toContain("createProdApp({ dist: 'custom' })");
-    expect(mainContent).toContain('await app.listen(9090)');
+    // listen() 无参，端口由运行时 PORT 环境变量决定
+    expect(mainContent).toContain('await app.listen()');
   }, 15000);
 });
