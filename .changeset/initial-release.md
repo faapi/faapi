@@ -110,6 +110,20 @@ import { createDevApp, createProdApp, createApp } from '@faapi/faapi';
 // createApp: createProdApp 的向后兼容别名
 ```
 
+### 业务方测试支持
+
+公开导出 `createContext` / `invokeHandler`，业务方可在不启动 HTTP 服务器、不依赖 build 产物的前提下，走框架真实的注入、中间件、序列化逻辑测试 handler：
+
+```ts
+import { createContext, invokeHandler } from '@faapi/faapi';
+
+const ctx = createContext(new Request('http://localhost/api/user?page=1'), {});
+const res = await invokeHandler(handler, ctx, body?, middlewares?, injectors?);
+expect(res.status).toBe(200);
+```
+
+完整请求链路测试（含 schema 校验、全局中间件）用 `createProdApp` + `app.inject()`（需先 `faapi build`）。
+
 ## @faapi/mcp（MCP Server SDK）
 
 纯手写 MCP Server SDK，不依赖 @modelcontextprotocol/sdk。

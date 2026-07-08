@@ -29,8 +29,7 @@
     "esbuild": "^0.25.0",
     "fast-glob": "^3.3.3",
     "typescript": "^5.7.0",
-    "ws": "^8.21.0",
-    "zod": "^4.4.3"
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
@@ -39,7 +38,11 @@
     "cac": "^6.7.14",
     "chokidar": "^4.0.3",
     "tsup": "^8.4.0",
-    "vitest": "^3.1.0"
+    "vitest": "^3.1.0",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.3"
   },
   "license": "MIT",
   "repository": {

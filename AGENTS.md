@@ -449,6 +449,30 @@ export function WS(ctx: WsContext): WsEventHandlers {
 
 > 注：WS 两阶段中间件策略——握手阶段（HTTP upgrade）复用洋葱中间件链，与同目录 HTTP 路由共享鉴权/CORS/限流；事件回调阶段不走中间件。详见 `src/runtime/wsHandler.md`。
 
+### 5.10 业务方测试支持
+
+框架公开导出 `createContext` / `invokeHandler`，业务方可在不启动 HTTP 服务器、不依赖 build 产物的前提下，走框架真实的注入、中间件、序列化逻辑测试 handler。
+
+```ts
+import { createContext, invokeHandler } from '@faapi/faapi';
+import { GET } from './handler';
+
+it('GET 返回分页数据', async () => {
+  const ctx = createContext(
+    new Request('http://localhost/api/user?page=1&pageSize=10'),
+    {},                      // params
+    { db: { host: '...' } }, // config
+  );
+  const res = await invokeHandler(GET, ctx);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ page: '1', pageSize: '10' });
+});
+```
+
+`invokeHandler(handler, ctx, body?, middlewares?, injectors?)` 支持传入中间件链和注入器，可测试鉴权拦截、依赖注入等场景。不走 schema 校验（zod.js 由 build 生成）；如需测试完整请求链路（含 schema、全局中间件），用 `createProdApp` + `app.inject()`（需先 `faapi build`）。
+
+详见 `src/testing.md`。
+
 ## 6. 约定
 
 ### 6.1 文件命名
@@ -505,7 +529,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 - `esbuild` 编译路由文件与 `faapi.config.ts`、`tsup` 打包
 - `cac` CLI、`fast-glob` 文件扫描、`chokidar` watch
 - TypeScript Compiler API AST 分析
-- `zod` 运行时参数校验（AST → RuntimeType → zod schema 代码生成）
+- `zod` 运行时参数校验（AST → RuntimeType → zod schema 代码生成）—— peerDependency，业务方需自行安装 `zod@^4`（框架生成的 `zod.js` 在业务方项目目录执行，需项目根 `node_modules` 可解析到 zod）
 - `ws` WebSocket 协议
 - `vitest` 测试
 - 代码质量：`eslint`（flat config）+ `prettier` + `husky` + `lint-staged` + `commitlint`
@@ -575,7 +599,8 @@ packages/<name>/
 - `version` 固定 `0.0.0-canary.0`，canary 阶段不递增（canary 版本由 CI 基于 git hash 生成）。
 - `repository.directory` 指向 `packages/<name>`。
 - `publishConfig.provenance: true` 必填，否则无法通过 Trusted Publisher 发布。
-- 依赖主包时加 `"dependencies": { "@faapi/faapi": "workspace:*" }`。
+- 依赖主包时声明为 `peerDependencies`（非 `dependencies`），同时 `devDependencies` 加 `workspace:*` 用于本地开发：`"peerDependencies": { "@faapi/faapi": "workspace:*" }` + `"devDependencies": { "@faapi/faapi": "workspace:*" }`。
+- 运行时 import 的依赖（如 `zod`）声明为 `peerDependencies`，业务方需自行安装；`devDependencies` 同步加一份用于本地测试。
 
 #### 6.5.3 `tsconfig.json`（固定模板）
 
@@ -609,7 +634,7 @@ export default defineConfig({
 });
 ```
 
-`external` 至少包含 `node:*` 和 `@faapi/faapi`；有第三方 peer 依赖（如 `next`）一并加入。
+`external` 至少包含 `node:*` 和 `@faapi/faapi`；运行时 import 的 peer 依赖（如 `next`、`zod`）一并加入，避免被 inline 进产物。
 
 #### 6.5.5 `vitest.config.ts`（依赖主包时需 alias）
 

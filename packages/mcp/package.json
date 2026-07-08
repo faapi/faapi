@@ -22,20 +22,20 @@
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "zod": "^4.4.3"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@faapi/faapi": "workspace:*",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "3",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.1.0"
+    "vitest": "^3.1.0",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@faapi/faapi": "workspace:*",
-    "typescript": ">=5.7.0"
+    "typescript": ">=5.7.0",
+    "zod": "^4.4.3"
   },
   "peerDependenciesMeta": {
     "typescript": {

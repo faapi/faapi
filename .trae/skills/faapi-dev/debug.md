@@ -145,6 +145,7 @@ export function GET() { ... }
 1. handler 抛错
 2. 模块加载失败
 3. 注入器抛错
+4. **未安装 zod**(peerDependencies 缺失)
 
 ### 排查
 
@@ -161,6 +162,28 @@ export function GET(ctx) {
   throw new Error('boom');  // 500
 }
 ```
+
+3. **未安装 zod**
+
+```
+Error: Cannot find package 'zod' imported from .faapi/api/user/zod.js
+```
+
+**原因**:`zod` 是 faapi 的 `peerDependencies`,业务方需自行安装。框架生成的 `zod.js` 顶部为 `import { z } from 'zod'`,从业务方项目目录向上查找 `node_modules/zod`,找不到就报错。
+
+**触发时机**:首次请求带类型声明的 handler 时(`validateInput` 按需 import `zod.js` 触发)。无类型声明的 handler 不触发 schema 校验,不会报错。
+
+**解决**:
+
+```bash
+pnpm add zod@^4
+# 或
+npm install zod@^4
+```
+
+> **为什么是 peerDependencies**:pnpm 严格 node_modules 布局下,`zod` 若放在 `@faapi/faapi` 的 `dependencies`,会被隔离到 `node_modules/@faapi/faapi/node_modules/zod`,不会提升到项目根。Node ESM 解析器从业务方目录下的 `zod.js` 向上查找 `node_modules/zod` 失败,导致运行时报错。改为 peerDependencies 强制业务方在项目根安装,确保 `zod.js` 能解析到。
+
+**验证**:`pnpm ls zod` 应显示 `zod 4.x`。
 
 配置全局错误中间件自定义错误响应,配置 `lifecycle.onError` 记录日志:
 
@@ -378,6 +401,7 @@ import type { User } from '../../types.ts';
 - [ ] `pnpm typecheck` 通过
 - [ ] `pnpm build` 成功(prod 模式)
 - [ ] 端口未被占用
+- [ ] `pnpm ls zod` 显示 `zod 4.x`(peerDependencies 必装)
 
 ### 路由问题
 - [ ] 文件位置正确(`api/<路径>/handler.ts`)

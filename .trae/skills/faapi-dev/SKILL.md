@@ -29,6 +29,7 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 | 写 WebSocket / SSE / 流式响应 | [realtime.md](./realtime.md) | `WS` 导出 / `ctx.sse()` |
 | ETag / compression / rateLimit / cluster 等自实现功能 | [recipes.md](./recipes.md) | 业务方自行实现中间件示例 |
 | dev 启动失败 / 路由不生效 / 400/500 错误 排查 | [debug.md](./debug.md) | 排查问题 |
+| 测试 handler / 中间件 / 注入器 | [testing.md](./testing.md) | `createContext` + `invokeHandler` 无服务器测试 |
 
 ## 使用方式
 
@@ -47,18 +48,19 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 - **dev 启动**:`faapi` / `faapi dev`
 - **prod 构建**:`faapi build` → `node dist/main`
 - **类型校验**:dev 和 build 都不做类型检查（esbuild 只编译不检查类型），用户需自己跑 `pnpm typecheck`
+- **zod 依赖**:`zod@^4` 是 faapi 的 `peerDependencies`,业务方必须自行安装。框架生成的 `zod.js`(每个 handler 一个,运行时按需 import 做 `safeParse`)位于业务方项目目录,顶部固定为 `import { z } from 'zod'`,需项目根 `node_modules` 可解析到 zod。未安装时首次请求会报 `Cannot find package 'zod'`
 
 ## 使用形态
 
 ```bash
-pnpm add @faapi/faapi
+pnpm add @faapi/faapi zod@^4
 faapi                    # 启动 dev server
 ```
 
 集成 Next.js:
 
 ```bash
-pnpm add @faapi/faapi @faapi/next next
+pnpm add @faapi/faapi @faapi/next next zod@^4
 ```
 
 ```ts

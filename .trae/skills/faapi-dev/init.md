@@ -54,6 +54,20 @@ pnpm add @faapi/faapi
 pnpm add @faapi/schema
 ```
 
+### 3. 安装 zod（运行时校验依赖,必装）
+
+`zod` 是 faapi 的 `peerDependencies`,**业务方必须自行安装**。框架生成的 `zod.js`(每个 handler 一个,运行时按需 import 做 `safeParse`)位于业务方项目目录(dev `.faapi/**/zod.js`、prod `dist/**/zod.js`),顶部固定为 `import { z } from 'zod'`。若项目根 `node_modules` 无法解析到 zod,运行时会报 `Cannot find package 'zod'`。
+
+```bash
+pnpm add zod@^4
+# 或
+npm install zod@^4
+```
+
+> **版本要求**:`zod@^4`(与框架 `peerDependencies` 声明 `^4.4.3` 一致即可)。框架使用 zod v4 内置的 `toJSONSchema`,无需额外安装 `zod-to-json-schema`。
+>
+> **为什么是 peerDependencies**:pnpm 严格 node_modules 布局下,`zod` 若放在 `@faapi/faapi` 的 `dependencies`,会被隔离到 `node_modules/@faapi/faapi/node_modules/zod`,不会提升到项目根。Node ESM 解析器从业务方目录下的 `zod.js` 向上查找 `node_modules/zod` 失败,导致运行时报错。改为 peerDependencies 强制业务方在项目根安装,确保 `zod.js` 能解析到。
+
 > **版本一致性**:`@faapi/faapi`、`@faapi/schema`、`@faapi/next`、`@faapi/mcp` 四个包采用 **fixed 模式**发布,版本号始终统一。`@faapi/next`、`@faapi/schema`、`@faapi/mcp` 通过 `peerDependencies` 声明对 `@faapi/faapi` 的依赖,pnpm 安装时会自动约束版本一致。
 >
 > ```bash
@@ -63,7 +77,7 @@ pnpm add @faapi/schema
 >
 > 如果版本不一致,pnpm 会发出 peer dependencies 警告。可用 `pnpm ls @faapi/faapi @faapi/schema @faapi/next @faapi/mcp` 检查版本。
 
-### 3. 配置 package.json scripts
+### 4. 配置 package.json scripts
 
 #### CLI 形态
 
@@ -98,7 +112,7 @@ faapi 不代理 `next build`,需在 build 脚本中串联(faapi 先 build,再 ne
 > - `start` 通过 `node dist/main` 启动(运行 `faapi build` 自动生成的 `dist/main.js` 启动入口,内部调 `createProdApp()` + `listen()`)。
 > - 集成 Next.js 时 `build` 必须先 `faapi build` 再 `next build`,顺序不能反(`node dist/main` 依赖 `dist/faapi-routes.js` + 各 handler 的 `zod.js`)。
 
-### 4. 创建 tsconfig.json
+### 5. 创建 tsconfig.json
 
 ```json
 {
@@ -120,7 +134,7 @@ faapi 不代理 `next build`,需在 build 脚本中串联(faapi 先 build,再 ne
 
 **关键**:`include` 必须包含 `src/api/**/*.ts`,这样 `tsc --noEmit` 才能检查 handler 内部的类型错误(如 `query.unknownProp`)。
 
-### 5. 创建第一个路由
+### 6. 创建第一个路由
 
 ```ts
 // src/api/user/handler.ts
@@ -134,7 +148,7 @@ export function GET(query: Query) {
 }
 ```
 
-### 6. 启动 dev server
+### 7. 启动 dev server
 
 ```bash
 pnpm dev
@@ -317,11 +331,30 @@ Error: dist/faapi-routes.js 不存在
 
 **解决**:先 `faapi build`,再 `node dist/main`。
 
+### 5. 未安装 zod（运行时 500 / `Cannot find package 'zod'`）
+
+```
+Error: Cannot find package 'zod' imported from .faapi/api/user/zod.js
+```
+
+**原因**:`zod` 是 faapi 的 `peerDependencies`,业务方需自行安装。框架生成的 `zod.js` 顶部为 `import { z } from 'zod'`,从业务方项目目录向上查找 `node_modules/zod`,找不到就报错。
+
+**解决**:
+
+```bash
+pnpm add zod@^4
+```
+
+> **何时触发**:dev 模式下首次请求带类型声明的 handler 触发 `validateInput` 时报错;prod 模式下 `node dist/main` 启动后首次请求触发。无类型声明的 handler(`export function GET() { return ... }`)不触发 schema 校验,不会报错。
+>
+> **检查方式**:`pnpm ls zod` 应能看到 `zod 4.x`。若版本不符,pnpm 会发 peer dependencies 警告。
+
 ## 检查清单
 
 ### CLI 形态
 
 - [ ] `package.json` 有 `@faapi/faapi` 依赖
+- [ ] `package.json` 有 `zod@^4` 依赖(peerDependencies,必装)
 - [ ] 若装了 `@faapi/schema`/`@faapi/next`,版本与 `@faapi/faapi` 一致(`pnpm ls` 检查)
 - [ ] `scripts` 含 `dev`/`build`/`start`/`typecheck` 四项
 - [ ] `src/api/` 目录存在,内有 `handler.ts`
@@ -333,7 +366,7 @@ Error: dist/faapi-routes.js 不存在
 
 ### 集成 Next.js 形态
 
-- [ ] `package.json` 有 `@faapi/faapi` / `@faapi/next` / `next` 依赖
+- [ ] `package.json` 有 `@faapi/faapi` / `@faapi/next` / `next` / `zod@^4` 依赖
 - [ ] `@faapi/faapi` 与 `@faapi/next` 版本一致(`pnpm ls @faapi/faapi @faapi/next` 检查)
 - [ ] `scripts.build` 为 `faapi build && next build`(顺序不能反)
 - [ ] `faapi.config.ts` 的 `plugins` 声明 `@faapi/next`
