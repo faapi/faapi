@@ -393,6 +393,53 @@ import type { User } from '../../types.js';
 import type { User } from '../../types.ts';
 ```
 
+## 不支持功能反馈
+
+遇到 faapi 暂不支持的功能时,在项目根目录的 `faapi-todo.md` 追加一条记录,帮助 faapi 持续优化。这是反馈机制,不阻塞当前开发(已有变通方案时继续推进)。
+
+### 何时记录
+
+- AST 类型提取抛 `SchemaExtractionError`(如 `WeakMap`/`WeakSet`/`Promise`/`any`/`void`/`never`/`object` 等不支持类型)
+- 框架缺失业务需要的内置能力(如需自行实现 ETag/compression/rateLimit/cluster 等,参考 [recipes.md](./recipes.md))
+- 配置字段/中间件能力/注入类型暂不支持的场景
+
+### 记录格式
+
+追加到项目根目录的 `faapi-todo.md`(不存在则创建),每条记录格式:
+
+```markdown
+## [YYYY-MM-DD] <简短标题>
+
+- **场景**: <遇到的具体场景,含报错信息或现象>
+- **期望**: <希望 faapi 提供的能力>
+- **当前变通**: <临时绕过方案,如改用 Map/Set、自实现中间件等>
+- **相关文件**: <handler/中间件/配置文件路径>
+```
+
+### 示例
+
+handler 用了 `Promise` 类型,dev 启动抛 `SchemaExtractionError`:
+
+```markdown
+## [2026-07-09] AST 不支持 Promise 类型
+
+- **场景**: handler 参数声明 `data: Promise<number>`,dev 启动抛 SchemaExtractionError: Unsupported type Promise
+- **期望**: AST 支持 Promise<T> 类型(或提供降级策略)
+- **当前变通**: 改用 number,异步逻辑移到 handler 内部 await
+- **相关文件**: src/api/user/handler.ts
+```
+
+需要内置限流但框架未提供:
+
+```markdown
+## [2026-07-09] 缺少内置 rateLimit 中间件
+
+- **场景**: 需要对 /api/login 限流,框架未内置 rateLimit
+- **期望**: 框架内置 rateLimit 中间件(或官方插件)
+- **当前变通**: 按 recipes.md 自实现令牌桶中间件
+- **相关文件**: src/api/login/middlewares.ts
+```
+
 ## 检查清单
 
 ### 启动问题

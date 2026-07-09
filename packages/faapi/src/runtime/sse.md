@@ -41,7 +41,31 @@ export async function POST(ctx) {
 }
 ```
 
-### 3. 命名事件 + 自定义状态码
+### 3. 上游 SSE 原始字节透传(LLM 中转平台场景)
+
+中转 OpenAI `/v1/chat/completions` 等接口时,上游已是合法 SSE 字节流,需要逐 chunk 透传给客户端,同时边透传边解析末尾 chunk 的 `usage` 字段落库。若用 `send`,会对原文再次加 `data: ` 前缀导致双重前缀;`sendRaw` 直接写入底层流,不做任何 SSE 序列化。
+
+```ts
+export async function POST(ctx) {
+  const upstream = await fetch(upstreamUrl, { method: 'POST', body: await ctx.request.json(), headers });
+  const sse = ctx.sse();
+  let usage = null;
+  try {
+    for await (const chunk of upstream.body as ReadableStream<Uint8Array>) {
+      if (sse.aborted) break;
+      sse.sendRaw(chunk);                 // 逐字节透传,不重新序列化
+      usage = captureUsage(chunk, usage); // 边透传边解析 usage
+    }
+  } finally {
+    await insertCallLog({ usage });
+    sse.close();
+  }
+}
+```
+
+> `sendRaw` 不校验内容是否合法 SSE 格式,调用方需保证透传的内容符合 [HTML5 SSE 规范](https://html.spec.whatwg.org/multipage/server-sent-events.html)。
+
+### 4. 命名事件 + 自定义状态码
 
 ```ts
 export function POST(ctx) {
@@ -68,11 +92,21 @@ export function POST(ctx) {
 | 成员 | 类型 | 说明 |
 |------|------|------|
 | `send(event)` | 方法 | 推送一个 SSE 事件（`{ data, event?, id?, retry? }`） |
+| `sendRaw(chunk)` | 方法 | 直接写入原始字节/字符串,不做 SSE 序列化（用于透传上游 SSE 原文） |
 | `sendError(message)` | 方法 | 推送 `event: error` 事件并关闭流（异常分支用） |
 | `close()` | 方法 | 关闭流（重复调用幂等） |
 | `aborted` | 只读属性 | 客户端断开时变 `true`,底层监听 ReadableStream cancel 信号 |
 | `closed` | 只读属性 | 流已关闭时为 `true` |
 | `response` | 只读属性 | 框架构造的 `Response` 对象（handler 返回后由框架读取） |
+
+#### `send` vs `sendRaw` 的职责分工
+
+| 方法 | 输入 | 行为 | 适用场景 |
+|------|------|------|---------|
+| `send(event)` | 结构化 `SseEvent` 对象 | 调用 `encodeSseEvent` 序列化为合法 SSE 文本 | 自产生事件（LLM token、进度、通知） |
+| `sendRaw(chunk)` | `string \| Uint8Array` 原始字节 | 直接 enqueue 到底层流,不做任何处理 | 透传上游已有的 SSE 原文 |
+
+`sendRaw` 不校验内容是否合法 SSE,调用方负责格式正确性。两者可混用(如先 `send` 推送自定义事件,再 `sendRaw` 透传上游流)。
 
 ### 客户端断开检测（aborted）
 

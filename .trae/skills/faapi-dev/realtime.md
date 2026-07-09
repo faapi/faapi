@@ -38,14 +38,24 @@ export function GET(ctx) {
 
 | 方法/属性 | 说明 |
 |----------|------|
-| `send({ data, event?, id?, retry? })` | 推送事件 |
+| `send({ data, event?, id?, retry? })` | 推送事件(结构化,自动 SSE 编码) |
+| `sendRaw(chunk)` | 直接写入原始字节/字符串,不做 SSE 序列化(透传上游 SSE 原文) |
 | `close()` | 关闭流 |
 | `aborted` | 客户端是否断开 |
 
 ```ts
 sse.send({ data: 'message' });
 sse.send({ data: 'update', event: 'progress', id: '1', retry: 5000 });
+
+// sendRaw: 接受 string 或 Uint8Array,close/aborted 后静默忽略
+sse.sendRaw('data: {"delta":"hi"}\n\n');
+sse.sendRaw(uint8ArrayChunk);  // 上游 ReadableStream 的 chunk
 ```
+
+**`send` vs `sendRaw`**:
+- `send` 自产生事件用(自动加 `data:` 前缀、序列化对象)
+- `sendRaw` 透传上游已有 SSE 原文用(不重新序列化,避免双重前缀)
+- 两者可混用
 
 ### LLM 流式输出示例
 
@@ -64,12 +74,67 @@ export async function POST(ctx, body: { prompt: string }) {
 }
 ```
 
+### 上游 SSE 透传示例(LLM 中转平台)
+
+中转 OpenAI `/v1/chat/completions` 等接口时,上游已是合法 SSE 字节流,用 `sendRaw` 逐 chunk 透传,边透传边解析末尾 chunk 的 `usage` 落库。**不要用 `send`**——它会对原文再次加 `data: ` 前缀导致双重前缀。
+
+```ts
+// src/api/v1/chat/completions/handler.ts
+export async function POST(ctx) {
+  // 不声明 body 参数 → 框架不预读请求体,这里自行读取并透传给上游
+  const upstream = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: ctx.headers.get('authorization')! },
+    body: await ctx.request.text(),
+  });
+
+  const sse = ctx.sse();
+  let usage = null;
+  try {
+    for await (const chunk of upstream.body as ReadableStream<Uint8Array>) {
+      if (sse.aborted) break;
+      sse.sendRaw(chunk);                  // 逐字节透传,不重新序列化
+      usage = captureUsage(chunk, usage);  // 边透传边解析末尾 usage
+    }
+  } finally {
+    await insertCallLog({ usage });
+    sse.close();
+  }
+}
+```
+
+要点:
+- `sendRaw` 接受 `string | Uint8Array`(Buffer 是 Uint8Array 子类,自然兼容)
+- `sendRaw` 不校验内容是否合法 SSE,调用方负责格式正确性
+- close/aborted 后 `sendRaw` 静默忽略,与 `send` 一致
+
 ### SSE 行为
 
 - 框架自动构造 `text/event-stream` Response
 - `SseWriter.aborted` 检测客户端断开
 - handler 返回或抛错时框架自动 `close` 兜底,避免连接泄漏
 - SSE 与 `ctx.json`/`ctx.html` 互斥(handler 只能返回一个)
+
+### handler 返回 `Response(ReadableStream)` — 流式透传(不缓冲)
+
+除 `ctx.sse()` 外,handler 也可以直接返回一个 body 为 `ReadableStream` 的 `Response`,框架会**流式透传,不缓冲**(源码:`toResponse` 对 `Response` 对象原样返回或用 `value.body` 重建,对裸 `ReadableStream` 直接作 body)。
+
+```ts
+// 纯代理上游响应(不需要边透传边解析)
+export async function GET(ctx) {
+  const upstream = await fetch('https://example.com/big-file');
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: { 'Content-Type': upstream.headers.get('Content-Type')! },
+  });
+}
+```
+
+**何时用 `Response(ReadableStream)` vs `ctx.sse()`**:
+- 纯透传(不解析 body 内容) → `Response(ReadableStream)`,更简单
+- 需要边透传边解析(如捕获 usage 落库)、自定义 SSE 事件、推送自产生的事件 → `ctx.sse()` + `sendRaw`/`send`
+
+`Response(ReadableStream)` 的 Content-Type 不限 `text/event-stream`,任意流式响应都适用(大文件、二进制流等)。
 
 ## WebSocket — 双向长连接
 

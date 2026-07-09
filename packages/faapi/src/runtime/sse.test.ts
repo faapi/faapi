@@ -200,6 +200,86 @@ describe('createSseWriter', () => {
     expect(text).toBe('data: {"count":5}\n\n');
   });
 
+  describe('sendRaw 原始字节透传', () => {
+    it('字符串 chunk 原样写入,不加 data: 前缀', async () => {
+      const writer = createSseWriter();
+      writer.sendRaw('data: {"hello":"world"}\n\n');
+      writer.close();
+      const text = await readStream(writer.response.body!);
+      expect(text).toBe('data: {"hello":"world"}\n\n');
+    });
+
+    it('多行 SSE 原文整段透传,不重新序列化', async () => {
+      const writer = createSseWriter();
+      const upstreamChunk = 'event: chunk\ndata: {"delta":"hi"}\n\ndata: [DONE]\n\n';
+      writer.sendRaw(upstreamChunk);
+      writer.close();
+      const text = await readStream(writer.response.body!);
+      expect(text).toBe(upstreamChunk);
+    });
+
+    it('Uint8Array chunk 原样写入', async () => {
+      const writer = createSseWriter();
+      const encoder = new TextEncoder();
+      const bytes = encoder.encode('data: ping\n\n');
+      writer.sendRaw(bytes);
+      writer.close();
+      const text = await readStream(writer.response.body!);
+      expect(text).toBe('data: ping\n\n');
+    });
+
+    it('多次 sendRaw 拼接完整 SSE 流', async () => {
+      const writer = createSseWriter();
+      writer.sendRaw('data: chunk1\n\n');
+      writer.sendRaw('data: chunk2\n\n');
+      writer.sendRaw('data: [DONE]\n\n');
+      writer.close();
+      const text = await readStream(writer.response.body!);
+      expect(text).toBe('data: chunk1\n\ndata: chunk2\n\ndata: [DONE]\n\n');
+    });
+
+    it('close 后再 sendRaw：静默忽略（不抛错）', async () => {
+      const writer = createSseWriter();
+      writer.sendRaw('data: before\n\n');
+      writer.close();
+      // 不应抛错
+      writer.sendRaw('data: after\n\n');
+      const text = await readStream(writer.response.body!);
+      expect(text).toBe('data: before\n\n');
+    });
+
+    it('与 send 混用：send 编码 + sendRaw 原文拼接', async () => {
+      const writer = createSseWriter();
+      writer.send({ event: 'start', data: 'begin' });
+      writer.sendRaw('data: {"delta":"hi"}\n\n');
+      writer.send({ data: 'end' });
+      writer.close();
+      const text = await readStream(writer.response.body!);
+      expect(text).toBe('event: start\ndata: begin\n\ndata: {"delta":"hi"}\n\ndata: end\n\n');
+    });
+
+    it('aborted 后 sendRaw 静默忽略（不抛错）', async () => {
+      const writer = createSseWriter();
+      writer.sendRaw('data: before\n\n');
+      await writer.response.body!.cancel();
+      expect(writer.aborted).toBe(true);
+      // 不应抛错
+      expect(() => writer.sendRaw('data: after\n\n')).not.toThrow();
+    });
+
+    it('sendRaw 不修改传入的 Uint8Array（透传语义）', async () => {
+      const writer = createSseWriter();
+      const encoder = new TextEncoder();
+      const bytes = encoder.encode('data: x\n\n');
+      const original = Array.from(bytes);
+      writer.sendRaw(bytes);
+      writer.close();
+      await readStream(writer.response.body!);
+      // 入参 bytes 不应被修改
+      expect(Array.from(bytes)).toEqual(original);
+    });
+  });
+
   describe('aborted 客户端断开检测', () => {
     it('初始 aborted 为 false', () => {
       const writer = createSseWriter();

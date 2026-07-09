@@ -104,6 +104,17 @@ export function encodeSseEvent(event: SseEvent): string {
 export interface SseWriter {
   /** 推送一个 SSE 事件 */
   send(event: SseEvent): void;
+  /**
+   * 直接写入原始字节/字符串,不做任何 SSE 序列化
+   *
+   * 用于透传上游已有的 SSE 原文(如 LLM 中转平台逐 chunk 转发 OpenAI 响应)。
+   * 调用方负责保证内容符合 HTML5 SSE 规范;`send` 会再次加 `data: ` 前缀,
+   * 不适用于原文透传场景。
+   *
+   * 接受 string 或 Uint8Array(Buffer 是 Uint8Array 子类,自然兼容)。
+   * 与 `send` 一致:close/aborted 后静默忽略,不抛错。
+   */
+  sendRaw(chunk: string | Uint8Array): void;
   /** 推送一个 error 事件并关闭流（用于流式输出中报错的优雅终止） */
   sendError(error: unknown): void;
   /** 关闭流（多次调用安全） */
@@ -157,6 +168,12 @@ export function createSseWriter(): SseWriter {
       if (closed || !controller) return;
       const text = encodeSseEvent(event);
       controller.enqueue(encoder.encode(text));
+    },
+
+    sendRaw(chunk: string | Uint8Array): void {
+      if (closed || !controller) return;
+      const bytes = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
+      controller.enqueue(bytes);
     },
 
     sendError(error: unknown): void {

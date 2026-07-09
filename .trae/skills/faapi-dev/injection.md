@@ -50,6 +50,8 @@ export function POST(form: LoginForm) {
 }
 ```
 
+**不声明 `body`/`form` 时,框架不预读请求体**:按参数名注入机制,handler 没有这两个参数就不会触发请求体解析。需要读取原始请求体的场景(代理转发、Webhook 验签、自定义协议)用 `await ctx.request.json()` / `.text()` / `.arrayBuffer()` 自行读取,详见 [route.md](./route.md) 的"不声明 body/form 时"章节。
+
 **自定义业务配置**通过 `ctx.config` 访问,不作为参数名注入:
 
 ```ts
