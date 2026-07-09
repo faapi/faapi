@@ -393,52 +393,114 @@ import type { User } from '../../types.js';
 import type { User } from '../../types.ts';
 ```
 
-## 不支持功能反馈
+## 问题反馈与处理流程(vibe coding 场景)
 
-遇到 faapi 暂不支持的功能时,在项目根目录的 `faapi-todo.md` 追加一条记录,帮助 faapi 持续优化。这是反馈机制,不阻塞当前开发(已有变通方案时继续推进)。
+用 AI 辅助开发 faapi 应用时,遇到 faapi 自身的问题(功能缺口/文档错误/行为异常),按本流程记录并反馈。这是反馈机制,不阻塞当前开发——有变通方案就先推进业务,同步把问题沉淀到 TODO 文档,便于 faapi 持续优化。
 
-### 何时记录
+### 三类问题
 
-- AST 类型提取抛 `SchemaExtractionError`(如 `WeakMap`/`WeakSet`/`Promise`/`any`/`void`/`never`/`object` 等不支持类型)
-- 框架缺失业务需要的内置能力(如需自行实现 ETag/compression/rateLimit/cluster 等,参考 [recipes.md](./recipes.md))
-- 配置字段/中间件能力/注入类型暂不支持的场景
+| 类型 | 文件 | 典型场景 |
+|------|------|---------|
+| 功能缺口 | `TODO-faapi-gaps.md` | AST 不支持的类型抛 `SchemaExtractionError`、框架缺失内置能力(rateLimit/cluster 等,参考 [recipes.md](./recipes.md))、配置/中间件/注入暂不支持 |
+| 文档错误 | `TODO-faapi-docs-fix.md` | 文档描述与源码实际行为不符(如"不声明 body 时框架不预读"实际会预读)、示例代码跑不通 |
+| 行为异常 | `TODO-faapi-bugs.md` | 框架行为不符合预期(疑似 bug)、运行时报错无法绕过 |
+
+> 三类文件放在**业务项目根目录**(不是 faapi 仓库),按需创建,不存在就不建。文件名固定,便于跨项目识别。
+
+### 处理流程
+
+```
+遇到问题
+  ↓
+1. 先查 faapi 源码确认(读源码定位文件+行号,不靠猜测)
+  ↓
+2. 有变通方案?
+  ├─ 是 → 变通推进业务,同步在对应 TODO 文件记录
+  └─ 否 → 标记 🔴 阻塞,TODO 记录 + 提 issue 反馈
+  ↓
+3. TODO 记录(含源码依据 + 场景 + 期望 + 实际 + 变通)
+  ↓
+4. 反馈到 faapi 仓库(提 issue 或直接 PR 修正)
+  ↓
+5. faapi 侧修复 + 验证(grep / typecheck / test)
+  ↓
+6. 业务项目删除对应 TODO 条目(或整个文件)
+```
+
+**关键原则**:记录前**必须读 faapi 源码确认问题真实性**,引用文件+行号作为依据。避免把用法错误误判为框架问题——先确认是文档错、框架 bug,还是自己用法不对。
 
 ### 记录格式
 
-追加到项目根目录的 `faapi-todo.md`(不存在则创建),每条记录格式:
+每个 TODO 文件按问题编号,每条记录:
 
 ```markdown
 ## [YYYY-MM-DD] <简短标题>
 
 - **场景**: <遇到的具体场景,含报错信息或现象>
-- **期望**: <希望 faapi 提供的能力>
-- **当前变通**: <临时绕过方案,如改用 Map/Set、自实现中间件等>
-- **相关文件**: <handler/中间件/配置文件路径>
+- **源码依据**: <faapi 源码文件+行号,证明问题真实性>
+- **期望**: <希望 faapi 提供的能力/正确行为>
+- **实际**: <当前实际行为>
+- **当前变通**: <临时绕过方案,无则写"无(阻塞)">
+- **相关文件**: <业务项目里受影响的文件路径>
+- **验证清单**: <修复后如何验证,如 grep 命令/typecheck/test>(可选)
 ```
 
-### 示例
+### 实战示例
 
-handler 用了 `Promise` 类型,dev 启动抛 `SchemaExtractionError`:
+#### 功能缺口:handler 用了 AST 不支持的类型
 
 ```markdown
 ## [2026-07-09] AST 不支持 Promise 类型
 
 - **场景**: handler 参数声明 `data: Promise<number>`,dev 启动抛 SchemaExtractionError: Unsupported type Promise
-- **期望**: AST 支持 Promise<T> 类型(或提供降级策略)
+- **源码依据**: packages/faapi/src/validator/extractRuntimeType.ts 类型 switch 无 Promise 分支(直接抛错,不降级)
+- **期望**: AST 支持 Promise<T>,或提供降级策略
+- **实际**: 直接抛 SchemaExtractionError
 - **当前变通**: 改用 number,异步逻辑移到 handler 内部 await
 - **相关文件**: src/api/user/handler.ts
 ```
 
-需要内置限流但框架未提供:
+#### 文档错误:文档与源码行为不符
 
 ```markdown
-## [2026-07-09] 缺少内置 rateLimit 中间件
+## [2026-07-09] 文档错误:声称"不声明 body 时框架不预读请求体"
 
-- **场景**: 需要对 /api/login 限流,框架未内置 rateLimit
-- **期望**: 框架内置 rateLimit 中间件(或官方插件)
-- **当前变通**: 按 recipes.md 自实现令牌桶中间件
-- **相关文件**: src/api/login/middlewares.ts
+- **场景**: 按文档用 `ctx.request.json()` 读取请求体,抛 "Body has already been read"
+- **源码依据**:
+  - packages/faapi/src/server/createServer.ts L296 `resolveInput` 无条件调用
+  - packages/faapi/src/runtime/resolveInput.ts L30/L51 POST/PUT/PATCH 无条件 `await request.text()`
+  - packages/faapi/src/runtime/inputType.ts L11-17 非 GET/DELETE/HEAD 返回 'body'
+- **期望**: 文档说明 POST/PUT/PATCH 始终预读请求体,正确用法是声明 body 参数
+- **实际**: 文档错误描述为"不声明 body 时框架不预读"
+- **当前变通**: 声明 body 参数(可用 index signature 允许开放字段透传)
+- **相关文件**: src/api/v1/chat/completions/handler.ts
+- **验证清单**:
+  - [ ] grep "不声明.*body.*框架不预读" 无匹配
+  - [ ] grep "ctx.request.(json|text)" 仅匹配 GET 场景或"不能用"警示
 ```
+
+#### 行为异常:疑似 bug
+
+```markdown
+## [2026-07-09] SSE aborted 后 send 仍写入(疑似)
+
+- **场景**: 客户端断开后 sse.send 未静默忽略,抛 TypeError
+- **源码依据**: packages/faapi/src/runtime/sse.ts send 守卫检查 closed/aborted
+- **期望**: aborted 后 send 静默忽略(文档承诺)
+- **实际**: <附复现步骤 + 堆栈>
+- **当前变通**: 无(阻塞)
+- **相关文件**: src/api/stream/handler.ts
+```
+
+### 反馈到 faapi 仓库
+
+TODO 记录后,按问题类型反馈:
+
+- **功能缺口**:提 issue,标题 `[gaps] <简述>`,附 TODO 全文;或直接 PR 实现(走 DDD 流程:文档→测试→代码)
+- **文档错误**:直接 PR 修正 faapi 文档(低风险,无需 issue),commit message 用 `docs: ...`
+- **行为异常**:提 issue,标题 `[bug] <简述>`,附复现步骤 + 源码依据
+
+修复合并后,**删除业务项目里对应的 TODO 文件**(或条目)。保留已修复的 TODO 会误导后续开发。
 
 ## 检查清单
 
