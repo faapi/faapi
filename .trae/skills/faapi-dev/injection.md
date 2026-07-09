@@ -50,7 +50,7 @@ export function POST(form: LoginForm) {
 }
 ```
 
-**不声明 `body`/`form` 时,框架不预读请求体**:按参数名注入机制,handler 没有这两个参数就不会触发请求体解析。需要读取原始请求体的场景(代理转发、Webhook 验签、自定义协议)用 `await ctx.request.json()` / `.text()` / `.arrayBuffer()` 自行读取,详见 [route.md](./route.md) 的"不声明 body/form 时"章节。
+**POST/PUT/PATCH 始终预读请求体**:faapi 对这些方法无条件调用 `resolveInput` 解析请求体(无论 handler 是否声明 `body`/`form`)。声明 `body` 参数获取已解析并校验的对象;不声明时请求体也已被消费,**不能用 `ctx.request.json()` / `.text()`**(会抛 "Body has already been read")。代理转发场景应声明 `body` 参数(可用 index signature 允许开放字段),详见 [route.md](./route.md) 的"POST/PUT/PATCH 的请求体注入"章节。
 
 **自定义业务配置**通过 `ctx.config` 访问,不作为参数名注入:
 

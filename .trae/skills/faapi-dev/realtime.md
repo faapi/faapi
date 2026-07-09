@@ -78,14 +78,17 @@ export async function POST(ctx, body: { prompt: string }) {
 
 中转 OpenAI `/v1/chat/completions` 等接口时,上游已是合法 SSE 字节流,用 `sendRaw` 逐 chunk 透传,边透传边解析末尾 chunk 的 `usage` 落库。**不要用 `send`**——它会对原文再次加 `data: ` 前缀导致双重前缀。
 
+> **注意**:faapi 对 POST/PUT/PATCH **始终预读请求体**(无论是否声明 `body` 参数),不能用 `ctx.request.json()`/`.text()`(会抛 "Body has already been read")。必须声明 `body` 参数获取已解析的请求体,用 index signature 允许开放字段透传。详见 [route.md](./route.md) 的"POST/PUT/PATCH 的请求体注入"。
+
 ```ts
 // src/api/v1/chat/completions/handler.ts
-export async function POST(ctx) {
-  // 不声明 body 参数 → 框架不预读请求体,这里自行读取并透传给上游
+interface ChatBody { model?: string; stream?: boolean; [key: string]: unknown }
+
+export async function POST(ctx, body: ChatBody) {
   const upstream = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: ctx.headers.get('authorization')! },
-    body: await ctx.request.text(),
+    body: JSON.stringify(body),
   });
 
   const sse = ctx.sse();

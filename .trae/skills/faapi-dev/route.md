@@ -96,14 +96,17 @@ export function POST(form: LoginForm) {
 }
 ```
 
-#### 不声明 `body`/`form` 时:框架不预读请求体
+#### POST/PUT/PATCH 的请求体注入
 
-handler 不声明 `body`/`form` 参数时,框架**不会预读或解析请求体**(按参数名注入机制决定)。需要读取原始请求体的场景(如转发/代理、Webhook 验签、自定义协议解析),用标准 Web API 自行读取:
+faapi 对 POST/PUT/PATCH 请求**始终预读请求体**(`resolveInput` 无条件调用 `request.text()` 解析,再由 `validateInput` 校验),无论 handler 是否声明 `body` 参数。声明 `body` 参数时获取已解析并校验的对象;不声明时请求体也已被消费,**不能再用 `ctx.request.json()` / `.text()`**(会抛 "Body has already been read")。
+
+需要透传请求体给上游(代理转发、OpenAI 兼容中转)的场景:声明 `body` 参数并透传 `JSON.stringify` 后的结果,用 index signature 允许开放字段:
 
 ```ts
-// 中转平台:读取原始 OpenAI 请求体透传给上游(不经 faapi schema 校验)
-export async function POST(ctx) {
-  const body = await ctx.request.json();   // 或 ctx.request.text() / .arrayBuffer()
+// 中转平台:声明 body 参数获取已解析请求体,透传给上游
+interface ChatBody { model?: string; stream?: boolean; [key: string]: unknown }
+
+export async function POST(ctx, body: ChatBody) {
   const upstream = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: ctx.headers.get('authorization')! },
@@ -113,11 +116,7 @@ export async function POST(ctx) {
 }
 ```
 
-适用场景:
-- **代理/转发**:透传任意请求体给上游,不校验
-- **Webhook 验签**:需要原始字节做 HMAC 签名验证
-- **自定义协议**:Content-Type 非 JSON/form 的请求体(如 protobuf)
-- **大文件上传流式处理**:避免一次性 buffer 全部内容
+> **限制**:POST/PUT/PATCH 的请求体会被框架预读解析,原始字节不可再访问。需要原始字节的场景(如 Webhook HMAC 验签、自定义二进制协议)当前不受支持——这是框架的设计取舍(优先类型校验路径)。如确有此需求,可提 issue 讨论。
 
 ### 动态路由参数
 

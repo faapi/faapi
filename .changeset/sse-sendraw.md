@@ -25,8 +25,10 @@ sendRaw(chunk: string | Uint8Array): void;
 ## 用法
 
 ```ts
-export async function POST(ctx) {
-  const upstream = await fetch(upstreamUrl, { method: 'POST', body: await ctx.request.text() });
+interface ChatBody { model?: string; stream?: boolean; [key: string]: unknown }
+
+export async function POST(ctx, body: ChatBody) {
+  const upstream = await fetch(upstreamUrl, { method: 'POST', body: JSON.stringify(body) });
   const sse = ctx.sse();
   let usage = null;
   try {
@@ -41,6 +43,8 @@ export async function POST(ctx) {
   }
 }
 ```
+
+> faapi 对 POST/PUT/PATCH 始终预读请求体,必须声明 `body` 参数获取已解析对象,不能用 `ctx.request.json()`/`.text()`(会抛 "Body has already been read")。
 
 ## `send` vs `sendRaw`
 
