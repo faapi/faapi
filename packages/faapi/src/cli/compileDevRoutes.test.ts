@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { compileDevRoutes } from './compileDevRoutes';
@@ -64,4 +64,61 @@ describe('compileDevRoutes', () => {
     const result = await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
     expect(result.compiledFiles).toEqual([]);
   });
+
+  it('原子写:编译后无 .tmp 残留文件', async () => {
+    writeFile('src/api/hello/handler.ts', `export function GET() { return { ok: true }; }\n`);
+
+    await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
+
+    // 递归检查 dist 目录下无 .tmp 残留
+    const tmpFiles = collectTmpFiles(join(tempDir, 'dist'));
+    expect(tmpFiles).toEqual([]);
+  });
+
+  it('原子写:产物包含 sourcemap 且内容完整', async () => {
+    writeFile('src/api/hello/handler.ts', `export function GET() { return { ok: true }; }\n`);
+
+    await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
+
+    const jsPath = join(tempDir, 'dist/api/hello/handler.js');
+    const mapPath = join(tempDir, 'dist/api/hello/handler.js.map');
+    expect(existsSync(jsPath)).toBe(true);
+    expect(existsSync(mapPath)).toBe(true);
+
+    // 产物内容完整:包含 export,不是半成品
+    const jsContent = readFileSync(jsPath, 'utf-8');
+    expect(jsContent).toContain('GET');
+    expect(jsContent.length).toBeGreaterThan(0);
+  });
+
+  it('原子写:增量编译也用原子写(无 .tmp 残留)', async () => {
+    writeFile('src/api/a/handler.ts', `export function GET() { return 1; }\n`);
+    writeFile('src/api/b/handler.ts', `export function GET() { return 2; }\n`);
+
+    await compileDevRoutes({
+      rootDir: tempDir,
+      dist: 'dist',
+      files: [join(tempDir, 'src/api/a/handler.ts'), join(tempDir, 'src/api/b/handler.ts')],
+    });
+
+    const tmpFiles = collectTmpFiles(join(tempDir, 'dist'));
+    expect(tmpFiles).toEqual([]);
+    expect(existsSync(join(tempDir, 'dist/api/a/handler.js'))).toBe(true);
+    expect(existsSync(join(tempDir, 'dist/api/b/handler.js'))).toBe(true);
+  });
+
+  /** 递归收集目录下所有 .tmp 开头的文件名 */
+  function collectTmpFiles(dir: string): string[] {
+    if (!existsSync(dir)) return [];
+    const result: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        result.push(...collectTmpFiles(full));
+      } else if (entry.name.includes('.tmp-')) {
+        result.push(full);
+      }
+    }
+    return result;
+  }
 });

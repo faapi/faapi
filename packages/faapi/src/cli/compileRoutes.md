@@ -16,6 +16,14 @@
 - `faapi build`：调 `compileBuildRoutes` 做**逐文件编译**（`bundle: false`），与 dev 模式一致，扫描 `src/**/*.ts` → `dist/**/*.js`。不再使用 bundle 模式,以保证 `instanceof` 跨 config/routes 边界生效（详见 `compileConfig.md`）。
 - watch 增量编译：watcher 调 `compileDevRoutes` 只传入变化的文件列表。
 
+### dev 原子写（`write: false` + rename）
+
+`compileDevRoutes` 启用 esbuild `write: false`,拿到 `outputFiles` 后自行**原子写**(写临时文件 + `rename`),而非让 esbuild 直接写 `outdir`。
+
+**为什么需要**:watch 模式下 `rebuildRoutes` 调 `compileDevRoutes` 期间,Node 主线程事件循环仍处理 HTTP 请求。若 esbuild 直接写文件(非原子),运行时 `loadRouteModule` 的 `import()` 可能读到写一半的产物(alias 未重写完)→ `Cannot find package '@/lib'` → 500。原子写保证 rename 前 HTTP 请求看到的是旧完整文件,rename 后看到新完整文件,无半成品窗口。
+
+仅 dev 需要(`compileBuildRoutes` 是 build 一次性编译,运行时不并发,用 esbuild 默认写即可)。
+
 ## 统一编译模式：逐文件编译（`bundle: false`）
 
 dev 和 build 都采用 `bundle: false` 逐文件编译，每个 `.ts` 独立编译为 `.js`，esbuild 不分析 import 关系。

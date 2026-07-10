@@ -74,9 +74,13 @@ export async function compileDevRoutes(options: CompileDevOptions): Promise<Comp
 
   // 逐文件编译，outbase 设为 src 以打平产物结构：
   // `src/api/hello/handler.ts` → `<dist>/api/hello/handler.js`（去掉 src/ 前缀）
+  //
+  // 启用 write: false + 自行原子写（写临时文件 + rename），避免 watch 模式下
+  // esbuild 非原子写期间运行时 import 读到半成品产物（alias 未重写完 → 500）。
+  // 详见 compileRoutes.md 的"dev 原子写"章节。
   const esbuild = await import('esbuild');
   const outbase = path.resolve(rootDir, APP_DIR);
-  await esbuild.build({
+  const result = await esbuild.build({
     entryPoints,
     outdir: absDist,
     outbase,
@@ -87,7 +91,21 @@ export async function compileDevRoutes(options: CompileDevOptions): Promise<Comp
     packages: 'external',
     plugins,
     logLevel,
+    write: false,
   });
+
+  // 原子写：esbuild 返回 outputFiles（内存内容），逐个写临时文件 + rename
+  // rename 在同一文件系统上是原子的（POSIX），HTTP 请求要么看到旧文件要么看到新文件
+  if (result.outputFiles) {
+    await Promise.all(
+      result.outputFiles.map(async (file) => {
+        await fs.promises.mkdir(path.dirname(file.path), { recursive: true });
+        const tmp = `${file.path}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+        await fs.promises.writeFile(tmp, file.contents);
+        await fs.promises.rename(tmp, file.path);
+      }),
+    );
+  }
 
   return { compiledFiles: entryPoints };
 }

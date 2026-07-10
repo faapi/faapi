@@ -82,6 +82,51 @@ export default {
 
 启动用 `faapi` 主 CLI,自动加载插件。详见 [init.md](./init.md)。
 
+### 目录结构
+
+faapi 与 Next.js 共存时,两个框架各自的目录约定需要并存:
+
+```
+project/
+├── src/
+│   ├── api/              ← faapi 路由(src/api/**/*.ts,固定扫描路径)
+│   ├── app/              ← Next.js App Router(Next.js 自动检测 src/app/)
+│   │   ├── layout.tsx
+│   │   ├── page.tsx
+│   │   └── ...
+│   ├── lib/              ← 后端共享代码(faapi handler 用)
+│   └── db/               ← 后端数据库代码(faapi handler 用)
+├── faapi.config.ts
+├── next.config.ts
+├── tsconfig.json
+└── package.json
+```
+
+**关键点**:
+
+- **faapi 固定扫描 `src/api/**/*.ts`**:把路由放在 `src/api/<path>/handler.ts`,faapi 自动发现
+- **Next.js 自动检测 `src/app/`**:当 `src/` 目录存在时,Next.js 会把 `src/app/` 作为 App Router 目录(无需在 `next.config.ts` 中配置 `srcDir`)
+- **`src/api/` 与 `src/app/` 不冲突**:faapi 只扫描 `src/api/**/*.ts`,不会扫描 `src/app/`;Next.js 只处理 `src/app/`,不会处理 `src/api/`
+- **前端/后端共享代码分离**:前端共享代码放 `src/app/lib/`(或 `src/lib/` 但注意与后端共享区分),后端共享代码放 `src/lib/` 或 `src/db/`
+
+`tsconfig.json` 需包含两端代码:
+
+```json
+{
+  "include": [
+    "src/api/**/*.ts",
+    "src/lib/**/*.ts",
+    "src/db/**/*.ts",
+    "src/app/**/*.ts",
+    "src/app/**/*.tsx",
+    "faapi.config.ts",
+    ".next/types/**/*.ts"
+  ]
+}
+```
+
+**为什么不用根目录 `app/`**:根目录 `app/` 与 `src/` 下放 faapi 路由会导致项目结构分裂(前端在根目录,后端在 `src/`),不利于维护。统一放在 `src/` 下更清晰。
+
 ## 自定义插件
 
 ```ts
