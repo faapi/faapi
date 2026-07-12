@@ -57,7 +57,7 @@ logger 中间件默认启用（与 cors 一致）：`config.logger` 未设置 / 
 
 应用行为配置：`cors`/`lifecycle`/`middlewares`/`injectors`/`extendContext`/`plugins`/`helmet`/`bodyLimit`/`logger`/`http2` + 自定义业务配置（通过 `ctx.config` 访问）。统一响应格式与错误处理通过辅助函数 + 全局中间件实现（框架不内置统一响应包装/错误格式化配置）。
 
-多环境配置：`faapi.config.{env}.ts` 深度合并（`FAAPI_ENV` 或 `NODE_ENV` 选择环境）。
+多环境配置：通过 `.env` 系列文件实现（参考 Next.js），启动时 `loadEnv` 加载到 `process.env`，`faapi.config.ts` 通过 `process.env.XXX` 读取。
 
 ### 环境变量
 
@@ -65,8 +65,7 @@ logger 中间件默认启用（与 cors 一致）：`config.logger` 未设置 / 
 |------|--------|------|
 | `PORT` | `3000` | 服务端口 |
 | `FAAPI_DIST` | dev 固定 `.faapi`，prod 默认 `dist`（可通过 `--dist` 修改） | 产物目录 |
-| `FAAPI_ENV` | — | 环境选择（高于 `NODE_ENV`） |
-| `NODE_ENV` | dev 兜底 `development` | 环境选择 + 运行时读取 |
+| `NODE_ENV` | dev 兜底 `development`，prod 兜底 `production`（均未显式设置时） | 环境选择（`loadEnv` 选 `.env.{env}`）+ 运行时读取 |
 
 ### CLI
 

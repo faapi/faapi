@@ -34,6 +34,7 @@ export { cors } from './middleware/cors';
 export { logger } from './middleware/logger';
 export { helmet } from './middleware/helmet';
 export { loadConfig } from './config/loadConfig';
+export { loadEnv } from './cli/loadEnv';
 
 // 错误类（供业务侧 instanceof 判定与自定义错误中间件使用）
 export {

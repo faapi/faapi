@@ -25,7 +25,7 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 | 配置生命周期钩子 | [lifecycle.md](./lifecycle.md) | `lifecycle: { onReady, onClose, onError }` |
 | 扩展 ctx | [extend-context.md](./extend-context.md) | `extendContext(ctx) { ... }` |
 | 写插件 / 集成 Next.js | [plugins.md](./plugins.md) | `@faapi/next` 集成 |
-| 多环境配置 | [multi-env.md](./multi-env.md) | `faapi.config.production.ts` |
+| 多环境配置 | [multi-env.md](./multi-env.md) | `.env` / `.env.production` |
 | 写 WebSocket / SSE / 流式响应 | [realtime.md](./realtime.md) | `WS` 导出 / `ctx.sse()` |
 | ETag / compression / rateLimit / cluster 等自实现功能 | [recipes.md](./recipes.md) | 业务方自行实现中间件示例 |
 | dev 启动失败 / 路由不生效 / 400/500 错误 排查 | [debug.md](./debug.md) | 排查问题 |

@@ -138,16 +138,16 @@ dev 和 prod 生成完全一致的产物三元组（`faapi-config.js` + `faapi-r
 | 产物 | dev 模式 | prod 模式 |
 |------|---------|----------|
 | `*.js`（路由/middleware/项目模块编译） | `.faapi/**/*.js` | `dist/**/*.js` |
-| `faapi-config.js`（配置入口产物，import config 源产物 + 内联 deepMerge） | `.faapi/faapi-config.js` | `dist/faapi-config.js` |
+| `faapi-config.js`（配置入口产物，import config 源产物 + export base） | `.faapi/faapi-config.js` | `dist/faapi-config.js` |
 | `faapi.config.js`（config 源编译产物，保留相对 import 指向项目模块） | `.faapi/faapi.config.js` | `dist/faapi.config.js` |
 | `faapi-routes.js`（路由清单） | `.faapi/faapi-routes.js` | `dist/faapi-routes.js` |
 | `zod.js`（schema 模块） | `.faapi/**/zod.js` | `dist/**/zod.js` |
 | `faapi-helpers.js`（coerce 公用函数，仅有 number/boolean 字段时生成） | `.faapi/faapi-helpers.js` | `dist/faapi-helpers.js` |
 | `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
 
-- `faapi` / `faapi dev`：dev 模式，`devCommand` 设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），`compileDevRoutes` 逐文件编译 `.ts` → `.faapi/*.js`（`bundle: false`，启动快、增量编译），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js` + `zod.js`，调 `createDevApp()` + `listen()`（含 `reloadRoutes` 热替换能力），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` 热替换路由）
-- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译合并配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 每个 handler 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `listen`），不启动服务器
-- `node dist/main`：生产模式，直接运行 `dist/main.js`，`createProdApp()` 读 `FAAPI_DIST`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
+- `faapi` / `faapi dev`：dev 模式，`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），`compileDevRoutes` 逐文件编译 `.ts` → `.faapi/*.js`（`bundle: false`，启动快、增量编译），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js` + `zod.js`，调 `createDevApp()` + `listen()`（含 `reloadRoutes` 热替换能力），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` 热替换路由）
+- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 每个 handler 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
+- `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`createProdApp()` 读 `FAAPI_DIST`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
 
 `FAAPI_DIST` 是路径参数而非模式标志——`createAppBase` 内部无 `if (isDev)` 分支，统一水合 `faapi-routes.js`、统一 `loadConfig(dist)` 读配置、统一按需 import `zod.js`。dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`，prod 的 `createProdApp` 直接返回 `createAppBase` 结果。
 
@@ -157,13 +157,13 @@ dev 和 build 都采用 `bundle: false` 逐文件编译，每个 `.ts` 独立编
 
 - **为什么不用 bundle 模式**：bundle 模式（`bundle: true`）会把 import 的项目模块 inline 进产物，导致 `faapi.config.ts` 中的 `instanceof` 对项目自定义错误类失效——config 和 routes 各自打包出独立的项目类副本，运行时对象不同一。逐文件编译保证每个源文件对应唯一一份产物，config 和 routes 共享同一运行时对象，`instanceof` 跨边界生效。
 - **`compileConfig` 两步编译**（确保 config 引用的项目模块与 routes 共享）：
-  - 步骤 1：`bundle: false` 逐文件编译 config 源（`faapi.config.ts` + `faapi.config.{env}.ts`）+ 递归收集 config 引用的项目模块（按 src 内/外分别用 outbase 打平前缀），aliasPlugin 重写 specifier（相对路径加 `.js` 后缀；config 引用 src 内模块时剥离前缀，使 config 产物 import `./lib/errors.js` 而非 `./src/lib/errors.js`）
-  - 步骤 2：`bundle: true` + 相对路径 external 编译入口源码（`import base from './faapi.config.js'` + 内联 `deepMerge` + `export default`），避免 inline config 产物，保留 `import './faapi.config.js'` 语句
+  - 步骤 1：`bundle: false` 逐文件编译 config 源（`faapi.config.ts`）+ 递归收集 config 引用的项目模块（按 src 内/外分别用 outbase 打平前缀），aliasPlugin 重写 specifier（相对路径加 `.js` 后缀；config 引用 src 内模块时剥离前缀，使 config 产物 import `./lib/errors.js` 而非 `./src/lib/errors.js`）
+  - 步骤 2：`bundle: true` + 相对路径 external 编译入口源码（`import base from './faapi.config.js'` + `export default base`），避免 inline config 产物，保留 `import './faapi.config.js'` 语句
 - **`process.env.NODE_ENV` 处理**：build 模式用 `define: { 'process.env.NODE_ENV': '"production"' }` + `minifySyntax: true` 做死代码消除——编译期把 `process.env.NODE_ENV` 替换为 `"production"`，`minifySyntax` 删除 `if (false) {...}` 死分支（两者在 `bundle: false` 下均生效，单文件级别优化）。dev 模式不传 `define`，`process.env.NODE_ENV` 运行时读取环境变量（`devCommand` 兜底设 `'development'`），便于热替换时环境变化。
 
-`NODE_ENV`/`FAAPI_ENV` 仅用于 `compileConfig` 选择环境配置文件（按 `FAAPI_ENV > NODE_ENV > 'development'` 优先级选择 `faapi.config.{env}.ts` 与基础配置深度合并到 `faapi-config.js`），不再用于运行时配置合并。
+`NODE_ENV` 用于 `loadEnv` 选择 `.env.{env}` 文件（按 `NODE_ENV || 'development'` 决定）。调用方在调 `loadEnv` 之前自行兜底 `NODE_ENV`：dev 设 `development`，prod 设 `production`。环境变量注入 `process.env` 供 `faapi.config.ts` 通过 `process.env.XXX` 读取。多环境差异通过 `.env` 系列文件实现，不再使用 `faapi.config.{env}.ts`。
 
-启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`node dist/main` → 由用户自行设置。build 产物中 `process.env.NODE_ENV` 已被 `define` 编译期替换为 `"production"`（死代码消除）；dev 中运行时读取环境变量。如果业务配置中有运行时读取 `process.env.NODE_ENV` 的逻辑（如 `onReady` 钩子），需启动时显式设置或由部署环境注入。
+启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`node dist/main` → `production`（由 `main.js` 入口兜底）。build 产物中源码内的 `process.env.NODE_ENV` 已被 `define` 编译期替换为 `"production"`（死代码消除）；dev 中运行时读取环境变量。如果业务配置中有运行时读取 `process.env.NODE_ENV` 的逻辑（如 `onReady` 钩子），需启动时显式设置或由部署环境注入。
 
 CORS 等运行时配置通过 `faapi.config.ts` 配置；框架元信息（port/dist）通过环境变量传入。
 
@@ -318,21 +318,41 @@ export default {
 
 #### 5.5.1 多环境配置
 
-支持按环境加载不同配置，环境由 `FAAPI_ENV` 或 `NODE_ENV` 决定（默认 `development`）。优先级 `FAAPI_ENV > NODE_ENV > 'development'`：
+多环境差异通过 `.env` 系列文件实现（参考 Next.js），不再使用 `faapi.config.{env}.ts`。`faapi dev` / `node dist/main` 启动时调用 `loadEnv`（见 [src/cli/loadEnv.md](packages/faapi/src/cli/loadEnv.md)）按以下顺序加载到 `process.env`，`faapi.config.ts` 和 handler 通过 `process.env.XXX` 读取。
+
+**env 决定规则**：`NODE_ENV || 'development'`。调用方在调 `loadEnv` 之前自行兜底 `NODE_ENV`：dev 设 `development`，prod 设 `production`。
+
+**文件加载顺序**（从低到高优先级，后者覆盖前者）：
+
+1. `.env` — 所有环境共享
+2. `.env.local` — 本地覆盖（不提交 git）
+3. `.env.{env}` — 按环境覆盖（如 `.env.production`）
+4. `.env.{env}.local` — 按环境本地覆盖（不提交 git）
+
+**shell 已设置的变量不被覆盖**（`export DB_HOST=xxx && faapi dev` 时 `.env` 中的 `DB_HOST` 不生效）。
+
+```bash
+# .env — 所有环境共享
+DB_HOST=localhost
+DB_PORT=5432
+
+# .env.production — 生产环境覆盖
+DB_HOST=db.production.com
+```
 
 ```ts
-// faapi.config.ts — 基础配置
-export default {
-  db: { host: 'localhost', port: 5432 },
-} satisfies FaapiConfig;
+// faapi.config.ts — 通过 process.env 读取
+import type { FaapiConfig } from '@faapi/faapi';
 
-// faapi.config.production.ts — 生产环境覆盖
 export default {
-  db: { host: 'db.production.com', port: 5432 },
+  db: {
+    host: process.env.DB_HOST ?? 'localhost',
+    port: Number(process.env.DB_PORT ?? '5432'),
+  },
 } satisfies FaapiConfig;
 ```
 
-环境配置与基础配置**深度合并**，环境配置优先。
+`.env` / `.env.local` / `.env.*.local` 已在 `.gitignore` 忽略（`.env.{env}` 如 `.env.production` 可提交以共享环境配置）。dev 模式不 watch `.env` 文件变化（环境变量变更需重启服务，与 Next.js 行为一致）。
 
 #### 5.5.2 自定义业务配置（ctx.config）
 

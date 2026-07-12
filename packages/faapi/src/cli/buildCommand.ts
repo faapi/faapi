@@ -41,11 +41,11 @@ export interface BuildOptions {
  * 流程：
  * 0. 编译配置产物（compileConfig）→ loadConfig 读应用行为配置
  * 1. 编译 TypeScript（逐文件编译，与 dev 一致，打平 src/ 前缀）
- * 2. 重新编译并合并配置文件（确保使用最新源码）
+ * 2. 重新编译配置文件（确保使用最新源码）
  * 3. 扫描路由（从 <dist> 产物，import .js 拿方法名）
  * 4. 生成 schema 模块（AST 从源码 .ts）
  * 5. 生成路由清单
- * 6. 生成启动入口 <dist>/main.js（import createProdApp + listen）
+ * 6. 生成启动入口 <dist>/main.js（import createProdApp + loadEnv + listen）
  *
  * **统一编译模式**：build 与 dev 都采用 `bundle: false` 逐文件编译，差异仅由 `dist` 驱动，
  * 不存在 `if (isDev)` 控制流分支。逐文件编译保证每个源文件对应唯一一份产物，
@@ -78,8 +78,8 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
     return;
   }
 
-  // 2. 编译并合并配置文件（faapi.config.ts + env 配置 → <dist>/faapi-config.js）
-  //    重新编译以确保使用最新源码（步骤 0 的编译是为了读 config，可能未含最新 env 文件）
+  // 2. 编译配置文件（faapi.config.ts → <dist>/faapi-config.js）
+  //    重新编译以确保使用最新源码（步骤 0 的编译是为了读 config）
   console.log('\n[2/6] Compiling config...');
   const configResult = await compileConfig({ rootDir, dist: outdir });
   if (configResult.generated) {
@@ -119,7 +119,8 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   console.log(`  Written to ${routesPath}`);
 
   // 6. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
-  //    内部 import @faapi/faapi 的 createProdApp + listen，运行时 `node <dist>/main` 直接启动
+  //    内部 import @faapi/faapi 的 createProdApp + loadEnv + listen
+  //    运行时 `node <dist>/main` 直接启动：loadEnv 加载 .env → createProdApp 水合产物 → listen
   //    --dist 选项写入 main.js（非默认 dist 时），端口由运行时 PORT 环境变量决定
   console.log('\n[6/6] Generating entry file...');
   const mainPath = path.resolve(rootDir, outdir, 'main.js');
@@ -127,7 +128,11 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   const createProdAppArgs =
     options?.dist && options.dist !== DEFAULT_DIST ? `{ dist: '${outdir}' }` : '';
   const mainContent = `// 由 faapi build 自动生成，请勿手动编辑
-import { createProdApp } from '@faapi/faapi';
+import { createProdApp, loadEnv } from '@faapi/faapi';
+
+// 兜底 NODE_ENV（未显式设置时）+ 加载 .env 系列文件到 process.env
+if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production';
+loadEnv(process.cwd());
 
 const app = await createProdApp(${createProdAppArgs});
 await app.listen();

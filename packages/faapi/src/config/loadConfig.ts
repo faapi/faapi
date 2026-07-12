@@ -15,7 +15,8 @@ const CONFIG_PRODUCT_FILE = 'faapi-config.js';
  * - dev 模式：`faapi dev` 启动时由 `compileConfig` 生成 `.faapi/faapi-config.js`
  * - prod 模式：`faapi build` 时由 `compileConfig` 生成 `dist/faapi-config.js`
  *
- * 产物由 `compileConfig` 在构建阶段合并 env 后固化，运行时不读源码、不现场编译、不按 env 合并。
+ * 产物由 `compileConfig` 在构建阶段编译，运行时不读源码、不现场编译。
+ * 环境变量由 `loadEnv` 从 `.env` 系列文件加载到 `process.env`，配置文件中通过 `process.env.XXX` 读取。
  *
  * - 产物存在 → import 并返回 default
  * - 产物不存在但源码有配置文件 → 抛错（强制 rebuild）

@@ -85,12 +85,7 @@ export function startWatcher(options: WatchOptions): void {
   // chokidar v4 移除了 glob 模式支持，改为监听 src 整个目录 + ignored 函数过滤
   // 监听整个 src 比 glob 更合理：handler.ts 引用的 util.ts 变化也能触发重建
   // 同时监听根目录的 faapi.config.{ts,js}（配置变化时重生成 faapi-config.js）
-  const CONFIG_FILES = [
-    'faapi.config.ts',
-    'faapi.config.js',
-    'faapi.config.production.ts',
-    'faapi.config.production.js',
-  ];
+  const CONFIG_FILES = ['faapi.config.ts', 'faapi.config.js'];
   const watchPaths = ['src', ...CONFIG_FILES];
   const watcher = chokidar.watch(watchPaths, {
     cwd: rootDir,

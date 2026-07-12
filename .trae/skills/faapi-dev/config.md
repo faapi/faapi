@@ -128,7 +128,14 @@ declare module '@faapi/faapi' {
 
 ## 多环境配置
 
-详见 [multi-env.md](./multi-env.md)。环境由 `FAAPI_ENV` 或 `NODE_ENV` 决定(默认 `development`)，文件命名 `faapi.config.{env}.ts`，深度合并。
+详见 [multi-env.md](./multi-env.md)。多环境差异通过 `.env` 系列文件实现（参考 Next.js），启动时 `loadEnv` 加载到 `process.env`，`faapi.config.ts` 通过 `process.env.XXX` 读取。不再使用 `faapi.config.{env}.ts`。
+
+```ts
+// faapi.config.ts
+export default {
+  db: { host: process.env.DB_HOST ?? 'localhost', port: 5432 },
+} satisfies FaapiConfig;
+```
 
 ## ETag / 中间件实例
 
@@ -162,7 +169,8 @@ export default {
 
 ## 检查清单
 
-- [ ] 文件名 `faapi.config.ts`(或 `.production.ts` 等)
+- [ ] 文件名 `faapi.config.ts`
 - [ ] 用 `satisfies FaapiConfig` 做类型检查
 - [ ] 业务配置 key 不与框架 key 冲突
+- [ ] 敏感值通过 `process.env.XXX` 读取（配合 `.env` 文件，见 [multi-env.md](./multi-env.md)）
 - [ ] `pnpm typecheck` 通过

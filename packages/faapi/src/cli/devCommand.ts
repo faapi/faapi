@@ -6,6 +6,7 @@ import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { loadConfig } from '../config/loadConfig';
+import { loadEnv } from './loadEnv';
 import { startWatcher } from './watcher';
 import { createDevApp } from './createDevApp';
 
@@ -40,40 +41,45 @@ export interface DevCommandOptions {
  * 4. `.faapi/` 下各 handler 目录的 `zod.js` — schema 模块（generateSchemaFiles 生成）
  *
  * 流程：
- * 1. 设置 dev 环境标记 + `FAAPI_DIST=.faapi`
- * 2. 编译配置产物 → 编译 .ts → `.faapi/`
- * 3. 生成路由清单 + schema 文件
- * 4. 调用 createDevApp() + listen() 启动 dev 应用（含 reloadRoutes 热替换能力）
- * 5. 启动 watcher（增量编译 + 重生成产物 + app.reloadRoutes 热替换）
+ * 1. 兜底 NODE_ENV（未显式设置时）+ 加载 .env 系列文件到 process.env（loadEnv）
+ * 2. 设置 dev 环境标记 + `FAAPI_DIST=.faapi`
+ * 3. 编译配置产物 → 编译 .ts → `.faapi/`
+ * 4. 生成路由清单 + schema 文件
+ * 5. 调用 createDevApp() + listen() 启动 dev 应用（含 reloadRoutes 热替换能力）
+ * 6. 启动 watcher（增量编译 + 重生成产物 + app.reloadRoutes 热替换）
  */
 export async function devCommand(options?: DevCommandOptions): Promise<void> {
   const rootDir = process.cwd();
 
-  // 1. 设置 dev 环境标记 + dist（固定为 .faapi，不可修改）
+  // 1. 兜底 NODE_ENV（未显式设置时）+ 加载 .env 系列文件到 process.env
+  //    loadEnv 读 NODE_ENV 决定加载 .env.{env}，需在 loadEnv 之前设置
+  if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
+  loadEnv(rootDir);
+
+  // 2. 设置 dist（固定为 .faapi，不可修改）
   const devDist = DEV_DIST;
   process.env.FAAPI_DIST = devDist;
-  if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
   console.log('- Development mode');
 
-  // 2. 编译配置产物
+  // 3. 编译配置产物
   console.log('- Compiling config...');
   await compileConfig({ rootDir, dist: devDist });
   const _config = await loadConfig(rootDir, devDist);
 
-  // 3. 编译 .ts → .faapi/
+  // 4. 编译 .ts → .faapi/
   console.log('- Compiling TypeScript...');
   await compileDevRoutes({ rootDir, dist: devDist });
 
-  // 4. 生成路由清单 + schema 文件
+  // 5. 生成路由清单 + schema 文件
   console.log('- Generating route manifest and schema...');
   await generateRouteArtifacts(rootDir, PATTERNS, devDist);
 
-  // 5. 启动 dev 应用（createDevApp + listen，含 reloadRoutes 热替换能力）
+  // 6. 启动 dev 应用（createDevApp + listen，含 reloadRoutes 热替换能力）
   console.log('- Starting dev app...');
   const app = await createDevApp({ rootDir, port: options?.port });
   await app.listen();
 
-  // 6. 启动 watcher（文件变化时增量编译 + 重生成 config + 调 app.reloadRoutes）
+  // 7. 启动 watcher（文件变化时增量编译 + 重生成 config + 调 app.reloadRoutes）
   startWatcher({ rootDir, app, devDist });
 }
 

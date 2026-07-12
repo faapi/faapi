@@ -53,17 +53,19 @@ export interface LifecycleContext {
  * } satisfies FaapiConfig;
  * ```
  *
- * 多环境配置：
+ * 自定义业务配置（任意 key）：
  * ```ts
  * import type { FaapiConfig } from '@faapi/faapi';
  * export default {
  *   cors: { origin: '*' },
- *   // 自定义业务配置（任意 key）
- *   db: { host: 'localhost', port: 5432 },
+ *   // 通过 process.env.XXX 读取 .env 文件加载的环境变量
+ *   db: { host: process.env.DB_HOST ?? 'localhost', port: 5432 },
  * } satisfies FaapiConfig;
  * ```
  *
- * 环境覆盖通过 faapi.config.{NODE_ENV}.ts 实现（如 faapi.config.production.ts）
+ * 多环境差异通过 `.env` 系列文件实现（见 `loadEnv`）：
+ * - `.env` / `.env.local` / `.env.{env}` / `.env.{env}.local`
+ * - 环境由 `NODE_ENV > 'development'` 决定
  *
  * 框架元信息通过环境变量配置（不放在 config 内）：
  * - `PORT`：服务端口，默认 3000

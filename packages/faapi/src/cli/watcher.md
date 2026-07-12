@@ -32,7 +32,7 @@ chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ign
 监听范围：
 
 - `src` 目录（递归监听整个源码目录，含 handler.ts 引用的 util.ts）
-- 根目录的 `faapi.config.{ts,js}`、`faapi.config.production.{ts,js}`（配置变化时重生成 `faapi-config.js`）
+- 根目录的 `faapi.config.{ts,js}`（配置变化时重生成 `faapi-config.js`）
 
 监听整个 src 比 glob 更合理：handler.ts 引用的 util.ts 变化也能触发重建。
 

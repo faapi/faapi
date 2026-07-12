@@ -104,7 +104,7 @@ node dist/main             # 启动生产服务器（dist/main.js 内部调 crea
 PORT=8080 node dist/main
 ```
 
-多环境配置通过 `faapi.config.{env}.ts` 覆盖（`FAAPI_ENV` > `NODE_ENV` > `development` 优先级），build 时按环境深度合并到 `dist/faapi-config.js`，运行时零编译。
+多环境配置通过 `.env` 系列文件实现（参考 Next.js）：启动时 `loadEnv` 按 `NODE_ENV || 'development'` 选择 `.env.{env}` 文件加载到 `process.env`，`faapi.config.ts` 通过 `process.env.XXX` 读取。
 
 ## CLI 命令
 

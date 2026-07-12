@@ -1,6 +1,6 @@
 # 配置模块
 
-定义 faapi 框架的配置接口、配置加载与合并逻辑。
+定义 faapi 框架的配置接口、配置加载逻辑。
 
 ## 模块
 
@@ -8,7 +8,6 @@
 | --- | --- |
 | [configTypes.ts](./configTypes.ts) | FaapiConfig 接口及生命周期/插件类型 |
 | [loadConfig.ts](./loadConfig.ts) | 从产物 `faapi-config.js` 读取配置 |
-| [deepMerge.ts](./deepMerge.ts) | 深度合并工具（编译期内联到 compileConfig） |
 | [pluginTypes.ts](./pluginTypes.ts) | FaapiPlugin / PluginContext / PluginDeclaration |
 
 ## FaapiConfig 字段

@@ -9,9 +9,10 @@ import { buildCommand } from './buildCommand';
  *
  * 覆盖：
  * - 逐文件编译（bundle:false，与 dev 一致）
- * - 配置文件 build 时预编译合并（faapi.config.ts + faapi.config.production.ts → faapi-config.js）
+ * - 配置文件 build 时预编译（faapi.config.ts → faapi-config.js）
  * - 产物结构（handler.js / middlewares.js / faapi-routes.js / faapi-config.js / zod.js）
  * - utils.ts 作为独立产物存在（不 bundle inline）
+ * - main.js 启动入口注入 loadEnv 调用
  *
  * 默认产物目录为 dist。
  */
@@ -22,7 +23,7 @@ describe('buildCommand', () => {
   beforeEach(() => {
     tempDir = join(tmpdir(), `faapi-build-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tempDir, { recursive: true });
-    // compileConfig 按 NODE_ENV 决定加载哪个 env 配置；测试期望合并 production 配置
+    // build 时 define 把 process.env.NODE_ENV 替换为 "production" 做死代码消除
     process.env.NODE_ENV = 'production';
   });
 
@@ -70,7 +71,7 @@ export default [
   async (ctx, next) => { await next(); },
 ] satisfies FaapiMiddleware[];\n`,
     );
-    // faapi.config.ts（验证 build 时编译合并配置）
+    // faapi.config.ts（验证 build 时编译配置）
     writeFile(
       'faapi.config.ts',
       `export default {
@@ -78,11 +79,6 @@ export default [
   db: { host: 'localhost', port: 5432 },
   extendContext(ctx) { ctx.t = (k) => k; },
 };\n`,
-    );
-    // faapi.config.production.ts（验证 env 合并）
-    writeFile(
-      'faapi.config.production.ts',
-      `export default { db: { host: 'db.production.com' } };\n`,
     );
     // tsconfig（别名插件需要）
     writeFile(
@@ -132,13 +128,16 @@ export default [
 
     // 5. main.js 启动入口内容（零入口设计：build 阶段自动生成）
     //    默认 dist 不写入 createProdApp 参数（用默认 dist）
+    //    注入 NODE_ENV 兜底 + loadEnv 调用
     const mainContent = readFileSync(join(tempDir, OUT, 'main.js'), 'utf-8');
-    expect(mainContent).toContain("import { createProdApp } from '@faapi/faapi'");
+    expect(mainContent).toContain("import { createProdApp, loadEnv } from '@faapi/faapi'");
+    expect(mainContent).toContain("if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production'");
+    expect(mainContent).toContain('loadEnv(process.cwd())');
     expect(mainContent).toContain('await createProdApp()');
     expect(mainContent).toContain('await app.listen()');
 
-    // 6. faapi-config.js：build 时合并基础 + production 配置
-    //    db.host 被 production 覆盖，db.port 保留基础配置
+    // 6. faapi-config.js：build 时编译基础配置
+    //    db.host 为基础配置值（多环境差异通过 .env 文件实现，见 loadEnv）
     const configModule = await import(
       `file://${join(tempDir, OUT, 'faapi-config.js')}?t=${Date.now()}`
     );
@@ -148,7 +147,7 @@ export default [
       extendContext: (ctx: Record<string, unknown>) => void;
     };
     expect(config.port).toBe(3000);
-    expect(config.db).toEqual({ host: 'db.production.com', port: 5432 });
+    expect(config.db).toEqual({ host: 'localhost', port: 5432 });
     expect(typeof config.extendContext).toBe('function');
     // 函数可执行
     const ctx: Record<string, unknown> = {};
@@ -174,6 +173,9 @@ export default [
     // main.js 包含实际产物目录参数（<dist>）
     const mainContent = readFileSync(join(tempDir, 'build-output/main.js'), 'utf-8');
     expect(mainContent).toContain("createProdApp({ dist: 'build-output' })");
+    // 注入 NODE_ENV 兜底 + loadEnv 调用
+    expect(mainContent).toContain("if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production'");
+    expect(mainContent).toContain('loadEnv(process.cwd())');
     // listen() 无参，端口由运行时 PORT 环境变量决定
     expect(mainContent).toContain('await app.listen()');
   }, 15000);

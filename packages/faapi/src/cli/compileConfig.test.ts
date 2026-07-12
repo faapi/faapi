@@ -7,23 +7,21 @@ import { compileDevRoutes } from './compileDevRoutes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 
 /**
- * compileConfig 测试：build 时编译合并配置文件
+ * compileConfig 测试：build 时编译配置文件
  *
  * 覆盖：
  * - 无配置文件：不生成产物
  * - 仅基础配置：编译并输出 dist/faapi-config.js
- * - 基础 + env 配置：深度合并
  * - .ts / .js 配置文件
  * - 配置文件相对 import 保留为 external（不 inline，运行时从 dist 加载）
  * - 配置文件 bare import 保留 external
  * - 函数型配置保留（middlewares/extendContext 等）
- * - deepMerge 特殊对象直接替换（数组/Date 等）
  * - config import 项目模块，instanceof 跨 config/routes 生效
+ *
+ * 多环境配置通过 .env 文件实现（见 loadEnv.test.ts），不再使用 faapi.config.{env}.ts。
  */
 describe('compileConfig', () => {
   let tempDir: string;
-  const savedFaapiEnv = process.env.FAAPI_ENV;
-  const savedNodeEnv = process.env.NODE_ENV;
 
   beforeEach(() => {
     tempDir = join(
@@ -31,16 +29,10 @@ describe('compileConfig', () => {
       `faapi-compile-config-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
     mkdirSync(tempDir, { recursive: true });
-    delete process.env.FAAPI_ENV;
-    delete process.env.NODE_ENV;
   });
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
-    if (savedFaapiEnv === undefined) delete process.env.FAAPI_ENV;
-    else process.env.FAAPI_ENV = savedFaapiEnv;
-    if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = savedNodeEnv;
   });
 
   /** 写文件到 tempDir 下指定相对路径 */
@@ -78,7 +70,7 @@ describe('compileConfig', () => {
     expect(config.db).toEqual({ host: 'localhost', port: 5432 });
   });
 
-  it('基础 .ts + env .ts：深度合并', async () => {
+  it('基础 .ts 配置：深度合并属性', async () => {
     writeFile(
       'faapi.config.ts',
       `export default {
@@ -87,13 +79,6 @@ describe('compileConfig', () => {
   redis: { host: '127.0.0.1' },
 };\n`,
     );
-    writeFile(
-      'faapi.config.production.ts',
-      `export default {
-  db: { host: 'db.production.com' },
-};\n`,
-    );
-    process.env.NODE_ENV = 'production';
 
     await compileConfig({ rootDir: tempDir, dist: 'dist' });
 
@@ -102,39 +87,9 @@ describe('compileConfig', () => {
       db: { host: string; port: number };
       redis: { host: string };
     }>();
-    // db 深度合并：host 被覆盖，port 保留
-    expect(config.db).toEqual({ host: 'db.production.com', port: 5432 });
-    // redis 未被覆盖，保留原值
+    expect(config.db).toEqual({ host: 'localhost', port: 5432 });
     expect(config.redis).toEqual({ host: '127.0.0.1' });
-    // port 未被覆盖
     expect(config.port).toBe(3000);
-  });
-
-  it('FAAPI_ENV 优先于 NODE_ENV 决定加载哪个 env 配置', async () => {
-    writeFile('faapi.config.ts', `export default { db: { host: 'localhost' } };\n`);
-    writeFile('faapi.config.staging.ts', `export default { db: { host: 'staging.db.com' } };\n`);
-    writeFile(
-      'faapi.config.production.ts',
-      `export default { db: { host: 'db.production.com' } };\n`,
-    );
-    process.env.NODE_ENV = 'production';
-    process.env.FAAPI_ENV = 'staging';
-
-    await compileConfig({ rootDir: tempDir, dist: 'dist' });
-
-    const config = await importProduct<{ db: { host: string } }>();
-    expect(config.db.host).toBe('staging.db.com');
-  });
-
-  it('env 配置不存在时仅导出基础配置', async () => {
-    writeFile('faapi.config.ts', `export default { port: 8080 };\n`);
-    process.env.NODE_ENV = 'production';
-    // 无 faapi.config.production.ts
-
-    await compileConfig({ rootDir: tempDir, dist: 'dist' });
-
-    const config = await importProduct<{ port: number }>();
-    expect(config.port).toBe(8080);
   });
 
   it('支持 .js 配置文件', async () => {
@@ -235,17 +190,6 @@ writeFileSync('${sideEffectFlag}', 'loaded');\n`,
     config.extendContext(ctx);
     expect(typeof ctx.t).toBe('function');
     expect((ctx.t as (k: string) => string)('hello')).toBe('hello');
-  });
-
-  it('deepMerge：数组直接替换（不递归合并）', async () => {
-    writeFile('faapi.config.ts', `export default { roles: ['admin', 'user'] };\n`);
-    writeFile('faapi.config.production.ts', `export default { roles: ['admin'] };\n`);
-    process.env.NODE_ENV = 'production';
-
-    await compileConfig({ rootDir: tempDir, dist: 'dist' });
-
-    const config = await importProduct<{ roles: string[] }>();
-    expect(config.roles).toEqual(['admin']);
   });
 
   it('配置文件中的 process.env 表达式保留（运行时读取）', async () => {
@@ -361,7 +305,7 @@ export default {
     expect(ctx.capturedCode).toBe('TEST_CODE');
   });
 
-  it('仅基础配置无 env 时入口直接 export base（不调 deepMerge）', async () => {
+  it('入口产物直接 export base（不调 deepMerge）', async () => {
     writeFile('faapi.config.ts', `export default { port: 1234 };\n`);
 
     await compileConfig({ rootDir: tempDir, dist: 'dist' });

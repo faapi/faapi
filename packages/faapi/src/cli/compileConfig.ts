@@ -1,7 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { Plugin } from 'esbuild';
-import { DEEP_MERGE_SOURCE } from '../config/deepMerge';
 import { buildAliasPlugins, resolveRelativeSpecifier } from './aliasPlugin';
 
 /**
@@ -34,41 +33,12 @@ function isInsideDir(filePath: string, dir: string): boolean {
 const BASE_CONFIG_FILES = ['faapi.config.ts', 'faapi.config.js'];
 
 /**
- * 环境配置文件后缀（与 loadConfig 保持一致）
- */
-const ENV_CONFIG_EXTS = ['.ts', '.js'];
-
-/**
- * 获取当前构建环境（用于查找 faapi.config.{env}.ts）
- *
- * 优先级：FAAPI_ENV → NODE_ENV → 'development'
- *
- * 与 loadConfig.getEnv 保持一致：build 时按相同规则确定 env，确保 build 产物与 dev 行为一致。
- */
-function getEnv(): string {
-  return process.env.FAAPI_ENV || process.env.NODE_ENV || 'development';
-}
-
-/**
  * 查找基础配置文件（返回源文件名，含后缀）
  *
  * 返回相对 rootDir 的路径（如 'faapi.config.ts'），供 esbuild 作为 entryPoint。
  */
 function findBaseConfig(rootDir: string): string | null {
   for (const f of BASE_CONFIG_FILES) {
-    if (fs.existsSync(path.join(rootDir, f))) {
-      return f;
-    }
-  }
-  return null;
-}
-
-/**
- * 查找环境配置文件（返回源文件名，含后缀）
- */
-function findEnvConfig(rootDir: string, env: string): string | null {
-  for (const ext of ENV_CONFIG_EXTS) {
-    const f = `faapi.config.${env}${ext}`;
     if (fs.existsSync(path.join(rootDir, f))) {
       return f;
     }
@@ -214,28 +184,25 @@ function createExternalRelativePlugin(): Plugin {
 }
 
 /**
- * build 时编译并合并配置文件，生成 `dist/faapi-config.js`
+ * build 时编译配置文件，生成 `dist/faapi-config.js`
  *
  * 采用两步编译，使 config 引用的项目模块与 routes 共享同一份运行时对象（instanceof 跨边界生效）：
  *
  * **步骤 1：逐文件编译 config 源文件（`bundle: false`）**
- * - 编译 `faapi.config.ts`（和 `faapi.config.{env}.ts`）→ `dist/faapi.config.js`
+ * - 编译 `faapi.config.ts` → `dist/faapi.config.js`
  * - 递归收集 config 引用的项目模块，按 src 内/外分别编译：
  *   - src 内：outbase=rootDir/src（打平前缀，与 compileDevRoutes 一致）→ `dist/lib/errors.js`
  *   - src 外：outbase=rootDir → `dist/base.js`
  * - aliasPlugin 重写 specifier：相对路径加 .js 后缀；config 引用 src 内模块时剥离前缀
  *
  * **步骤 2：编译合并入口（`bundle: true` + external 相对路径）**
- * - 生成虚拟入口源码（import 已编译的 config 产物 + 内联 deepMerge + export 合并结果）
+ * - 生成虚拟入口源码（import 已编译的 config 产物 + export base）
  * - 相对路径 import 标记为 external（不 inline config 产物）
  * - 第三方依赖（`packages: 'external'`）也保持 external
  * - 产物 `dist/faapi-config.js` 保留 `import base from './faapi.config.js'`
  *
- * 产物由 `loadConfig` 在运行时统一 import。env 在编译阶段固化，运行时不读源码、不现场编译、
- * 不按 env 合并。配置文件中的 `process.env.*` 表达式保留（不传 define），运行时读取环境变量。
- *
- * deepMerge 逻辑：通过 `DEEP_MERGE_SOURCE`（由 `deepMerge.toString()` 序列化）内联到入口源码，
- * 确保与 `loadConfig.deepMerge` 运行时实现完全一致。
+ * 产物由 `loadConfig` 在运行时统一 import。环境变量通过 `.env` 文件加载（见 `loadEnv`），
+ * 配置文件中通过 `process.env.XXX` 读取，运行时取值。不传 `define`，保留 `process.env` 表达式。
  */
 export async function compileConfig(options: CompileConfigOptions): Promise<CompileConfigResult> {
   const { rootDir, dist } = options;
@@ -246,17 +213,11 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
     return { generated: false, outputFile: '' };
   }
 
-  const env = getEnv();
-  const envConfigName = findEnvConfig(rootDir, env);
-
   const absDist = path.resolve(rootDir, dist);
   await fs.promises.mkdir(absDist, { recursive: true });
 
   // 收集 config 入口文件（绝对路径）
   const configEntryPoints: string[] = [path.resolve(rootDir, baseConfigName)];
-  if (envConfigName) {
-    configEntryPoints.push(path.resolve(rootDir, envConfigName));
-  }
 
   // 步骤 1：逐文件编译 config 源 + 项目模块
   // 递归收集 config 引用的项目模块
@@ -300,22 +261,12 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
     });
   }
 
-  // 步骤 2：编译合并入口（bundle:true + external 相对路径）
-  // 入口源码 import 已编译的 config 产物（带 .js 后缀）+ 内联 deepMerge + export 合并结果
+  // 步骤 2：编译入口（bundle:true + external 相对路径）
+  // 入口源码 import 已编译的 config 产物（带 .js 后缀）+ export base
   const baseImport = `import base from './${toProdImport(baseConfigName)}';`;
-  const imports: string[] = [baseImport];
-  let exportDefault: string;
+  const exportDefault = 'export default base;';
 
-  if (envConfigName) {
-    const envImport = `import env from './${toProdImport(envConfigName)}';`;
-    imports.push(envImport);
-    exportDefault = 'export default deepMerge(base, env);';
-  } else {
-    // 无环境配置：直接导出基础配置（不调用 deepMerge）
-    exportDefault = 'export default base;';
-  }
-
-  const entryCode = [...imports, DEEP_MERGE_SOURCE, exportDefault].join('\n');
+  const entryCode = [baseImport, exportDefault].join('\n');
 
   const outputFile = path.resolve(absDist, 'faapi-config.js');
   await esbuild.build({

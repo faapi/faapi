@@ -10,7 +10,7 @@
 
 - `faapi build` 命令
 - **逐文件编译** `src/**/*.ts` → `dist/**/*.js`（esbuild，`bundle: false`，与 dev 模式一致）
-- **配置文件编译合并** `faapi.config.ts` + `faapi.config.{env}.ts` → `dist/faapi-config.js`（`compileConfig`，env 在 build 阶段固化）
+- **配置文件编译** `faapi.config.ts` → `dist/faapi-config.js`（`compileConfig`，多环境差异通过 `.env` 文件实现，见 `loadEnv`）
 - 生成 `dist/**/zod.js`（每个 handler 一个 zod schema 模块）
 - 生成 `dist/faapi-routes.js`（序列化路由清单）
 
@@ -20,11 +20,11 @@
 
 1. **扫描源文件**（全量扫描 `src/**/*.ts`，排除测试文件和声明文件，作为编译 entryPoints）
 2. **编译 TypeScript**（`compileBuildRoutes`：`bundle: false` 逐文件编译，与 dev 一致，打平 src 前缀）
-3. **重新编译并合并配置文件**（`compileConfig`：`faapi.config.ts` + `faapi.config.{env}.ts` → `dist/faapi-config.js`，确保使用最新源码，深度合并后单文件输出）
+3. **重新编译配置文件**（`compileConfig`：`faapi.config.ts` → `dist/faapi-config.js`，确保使用最新源码，单文件输出）
 4. **扫描路由**（`scanRoutes` 从产物 `.js` import 拿方法名，filePath 保持源码 `.ts`）+ 排序 + 冲突检测
 5. **生成 schema 文件**（`generateSchemaFiles` → `dist/**/zod.js`，AST 从源码 `.ts`）
 6. **生成路由清单**（`serializeRoutes` + `writeRoutesModule` → `dist/faapi-routes.js`）
-7. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp } from '@faapi/faapi'` + `createProdApp()` + `listen()`；`--dist` 选项写入 `main.js`，端口由运行时 `PORT` 环境变量决定）
+7. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp, loadEnv } from '@faapi/faapi'` + 兜底 `NODE_ENV=production` + `loadEnv(cwd)` + `createProdApp()` + `listen()`；`--dist` 选项写入 `main.js`，端口由运行时 `PORT` 环境变量决定）
 
 ## 编译模式
 
@@ -40,7 +40,7 @@
 dist/
 ├── main.js                   # 启动入口（零入口设计：build 阶段自动生成，import createProdApp + listen）
 ├── faapi-routes.js           # 路由清单（序列化，含 middlewarePaths）
-├── faapi-config.js           # 配置入口产物（import faapi.config.js + 内联 deepMerge）
+├── faapi-config.js           # 配置入口产物（import faapi.config.js + export base）
 ├── faapi.config.js           # config 源编译产物（保留相对 import 指向项目模块）
 ├── faapi-helpers.js          # coerce 公用函数（仅当存在 number/boolean 字段时生成）
 ├── api/hello/handler.js      # 编译后的路由（相对 import 已重写为 .js 后缀）
@@ -56,13 +56,17 @@ build 阶段最后一步生成 `dist/main.js`，内容如下：
 
 ```js
 // 由 faapi build 自动生成，请勿手动编辑
-import { createProdApp } from '@faapi/faapi';
+import { createProdApp, loadEnv } from '@faapi/faapi';
+
+// 兜底 NODE_ENV（未显式设置时）+ 加载 .env 系列文件到 process.env
+if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production';
+loadEnv(process.cwd());
 
 const app = await createProdApp();
 await app.listen();
 ```
 
-`node dist/main` 直接运行此文件启动服务。`@faapi/faapi` 作为运行时依赖保留在 `node_modules` 中（不被 bundle），便于版本升级。
+`node dist/main` 直接运行此文件启动服务。`loadEnv` 在 `createProdApp` 之前加载 `.env` 系列文件到 `process.env`，供 `faapi.config.ts` 通过 `process.env.XXX` 读取。`@faapi/faapi` 作为运行时依赖保留在 `node_modules` 中（不被 bundle），便于版本升级。
 
 ### CLI 选项对 main.js 的影响
 
