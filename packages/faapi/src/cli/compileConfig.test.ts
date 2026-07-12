@@ -18,7 +18,7 @@ import { importWithCacheBust } from '../utils/importWithCacheBust';
  * - 函数型配置保留（middlewares/extendContext 等）
  * - config import 项目模块，instanceof 跨 config/routes 生效
  *
- * 多环境配置通过 .env 文件实现（见 loadEnv.test.ts），不再使用 faapi.config.{env}.ts。
+ * 多环境配置通过 .env 文件实现（见 loadEnv.test.ts）。
  */
 describe('compileConfig', () => {
   let tempDir: string;

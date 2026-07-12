@@ -6,7 +6,7 @@
 
 ## 机制
 
-faapi 参考 Next.js 实现，通过 `loadEnv` 在启动时加载 `.env` 系列文件到 `process.env`，`faapi.config.ts` 和 handler 通过 `process.env.XXX` 读取。不再使用 `faapi.config.{env}.ts` 多环境配置文件。
+faapi 参考 Next.js 实现，通过 `loadEnv` 在启动时加载 `.env` 系列文件到 `process.env`，`faapi.config.ts` 和 handler 通过 `process.env.XXX` 读取。
 
 ## env 决定规则
 

@@ -7,7 +7,7 @@
 faapi 需要统一的环境变量加载机制，让数据库连接、API 密钥等可变配置脱离 `faapi.config.ts` 源码：
 
 - **配置与密钥分离**：`faapi.config.ts` 只写结构化配置（端口、CORS 策略等），敏感值通过 `process.env.DB_URL` 读取
-- **多环境差异**：dev/prod 用不同 `.env.{env}` 文件，无需 `faapi.config.{env}.ts` 多环境配置文件
+- **多环境差异**：dev/prod 用不同 `.env.{env}` 文件
 - **12-Factor App 合规**：环境变量驱动配置，便于容器化部署
 
 参考 Next.js 的 `.env` 加载方案，支持 `.env` / `.env.local` / `.env.{env}` / `.env.{env}.local` 四级文件，shell 变量优先。

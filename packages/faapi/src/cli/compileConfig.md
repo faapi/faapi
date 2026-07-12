@@ -10,7 +10,7 @@
 - 第三方依赖保持 external，运行时从用户 `node_modules` 解析
 - **config 引用的项目模块（如自定义错误类）与 routes 引用的同一模块在运行时是同一对象**，`instanceof` 跨 config/routes 生效
 
-环境变量通过 `.env` 文件加载（见 [loadEnv](./loadEnv.md)），配置文件中通过 `process.env.XXX` 读取，运行时取值。多环境差异通过 `.env.{env}` 文件实现，不再使用 `faapi.config.{env}.ts`。
+环境变量通过 `.env` 文件加载（见 [loadEnv](./loadEnv.md)），配置文件中通过 `process.env.XXX` 读取，运行时取值。多环境差异通过 `.env.{env}` 文件实现。
 
 dev 和 prod 都调用 `compileConfig`，只是 dist 不同：
 

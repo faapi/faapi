@@ -161,7 +161,7 @@ dev 和 build 都采用 `bundle: false` 逐文件编译，每个 `.ts` 独立编
   - 步骤 2：`bundle: true` + 相对路径 external 编译入口源码（`import base from './faapi.config.js'` + `export default base`），避免 inline config 产物，保留 `import './faapi.config.js'` 语句
 - **`process.env.NODE_ENV` 处理**：build 模式用 `define: { 'process.env.NODE_ENV': '"production"' }` + `minifySyntax: true` 做死代码消除——编译期把 `process.env.NODE_ENV` 替换为 `"production"`，`minifySyntax` 删除 `if (false) {...}` 死分支（两者在 `bundle: false` 下均生效，单文件级别优化）。dev 模式不传 `define`，`process.env.NODE_ENV` 运行时读取环境变量（`devCommand` 兜底设 `'development'`），便于热替换时环境变化。
 
-`NODE_ENV` 用于 `loadEnv` 选择 `.env.{env}` 文件（按 `NODE_ENV || 'development'` 决定）。调用方在调 `loadEnv` 之前自行兜底 `NODE_ENV`：dev 设 `development`，prod 设 `production`。环境变量注入 `process.env` 供 `faapi.config.ts` 通过 `process.env.XXX` 读取。多环境差异通过 `.env` 系列文件实现，不再使用 `faapi.config.{env}.ts`。
+`NODE_ENV` 用于 `loadEnv` 选择 `.env.{env}` 文件（按 `NODE_ENV || 'development'` 决定）。调用方在调 `loadEnv` 之前自行兜底 `NODE_ENV`：dev 设 `development`，prod 设 `production`。环境变量注入 `process.env` 供 `faapi.config.ts` 通过 `process.env.XXX` 读取。多环境差异通过 `.env` 系列文件实现。
 
 启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`node dist/main` → `production`（由 `main.js` 入口兜底）。build 产物中源码内的 `process.env.NODE_ENV` 已被 `define` 编译期替换为 `"production"`（死代码消除）；dev 中运行时读取环境变量。如果业务配置中有运行时读取 `process.env.NODE_ENV` 的逻辑（如 `onReady` 钩子），需启动时显式设置或由部署环境注入。
 
@@ -318,7 +318,7 @@ export default {
 
 #### 5.5.1 多环境配置
 
-多环境差异通过 `.env` 系列文件实现（参考 Next.js），不再使用 `faapi.config.{env}.ts`。`faapi dev` / `node dist/main` 启动时调用 `loadEnv`（见 [src/cli/loadEnv.md](packages/faapi/src/cli/loadEnv.md)）按以下顺序加载到 `process.env`，`faapi.config.ts` 和 handler 通过 `process.env.XXX` 读取。
+多环境差异通过 `.env` 系列文件实现（参考 Next.js）。`faapi dev` / `node dist/main` 启动时调用 `loadEnv`（见 [src/cli/loadEnv.md](packages/faapi/src/cli/loadEnv.md)）按以下顺序加载到 `process.env`，`faapi.config.ts` 和 handler 通过 `process.env.XXX` 读取。
 
 **env 决定规则**：`NODE_ENV || 'development'`。调用方在调 `loadEnv` 之前自行兜底 `NODE_ENV`：dev 设 `development`，prod 设 `production`。
 

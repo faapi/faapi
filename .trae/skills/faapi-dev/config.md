@@ -128,7 +128,7 @@ declare module '@faapi/faapi' {
 
 ## 多环境配置
 
-详见 [multi-env.md](./multi-env.md)。多环境差异通过 `.env` 系列文件实现（参考 Next.js），启动时 `loadEnv` 加载到 `process.env`，`faapi.config.ts` 通过 `process.env.XXX` 读取。不再使用 `faapi.config.{env}.ts`。
+详见 [multi-env.md](./multi-env.md)。多环境差异通过 `.env` 系列文件实现（参考 Next.js），启动时 `loadEnv` 加载到 `process.env`，`faapi.config.ts` 通过 `process.env.XXX` 读取。
 
 ```ts
 // faapi.config.ts
