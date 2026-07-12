@@ -1,6 +1,6 @@
 {
   "name": "@faapi/schema",
-  "version": "0.0.0-canary.0",
+  "version": "1.0.0",
   "description": "Schema introspection for faapi — expose API schema to AI assistants via MCP",
   "type": "module",
   "main": "./dist/index.js",
