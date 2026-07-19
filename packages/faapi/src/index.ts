@@ -53,6 +53,17 @@ export { FaapiError } from './errors/FaapiError';
 export { createContext } from './runtime/createContext';
 export { invokeHandler } from './runtime/invokeHandler';
 
+// E2E 测试辅助（业务方测试完整请求链路 + WS 路由）
+// 详见 src/testServer.md + src/wsTestClient.md
+export { createTestServer, type TestServer, type TestServerOptions } from './testServer';
+export {
+  connectWs,
+  MessageQueue,
+  waitForWsOpen,
+  type WsTestClient,
+  type WsTestClientOptions,
+} from './wsTestClient';
+
 // 高层编程式启动 API（参考 NestJS NestFactory.create()）
 // dev/prod 拆分：createDevApp（含 reloadRoutes 热替换）/ createProdApp（精简）
 // createApp 为 createProdApp 的向后兼容别名

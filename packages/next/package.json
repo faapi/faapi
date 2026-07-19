@@ -1,6 +1,6 @@
 {
   "name": "@faapi/next",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Next.js integration for faapi — serve faapi APIs and Next.js pages from a single server",
   "type": "module",
   "main": "./src/index.ts",

@@ -1,5 +1,18 @@
 # @faapi/faapi
 
+## 1.0.1
+
+### Patch Changes
+
+- 新增 E2E 测试 API：公开导出 `createTestServer` / `connectWs` / `MessageQueue` / `waitForWsOpen`，业务方一行代码启动带 schema 校验的真实端口测试服务器，并便捷测试 WebSocket 路由。
+
+  - `createTestServer(options)`：内部自动 scanRoutes + mkdtemp + generateSchemaFiles + createServer + listen(0)；`close()` 自动 closeAllConnections + 清理 schema 目录 + invalidateSchemaCache
+  - `connectWs(baseUrl, pathname, options?)`：解决 WS 测试三大痛点——open/message 监听竞态、三事件监听 + 超时清理、http→ws 协议转换；失败时主动 `ws.close()` 避免资源泄漏
+  - `MessageQueue`：FIFO 缓冲早到消息 + Promise 化 `next(timeout)`；支持 Buffer/Buffer[]/ArrayBuffer 多种消息形态
+  - `waitForWsOpen(ws, timeout?)`：Promise 化等待 `open` 事件，监听 open/error/close 并清理
+
+  默认禁用 CORS/Helmet/Logger 避免污染断言；与 `createProdApp + app.inject` 互补——`createTestServer` 专注"真实端口 + 自动 schema"，无需 `faapi build` 即可测试 SSE/WS/CORS/真实 HTTP 头。
+
 ## 1.0.0
 
 ### Major Changes

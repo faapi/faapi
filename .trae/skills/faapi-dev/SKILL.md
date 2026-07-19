@@ -29,7 +29,7 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 | 写 WebSocket / SSE / 流式响应 | [realtime.md](./realtime.md) | `WS` 导出 / `ctx.sse()` |
 | ETag / compression / rateLimit / cluster 等自实现功能 | [recipes.md](./recipes.md) | 业务方自行实现中间件示例 |
 | dev 启动失败 / 路由不生效 / 400/500 错误 排查 | [debug.md](./debug.md) | 排查问题 |
-| 测试 handler / 中间件 / 注入器 | [testing.md](./testing.md) | `createContext` + `invokeHandler` 无服务器测试 |
+| 测试 handler / 中间件 / 注入器 / E2E / WebSocket 路由 | [testing.md](./testing.md) | `createContext` + `invokeHandler` 无服务器测试 / `createTestServer` + `fetch` E2E / `connectWs` WS 路由 |
 
 ## 使用方式
 
