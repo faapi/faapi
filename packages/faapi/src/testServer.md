@@ -158,6 +158,71 @@ afterAll(() => ts.close());
 | 不执行 `lifecycle.onReady` / `onClose` | 用 `createProdApp` |
 | 无服务器 mock 注入（`app.inject`） | 用 `createProdApp + app.inject` |
 
+## vitest 环境下的别名解析与 vi.mock
+
+业务方 handler 用 TypeScript paths 别名（如 `import { db } from '@/lib/db'`）时，Node 原生 ESM `import()` 无法解析别名，会导致 handler 加载失败、路由表为空、所有请求 404。
+
+`createTestServer` 内部走 `importWithCacheBust`，在 vitest 环境下自动检测 `globalThis.vi.importActual`，优先走 Vite SSR pipeline：
+- 识别 `vitest.config.ts` 的 `resolve.alias` 与 tsconfig paths 别名
+- 让 `vi.mock` 在加载的 handler 内生效
+
+**前置条件**（满足任一）：
+- `vitest.config.ts` 设 `test.globals: true`（推荐，`globalThis.vi` 自动注入）
+- 测试文件内显式 `import { vi } from 'vitest'` 后挂到 `globalThis.vi`
+
+**示例**：业务方 vitest.config.ts 配置 `@` 别名 + handler 内用 `@/lib/db`：
+
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+import path from 'node:path';
+
+export default defineConfig({
+  resolve: {
+    alias: { '@': path.resolve(__dirname, './src') },
+  },
+  test: { globals: true },
+});
+```
+
+```ts
+// src/api/user/handler.ts
+import { db } from '@/lib/db';  // 别名引用
+export function GET() { return { user: db.user }; }
+```
+
+```ts
+// src/e2e/test.ts
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { createTestServer } from '@faapi/faapi';
+
+let ts;
+beforeAll(async () => { ts = await createTestServer({ rootDir: process.cwd() }); });
+afterAll(() => ts.close());
+
+it('GET /api/user 走真实 @/lib/db', async () => {
+  const res = await fetch(`${ts.baseUrl}/api/user`);
+  expect((await res.json()).user.id).toBe('real-user-id');
+});
+```
+
+**vi.mock 生效**：handler 加载走 Vite pipeline，业务方 `vi.mock('@/lib/db', ...)` 在 createTestServer 内部加载的 handler 内可见：
+
+```ts
+// vi.mock 顶层 hoist
+vi.mock('@/lib/db', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, db: { ...actual.db, source: 'mocked' } };
+});
+
+it('vi.mock 生效', async () => {
+  const res = await fetch(`${ts.baseUrl}/api/user`);
+  expect((await res.json()).source).toBe('mocked');
+});
+```
+
+非 vitest 环境（`globalThis.vi` 不存在）回退到 Node 原生 `import()`，无副作用。详见 [utils/importWithCacheBust.md](./utils/importWithCacheBust.md)。
+
 ## 相关模块
 
 - [server/createServer.ts](./server/createServer.ts) - 底层 HTTP server 创建（`createTestServer` 内部调用）

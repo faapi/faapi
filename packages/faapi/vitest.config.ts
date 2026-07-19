@@ -1,5 +1,8 @@
 import { defineConfig } from 'vitest/config';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isCI = !!process.env.CI;
 
 // E2E 测试访问的是本机 127.0.0.1 / localhost，需绕过 HTTP 代理
@@ -14,6 +17,13 @@ const isCI = !!process.env.CI;
 }
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // 仅用于 testServer.e2e.alias.test.ts：模拟业务项目用 @/ 别名引用 lib 模块
+      // （参考 sso 项目 tsconfig.json paths）。其他测试不 import @/，不受影响。
+      '@': path.resolve(__dirname, 'fixtures/api-alias/src'),
+    },
+  },
   test: {
     globals: true,
     include: ['src/**/*.test.{ts,tsx}'],

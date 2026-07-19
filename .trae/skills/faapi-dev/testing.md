@@ -282,6 +282,49 @@ it('WS 无 token 被拦截', async () => {
 | 不执行 `lifecycle.onReady` / `onClose` | `createProdApp` |
 | 无服务器 mock 注入（`app.inject`） | `createProdApp + app.inject` |
 
+### vitest 环境下的别名解析与 vi.mock
+
+业务方 handler 用 TypeScript paths 别名（如 `import { db } from '@/lib/db'`）时，`createTestServer` 内部自动检测 `globalThis.vi.importActual`，走 Vite SSR pipeline：
+
+- 识别 `vitest.config.ts` 的 `resolve.alias` 与 tsconfig paths 别名
+- 让 `vi.mock('@/lib/db', ...)` 在加载的 handler 内生效
+
+**前置**：`vitest.config.ts` 设 `test.globals: true`（推荐），或测试文件内显式 `import { vi } from 'vitest'` 后挂到 `globalThis.vi`。
+
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+import path from 'node:path';
+
+export default defineConfig({
+  resolve: { alias: { '@': path.resolve(__dirname, './src') } },
+  test: { globals: true },
+});
+```
+
+```ts
+// src/e2e/test.ts
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { createTestServer } from '@faapi/faapi';
+
+// vi.mock 顶层 hoist，createTestServer 内部加载的 handler 内可见
+vi.mock('@/lib/db', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, db: { ...actual.db, source: 'mocked' } };
+});
+
+let ts;
+beforeAll(async () => { ts = await createTestServer({ rootDir: process.cwd() }); });
+afterAll(() => ts.close());
+
+it('vi.mock 生效：handler 看到 mocked 数据', async () => {
+  const res = await fetch(`${ts.baseUrl}/api/user`);
+  expect((await res.json()).source).toBe('mocked');
+});
+```
+
+非 vitest 环境回退到 Node 原生 `import()`，无副作用。详见 `src/utils/importWithCacheBust.md`。
+
 ## 检查清单
 
 - [ ] 测试文件使用 `.test.ts` 后缀，与 handler 同目录

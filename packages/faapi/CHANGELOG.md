@@ -1,5 +1,27 @@
 # @faapi/faapi
 
+## 1.0.2
+
+### Patch Changes
+
+- `createTestServer` 在 vitest 环境下自动走 Vite SSR pipeline，识别 TypeScript paths 别名 + 让 `vi.mock` 生效。
+
+  ## 问题
+
+  业务方在 vitest 下用 `createTestServer` 启动 in-memory 测试服务器时，handler 内 `import { db } from '@/lib/db'` 报 `Cannot find package '@/lib'`——`createTestServer` 内部 `importWithCacheBust` 用 Node 原生 `import()` 加载 handler，Node 原生 ESM 不识别 tsconfig paths 别名，也不让 `vi.mock` 生效（mock 只在 Vite module pipeline 内有效）。
+
+  ## 修复
+
+  `importWithCacheBust` 检测 `globalThis.vi.importActual`（vitest `globals: true` 时注入），优先走 Vite SSR pipeline：
+  - 识别 `vitest.config.ts` 的 `resolve.alias` 与 tsconfig paths 别名
+  - 让 `vi.mock` 在加载的 handler 内生效
+
+  非 vitest 环境回退到 Node 原生 `import()`，无副作用。
+
+  ## 业务方前置
+
+  `vitest.config.ts` 设 `test.globals: true`（推荐），或测试文件内显式 `import { vi } from 'vitest'` 后挂到 `globalThis.vi`。
+
 ## 1.0.1
 
 ### Patch Changes
