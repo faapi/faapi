@@ -1,5 +1,11 @@
 # @faapi/next
 
+## 1.1.1
+
+### Patch Changes
+
+- 改进发布流程：通过 tag 区分 canary 和 stable 发布
+
 ## 1.1.0
 
 ### Patch Changes
