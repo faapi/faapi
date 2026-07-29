@@ -620,7 +620,8 @@ packages/<name>/
 - `version` 固定 `0.0.0-canary.0`，canary 阶段不递增（canary 版本由 CI 基于 git hash 生成）。
 - `repository.directory` 指向 `packages/<name>`。
 - `publishConfig.provenance: true` 必填，否则无法通过 Trusted Publisher 发布。
-- 依赖主包时声明为 `peerDependencies`（非 `dependencies`），同时 `devDependencies` 加 `workspace:*` 用于本地开发：`"peerDependencies": { "@faapi/faapi": "workspace:*" }` + `"devDependencies": { "@faapi/faapi": "workspace:*" }`。
+- 依赖主包时声明为 `peerDependencies`（非 `dependencies`），同时 `devDependencies` 加 `workspace:*` 用于本地开发：`"peerDependencies": { "@faapi/faapi": "workspace:^" }` + `"devDependencies": { "@faapi/faapi": "workspace:*" }`。peerDependencies 用 `workspace:^`（发布时替换为 `^version`），使 minor/patch bump 不触发 changeset 的 peerDependent major bump；devDependencies 用 `workspace:*`（仅本地开发，不影响 changeset 计算）。
+- `.changeset/config.json` 必须设置 `___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH.onlyUpdatePeerDependentsWhenOutOfRange: true`，配合 peerDependencies 的 `workspace:^`，避免 changeset 在 minor/patch changeset 时错误地将 peerDependent 包 major bump（fixed 模式下会连锁升级所有包到 major）。
 - 运行时 import 的依赖（如 `zod`）声明为 `peerDependencies`，业务方需自行安装；`devDependencies` 同步加一份用于本地测试。
 
 #### 6.5.3 `tsconfig.json`（固定模板）

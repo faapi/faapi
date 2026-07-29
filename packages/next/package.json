@@ -39,7 +39,7 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@faapi/faapi": "workspace:*",
+    "@faapi/faapi": "workspace:^",
     "next": ">=13.0.0"
   },
   "peerDependenciesMeta": {

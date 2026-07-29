@@ -34,8 +34,8 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@faapi/faapi": "workspace:*",
-    "@faapi/mcp": "workspace:*",
+    "@faapi/faapi": "workspace:^",
+    "@faapi/mcp": "workspace:^",
     "typescript": ">=5.7.0",
     "zod": "^4.4.3"
   },
