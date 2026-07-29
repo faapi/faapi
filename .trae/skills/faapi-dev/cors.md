@@ -6,7 +6,7 @@
 
 ## 配置方式
 
-CORS 仅通过 `faapi.config.ts` 的 `cors` 字段配置。dev 模式默认启用 CORS。
+CORS 仅通过 `faapi.config.ts` 的 `cors` 字段配置。CORS 默认启用（dev/prod 一致，`createAppCore.ts` 中 `cors: config?.cors ?? true`），可通过 `cors: false` 禁用。
 
 ```ts
 export default {

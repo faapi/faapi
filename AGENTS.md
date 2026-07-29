@@ -402,6 +402,7 @@ TypeScript 的 `interface` 在运行时会被擦除。第一版通过 TypeScript
 | `context` / `ctx` | 完整请求上下文 | `GET(context)` |
 | `cookies` | Cookie 对象 | `GET(cookies)` |
 | `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
+| `ua` | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 

@@ -45,6 +45,14 @@ describe('业务方测试支持', () => {
       expect(ctx.ip).toBe('1.2.3.4');
     });
 
+    it('从 user-agent 头读取 ua', () => {
+      const ctx = createContext(
+        new Request('http://localhost/', { headers: { 'user-agent': 'curl/8.0' } }),
+        {},
+      );
+      expect(ctx.ua).toBe('curl/8.0');
+    });
+
     it('解析 cookie 头', () => {
       const ctx = createContext(
         new Request('http://localhost/', {

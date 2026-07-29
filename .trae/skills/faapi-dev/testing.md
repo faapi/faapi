@@ -11,7 +11,7 @@ faapi 的 handler 是"函数即接口"——按参数名自动注入 `query`/`bo
 | 1. 直接调用 handler | 手动调用 | 否 | 否 | 否 | 否 | 纯逻辑 |
 | 2. 轻量注入 | `createContext` + `invokeHandler` | 否 | 否 | 否 | 显式传入 | 注入/中间件/序列化 |
 | 3. 完整链路注入 | `createProdApp` + `app.inject()` | 否 | ✅ | ✅ | ✅ | 完整链路（无端口） |
-| 4. **E2E 真实端口** | **`createTestServer` + `fetch`** | **✅（listen 0）** | **自动生成** | **✅** | **✅** | **SSE/WS/CORS/真实 HTTP** |
+| 4. **E2E 真实端口** | **`createTestServer` + `fetch`** | **✅（listen 0）** | **自动生成** | **✅** | **✅（options.middlewares）** | **SSE/WS/CORS/真实 HTTP** |
 
 ## 公开 API
 
@@ -23,6 +23,11 @@ import {
   connectWs,
   MessageQueue,
   waitForWsOpen,
+  // 类型导出（按需 import）
+  type TestServer,
+  type TestServerOptions,
+  type WsTestClient,
+  type WsTestClientOptions,
 } from '@faapi/faapi';
 ```
 
@@ -45,8 +50,10 @@ import {
 | `waitForWsOpen(ws, timeout?)` | Promise 化等待 WS `open` 事件（三事件监听 + 超时清理） |
 
 `createTestServer` 内部自动：scanRoutes + sortRoutes + mkdtemp + generateSchemaFiles + createServer + listen(0)。
-`ts.close()` 内部自动：closeAllConnections + server.close + fs.rm(schemaDist) + invalidateSchemaCache。
+`ts.close()` 内部自动：closeAllConnections + closeIdleConnections + server.close + fs.rm(schemaDist) + invalidateSchemaCache。
 业务方一行 setup、一行 teardown，代码聚焦断言。
+
+> 注：`createTestServer` 不读 `faapi.config.ts`，全局中间件需通过 `options.middlewares` 显式传入（不同于 `createProdApp` 自动加载 config）。
 
 ## 测试模式选择
 
@@ -205,16 +212,20 @@ it('GET /api/user?page=1 → schema coerce 生效', async () => {
 createTestServer({
   rootDir: process.cwd(),       // 必填
   patterns: ['src/api/**/*.ts'], // 默认值
+  dist: '/tmp/my-schema',       // 可选：schema 产物输出目录，不传时自动 mkdtemp
+  bodyLimit: 10 * 1024 * 1024,  // 可选：请求体大小限制，默认 10MB
   // 以下可选，默认禁用 CORS/Helmet/Logger 避免污染断言
   cors: true,                    // 启用 CORS（反射 Origin）
   helmet: { ... },
   logger: { ... },
-  middlewares: [authMiddleware], // 全局中间件
+  middlewares: [authMiddleware], // 全局中间件（不读 faapi.config.ts，需显式传入）
   injectors: { db: () => mockDb },
   config: { db: { host: '...' } },
   onError: (err, ctx) => { ... },
 });
 ```
+
+`createTestServer` 返回的 `TestServer` 还包含 `schemaDist`（schema 临时目录绝对路径，可查看生成的 zod.js 用于调试）、`routes`/`wsRoutes`（排序后的路由清单，可在测试中断言路由表）字段。
 
 ### WebSocket 路由测试
 

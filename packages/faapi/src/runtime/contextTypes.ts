@@ -52,6 +52,13 @@ export interface FaapiContext {
    * 无法获取时为空字符串。
    */
   ip: string;
+  /**
+   * 客户端 User-Agent（请求头 `user-agent` 原值）
+   *
+   * 在 createContext 内部从 request.headers 读取（与 ip 不同，无需调用方传入）。
+   * 不做解析/规整，仅原样透传；无该请求头时为空字符串。
+   */
+  ua: string;
   /** 解析后的所有 cookie 键值对 */
   cookies: Record<string, string>;
   /** 配置文件中的自定义业务配置（类型可通过 declare module '@faapi/faapi' 增强 FaapiContextConfig） */

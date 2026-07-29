@@ -27,9 +27,10 @@ interface FaapiPlugin {
 
 interface PluginContext {
   rootDir: string;
-  routes: RouteManifest;
+  routes: RouteManifest;          // setup 时的快照，reloadRoutes 后不更新
+  getRoutes: () => RouteManifest; // 获取最新路由（dev 模式 reloadRoutes 后用此取更新后的数组）
   server: Server;                  // 未 listen
-  config: Record<string, unknown>;
+  config: Record<string, unknown>; // 自定义业务配置（faapi.config.ts 中的自定义 key，不含 cors/middlewares 等内置 key）
   options?: unknown;               // 来自声明中的 options 字段或元组第二个元素
   wrapHandler?: (fn: (original: RequestHandler) => RequestHandler) => void;
   wrapUpgradeHandler?: (fn: (original: UpgradeHandler | undefined) => UpgradeHandler) => void;
@@ -55,7 +56,19 @@ ctx.wrapHandler((original) => (req, res) => {
 
 ## 加载时机
 
-插件在 server 创建后、listen 之前(beforeListen 钩子中)加载。这确保插件能包装 handler,且包装后的 handler 在 server 开始处理请求前生效。
+插件在 server 创建后、listen 之前加载（`createAppBase` 函数体内顺序执行，无独立 `beforeListen` 钩子）。这确保插件能包装 handler,且包装后的 handler 在 server 开始处理请求前生效。
+
+## routes vs getRoutes
+
+- `ctx.routes` 是 **setup 时的快照**，dev 模式 `reloadRoutes` 热替换后**不会更新**。
+- 需要感知路由变更的插件（如 dev 模式下重新生成路由 schema）应使用 `ctx.getRoutes()` 获取最新清单。
+
+## 加载行为
+
+- `enable: false` 的插件会被跳过（`loadPlugins.ts`）。
+- 同名插件（按 specifier 去重）仅加载一次，重复声明会 warn。
+- 插件 `setup` 不是函数时跳过并 warn。
+- 插件加载失败（包不存在/import 失败）时 warn 但不抛错，不影响其他插件和主流程。
 
 ## 内置插件
 

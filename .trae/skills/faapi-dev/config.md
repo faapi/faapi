@@ -94,8 +94,10 @@ export default {
 export default {
   http2: { key: '/path/to/key.pem', cert: '/path/to/cert.pem' },
 } satisfies FaapiConfig;
-// 或简写: http2: true（使用默认证书路径）
+// 或简写: http2: true（仍需通过环境/外部代理提供 TLS 证书，代码中不读取默认证书路径）
 ```
+
+> 注：`http2: true` 时 `key`/`cert` 为 undefined，会创建无证书的 HTTP/2 secure server。生产环境建议在反向代理（nginx/Caddy）层终止 TLS，faapi 仅监听 HTTP；如需 faapi 直接终止 TLS，必须显式提供 `key`/`cert`。
 
 ## 自定义业务配置 (ctx.config)
 

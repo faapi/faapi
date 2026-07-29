@@ -233,6 +233,30 @@ describe('injectParams', () => {
     });
   });
 
+  describe('ua 注入', () => {
+    it('注入 ua 字符串（从 ctx.ua）', async () => {
+      const ctx = createMockContext({ ua: 'Mozilla/5.0 curl/8.0' });
+      const fn = eval('(ua) => ua');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBe('Mozilla/5.0 curl/8.0');
+    });
+
+    it('ua 为空字符串时注入空字符串', async () => {
+      const ctx = createMockContext({ ua: '' });
+      const fn = eval('(ua) => ua');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBe('');
+    });
+
+    it('ua 与 ip 混合注入', async () => {
+      const ctx = createMockContext({ ip: '203.0.113.1', ua: 'curl/8.0' });
+      const fn = eval('(ip, ua) => ({ ip, ua })');
+      const result = (await injectParamsAsync(fn, ctx)) as { ip: unknown; ua: unknown };
+      expect(result.ip).toBe('203.0.113.1');
+      expect(result.ua).toBe('curl/8.0');
+    });
+  });
+
   describe('ctx 别名注入', () => {
     it('ctx 参数注入 context 对象（与 context 行为一致）', async () => {
       const ctx = createMockContext();

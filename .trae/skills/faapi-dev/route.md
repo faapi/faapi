@@ -28,9 +28,11 @@ URL:       /api/user
 ```
 api/user/handler.ts              → /api/user
 api/user/[id]/handler.ts         → /api/user/:id
-api/user/[...slug]/handler.ts    → /api/user/*  (catch-all)
+api/user/[...slug]/handler.ts    → /api/user/*  (catch-all，内部表示 :...slug)
 api/(auth)/login/handler.ts      → /api/login   (分组不影响 URL)
 ```
+
+> **catch-all 匹配规则**：`/api/user/*` 至少需匹配一个路径段——匹配 `/api/user/a`、`/api/user/a/b`，但**不匹配** `/api/user`（无后续段）。如需同时匹配根路径，需另写一个 `/api/user` 的 handler。
 
 ## 基本 handler
 
@@ -55,8 +57,8 @@ export function GET(query: Query) {
 
 **URL 参数都是 string**,但 faapi 通过 AST 类型校验自动转换:
 - 声明 `page: number`,传入 `?page=1` → `query.page === 1`(number)
-- 声明 `page: number`,传入 `?page=abc` → 返回 400
-- 缺少必填字段 `?pageSize=10`(没有 page) → 返回 400
+- 声明 `page: number`,传入 `?page=abc` → 返回 422（TYPE_MISMATCH）
+- 缺少必填字段 `?pageSize=10`(没有 page) → 返回 400（MISSING_FIELD）
 
 ### POST 请求
 
@@ -168,6 +170,7 @@ export function PUT(params: Params, body: UpdateBody) {
 | `context` / `ctx` | 完整请求上下文 | `GET(ctx)` |
 | `cookies` | Cookie 对象 | `GET(cookies)` |
 | `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
+| `ua` | 客户端 User-Agent（请求头 `user-agent` 原值） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 

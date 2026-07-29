@@ -18,6 +18,20 @@ describe('createContext', () => {
     expect(ctx.ip).toBe('203.0.113.1');
   });
 
+  it('无 user-agent 请求头时 ctx.ua 为空字符串', () => {
+    const ctx = createContext(new Request('http://localhost/'), {});
+    expect(ctx.ua).toBe('');
+  });
+
+  it('从 user-agent 请求头读取 ctx.ua（原样透传）', () => {
+    const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+    const ctx = createContext(
+      new Request('http://localhost/', { headers: { 'user-agent': ua } }),
+      {},
+    );
+    expect(ctx.ua).toBe(ua);
+  });
+
   it('query 参数正确提取', () => {
     const request = new Request('http://localhost/api/users?name=alice&age=30');
     const ctx = createContext(request, {});

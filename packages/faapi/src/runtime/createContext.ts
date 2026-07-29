@@ -38,6 +38,9 @@ function formatSetCookie(name: string, value: string, options?: CookieOptions): 
  * @param params 动态路由参数
  * @param config 自定义业务配置（来自 faapi.config.ts）
  * @param ip 客户端 IP（由调用方从 IncomingMessage 提取，HTTP/WS 握手均通过 utils/getClientIp）
+ *
+ * ua 不作为参数传入：User-Agent 是标准 HTTP 请求头，createContext 内部直接从
+ * request.headers 读取（与 ip 不同，ip 需要从 IncomingMessage 提取故由调用方传入）。
  */
 export function createContext(
   request: Request,
@@ -61,6 +64,7 @@ export function createContext(
     method: request.method,
     path: url.pathname,
     ip,
+    ua: request.headers.get('user-agent') ?? '',
     cookies: cookiesObj,
     config,
     meta,

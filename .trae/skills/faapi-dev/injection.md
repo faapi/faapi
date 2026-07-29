@@ -8,7 +8,7 @@
 
 faapi 按**参数名**注入依赖,不是按类型。两种注入源:
 
-1. **内置注入**:`query`/`body`/`params`/`headers`/`ctx`/`cookies`/`files`/`fields`(框架自动)
+1. **内置注入**:`query`/`body`/`form`/`params`/`headers`/`ctx`/`cookies`/`ip`/`ua`/`files`/`fields`(框架自动)
 2. **注入器注入**:`injectors` 配置提供的自定义依赖(db、user 等)
 
 **参数名匹配**:handler 参数名必须与注入源一致,与参数顺序无关。
@@ -30,6 +30,7 @@ GET(query: Query, db: Db)
 | `context` / `ctx` | 完整请求上下文 | `GET(ctx)` |
 | `cookies` | Cookie 对象 | `GET(cookies)` |
 | `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
+| `ua` | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 

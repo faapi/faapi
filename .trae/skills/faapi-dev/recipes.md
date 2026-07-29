@@ -87,8 +87,10 @@ export default {
 
 ## 集群模式
 
+> **前置条件**：`createApp` 是 `createProdApp` 的别名，会检查 `dist/faapi-routes.js` 是否存在。启动前必须先跑 `faapi build` 生成 `dist/` 产物，否则报错 `dist/faapi-routes.js 不存在`。cluster 模式仅适用于 prod，dev 模式用 `faapi dev` 单进程即可。
+
 ```ts
-// cluster.ts — 独立入口脚本，用 node cluster.ts 启动
+// cluster.ts — 独立入口脚本，用 node cluster.ts 启动（需先 faapi build）
 import cluster from 'node:cluster';
 import { cpus } from 'node:os';
 import { createApp } from '@faapi/faapi';
@@ -105,3 +107,68 @@ if (cluster.isPrimary) {
   createApp().then((app) => app.listen());
 }
 ```
+
+```bash
+faapi build        # 先构建产物
+node cluster.ts    # 再启动 cluster
+```
+
+## 响应压缩
+
+faapi 不内置响应压缩中间件——动态 API 的响应多为小 JSON，压缩收益有限且增加 CPU 开销。生产环境**推荐在反向代理（nginx/Caddy）层处理压缩**，faapi 仅返回未压缩响应。
+
+如需在应用层压缩（如自托管无反向代理场景），用 `node:zlib` 自行实现中间件：
+
+```ts
+// middlewares/compression.ts
+import type { FaapiMiddleware } from '@faapi/faapi';
+import { gzip, deflate } from 'node:zlib';
+import { promisify } from 'node:util';
+
+const gzipAsync = promisify(gzip);
+const deflateAsync = promisify(deflate);
+
+export function compression(): FaapiMiddleware {
+  return async (ctx, next) => {
+    // next() 返回内层 Response（faapi 洋葱模型，中间件可替换内层响应）
+    const response = await next();
+
+    // 已压缩 / 非 2xx / 无 body → 透传
+    if (response.headers.get('content-encoding')) return response;
+    if (response.status < 200 || response.status >= 300) return response;
+
+    const acceptEncoding = ctx.headers.get('accept-encoding') ?? '';
+    if (!acceptEncoding.includes('gzip') && !acceptEncoding.includes('deflate')) {
+      return response;
+    }
+
+    const body = await response.text();
+    if (!body) return response;
+
+    try {
+      let buf: Buffer;
+      let encoding: string;
+      if (acceptEncoding.includes('gzip')) {
+        buf = await gzipAsync(Buffer.from(body));
+        encoding = 'gzip';
+      } else {
+        buf = await deflateAsync(Buffer.from(body));
+        encoding = 'deflate';
+      }
+      const headers = new Headers(response.headers);
+      headers.set('Content-Encoding', encoding);
+      headers.set('Content-Length', String(buf.byteLength));
+      return new Response(buf, { status: response.status, headers });
+    } catch {
+      return response; // 压缩失败透传原响应
+    }
+  };
+}
+
+// faapi.config.ts
+export default {
+  middlewares: [compression()],
+} satisfies FaapiConfig;
+```
+
+> **注意**：中间件在 `await next()` 之后返回新 Response 会替换内层响应。流式响应（SSE）的 handler 返回后由框架自动 close writer，压缩中间件拿到的是已 finalize 的 Response；WebSocket 事件回调阶段不走洋葱中间件，无需特殊处理。

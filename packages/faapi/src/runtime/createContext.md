@@ -9,7 +9,7 @@
 ## 使用场景
 
 - 请求处理时创建上下文
-- 提取请求相关信息
+- 提取请求相关信息（含内联读取 `user-agent` 请求头存到 `ctx.ua`；`ctx.ip` 由调用方从 `IncomingMessage` 提取后传入）
 - 执行 config.extendContext 扩展钩子（用户可挂载自定义 ctx 方法）
 
 ## 相关模块

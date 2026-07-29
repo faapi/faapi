@@ -38,10 +38,13 @@ export function GET(ctx) {
 
 | 方法/属性 | 说明 |
 |----------|------|
-| `send({ data, event?, id?, retry? })` | 推送事件(结构化,自动 SSE 编码) |
+| `send({ data, event?, id?, retry?, comment? })` | 推送事件(结构化,自动 SSE 编码)；`comment` 用于心跳/keep-alive 注释行 |
 | `sendRaw(chunk)` | 直接写入原始字节/字符串,不做 SSE 序列化(透传上游 SSE 原文) |
+| `sendError(error)` | 序列化错误对象为 SSE 事件推送（用于向客户端通知错误） |
 | `close()` | 关闭流 |
-| `aborted` | 客户端是否断开 |
+| `closed` | 流是否已关闭（只读） |
+| `aborted` | 客户端是否断开（只读） |
+| `response` | 框架自动构造的 `text/event-stream` Response（只读，由框架使用） |
 
 ```ts
 sse.send({ data: 'message' });
@@ -175,6 +178,8 @@ export function WS(ctx: WsContext): WsEventHandlers {
 | `ctx.query` | URL 查询参数 |
 | `ctx.headers` | 请求头 |
 | `ctx.config` | 业务配置 |
+| `ctx.user?` | 中间件塞入的用户对象（握手中间件中 `ctx.user = ...` 后可用） |
+| `[key: string]` | 索引签名，支持 `declare module` 增强 |
 
 可用 `declare module` 增强:
 

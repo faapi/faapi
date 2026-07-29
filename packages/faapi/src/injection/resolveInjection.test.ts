@@ -44,6 +44,12 @@ describe('resolveInjection', () => {
       const result = resolveInjection(fn);
       expect(result).toEqual([{ name: 'ctx', type: 'context', hasType: false }]);
     });
+
+    it('识别 ua 参数', () => {
+      const fn = eval('(ua) => {}');
+      const result = resolveInjection(fn);
+      expect(result).toEqual([{ name: 'ua', type: 'ua', hasType: false }]);
+    });
   });
 
   describe('多参数支持', () => {

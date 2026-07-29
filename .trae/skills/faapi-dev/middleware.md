@@ -46,6 +46,8 @@ export default [middleware] satisfies FaapiMiddleware[];
 
 **注意**:faapi 只有"await next() 之前/之后"的代码段,**没有"全局 before/after"概念**。每个中间件自己控制前后逻辑,通过 `await next()` 衔接。
 
+**强制语义**:中间件**必须** `await next()` 或返回 `Response`——既不调用 `next()` 也不返回 `Response` 会抛错（`中间件必须 await next() 或返回 Response`），禁止语义模糊用法。`next()` 返回内层 `Response`，中间件可选择使用或替换（`await next()` 后返回新 Response 会替换内层响应）。
+
 ## 基本示例
 
 ### 鉴权(拦截)
@@ -195,6 +197,7 @@ export function GET(db: Db, user: User) {
 | `ctx.params` | 动态路由参数 |
 | `ctx.cookies` | Cookie 键值对 |
 | `ctx.ip` | 客户端 IP（X-Forwarded-For 优先） |
+| `ctx.ua` | 客户端 User-Agent（请求头 `user-agent` 原值） |
 | `ctx.config` | 配置文件中的自定义业务配置 |
 | `ctx.json(data, status?)` | 返回 JSON 响应 |
 | `ctx.html(html, status?)` | 返回 HTML 响应 |

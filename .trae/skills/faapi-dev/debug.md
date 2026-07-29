@@ -2,31 +2,51 @@
 
 ## 何时加载
 
-dev 启动失败、路由不生效、类型校验 400、500 错误、行为与预期不符。
+dev 启动失败、路由不生效、类型校验 400/422、500 错误、行为与预期不符。
 
 ## 错误状态码速查
 
 | 状态码 | 原因 | 排查方向 |
 |--------|------|---------|
-| 400 | query/body/params 缺失或非法 | 类型校验失败 |
+| 400 | 请求语法错误：JSON 解析失败、必填字段缺失（INVALID_FORMAT / MISSING_FIELD） | 类型校验失败 |
 | 404 | 路由不存在 | 文件位置/路径映射 |
 | 405 | 方法不允许 | handler 导出的方法 |
+| 422 | 语义错误：类型不匹配、值不在允许范围、query 字符串转换失败（TYPE_MISMATCH / INVALID_VALUE / COERCE_FAILED） | 类型校验失败 |
 | 500 | 模块加载失败/handler 异常 | 服务端日志 |
 
-## 400 — 类型校验失败
+> ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重度，400 优先于 422）。
+
+## 400 / 422 — 类型校验失败
 
 ### 现象
 
 ```json
-{ "error": "Validation failed: page expected number, got string" }
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "参数校验失败",
+    "issues": [
+      {
+        "path": "page",
+        "code": "TYPE_MISMATCH",
+        "expected": "number",
+        "received": "string",
+        "message": "page expected number, got string"
+      }
+    ]
+  }
+}
 ```
+
+- 400：`INVALID_FORMAT`（JSON 解析失败、Date 非 ISO 8601）/ `MISSING_FIELD`（必填字段缺失）
+- 422：`TYPE_MISMATCH`（类型不匹配）/ `INVALID_VALUE`（值不在允许范围）/ `COERCE_FAILED`（query 字符串转换失败）
 
 ### 原因
 
-- 必填字段缺失:`?page=` 缺少 page
-- 类型不匹配:`?page=abc` 但声明 `page: number`
-- 嵌套对象字段缺失
-- 数组元素类型错误
+- 必填字段缺失（400）：`?page=` 缺少 page
+- 类型不匹配（422）：`?page=abc` 但声明 `page: number`
+- 嵌套对象字段缺失（400）
+- 数组元素类型错误（422）
 
 ### 排查
 
@@ -110,10 +130,14 @@ api/user/[id]/handler.ts → /api/user/123
 4. **查看启动日志**
 
 ```
-- Routes: 3 route(s), 1 WS route(s)
-  - GET  /api/user
-  - POST /api/user
-  - GET  /api/user/:id
+faapi server started
+- Local: http://localhost:3000
+- Loaded routes:
+  GET    /api/user  src/api/user/handler.ts
+  POST   /api/user  src/api/user/handler.ts
+  GET    /api/user/:id  src/api/user/[id]/handler.ts
+- WebSocket routes:
+  WS     /api/chat  src/api/chat/handler.ts
 ```
 
 如果路由数 0,说明没扫描到文件。
@@ -245,9 +269,9 @@ Error loading config: Unexpected token }
 Error: Cannot find module './handler'
 ```
 
-**原因**:tsconfig 配置为 `moduleResolution: Bundler`,但运行时用了不支持无后缀解析的工具(如直接 `node dist/index.js` 而未经过 tsup 打包)。
+**原因**:tsconfig 配置为 `moduleResolution: Bundler`,但运行时用了不支持无后缀解析的工具(如直接 `node` 运行未经 `faapi build` 编译的源码)。
 
-**解决**:本地相对导入路径不写后缀,由 tsc/tsup/esbuild 解析。
+**解决**:本地相对导入路径不写后缀,由 tsc/esbuild 解析;生产环境用 `faapi build` 编译后 `node dist/main` 启动。
 
 ```ts
 // ✅ 正确:无后缀
@@ -260,7 +284,7 @@ import { foo } from './utils.js';
 import { foo } from './utils.ts';
 ```
 
-> 注:dev 模式 esbuild 编译支持 Bundler 解析(无后缀导入由 esbuild 解析);prod 模式由 tsup 打包成单文件,无相对路径问题。faapi.config.ts 也由 esbuild 编译为临时 .mjs 后 import。
+> 注:dev 和 prod 都采用 esbuild `bundle: false` 逐文件编译(每个 `.ts` 独立编译为 `.js`,不分析 import 关系),由 esbuild 解析无后缀导入。`faapi.config.ts` 由 `compileConfig` 两步编译为 `dist/faapi-config.js`(详见 AGENTS.md 5.3 节"统一编译模式")。
 
 ## prod 启动失败
 

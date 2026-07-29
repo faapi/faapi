@@ -29,6 +29,7 @@ function createMockContext(
     method,
     path: '/test',
     ip: '',
+    ua: '',
     cookies,
     config: {} as Record<string, unknown>,
     meta,

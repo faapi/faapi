@@ -21,6 +21,8 @@ function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?:
       return ctx.cookies;
     case 'ip':
       return ctx.ip;
+    case 'ua':
+      return ctx.ua;
     case 'body':
       return body;
     // form 与 body 共享解析结果（resolveInput 已按 Content-Type 解析 form-urlencoded）
