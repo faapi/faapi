@@ -1,5 +1,11 @@
 # @faapi/faapi
 
+## 1.2.1
+
+### Patch Changes
+
+- 修复 server 未 listen 时调用 app.close() 报 ERR_SERVER_NOT_RUNNING 的问题；修复 dev 按需编译在 vitest/CI 环境下首次 import 失败导致 500 的问题（改为先 ensureCompiled 编译再 import）。
+
 ## 1.2.0
 
 ### Minor Changes
