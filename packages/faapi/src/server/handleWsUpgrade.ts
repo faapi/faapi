@@ -72,7 +72,7 @@ async function loadWsHandler(
         const sourcePath = prodPathToSourcePath(filePath, rootDir, dist);
         const compiled = await ensureCompiled(sourcePath, rootDir, dist);
         if (compiled) {
-          module = await importWithCacheBust(filePath);
+          module = await importWithCacheBust(filePath, true);
         }
       }
     }

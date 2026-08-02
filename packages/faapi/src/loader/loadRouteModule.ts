@@ -46,8 +46,8 @@ export async function loadRouteModule(
         try {
           const compiled = await ensureCompiled(sourcePath, rootDir, dist);
           if (compiled) {
-            // 编译成功，重试 import
-            module = await importWithCacheBust(filePath);
+            // 编译成功，重试 import（bustViteCache 绕过 Vite SSR 对首次 import 失败的缓存）
+            module = await importWithCacheBust(filePath, true);
             const handler = resolveExport(module, method);
             validateRouteModule(handler, method, filePath);
             return { handler, method };

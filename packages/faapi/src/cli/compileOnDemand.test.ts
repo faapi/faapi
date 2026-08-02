@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDevApp } from './createDevApp';
@@ -114,8 +114,11 @@ describe('按需编译（Vite 风格）', () => {
     const sourcePath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
     await ensureCompiled(sourcePath, tempDir, '.faapi');
 
-    // 模拟源码变化：重写文件更新 mtime + 清除缓存
+    // 模拟源码变化：重写文件 + 显式设置未来 mtime（CI 文件系统 mtime 精度可能较粗，
+    // 重写文件后 mtime 可能未前进 → isProductFresh 误判产物最新 → 跳过重编译）
     writeHandler();
+    const futureTime = Date.now() / 1000 + 10;
+    utimesSync(sourcePath, futureTime, futureTime);
     clearCompiledFiles();
 
     // 再次调用：源码 mtime > 产物 mtime → 重新编译

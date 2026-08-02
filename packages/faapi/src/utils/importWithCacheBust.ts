@@ -48,12 +48,23 @@ function getVitestImportActual(): ImportActualFn | undefined {
  *    query 绕过 ESM 缓存；非 watch 模式等价普通 `import()`。
  *
  * @param filePath 文件绝对路径
+ * @param bustViteCache vitest 环境下是否强制绕过 Vite SSR 缓存（按需编译重试场景：
+ *   首次 import 失败 → 编译创建文件 → 重试 import 需绕过 Vite 对首次失败的缓存）
  * @returns 模块导出对象
  */
-export async function importWithCacheBust(filePath: string): Promise<Record<string, unknown>> {
+export async function importWithCacheBust(
+  filePath: string,
+  bustViteCache = false,
+): Promise<Record<string, unknown>> {
   // vitest 环境优先走 Vite pipeline（识别 tsconfig paths + vi.mock）
   const importActual = getVitestImportActual();
   if (importActual) {
+    if (bustViteCache) {
+      // 加 cache-busting query：Vite 以完整模块 ID（含 query）为缓存键，
+      // 不同 query 视为不同模块，绕过首次 import 失败的缓存
+      const url = pathToFileURL(filePath).href;
+      return (await importActual(`${url}?t=${Date.now()}`)) as Record<string, unknown>;
+    }
     return (await importActual(filePath)) as Record<string, unknown>;
   }
 
