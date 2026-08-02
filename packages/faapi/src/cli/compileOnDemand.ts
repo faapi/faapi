@@ -12,8 +12,8 @@ import type { RouteManifest } from '../router/routeTypes';
  * 与阶段 1（scanRoutes 去 import）配合，dev 冷启动近乎瞬开。
  *
  * 四种触发路径：
- * 1. `loadRouteModule` import handler.js 失败 → 调 `ensureCompiled` 编译源码 → 重试 import
- * 2. `loadWsHandler` import handler.js 失败 → 同上
+ * 1. `loadRouteModule` 先调 `ensureCompiled` 编译源码 → 再 import handler.js
+ * 2. `loadWsHandler` 同上（WS handler.js）
  * 3. `createServer` 调 `ensureSchemaGenerated` 检查 zod.js 是否存在/最新 → 不存在则生成
  * 4. watcher 文件变化 → 增量编译该文件（保留现有逻辑）+ 删除 stale zod.js
  *
@@ -44,7 +44,7 @@ function isProductFresh(sourceAbsPath: string, productAbsPath: string): boolean 
 /**
  * 编译状态缓存：源文件绝对路径 → 是否已按需编译过
  *
- * 用于避免重复编译同一文件（首次 import 失败 → 编译 → 后续 import 成功 → 不再触发编译）。
+ * 用于避免重复编译同一文件（首次请求编译后，后续请求命中缓存跳过编译）。
  * watcher 文件变化时通过 clearCompiledFiles 清除全部条目（reloadRoutes 统一处理）。
  */
 const compiledFiles = new Set<string>();
@@ -59,7 +59,7 @@ export function clearCompiledFiles(): void {
 /**
  * 确保源文件已编译为产物，未编译则触发单文件编译
  *
- * 调用方在 import 产物失败时调用此函数，编译后重试 import。
+ * 调用方（`loadRouteModule` / `loadWsHandler`）在 import 产物之前调用此函数，确保产物已生成。
  *
  * mtime 缓存（阶段 4）：
  * 1. 内存 Set 命中 → 跳过（最快路径）

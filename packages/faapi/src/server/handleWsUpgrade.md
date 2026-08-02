@@ -37,12 +37,12 @@ faapi 的 WebSocket 支持需要拦截 HTTP upgrade 请求，将匹配到的路�
 3. 路由匹配失败 → 返回 404 并销毁 socket
 4. 路由匹配成功 → 构造 `FaapiContext`，执行中间件链：
    - 中间件拦截（返回 Response）→ 把 Response 写回 socket 后销毁，不升级
-   - 中间件放行 → `finalHandler` 内 `loadWsHandler` 加载 WS handler（**dev 按需模式**：import 失败时触发 `ensureCompiled` 单文件编译）→ `ws.handleUpgrade` 完成协议升级
+   - 中间件放行 → `finalHandler` 内 `loadWsHandler` 加载 WS handler（**dev 按需模式**：先 `ensureCompiled` 单文件编译再 import）→ `ws.handleUpgrade` 完成协议升级
 5. 协议升级后绑定事件回调（`onOpen`/`onMessage`/`onClose`/`onError`）
 
 中间件链顺序：全局中间件（外）→ 目录中间件（内）→ finalHandler。
 
-dev 按需模式下，WS handler.js 不预编译——首次 WS 连接时 `loadWsHandler` import 失败触发 `ensureCompiled` 单文件编译。详见 [compileOnDemand](../cli/compileOnDemand.md)。
+dev 按需模式下，WS handler.js 不预编译——首次 WS 连接时 `loadWsHandler` 先调 `ensureCompiled` 单文件编译再 import。详见 [compileOnDemand](../cli/compileOnDemand.md)。
 
 ## 相关模块
 
@@ -51,4 +51,4 @@ dev 按需模式下，WS handler.js 不预编译——首次 WS 连接时 `loadW
 - [runtime/createContext.ts](../runtime/createContext.ts) - 构造请求上下文
 - [runtime/invokeHandler.ts](../runtime/invokeHandler.md) - `compose` 洋葱中间件执行
 - [errors/formatErrorResponse.ts](../errors/formatErrorResponse.ts) - 内置错误响应格式化
-- [cli/compileOnDemand.md](../cli/compileOnDemand.md) - dev 按需编译（WS handler.js import 失败时触发）
+- [cli/compileOnDemand.md](../cli/compileOnDemand.md) - dev 按需编译（WS handler.js 先编译再 import）

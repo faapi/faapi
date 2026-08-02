@@ -20,7 +20,7 @@
 
 ```
 request → toWebRequest → createContext → matchRoute
-  → loadRouteModule（dev 按需模式：import 失败时触发 ensureCompiled 单文件编译）
+  → loadRouteModule（dev 按需模式：先 ensureCompiled 单文件编译再 import）
   → resolveInput
   → getRuntimeSchemaPath(route.filePath, dist, rootDir) → schemaPath
   → if (isDevOnDemandEnabled()): ensureSchemaGenerated 按需生成 zod.js（mtime 缓存复用）
@@ -29,12 +29,12 @@ request → toWebRequest → createContext → matchRoute
   → sendNodeResponse
 ```
 
-dev 按需模式下，handler.js 由 `loadRouteModule` import 失败触发编译，zod.js 由 `ensureSchemaGenerated` 触发生成，均在首次请求时完成（详见 [compileOnDemand](../cli/compileOnDemand.md)）。prod 模式跳过 `ensureSchemaGenerated`——build 阶段已固化全部 zod.js。
+dev 按需模式下，handler.js 由 `loadRouteModule` 先 `ensureCompiled` 编译再 import，zod.js 由 `ensureSchemaGenerated` 触发生成，均在首次请求时完成（详见 [compileOnDemand](../cli/compileOnDemand.md)）。prod 模式跳过 `ensureSchemaGenerated`——build 阶段已固化全部 zod.js。
 
 ## 相关模块
 
 - `matchRoute.ts` - 路由匹配
-- `loadRouteModule.ts` - 加载路由模块（dev 按需模式下含 `ensureCompiled` 回退）
+- `loadRouteModule.ts` - 加载路由模块（dev 按需模式下先 `ensureCompiled` 再 import）
 - `resolveInput.ts` - 解析输入
 - `invokeHandler.ts` - 调用 handler、导出 compose/mergeMeta 用于全局中间件调度
 - `../validator/validateInput.ts` - 参数校验（zod safeParse）

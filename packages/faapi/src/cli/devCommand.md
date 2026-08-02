@@ -24,7 +24,7 @@ CLI 选项（`--port`）优先于环境变量（`PORT`）。
 
 dev 启动时**只编译配置和路由清单**，不全量编译 handler.js / 生成 zod.js：
 
-- **handler.js**：首次请求时由 `loadRouteModule` import 失败触发 `ensureCompiled` 单文件编译
+- **handler.js**：首次请求时由 `loadRouteModule` 先调 `ensureCompiled` 单文件编译再 import
 - **zod.js**：首次请求时由 `createServer` 在 `validateInput` 之前调 `ensureSchemaGenerated` 生成
 - **mtime 缓存**：watcher 已编译过的文件，首次请求时 mtime 复用跳过编译
 

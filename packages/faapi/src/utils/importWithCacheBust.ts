@@ -48,8 +48,9 @@ function getVitestImportActual(): ImportActualFn | undefined {
  *    query 绕过 ESM 缓存；非 watch 模式等价普通 `import()`。
  *
  * @param filePath 文件绝对路径
- * @param bustViteCache vitest 环境下是否强制绕过 Vite SSR 缓存（按需编译重试场景：
- *   首次 import 失败 → 编译创建文件 → 重试 import 需绕过 Vite 对首次失败的缓存）
+ * @param bustViteCache dev 按需模式下走 Node 原生 import（绕过 Vite SSR pipeline）。
+ *   handler.js / zod.js 是已编译产物（别名已在编译时重写为相对路径），不需要 Vite alias 解析，
+ *   直接走 Node 原生 import + 时间戳 query 避免 Vite SSR 缓存干扰。
  * @returns 模块导出对象
  */
 export async function importWithCacheBust(
@@ -60,9 +61,8 @@ export async function importWithCacheBust(
   const importActual = getVitestImportActual();
   if (importActual) {
     if (bustViteCache) {
-      // 按需编译重试场景：首次 import 失败被 Vite SSR 缓存，加 query 仍可能命中缓存。
-      // handler.js 是已编译产物（别名已在编译时重写为相对路径），不需要 Vite alias 解析，
-      // 直接走 Node 原生 import() + 时间戳 query 绕过 ESM 缓存。
+      // dev 按需模式：handler.js / zod.js 是已编译产物（别名已在编译时重写为相对路径），
+      // 不需要 Vite alias 解析，直接走 Node 原生 import + 时间戳 query 避免 Vite SSR 缓存干扰
       let url = pathToFileURL(filePath).href;
       url += `?t=${Date.now()}`;
       return (await import(url)) as Record<string, unknown>;

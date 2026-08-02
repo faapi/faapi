@@ -9,7 +9,7 @@
 `compileOnDemand` 把这一思想引入 faapi：
 
 - **启动零编译**：dev 启动只编译 config + 生成路由清单（`faapi-routes.js`），handler.js 与 zod.js 均不预生成
-- **首次请求触发**：handler.js 由 `loadRouteModule` import 失败时触发编译；zod.js 由 `createServer` 在 `validateInput` 之前触发生成
+- **首次请求触发**：handler.js 由 `loadRouteModule` 先调 `ensureCompiled` 编译再 import；zod.js 由 `createServer` 在 `validateInput` 之前触发生成
 - **mtime 缓存复用**：产物存在且 mtime ≥ 源码 mtime 时跳过重新编译/生成，watcher 已编译过的文件首次请求时直接复用
 - **缓存失效**：watcher 文件变化时清除内存缓存 + 删除 stale zod.js，下次请求按需重建
 
@@ -18,7 +18,7 @@ prod 模式（`node dist/main`）不启用按需编译——build 阶段已固�
 ## 使用场景
 
 - `faapi dev` / `faapi`：启动时设置 `setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`
-- 请求到达 `loadRouteModule`：handler.js 不存在或 stale → `ensureCompiled` 编译源码 → 重试 import
+- 请求到达 `loadRouteModule`：先 `ensureCompiled` 编译源码（handler.js 不存在或 stale 时触发）→ import 产物
 - 请求到达 `createServer.handleRequest`：zod.js 不存在或 stale → `ensureSchemaGenerated` 生成 → 继续 `validateInput`
 - watcher 文件变化 → `reloadRoutes` 调 `deleteSchemaFiles` + `clearCompiledFiles` + `clearGeneratedSchemas` 失效缓存
 
@@ -190,7 +190,7 @@ watcher 文件变化（debounce 100ms）
        └─ ctx.updateRoutes(sorted, wsRoutes)  // 更新 server 路由引用
 ```
 
-下次请求到达时，`loadRouteModule` import 失败（旧 handler.js 已被 watcher 重新编译但 cache bust 生效）→ `ensureCompiled` 检测到 mtime fresh（watcher 已编译）→ 跳过编译，直接 import。
+下次请求到达时，`loadRouteModule` 先调 `ensureCompiled` → 检测到 mtime fresh（watcher 已编译）→ 跳过编译 → import 新产物。
 
 ## mtime 缓存的边界
 
@@ -201,7 +201,7 @@ watcher 文件变化（debounce 100ms）
 
 ## 相关模块
 
-- [loadRouteModule](../loader/loadRouteModule.md) — handler.js import 失败时调 `ensureCompiled` + 重试
+- [loadRouteModule](../loader/loadRouteModule.md) — handler.js 先调 `ensureCompiled` 编译再 import
 - [handleWsUpgrade](../server/handleWsUpgrade.md) — WS 升级时调 `ensureCompiled`（通过 `loadWsHandler`）
 - [createServer](../server/createServer.md) — `validateInput` 之前调 `ensureSchemaGenerated`
 - [createDevApp](./createDevApp.md) — `reloadRoutes` 调 `deleteSchemaFiles` + `clearGeneratedSchemas` + `clearCompiledFiles`
