@@ -86,3 +86,42 @@ export async function loadMiddlewaresFile(filePath: string): Promise<LoadedMiddl
     return { middlewares: [], injectors: {} };
   }
 }
+
+/**
+ * 按路径列表加载并合并中间件（根在前，路由目录在后）
+ *
+ * 合并语义：
+ * - 子级中间件追加在父级之后（洋葱模型：后注册的中间件在内层）
+ * - 子级注入器覆盖父级同名注入器
+ *
+ * 单文件加载带缓存（getCachedMiddlewares/setCachedMiddlewares），重复调用仅首次真正加载。
+ *
+ * @param middlewarePaths 中间件文件绝对路径列表（根在前，路由目录在后）
+ * @returns 合并后的中间件+注入器；无中间件时返回 undefined
+ */
+export async function loadMergedMiddlewares(
+  middlewarePaths: string[],
+): Promise<LoadedMiddlewareBundle | undefined> {
+  if (middlewarePaths.length === 0) return undefined;
+
+  const mergedMiddlewares: FaapiMiddleware[] = [];
+  const mergedInjectors: InjectorMap = {};
+
+  for (const absMwPath of middlewarePaths) {
+    let bundle: LoadedMiddlewareBundle | undefined = getCachedMiddlewares(absMwPath);
+    if (bundle === undefined) {
+      bundle = await loadMiddlewaresFile(absMwPath);
+      setCachedMiddlewares(absMwPath, bundle);
+    }
+    mergedMiddlewares.push(...bundle.middlewares);
+    for (const [name, injector] of Object.entries(bundle.injectors)) {
+      mergedInjectors[name] = injector;
+    }
+  }
+
+  if (mergedMiddlewares.length === 0 && Object.keys(mergedInjectors).length === 0) {
+    return undefined;
+  }
+
+  return { middlewares: mergedMiddlewares, injectors: mergedInjectors };
+}

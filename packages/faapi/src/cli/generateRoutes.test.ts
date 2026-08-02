@@ -9,7 +9,7 @@ import {
   hydrateRoutes,
   type SerializedRouteManifest,
 } from './generateRoutes';
-import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
+import { invalidateMiddlewareCache, loadMergedMiddlewares } from '../middleware/loadMiddlewares';
 import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
 
 /**
@@ -254,7 +254,7 @@ describe('generateRoutes', () => {
       expect(wsRoutes).toHaveLength(0);
     });
 
-    it('按 middlewarePaths 加载中间件并合并', async () => {
+    it('按 middlewarePaths 传递路径，请求阶段加载并合并', async () => {
       // 在 dist/ 下创建 prd 形式中间件 .js 文件（模拟 build 产物）
       mkdirSync(join(tempDir, 'dist/api/user'), { recursive: true });
       writeFileSync(
@@ -266,6 +266,10 @@ describe('generateRoutes', () => {
         `export default [async (ctx, next) => { ctx.mark = 'user'; await next(); }];\n`,
       );
 
+      const middlewarePaths = [
+        join(tempDir, 'dist/api/middlewares.js'),
+        join(tempDir, 'dist/api/user/middlewares.js'),
+      ];
       const manifest: SerializedRouteManifest = {
         routes: [
           {
@@ -274,10 +278,7 @@ describe('generateRoutes', () => {
             filePath: 'dist/api/user/handler.js',
             paramNames: [],
             isDynamic: false,
-            middlewarePaths: [
-              join(tempDir, 'dist/api/middlewares.js'),
-              join(tempDir, 'dist/api/user/middlewares.js'),
-            ],
+            middlewarePaths,
           },
         ],
         wsRoutes: [],
@@ -285,13 +286,19 @@ describe('generateRoutes', () => {
 
       const { routes } = await hydrateRoutes(manifest);
 
-      // 父级在前，子级追加在后（洋葱模型内层）
-      expect(routes[0].middlewares).toHaveLength(2);
-      expect(typeof routes[0].middlewares![0]).toBe('function');
-      expect(typeof routes[0].middlewares![1]).toBe('function');
+      // hydrateRoutes 不预加载中间件，只传递 middlewarePaths（Vite 风格按需加载）
+      expect(routes[0].middlewarePaths).toEqual(middlewarePaths);
+      expect(routes[0].middlewares).toBeUndefined();
+      expect(routes[0].injectors).toBeUndefined();
+
+      // 模拟请求阶段：按 middlewarePaths 加载并合并
+      const bundle = await loadMergedMiddlewares(routes[0].middlewarePaths!);
+      expect(bundle?.middlewares).toHaveLength(2);
+      expect(typeof bundle?.middlewares[0]).toBe('function');
+      expect(typeof bundle?.middlewares[1]).toBe('function');
     });
 
-    it('子级注入器覆盖父级同名注入器', async () => {
+    it('子级注入器覆盖父级同名注入器（请求阶段加载）', async () => {
       mkdirSync(join(tempDir, 'dist/api/user'), { recursive: true });
       writeFileSync(
         join(tempDir, 'dist/api/middlewares.js'),
@@ -320,21 +327,26 @@ describe('generateRoutes', () => {
       };
 
       const { routes } = await hydrateRoutes(manifest);
+      // hydrateRoutes 不预加载注入器，请求阶段加载
+      expect(routes[0].injectors).toBeUndefined();
 
+      // 模拟请求阶段加载
+      const bundle = await loadMergedMiddlewares(routes[0].middlewarePaths!);
       // 测试中注入器忽略 ctx，断言时省略入参（类型断言为无参函数）
-      const dbInjector = routes[0].injectors!.db as () => string;
-      const userInjector = routes[0].injectors!.user as () => string;
+      const dbInjector = bundle!.injectors.db as () => string;
+      const userInjector = bundle!.injectors.user as () => string;
       expect(dbInjector()).toBe('child-db'); // 子级覆盖
       expect(userInjector()).toBe('parent-user'); // 父级保留
     });
 
-    it('水合 WS 路由（同样加载中间件）', async () => {
+    it('水合 WS 路由（传递 middlewarePaths，请求阶段加载）', async () => {
       mkdirSync(join(tempDir, 'dist/api/chat'), { recursive: true });
       writeFileSync(
         join(tempDir, 'dist/api/chat/middlewares.js'),
         `export default [async (ctx, next) => { await next(); }];\n`,
       );
 
+      const middlewarePaths = [join(tempDir, 'dist/api/chat/middlewares.js')];
       const manifest: SerializedRouteManifest = {
         routes: [],
         wsRoutes: [
@@ -343,15 +355,21 @@ describe('generateRoutes', () => {
             filePath: 'dist/api/chat/handler.js',
             paramNames: [],
             isDynamic: false,
-            middlewarePaths: [join(tempDir, 'dist/api/chat/middlewares.js')],
+            middlewarePaths,
           },
         ],
       };
 
       const { wsRoutes } = await hydrateRoutes(manifest);
 
-      expect(wsRoutes[0].middlewares).toHaveLength(1);
-      expect(typeof wsRoutes[0].middlewares![0]).toBe('function');
+      // hydrateRoutes 不预加载 WS 路由中间件，只传递 middlewarePaths
+      expect(wsRoutes[0].middlewarePaths).toEqual(middlewarePaths);
+      expect(wsRoutes[0].middlewares).toBeUndefined();
+
+      // 模拟握手阶段加载
+      const bundle = await loadMergedMiddlewares(wsRoutes[0].middlewarePaths!);
+      expect(bundle?.middlewares).toHaveLength(1);
+      expect(typeof bundle?.middlewares[0]).toBe('function');
     });
   });
 
@@ -387,14 +405,22 @@ describe('generateRoutes', () => {
       invalidateMiddlewareCache();
       const loaded = (await import(pathToFileURL(outputPath).href)) as SerializedRouteManifest;
 
-      // 5. hydrate
+      // 5. hydrate（不预加载中间件，只传递 middlewarePaths）
       const { routes: hydratedRoutes } = await hydrateRoutes(loaded);
 
       expect(hydratedRoutes[0].filePath).toBe('dist/api/user/handler.js');
       expect(hydratedRoutes[0].urlPath).toBe('/api/user');
+      // hydrateRoutes 不预加载中间件
+      expect(hydratedRoutes[0].middlewares).toBeUndefined();
+      expect(hydratedRoutes[0].injectors).toBeUndefined();
+      expect(hydratedRoutes[0].middlewarePaths).toBeDefined();
+      expect(hydratedRoutes[0].middlewarePaths).toHaveLength(2);
+
+      // 6. 模拟请求阶段加载中间件
+      const bundle = await loadMergedMiddlewares(hydratedRoutes[0].middlewarePaths!);
       // 根 middlewares.ts 导出空数组 → 不产生中间件项；api/middlewares.ts 产生 1 个
-      expect(hydratedRoutes[0].middlewares).toHaveLength(1);
-      const dbInjector = hydratedRoutes[0].injectors!.db as () => string;
+      expect(bundle?.middlewares).toHaveLength(1);
+      const dbInjector = bundle!.injectors.db as () => string;
       expect(dbInjector()).toBe('prd-db');
     });
   });

@@ -1,5 +1,17 @@
 # @faapi/faapi
 
+## 1.2.0
+
+### Minor Changes
+
+- Vite 风格按需编译与中间件按需加载
+
+  - dev 模式启动时只编译 config + 生成路由清单，handler.js / zod.js 在首次请求时才触发编译/生成（三层 mtime 缓存复用未变更产物）
+  - scanRoutes 改为正则提取方法名（零 import handler.js），中间件改为收集路径不预加载
+  - 中间件加载延后到首次请求阶段（dev/prod 通用），hydrateRoutes 只传递 middlewarePaths，createServer / handleWsUpgrade 按需调用 loadMergedMiddlewares
+  - watcher 热替换时清缓存（clearCompiledFiles / clearGeneratedSchemas / invalidateMiddlewareCache），下次请求按需重建
+  - ensureCompiled / ensureSchemaGenerated 失败时抛错（不静默吞错），loadRouteModule 捕获并附加上下文
+
 ## 1.1.1
 
 ### Patch Changes

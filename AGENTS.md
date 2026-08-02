@@ -145,7 +145,7 @@ dev 和 prod 生成完全一致的产物三元组（`faapi-config.js` + `faapi-r
 | `faapi-helpers.js`（coerce 公用函数，仅有 number/boolean 字段时生成） | `.faapi/faapi-helpers.js` | `dist/faapi-helpers.js` |
 | `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
 
-- `faapi` / `faapi dev`：dev 模式，`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），`compileDevRoutes` 逐文件编译 `.ts` → `.faapi/*.js`（`bundle: false`，启动快、增量编译），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js` + `zod.js`，调 `createDevApp()` + `listen()`（含 `reloadRoutes` 热替换能力），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` 热替换路由）
+- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `createDevApp()` + `listen()`（含 `reloadRoutes` 热替换能力），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` 热替换路由）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
 - `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 每个 handler 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
 - `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`createProdApp()` 读 `FAAPI_DIST`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
 
@@ -390,6 +390,36 @@ TypeScript 的 `interface` 在运行时会被擦除。第一版通过 TypeScript
 
 第一版先支持基础类型、对象类型、可选字段和数组类型；后续版本逐步扩展 AST 能力。
 
+#### 5.6.1 Vite 风格按需编译（dev 模式）
+
+dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成路由清单，handler.js / zod.js 在首次请求时才触发编译/生成，配合 mtime 缓存复用未变更的产物。详见 `src/cli/compileOnDemand.md`。
+
+| 阶段 | 触发时机 | 行为 |
+|------|---------|------|
+| 启动 | `faapi dev` | 编译 config + 生成 `faapi-routes.js`（scanRoutes 仅读源码 + 正则提取方法名，零 import） |
+| 首次请求 | `loadRouteModule` import 失败 | `ensureCompiled` 单文件编译 handler.js → 重试 import |
+| 首次请求 | `createServer` 在 `validateInput` 之前 | `ensureSchemaGenerated` 单文件生成 zod.js |
+| watcher 文件变化 | `reloadRoutes` | 删 stale zod.js + 清缓存（`clearCompiledFiles` / `clearGeneratedSchemas` / `invalidateMiddlewareCache`），下次请求按需重建 |
+
+**三层 mtime 缓存**（`ensureCompiled` / `ensureSchemaGenerated` 共用策略）：
+
+1. 内存 Set 命中 → 跳过（最快路径）
+2. 产物存在且 mtime ≥ 源码 mtime → 加入 Set 跳过（复用 watcher 已编译的产物）
+3. 产物不存在或 stale → 编译/生成 → 加入 Set
+
+**与 prod 模式的差异**：prod 模式（`node dist/main`）不启用按需编译——`faapi build` 阶段已固化全部产物，import 失败即报错。`isDevOnDemandEnabled()` 是全局开关，prod 始终为 `false`。
+
+#### 5.6.2 中间件按需加载（dev/prod 通用）
+
+中间件模块（`middlewares.js`）的加载延后到首次请求阶段，dev 和 prod 都适用（与 handler.js / zod.js 的按需编译同源思想）。
+
+- **scanRoutes**（dev）/ **serializeRoutes**（build）：只收集 `middlewarePaths`（中间件文件绝对路径列表，根在前、路由目录在后），不 import 任何中间件模块。
+- **hydrateRoutes**（prod 启动）：把 `middlewarePaths` 存到 `RouteRecord` 上，不预加载中间件。
+- **createServer** / **handleWsUpgrade**（首次请求）：`route.middlewares` 为 `undefined` 时调 `loadMergedMiddlewares(route.middlewarePaths)` 加载并合并，结果缓存到 `route.middlewares` / `route.injectors`，后续请求直接复用。
+- **reloadRoutes**（watcher 热替换）：调 `invalidateMiddlewareCache()` 清缓存，下次请求重新加载。
+
+`loadMergedMiddlewares` 单文件加载带缓存（`getCachedMiddlewares` / `setCachedMiddlewares`），多文件合并语义：子级中间件追加在父级之后（洋葱模型内层），子级注入器覆盖父级同名注入器。
+
 ### 5.7 内置注入类型
 
 | 参数名 | 注入内容 | 示例 |
@@ -540,8 +570,8 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
   - `generateSchemaFileSource` 根据 schemaName 推断 inputType：以 `Query`/`Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）。
   - `mapZodCode` 新增 `not_finite → COERCE_FAILED` 映射（实际场景中 coerce 失败多报 `invalid_type`）。
 - dev 和 prd 行为一致，不降级：
-  - dev：启动时全量 AST 提取并预生成 `zod.js`，watch 时增量编译 + 全量重建 schema + `invalidateSchemaCache()` 清空模块缓存。
-  - prd：`faapi build` 生成 `zod.js`，启动时按需 import。
+  - dev（Vite 风格按需模式）：启动时仅编译 config + 生成路由清单，**不预生成 `zod.js`**；首次请求时 `ensureSchemaGenerated` 按需生成（mtime 缓存复用未变更的产物），watch 时删 stale zod.js + 清缓存 + 下次请求按需重建。
+  - prd：`faapi build` 全量生成 `zod.js`，启动时按需 import。
   - schema 缺失（`zod.js` 文件不存在或 import 失败）抛 `InternalError`，不静默放行。
 
 ### 6.4 技术栈

@@ -1,6 +1,6 @@
 # createServer
 
-一句话概括：创建 HTTP 服务器并处理请求分发。
+一句话概括：创建 HTTP 服务器并处理请求分发。dev 按需模式下，`validateInput` 之前会调 `ensureSchemaGenerated` 按需生成 zod.js。
 
 ## 为什么需要
 
@@ -14,10 +14,29 @@
 - CORS 作为标准中间件走洋葱模型（preflight 拦截、非 preflight 附加头后放行）
 - onError 钩子：错误响应发出后触发，用于副作用（日志/告警），不修改已发出的响应（参考 Fastify onError 语义）
 - 错误兜底链：全局错误中间件 try/catch 未拦截 → 内置 formatErrorResponse 兜底 → 仍失败则最简 500 JSON
+- **dev 按需模式**：`handleRequest` 在 `validateInput` 之前调 `ensureSchemaGenerated` 按需生成 zod.js
+
+## 请求处理链路
+
+```
+request → toWebRequest → createContext → matchRoute
+  → loadRouteModule（dev 按需模式：import 失败时触发 ensureCompiled 单文件编译）
+  → resolveInput
+  → getRuntimeSchemaPath(route.filePath, dist, rootDir) → schemaPath
+  → if (isDevOnDemandEnabled()): ensureSchemaGenerated 按需生成 zod.js（mtime 缓存复用）
+  → validateInput（zod.js safeParse）
+  → invokeHandler（洋葱模型中间件 + handler）
+  → sendNodeResponse
+```
+
+dev 按需模式下，handler.js 由 `loadRouteModule` import 失败触发编译，zod.js 由 `ensureSchemaGenerated` 触发生成，均在首次请求时完成（详见 [compileOnDemand](../cli/compileOnDemand.md)）。prod 模式跳过 `ensureSchemaGenerated`——build 阶段已固化全部 zod.js。
 
 ## 相关模块
 
 - `matchRoute.ts` - 路由匹配
-- `loadRouteModule.ts` - 加载路由模块
+- `loadRouteModule.ts` - 加载路由模块（dev 按需模式下含 `ensureCompiled` 回退）
 - `resolveInput.ts` - 解析输入
 - `invokeHandler.ts` - 调用 handler、导出 compose/mergeMeta 用于全局中间件调度
+- `../validator/validateInput.ts` - 参数校验（zod safeParse）
+- `../cli/compileOnDemand.ts` - dev 按需生成 zod.js（`ensureSchemaGenerated`）
+- `../cli/generateSchemaFiles.ts` - `getRuntimeSchemaPath` 计算 zod.js 路径

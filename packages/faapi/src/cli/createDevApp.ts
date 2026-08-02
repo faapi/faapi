@@ -2,11 +2,16 @@ import type { AppBase, CreateAppOptions } from './createAppCore';
 import { createAppBase } from './createAppCore';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
-import { generateSchemaFiles } from './generateSchemaFiles';
 import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
 import { invalidateSchemaCache } from '../validator/validateInput';
 import { setLoadTimestamp } from '../utils/importWithCacheBust';
+import {
+  clearCompiledFiles,
+  clearGeneratedSchemas,
+  deleteSchemaFiles,
+  isDevOnDemandEnabled,
+} from './compileOnDemand';
 
 /** dev 应用接口（AppBase + reloadRoutes 热替换） */
 export interface DevApp extends AppBase {
@@ -45,11 +50,24 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     invalidateMiddlewareCache();
     invalidateProgramCache();
     invalidateSchemaCache();
-    // 重新扫描路由 + 重新生成 schema
+    // 清按需编译缓存（让被修改的 handler.js 重新编译）
+    clearCompiledFiles();
+    // 重新扫描路由
     // 不走 faapi-routes.js 重新 import——ESM 模块缓存难以可靠绕过，直接 scanRoutes 更稳定
     const reScanned = await scanRoutes(ctx.rootDir, ctx.patterns, ctx.dist);
     const sorted = sortRoutes(reScanned.routes);
-    await generateSchemaFiles(sorted, ctx.rootDir, ctx.dist);
+
+    if (isDevOnDemandEnabled()) {
+      // 按需模式：删除 stale zod.js（类型引用变化等），下次请求触发重新生成
+      // 不全量 generateSchemaFiles——保持按需生成策略
+      await deleteSchemaFiles(sorted, ctx.rootDir, ctx.dist);
+      clearGeneratedSchemas();
+    } else {
+      // 非按需模式（兼容旧路径）：全量重新生成 zod.js
+      const { generateSchemaFiles } = await import('./generateSchemaFiles');
+      await generateSchemaFiles(sorted, ctx.rootDir, ctx.dist);
+    }
+
     // 更新 app 和 server 路由引用
     ctx.updateRoutes(sorted, reScanned.wsRoutes);
   };

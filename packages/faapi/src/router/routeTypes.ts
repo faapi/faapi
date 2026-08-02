@@ -10,9 +10,11 @@ export interface RouteRecord {
   isDynamic: boolean;
   /** 是否为 catch-all 路由（[...slug]） */
   isCatchAll?: boolean;
-  /** 路由对应的中间件集合（从根到路由目录合并，构建时加载） */
+  /** 中间件文件绝对路径列表（根在前，路由目录在后；按需加载用） */
+  middlewarePaths?: string[];
+  /** 路由对应的中间件集合（从根到路由目录合并，按需加载后缓存） */
   middlewares?: FaapiMiddleware[];
-  /** 路由对应的注入器映射表（从根到路由目录合并，构建时加载） */
+  /** 路由对应的注入器映射表（从根到路由目录合并，按需加载后缓存） */
   injectors?: InjectorMap;
 }
 
@@ -29,7 +31,9 @@ export interface WsRouteRecord {
   isDynamic: boolean;
   /** 是否为 catch-all 路由（[...slug]） */
   isCatchAll?: boolean;
-  /** 路由对应的中间件集合（握手阶段执行，复用鉴权/CORS/日志） */
+  /** 中间件文件绝对路径列表（根在前，路由目录在后；按需加载用） */
+  middlewarePaths?: string[];
+  /** 路由对应的中间件集合（握手阶段执行，复用鉴权/CORS/日志；按需加载后缓存） */
   middlewares?: FaapiMiddleware[];
   /** 路由对应的注入器映射表 */
   injectors?: InjectorMap;

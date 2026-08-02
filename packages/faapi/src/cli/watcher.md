@@ -24,6 +24,7 @@
 |------|------|
 | `rootDir` | 项目根目录 |
 | `app` | dev 应用实例（`DevApp`，调用 `app.reloadRoutes()` 热替换） |
+| `devDist` | dev 产物目录（固定为 `.faapi`），用于增量编译与配置重生成 |
 
 ## 监听范围
 
@@ -52,8 +53,10 @@ chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ign
 3. **调 `app.reloadRoutes()`**（由 `createDevApp` 提供，完成以下工作）：
    - 更新模块加载时间戳（`setLoadTimestamp(Date.now())`，ESM import 绕过缓存）
    - 清理中间件 + Program + schema 缓存
-   - 全量扫描路由（`scanRoutes`，import 产物 `.js`）
-   - 重新生成 schema 文件（`generateSchemaFiles` 生成 zod.js）+ `invalidateSchemaCache` 清空模块缓存
+   - `clearCompiledFiles()` 清按需编译内存缓存
+   - 全量扫描路由（`scanRoutes`，仅读源码 + 正则提取方法名，零 import）
+   - **按需模式**：`deleteSchemaFiles` 删 stale zod.js + `clearGeneratedSchemas` 清按需生成缓存（下次请求触发 `ensureSchemaGenerated` 重建）
+   - **非按需模式**：`generateSchemaFiles` 全量重新生成 zod.js + `invalidateSchemaCache` 清空模块缓存
    - `ctx.updateRoutes` 更新 `app.routes` / `app.wsRoutes` 和 `routesRef.current` / `routesRef.wsCurrent`（server 使用最新路由）
 
 ### 与 `createDevApp.reloadRoutes()` 的分工
@@ -62,7 +65,7 @@ chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ign
 |------|---------|
 | 增量编译变化的文件 | `watcher`（`compileDevRoutes` with `files`） |
 | 重生成 `faapi-config.js` | `watcher`（`compileConfig`） |
-| 清缓存 + 重新扫描 + schema + 更新引用 | `createDevApp.reloadRoutes()` |
+| 清缓存 + 重新扫描 + 按需模式下删 stale zod.js + 更新引用 | `createDevApp.reloadRoutes()` |
 
 watcher 是 CLI 侧的薄封装，核心重建逻辑在 `createDevApp.reloadRoutes()` 中。
 
@@ -85,3 +88,4 @@ unlink（文件删除）不增量编译（无文件可编译），但触发 `rel
 - `compileDevRoutes.ts` - 增量编译
 - `compileConfig.ts` - 重生成 `faapi-config.js`
 - `devCommand.ts` - 启动 watcher 的入口，传递 app 引用
+- `compileOnDemand.ts` - 按需模式下 `reloadRoutes` 调 `deleteSchemaFiles` + `clearCompiledFiles` + `clearGeneratedSchemas`

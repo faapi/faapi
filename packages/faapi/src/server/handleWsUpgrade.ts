@@ -25,6 +25,13 @@ import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { getClientIp } from '../utils/getClientIp';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 import {
+  ensureCompiled,
+  isDevOnDemandEnabled,
+  getDevDist,
+  prodPathToSourcePath,
+} from '../cli/compileOnDemand';
+import { loadMergedMiddlewares } from '../middleware/loadMiddlewares';
+import {
   wrapWsSocket,
   type WsContext,
   type WsEventHandlers,
@@ -46,9 +53,34 @@ function getPathname(req: IncomingMessage): string {
  * 直接动态 import handler.ts 并取 `WS` 导出（不经过 loadRouteModule，
  * 因为 WS 不是 HTTP 方法，loadRouteModule 的 method 维度不适用）。
  * watch 模式下通过时间戳 query string 绕过 ESM 缓存。
+ *
+ * Dev 按需编译模式：首次 import 失败时触发单文件编译，编译后重试 import。
  */
-async function loadWsHandler(filePath: string, ctx: WsContext): Promise<WsEventHandlers | void> {
-  const module = await importWithCacheBust(filePath);
+async function loadWsHandler(
+  filePath: string,
+  ctx: WsContext,
+  rootDir?: string,
+): Promise<WsEventHandlers | void> {
+  let module: Record<string, unknown> | undefined;
+  try {
+    module = await importWithCacheBust(filePath);
+  } catch (err) {
+    // Dev 按需编译模式：import 失败时尝试编译源码后重试
+    if (isDevOnDemandEnabled() && rootDir) {
+      const dist = getDevDist();
+      if (dist) {
+        const sourcePath = prodPathToSourcePath(filePath, rootDir, dist);
+        const compiled = await ensureCompiled(sourcePath, rootDir, dist);
+        if (compiled) {
+          module = await importWithCacheBust(filePath);
+        }
+      }
+    }
+    if (!module) {
+      throw err;
+    }
+  }
+
   const handler = module['WS'];
   if (typeof handler !== 'function') {
     throw new Error(`WS export not found in ${filePath}`);
@@ -180,7 +212,7 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
         const absoluteFilePath = path.resolve(rootDir, route.filePath);
         // WsContext 是 FaapiContext 的结构子集，直接复用 ctx 实例
         // 中间件塞入的字段（如 ctx.user）对 WS handler 可见
-        handlers = await loadWsHandler(absoluteFilePath, ctx as unknown as WsContext);
+        handlers = await loadWsHandler(absoluteFilePath, ctx as unknown as WsContext, rootDir);
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         console.error(`[faapi] WS handler 加载失败 ${route.filePath}: ${reason}`);
@@ -208,6 +240,15 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
     // 执行中间件链：全局中间件（外）+ 目录中间件（内）
     let response: Response;
     try {
+      // 按需加载中间件：route.middlewares 为 undefined 时从 middlewarePaths 加载（Vite 风格）
+      if (route.middlewares === undefined && route.middlewarePaths) {
+        const bundle = await loadMergedMiddlewares(route.middlewarePaths);
+        if (bundle) {
+          route.middlewares = bundle.middlewares;
+        } else {
+          route.middlewares = [];
+        }
+      }
       const dirMiddlewares = route.middlewares ?? [];
       const allMiddlewares =
         globalMiddlewares && globalMiddlewares.length > 0

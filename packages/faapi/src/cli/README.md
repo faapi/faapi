@@ -17,7 +17,7 @@
 
 | 命令 | 模式 | 行为 |
 |------|------|------|
-| `faapi` / `faapi dev` | dev | 编译 `.ts` → `.faapi/*.js` + 生成产物三元组 + 调用 `createDevApp()` 启动 dev 应用 + watch 热替换 |
+| `faapi` / `faapi dev` | dev（**Vite 风格按需编译**） | 编译 config + 生成路由清单 + 调用 `createDevApp()` 启动 dev 应用 + watch 热替换；handler.js / zod.js 首次请求时按需编译/生成 |
 | `faapi build` | 构建 | 逐文件编译（bundle: false） `.ts` → `dist/*.js` + 生成产物三元组（`dist/faapi-config.js` + `dist/faapi-routes.js` + 各 handler 的 `zod.js`）+ 生成 `dist/main.js` 启动入口，不启动服务器 |
 | `node dist/main` | 生产 | 直接运行 `dist/main.js`，内部调 `createProdApp()` + `listen()`，读 `dist/` 产物三元组启动服务 |
 
@@ -28,17 +28,18 @@ dev 和 prod 走完全一致的读产物代码路径（`createAppBase`），差�
 | 模块 | 说明 |
 | --- | --- |
 | [index.ts](./index.ts) | CLI 入口，分发 dev/build 命令 |
-| [devCommand.ts](./devCommand.ts) | dev 模式编排：设 `FAAPI_DIST` → 编译 + 生成产物三元组 → 调用 `createDevApp()` + `listen()` → 启动 watcher |
+| [devCommand.ts](./devCommand.ts) | dev 模式编排：设 `FAAPI_DIST` + 启用按需编译模式 → 编译 config + 生成路由清单 → 调用 `createDevApp()` + `listen()` → 启动 watcher |
 | [createAppCore.ts](./createAppCore.ts) | dev/prod 共享的编排核心（`createAppBase`）：配置/路由水合/schema/插件/listen/close |
 | [createDevApp.ts](./createDevApp.ts) | dev 入口：`createAppBase` + `reloadRoutes` 热替换（由 devCommand 内部调用） |
 | [createProdApp.ts](./createProdApp.ts) | prod 入口：`createAppBase`（精简，无 reloadRoutes，由 `dist/main.js` 内部调用） |
 | [createApp.ts](./createApp.ts) | `createProdApp` 的向后兼容别名 |
 | [buildCommand.ts](./buildCommand.ts) | 构建：编译 TypeScript → 编译配置 → 扫描路由 → schema 文件 → 路由清单 → 生成 `dist/main.js` 启动入口 |
-| [compileDevRoutes.ts](./compileDevRoutes.ts) | dev 专用编译：esbuild 逐文件编译 `.ts` 到 `.faapi/`（启动快、增量编译友好） |
+| [compileDevRoutes.ts](./compileDevRoutes.ts) | dev 专用编译：esbuild 逐文件编译 `.ts` 到 `.faapi/`（启动快、增量编译友好；按需模式下由 `ensureCompiled` 单文件调用） |
 | [compileBuildRoutes.ts](./compileBuildRoutes.ts) | build 专用编译：esbuild bundle 模式 + splitting + tree shaking + 死分支删除 |
+| [compileOnDemand.ts](./compileOnDemand.ts) | **Vite 风格按需编译**：`ensureCompiled` 单文件编译 handler.js + `ensureSchemaGenerated` 单文件生成 zod.js + mtime 缓存复用 |
 | [aliasPlugin.ts](./aliasPlugin.ts) | esbuild 别名重写插件（dev/build 编译器共用） |
 | [compileConfig.ts](./compileConfig.ts) | 配置编译：`faapi.config.ts` → 单个 `faapi-config.js`（dev/build 共用） |
-| [generateSchemaFiles.ts](./generateSchemaFiles.ts) | schema 生成：为每个 handler 生成 `zod.js`（zod schema + 字段元数据，与 handler.js 同级） |
+| [generateSchemaFiles.ts](./generateSchemaFiles.ts) | schema 生成：为每个 handler 生成 `zod.js`（zod schema + 字段元数据，与 handler.js 同级；dev 按需模式下由 `ensureSchemaGenerated` 单文件调用） |
 | [collectRouteSchemaSources.ts](./collectRouteSchemaSources.ts) | AST 提取入口：从路由清单收集 schema 源数据（dev/prd 共用） |
 | [generateRoutes.ts](./generateRoutes.ts) | 路由清单：序列化为 `faapi-routes.js` + 水合还原（hydrateRoutes） |
 | [watcher.ts](./watcher.ts) | dev watch：监听 src + 根配置文件，增量编译 + 重生成 config + 调 `app.reloadRoutes()` 热替换 |
@@ -58,16 +59,16 @@ CORS 等运行时配置请使用 `faapi.config.ts`。
 ```
 devCommand
   → 兜底 NODE_ENV=development（未显式设置时）+ loadEnv(rootDir)（加载 .env 系列文件到 process.env）
-  → 设 FAAPI_DIST=.faapi
+  → 设 FAAPI_DIST=.faapi + 启用按需编译模式（setDevOnDemandEnabled(true) + setDevDist('.faapi')）
   → compileConfig(faapi.config.ts → .faapi/faapi-config.js)
   → loadConfig 读应用行为配置
-  → compileDevRoutes(src/**/*.ts → .faapi/**/*.js)
-  → generateRouteArtifacts(faapi-routes.js + zod.js)
+  → generateRouteArtifacts(仅 faapi-routes.js，不编译 handler.js，不生成 zod.js——按需模式)
   → createDevApp({ rootDir }) + app.listen()（含 reloadRoutes 热替换能力）
-  → startWatcher({ rootDir, app })（增量编译 + 重生成 config + app.reloadRoutes 热替换）
+  → startWatcher({ rootDir, app, devDist })（增量编译 + 重生成 config + app.reloadRoutes 热替换）
+  → 首次请求时 ensureCompiled 按需编译 handler.js + ensureSchemaGenerated 按需生成 zod.js
 ```
 
-dev 模式不运行用户入口文件——devCommand 直接调用 `createDevApp()` 持有 app 引用后传给 watcher。
+dev 模式不运行用户入口文件——devCommand 直接调用 `createDevApp()` 持有 app 引用后传给 watcher。handler.js / zod.js 在首次请求时按需编译/生成（Vite 风格），详见 [compileOnDemand](./compileOnDemand.md)。
 
 ### 生产模式（`node dist/main`）
 

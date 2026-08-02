@@ -28,6 +28,8 @@ import type { InjectorMap } from '../middleware/injectorTypes';
 import { attachWebSocket } from './handleWsUpgrade';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 import { getRuntimeSchemaPath } from '../cli/generateSchemaFiles';
+import { ensureSchemaGenerated, isDevOnDemandEnabled, getDevDist } from '../cli/compileOnDemand';
+import { loadMergedMiddlewares } from '../middleware/loadMiddlewares';
 
 /**
  * 将 Node.js IncomingMessage 转为 Web Request 对象
@@ -292,18 +294,42 @@ async function handleRequest(
 
     // 处理 API 路由（handler.ts）
     const absoluteFilePath = path.resolve(rootDir, route.filePath);
-    const routeModule = await loadRouteModule(absoluteFilePath, route.method);
+    const routeModule = await loadRouteModule(absoluteFilePath, route.method, rootDir);
     const input = await resolveInput(route.method, request);
 
     // 参数校验（运行时按 route.filePath 计算 zod.js 路径，import 并 safeParse）
     const inputType = getInputTypeForMethod(route.method);
     const schemaPath = getRuntimeSchemaPath(route.filePath, dist, rootDir);
+
+    // Dev 按需模式：zod.js 不存在或 stale 时触发按需生成（阶段 3）
+    if (isDevOnDemandEnabled()) {
+      const devDist = getDevDist();
+      if (devDist) {
+        await ensureSchemaGenerated(schemaPath, route.filePath, routes, rootDir, dist);
+      }
+    }
+
     const result = await validateInput(schemaPath, route.method, inputType, input);
     if (!result.valid) {
       throw new ValidationError('参数校验失败', result.issues);
     }
 
     const body = hasBody(route.method) ? result.data : undefined;
+
+    // 按需加载中间件：route.middlewares 为 undefined 时从 middlewarePaths 加载（Vite 风格）
+    // 启动时 hydrateRoutes 不预加载中间件，首次请求时加载并缓存到 route 上
+    if (route.middlewares === undefined && route.injectors === undefined && route.middlewarePaths) {
+      const bundle = await loadMergedMiddlewares(route.middlewarePaths);
+      if (bundle) {
+        route.middlewares = bundle.middlewares;
+        route.injectors = bundle.injectors;
+      } else {
+        // 标记为已加载（空中间件），避免重复加载
+        route.middlewares = [];
+        route.injectors = {};
+      }
+    }
+
     // 合并注入器：全局注入器为基线，目录注入器覆盖同名
     const mergedInjectors = globalInjectors
       ? { ...globalInjectors, ...route.injectors }

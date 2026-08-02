@@ -1,6 +1,6 @@
 # devCommand
 
-一句话概括：`faapi dev` 的完整流程——编译 TypeScript、生成产物三元组、调用 `createDevApp()` 启动 dev 应用、启动文件 watcher 实现热替换。
+一句话概括：`faapi dev` 的完整流程——编译配置 + 生成路由清单 + 启用按需编译模式 + 调用 `createDevApp()` 启动 dev 应用 + 启动文件 watcher 实现热替换。
 
 ## 为什么需要
 
@@ -11,18 +11,37 @@ dev 模式与 `faapi build`（产线构建）为两套独立代码路径，仅�
 `devCommand` 是 CLI 端的薄编排层，负责生成与 `faapi build` 一致的产物三元组（只是 dist 为 `.faapi`），让 `createDevApp` 走完全统一的读产物路径：
 
 1. 设置 `FAAPI_DIST=.faapi` + `NODE_ENV=development`（仅未显式设置时兜底）
-2. `compileConfig` 编译配置源码 → `.faapi/faapi-config.js`
-3. `loadConfig(rootDir, '.faapi')` 读应用行为配置
-4. `compileDevRoutes` 编译 `.ts` → `.faapi/**/*.js`（esbuild 逐文件，含别名重写）
-5. `generateRouteArtifacts` 生成 `.faapi/faapi-routes.js` + 各 handler 的 `zod.js`
+2. 启用按需编译模式：`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`
+3. `compileConfig` 编译配置源码 → `.faapi/faapi-config.js`
+4. `loadConfig(rootDir, '.faapi')` 读应用行为配置
+5. `generateRouteArtifacts` 生成 `.faapi/faapi-routes.js`（**仅路由清单，不编译 handler.js，不生成 zod.js**——按需模式）
 6. `createDevApp({ rootDir, port })` + `app.listen()` 启动 dev 应用（含 reloadRoutes 热替换能力）
-7. `startWatcher({ rootDir, app })`（文件变化时增量编译 + 重生成 config + 调 `app.reloadRoutes()`）
+7. `startWatcher({ rootDir, app, devDist: '.faapi' })`（文件变化时增量编译 + 重生成 config + 调 `app.reloadRoutes()`）
 
 CLI 选项（`--port`）优先于环境变量（`PORT`）。
 
+## Vite 风格按需编译
+
+dev 启动时**只编译配置和路由清单**，不全量编译 handler.js / 生成 zod.js：
+
+- **handler.js**：首次请求时由 `loadRouteModule` import 失败触发 `ensureCompiled` 单文件编译
+- **zod.js**：首次请求时由 `createServer` 在 `validateInput` 之前调 `ensureSchemaGenerated` 生成
+- **mtime 缓存**：watcher 已编译过的文件，首次请求时 mtime 复用跳过编译
+
+详见 [compileOnDemand](./compileOnDemand.md)。
+
+**与旧版（启动全量编译）的差异**：
+
+| 步骤 | 旧版 | 新版（按需） |
+| --- | --- | --- |
+| 启动时编译 handler.js | 全量 `compileDevRoutes(src/**/*.ts)` | 跳过 |
+| 启动时生成 zod.js | 全量 `generateSchemaFiles` | 跳过 |
+| 首次请求延迟 | 即时（已编译） | 单文件编译约 50ms |
+| 启动速度 | 慢（项目越大越慢） | 近乎瞬开（仅 config + 路由清单） |
+
 ## 使用场景
 
-- `faapi` 或 `faapi dev`：开发模式，编译 + 生成产物 + 启动 dev 应用 + watch 热替换
+- `faapi` 或 `faapi dev`：开发模式，编译配置 + 生成路由清单 + 启动 dev 应用 + watch 热替换
 - 源码目录固定为 `src`
 
 ## 与 createDevApp 的协作
@@ -33,21 +52,21 @@ CLI 选项（`--port`）优先于环境变量（`PORT`）。
 
 ## generateRouteArtifacts
 
-`devCommand` 导出 `generateRouteArtifacts(rootDir, patterns)` 函数，生成路由产物：
+`devCommand` 导出 `generateRouteArtifacts(rootDir, patterns, dist)` 函数，**仅生成路由清单**：
 
-1. `scanRoutes` 扫描路由（扫描源码 `.ts` 列表，import 产物 `.js` 拿方法名）
+1. `scanRoutes` 扫描路由（读源码 + 正则提取方法名，零 import——详见 [scanRoutes](../router/scanRoutes.md)）
 2. `sortRoutes` 排序
 3. `serializeRoutes` + `writeRoutesModule` 生成 `faapi-routes.js`
-4. `generateSchemaFiles` 生成各 handler 的 `zod.js`
 
-与 `buildCommand` 的对应步骤一致，只是 dist 为 `.faapi`。
+**与 `buildCommand` 的差异**：build 阶段全量生成 zod.js（`generateSchemaFiles`），dev 阶段跳过（按需生成）。两者产物三元组结构一致，仅 zod.js 生成时机不同。
 
 ## 相关模块
 
+- [compileOnDemand](./compileOnDemand.md) — 按需编译核心：`ensureCompiled` / `ensureSchemaGenerated` / `deleteSchemaFiles`
 - `createDevApp.ts` - `devCommand` 直接调用，启动 dev 应用（含 reloadRoutes）
 - `createAppCore.ts` - `createDevApp` 的共享编排核心（createAppBase）
-- `compileDevRoutes.ts` - `devCommand` 编译 TypeScript 到 `.faapi/`
+- `compileDevRoutes.ts` - 按需编译时由 `ensureCompiled` 单文件调用
 - `compileConfig.ts` - 编译配置源码为 `.faapi/faapi-config.js`
 - `generateRoutes.ts` - `generateRouteArtifacts` 生成 `faapi-routes.js`
-- `generateSchemaFiles.ts` - `generateRouteArtifacts` 生成 `zod.js`
+- `generateSchemaFiles.ts` - 按需生成时由 `ensureSchemaGenerated` 单文件调用
 - `watcher.ts` - `devCommand` 启动的文件 watcher，接收 app 引用，调 `app.reloadRoutes()`

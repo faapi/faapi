@@ -7,14 +7,6 @@ import type {
   WsRouteRecord,
 } from '../router/routeTypes';
 import type { HttpMethod } from '../router/constants';
-import type { FaapiMiddleware } from '../middleware/middlewareTypes';
-import type { InjectorMap } from '../middleware/injectorTypes';
-import {
-  loadMiddlewaresFile,
-  getCachedMiddlewares,
-  setCachedMiddlewares,
-} from '../middleware/loadMiddlewares';
-import type { LoadedMiddlewareBundle } from '../middleware/loadMiddlewares';
 
 /**
  * 序列化路由记录（可写入 JS 模块，无函数引用）
@@ -173,71 +165,35 @@ export const wsRoutes = ${JSON.stringify(manifest.wsRoutes, null, 2)};
 }
 
 /**
- * 从序列化清单水合路由（加载中间件，还原 RouteRecord）
+ * 从序列化清单水合路由（还原 RouteRecord，不预加载中间件）
  *
- * start 时调用，对每条路由按 middlewarePaths 加载中间件文件。
+ * 中间件改为按需加载：只把 `middlewarePaths` 存到 `route.middlewarePaths`，
+ * 请求阶段由 `createServer` / `handleWsUpgrade` 调 `loadMergedMiddlewares` 按需加载。
+ * 这样 dev/prod 启动时都不全量加载中间件模块（Vite 风格），首次请求时才加载。
  */
 export async function hydrateRoutes(
   manifest: SerializedRouteManifest,
 ): Promise<{ routes: RouteManifest; wsRoutes: WsRouteManifest }> {
-  const hydrateRoute = async (serialized: SerializedRouteRecord): Promise<RouteRecord> => {
-    const bundle = await loadMiddlewarePaths(serialized.middlewarePaths);
-    return {
-      method: serialized.method,
-      urlPath: serialized.urlPath,
-      filePath: serialized.filePath,
-      paramNames: serialized.paramNames,
-      isDynamic: serialized.isDynamic,
-      isCatchAll: serialized.isCatchAll,
-      middlewares: bundle?.middlewares,
-      injectors: bundle?.injectors,
-    };
-  };
+  const hydrateRoute = (serialized: SerializedRouteRecord): RouteRecord => ({
+    method: serialized.method,
+    urlPath: serialized.urlPath,
+    filePath: serialized.filePath,
+    paramNames: serialized.paramNames,
+    isDynamic: serialized.isDynamic,
+    isCatchAll: serialized.isCatchAll,
+    middlewarePaths: serialized.middlewarePaths,
+  });
 
-  const hydrateWsRoute = async (serialized: SerializedWsRouteRecord): Promise<WsRouteRecord> => {
-    const bundle = await loadMiddlewarePaths(serialized.middlewarePaths);
-    return {
-      urlPath: serialized.urlPath,
-      filePath: serialized.filePath,
-      paramNames: serialized.paramNames,
-      isDynamic: serialized.isDynamic,
-      isCatchAll: serialized.isCatchAll,
-      middlewares: bundle?.middlewares,
-      injectors: bundle?.injectors,
-    };
-  };
+  const hydrateWsRoute = (serialized: SerializedWsRouteRecord): WsRouteRecord => ({
+    urlPath: serialized.urlPath,
+    filePath: serialized.filePath,
+    paramNames: serialized.paramNames,
+    isDynamic: serialized.isDynamic,
+    isCatchAll: serialized.isCatchAll,
+    middlewarePaths: serialized.middlewarePaths,
+  });
 
-  const routes = await Promise.all(manifest.routes.map(hydrateRoute));
-  const wsRoutes = await Promise.all(manifest.wsRoutes.map(hydrateWsRoute));
+  const routes = manifest.routes.map(hydrateRoute);
+  const wsRoutes = manifest.wsRoutes.map(hydrateWsRoute);
   return { routes, wsRoutes };
-}
-
-/**
- * 按路径列表加载并合并中间件（根在前，路由目录在后）
- *
- * 与 scanRoutes.findMergedMiddlewares 的合并逻辑一致：
- * - 中间件：父级在前，子级追加在后（洋葱模型内层）
- * - 注入器：子级覆盖父级同名
- */
-async function loadMiddlewarePaths(
-  middlewarePaths: string[],
-): Promise<{ middlewares: FaapiMiddleware[]; injectors: InjectorMap } | undefined> {
-  if (middlewarePaths.length === 0) return undefined;
-
-  const mergedMiddlewares: FaapiMiddleware[] = [];
-  const mergedInjectors: InjectorMap = {};
-
-  for (const absMwPath of middlewarePaths) {
-    let bundle: LoadedMiddlewareBundle | undefined = getCachedMiddlewares(absMwPath);
-    if (bundle === undefined) {
-      bundle = await loadMiddlewaresFile(absMwPath);
-      setCachedMiddlewares(absMwPath, bundle);
-    }
-    mergedMiddlewares.push(...bundle.middlewares);
-    for (const [name, injector] of Object.entries(bundle.injectors)) {
-      mergedInjectors[name] = injector;
-    }
-  }
-
-  return { middlewares: mergedMiddlewares, injectors: mergedInjectors };
 }
