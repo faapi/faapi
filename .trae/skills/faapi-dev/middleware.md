@@ -15,6 +15,8 @@
 
 **就近查找**:从路由文件所在目录开始,逐级向上查找 `middlewares.ts`,所有找到的中间件**按根→路由顺序叠加**。
 
+**按需加载(dev/prod 通用)**:启动时只收集 `middlewarePaths`(中间件文件路径列表),不 import 中间件模块。首次请求时 `createServer` / `handleWsUpgrade` 调 `loadMergedMiddlewares` 按需加载并缓存到 `route.middlewares`,后续请求直接复用。watcher 文件变化时清缓存(`invalidateMiddlewareCache`),下次请求重新加载。
+
 ## 中间件签名
 
 ```ts

@@ -45,9 +45,10 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 - **中间件文件**:`middlewares.ts`,与 `handler.ts` 同目录或父目录
 - **包管理器**:pnpm
 - **模块系统**:ESM,`moduleResolution: Bundler`,本地相对导入路径不写后缀
-- **dev 启动**:`faapi` / `faapi dev`
+- **dev 启动**:`faapi` / `faapi dev`(Vite 风格按需编译,近乎瞬开)
 - **prod 构建**:`faapi build` → `node dist/main`
 - **类型校验**:dev 和 build 都不做类型检查（esbuild 只编译不检查类型），用户需自己跑 `pnpm typecheck`
+- **按需编译(dev 模式)**:dev 启动时只编译 config + 生成路由清单(零 import handler.js / 中间件),handler.js / zod.js / 中间件模块在**首次请求**时才触发编译/生成/加载(配合 mtime 缓存复用未变更产物)。watcher 文件变化时清缓存,下次请求按需重建。首次请求有约 50ms 单文件延迟,后续请求复用缓存。prod 模式(`faapi build`)预编译全部产物,启动时直接读取
 - **zod 依赖**:`zod@^4` 是 faapi 的 `peerDependencies`,业务方必须自行安装。框架生成的 `zod.js`(每个 handler 一个,运行时按需 import 做 `safeParse`)位于业务方项目目录,顶部固定为 `import { z } from 'zod'`,需项目根 `node_modules` 可解析到 zod。未安装时首次请求会报 `Cannot find package 'zod'`
 - **问题反馈**:vibe coding 遇到 faapi 自身问题(功能缺口/文档错误/行为异常)时,在业务项目根目录维护分类 TODO 文件(`TODO-faapi-gaps.md`/`TODO-faapi-docs-fix.md`/`TODO-faapi-bugs.md`),记录场景 + **源码依据(文件+行号)** + 期望 + 实际 + 变通 + 验证清单,反馈到 faapi 仓库;修复后删除对应 TODO。详见 [debug.md](./debug.md) 的"问题反馈与处理流程"章节。
 

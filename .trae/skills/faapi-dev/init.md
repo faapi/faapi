@@ -182,10 +182,11 @@ faapi
 ```
 
 默认行为:
-- 扫描 `src/api/**/*.ts`
-- 启动 watch 模式(文件变化自动重建路由)
+- 扫描 `src/api/**/*.ts`(零 import handler.js / 中间件,正则提取方法名 → 近乎瞬开)
+- 启动 watch 模式(文件变化清缓存,下次请求按需重建)
 - 自动启用 CORS
 - 端口 3000
+- **按需编译**:handler.js / zod.js / 中间件模块在首次请求时才编译/生成/加载(配合 mtime 缓存复用未变更产物)。首次请求约 50ms 单文件延迟,后续请求复用缓存
 
 访问 `http://localhost:3000/api/user?page=1&pageSize=10`,返回:
 
@@ -241,7 +242,7 @@ pnpm start
 
 **prod 模式行为**:
 - 读 `FAAPI_DIST`(未设置时默认 `dist`)定位产物目录
-- 读 `dist/faapi-routes.js` 路由清单 + 水合中间件(不扫描文件系统)
+- 读 `dist/faapi-routes.js` 路由清单 + 传递 `middlewarePaths`(不预加载中间件,首次请求时按需加载并缓存)
 - 读 `dist/faapi-config.js` 配置(运行时零编译、零合并)
 - 按需 import 各 handler 的 `zod.js` 做 zod safeParse 校验(不跑 AST 提取)
 - `main.js` 入口最早阶段兜底 `NODE_ENV=production`(未显式设置时)+ 调 `loadEnv(cwd)` 加载 `.env` 系列文件

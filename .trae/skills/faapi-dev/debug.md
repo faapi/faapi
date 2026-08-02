@@ -170,6 +170,7 @@ export function GET() { ... }
 2. 模块加载失败
 3. 注入器抛错
 4. **未安装 zod**(peerDependencies 缺失)
+5. **按需编译失败**(dev 模式首次请求触发,handler 语法错误等)
 
 ### 排查
 
@@ -195,7 +196,7 @@ Error: Cannot find package 'zod' imported from .faapi/api/user/zod.js
 
 **原因**:`zod` 是 faapi 的 `peerDependencies`,业务方需自行安装。框架生成的 `zod.js` 顶部为 `import { z } from 'zod'`,从业务方项目目录向上查找 `node_modules/zod`,找不到就报错。
 
-**触发时机**:首次请求带类型声明的 handler 时(`validateInput` 按需 import `zod.js` 触发)。无类型声明的 handler 不触发 schema 校验,不会报错。
+**触发时机**:dev 模式首次请求带类型声明的 handler 时(`validateInput` 按需 import `zod.js` 触发,`zod.js` 由 `ensureSchemaGenerated` 按需生成)。无类型声明的 handler 不触发 schema 校验,不会报错。
 
 **解决**:
 
@@ -208,6 +209,21 @@ npm install zod@^4
 > **为什么是 peerDependencies**:pnpm 严格 node_modules 布局下,`zod` 若放在 `@faapi/faapi` 的 `dependencies`,会被隔离到 `node_modules/@faapi/faapi/node_modules/zod`,不会提升到项目根。Node ESM 解析器从业务方目录下的 `zod.js` 向上查找 `node_modules/zod` 失败,导致运行时报错。改为 peerDependencies 强制业务方在项目根安装,确保 `zod.js` 能解析到。
 
 **验证**:`pnpm ls zod` 应显示 `zod 4.x`。
+
+4. **按需编译失败(dev 模式)**
+
+dev 模式采用 Vite 风格按需编译,handler.js / zod.js 在首次请求时才编译/生成。**编译错误不会在启动时报错,而是在首次请求时返回 500**:
+
+```
+Failed to compile route module "src/api/broken/handler.ts": Build failed with 1 error:
+src/api/broken/handler.ts:1:23: ERROR: Expected identifier but found ";"
+```
+
+**原因**:handler.ts 语法错误、类型声明用了 AST 不支持的类型(如 `any`/`Promise<T>`)等。
+
+**解决**:按错误信息修复 handler 文件,保存后 watcher 自动清缓存,下次请求重新编译。
+
+> **prod 模式不受影响**:`faapi build` 阶段已全量编译,编译错误在 build 时就会报错,不会到运行时。
 
 配置全局错误中间件自定义错误响应,配置 `lifecycle.onError` 记录日志:
 
@@ -337,6 +353,20 @@ faapi build  # 重新编译
 
 **解决**:查看错误信息,修复后保存,watch 会自动重试。
 
+### 3. 文件变化后请求仍返回旧结果
+
+**原因**:dev 模式采用 Vite 风格按需编译,watcher 文件变化时只清缓存(`clearCompiledFiles` / `clearGeneratedSchemas` / `invalidateMiddlewareCache`),不主动重编译。下次请求才触发按需重建。
+
+**解决**:确认 watcher 已检测到变化(终端有 reload 日志),再次发起请求触发重新编译。如果仍返回旧结果,检查 `.faapi/` 下产物 mtime 是否更新。
+
+> **mtime 缓存策略**:`ensureCompiled` / `ensureSchemaGenerated` 三层缓存:① 内存 Set 命中跳过 → ② 产物存在且 mtime ≥ 源码 mtime 跳过 → ③ 编译/生成。watcher 已 `clearCompiledFiles` 清空内存 Set,但产物文件可能仍是最新(watcher 已增量编译),此时走 ② 复用。
+
+### 4. `.env` 文件变化不生效
+
+**原因**:dev 模式不 watch `.env` 文件变化(环境变量变更需重启服务,与 Next.js 行为一致)。
+
+**解决**:修改 `.env` 后重启 `faapi dev`。
+
 ## 类型校验不生效
 
 ### 现象
@@ -402,7 +432,7 @@ handler 引用了其他文件的类型,dev 模式校验不生效。
 
 ### 原因
 
-dev 模式 watch 增量编译 + 重新生成 schema,跨文件类型引用应该自然解决。如果还有问题:
+dev 模式采用 Vite 风格按需编译,首次请求时 `ensureSchemaGenerated` 单文件生成 `zod.js`(TypeScript checker 在 AST 提取阶段已解析跨文件类型为完整 RuntimeType,内联到 `zod.js`,无需跨文件 import)。watcher 文件变化时清缓存 + 下次请求按需重建。如果还有问题:
 
 1. 循环引用
 
