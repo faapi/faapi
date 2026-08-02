@@ -12,6 +12,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
 import type { Socket } from 'node:net';
+import fs from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'node:path';
 import type { WsRouteMatch, RoutesRef } from '../router/routeTypes';
@@ -54,32 +55,28 @@ function getPathname(req: IncomingMessage): string {
  * 因为 WS 不是 HTTP 方法，loadRouteModule 的 method 维度不适用）。
  * watch 模式下通过时间戳 query string 绕过 ESM 缓存。
  *
- * Dev 按需编译模式：首次 import 失败时触发单文件编译，编译后重试 import。
+ * Dev 按需编译模式：先确保编译再 import，避免 import 不存在的文件污染 Vite SSR 状态。
  */
 async function loadWsHandler(
   filePath: string,
   ctx: WsContext,
   rootDir?: string,
 ): Promise<WsEventHandlers | void> {
-  let module: Record<string, unknown> | undefined;
-  try {
-    module = await importWithCacheBust(filePath);
-  } catch (err) {
-    // Dev 按需编译模式：import 失败时尝试编译源码后重试
-    if (isDevOnDemandEnabled() && rootDir) {
-      const dist = getDevDist();
-      if (dist) {
-        const sourcePath = prodPathToSourcePath(filePath, rootDir, dist);
-        const compiled = await ensureCompiled(sourcePath, rootDir, dist);
-        if (compiled) {
-          module = await importWithCacheBust(filePath, true);
-        }
+  // Dev 按需模式：先确保编译再 import（同 loadRouteModule 逻辑）
+  if (isDevOnDemandEnabled() && rootDir) {
+    const dist = getDevDist();
+    if (dist) {
+      const sourcePath = prodPathToSourcePath(filePath, rootDir, dist);
+      if (sourcePath && fs.existsSync(sourcePath)) {
+        await ensureCompiled(sourcePath, rootDir, dist);
       }
     }
-    if (!module) {
-      throw err;
-    }
   }
+
+  const module = (await importWithCacheBust(filePath, isDevOnDemandEnabled())) as Record<
+    string,
+    unknown
+  >;
 
   const handler = module['WS'];
   if (typeof handler !== 'function') {

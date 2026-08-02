@@ -60,10 +60,12 @@ export async function importWithCacheBust(
   const importActual = getVitestImportActual();
   if (importActual) {
     if (bustViteCache) {
-      // 加 cache-busting query：Vite 以完整模块 ID（含 query）为缓存键，
-      // 不同 query 视为不同模块，绕过首次 import 失败的缓存
-      const url = pathToFileURL(filePath).href;
-      return (await importActual(`${url}?t=${Date.now()}`)) as Record<string, unknown>;
+      // 按需编译重试场景：首次 import 失败被 Vite SSR 缓存，加 query 仍可能命中缓存。
+      // handler.js 是已编译产物（别名已在编译时重写为相对路径），不需要 Vite alias 解析，
+      // 直接走 Node 原生 import() + 时间戳 query 绕过 ESM 缓存。
+      let url = pathToFileURL(filePath).href;
+      url += `?t=${Date.now()}`;
+      return (await import(url)) as Record<string, unknown>;
     }
     return (await importActual(filePath)) as Record<string, unknown>;
   }

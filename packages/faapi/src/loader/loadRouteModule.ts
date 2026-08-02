@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import type { HttpMethod } from '../router/constants';
 import { resolveExport } from './resolveExports';
 import { validateRouteModule } from './validateRouteModule';
@@ -17,13 +18,12 @@ export interface RouteModule {
 /**
  * 动态 import 路由文件并提取 handler
  *
- * Dev 按需编译模式（Vite 风格）：首次 import 失败时触发单文件编译，编译后重试 import。
- * Prod 模式：产物在 build 阶段已固化，import 失败直接抛错。
+ * Dev 按需编译模式（Vite 风格）：先确保编译再 import，避免 import 不存在的文件。
+ * Prod 模式：产物在 build 阶段已固化，直接 import，失败即报错。
  *
  * 错误传递：
- * - import 失败 + 编译成功 → 重试 import（编译错误不会抛出）
- * - import 失败 + 编译失败 → 抛出编译错误（比 import 错误更精确，因为编译错误才是根本原因）
- * - import 失败 + 非按需模式 → 抛出 import 错误
+ * - 编译失败 → 抛出编译错误（"Failed to compile route module"）
+ * - import 失败 → 抛出加载错误（"Failed to load route module"）
  *
  * @param filePath 路由文件的绝对路径
  * @param method HTTP 方法名（也是导出名）
@@ -34,34 +34,31 @@ export async function loadRouteModule(
   method: HttpMethod,
   rootDir?: string,
 ): Promise<RouteModule> {
-  let module: Record<string, unknown>;
-  try {
-    module = await importWithCacheBust(filePath);
-  } catch (err: unknown) {
-    // Dev 按需编译模式：import 失败时尝试编译源码后重试
-    if (isDevOnDemandEnabled() && rootDir) {
-      const dist = getDevDist();
-      if (dist) {
-        const sourcePath = prodPathToSourcePath(filePath, rootDir, dist);
+  // Dev 按需模式：先确保编译再 import
+  // 避免"import 失败 → 编译 → 重试 import"模式——首次 import 不存在的文件会污染
+  // Vite SSR 内部状态，导致编译创建文件后重试 import 仍失败（CI Linux 上复现）
+  if (isDevOnDemandEnabled() && rootDir) {
+    const dist = getDevDist();
+    if (dist) {
+      const sourcePath = prodPathToSourcePath(filePath, rootDir, dist);
+      if (sourcePath && fs.existsSync(sourcePath)) {
         try {
-          const compiled = await ensureCompiled(sourcePath, rootDir, dist);
-          if (compiled) {
-            // 编译成功，重试 import（bustViteCache 绕过 Vite SSR 对首次 import 失败的缓存）
-            module = await importWithCacheBust(filePath, true);
-            const handler = resolveExport(module, method);
-            validateRouteModule(handler, method, filePath);
-            return { handler, method };
-          }
+          await ensureCompiled(sourcePath, rootDir, dist);
         } catch (compileErr) {
-          // 编译失败：抛出编译错误（比 import 错误更精确，编译错误才是根本原因）
-          const compileReason =
-            compileErr instanceof Error ? compileErr.message : String(compileErr);
-          throw new Error(`Failed to compile route module "${sourcePath}": ${compileReason}`, {
+          const reason = compileErr instanceof Error ? compileErr.message : String(compileErr);
+          throw new Error(`Failed to compile route module "${sourcePath}": ${reason}`, {
             cause: compileErr,
           });
         }
       }
     }
+  }
+
+  // import 模块（dev 按需模式下走 Node 原生 import 绕过 Vite SSR 缓存）
+  let module: Record<string, unknown>;
+  try {
+    module = await importWithCacheBust(filePath, isDevOnDemandEnabled());
+  } catch (err: unknown) {
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to load route module "${filePath}": ${reason}`, { cause: err });
   }

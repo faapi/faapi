@@ -2,6 +2,7 @@ import { getSchemaName } from './schemaName';
 import { InternalError } from '../errors/httpErrors';
 import type { ValidationIssue, ValidationErrorCode } from '../errors/httpErrors';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
+import { isDevOnDemandEnabled } from '../cli/compileOnDemand';
 
 /**
  * 校验结果类型
@@ -51,7 +52,9 @@ export function invalidateSchemaCache(): void {
 async function loadSchemaModule(schemaPath: string): Promise<SchemaModule> {
   let mod = moduleCache.get(schemaPath);
   if (!mod) {
-    mod = (await importWithCacheBust(schemaPath)) as SchemaModule;
+    // dev 按需模式下走 Node 原生 import 绕过 Vite SSR 缓存
+    // （zod.js 是已编译产物，不需要 Vite alias 解析）
+    mod = (await importWithCacheBust(schemaPath, isDevOnDemandEnabled())) as SchemaModule;
     moduleCache.set(schemaPath, mod);
   }
   return mod;
