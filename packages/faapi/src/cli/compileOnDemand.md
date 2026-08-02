@@ -56,7 +56,7 @@ async function ensureCompiled(
 2. **mtime 复用**：产物存在且 `mtimeMs ≥ 源码 mtimeMs` → 加入 Set 跳过（复用 watcher 已编译的产物）
 3. **产物不存在或 stale**：调 `compileDevRoutes({ files: [sourceAbsPath] })` 单文件编译 → 加入 Set
 
-返回 `true` 表示实际触发了编译（调用方据此决定是否重试 import），`false` 表示跳过或编译失败。
+返回 `true` 表示实际触发了编译（调用方据此决定是否重试 import），`false` 表示跳过（已编译过 / 产物已最新 / 源文件不存在）。**编译失败时抛错**（带原始 cause），由调用方错误处理链接管，不静默吞错。
 
 ### 路径反推
 
@@ -104,7 +104,7 @@ async function ensureSchemaGenerated(
    - 过滤同文件所有路由，把产物 filePath 改回源码 filePath（`generateSchemaFiles` 内部 AST 分析需要源码 .ts 路径）
    - 调 `generateSchemaFiles(sourceRoutes, rootDir, dist)` 生成 → 加入 Set
 
-返回 `true` 表示实际触发了生成，`false` 表示跳过或生成失败。
+返回 `true` 表示实际触发了生成，`false` 表示跳过（已生成过 / 产物已最新 / 源文件不存在）。**生成失败时抛错**（带原始 cause），由 `createServer` 错误处理链接管，不静默吞错。
 
 ### deleteSchemaFiles
 

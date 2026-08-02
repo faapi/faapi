@@ -351,6 +351,12 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
         await config.lifecycle.onClose({ rootDir, routes: sorted, server });
       }
 
+      // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）
+      if (!server.listening) {
+        app.server = null;
+        return;
+      }
+
       return new Promise<void>((resolve) => {
         server.close((err) => {
           if (err) console.error('Error closing server:', err);

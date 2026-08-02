@@ -77,7 +77,7 @@ export async function compileDevRoutes(options: CompileDevOptions): Promise<Comp
   //
   // 启用 write: false + 自行原子写（写临时文件 + rename），避免 watch 模式下
   // esbuild 非原子写期间运行时 import 读到半成品产物（alias 未重写完 → 500）。
-  // 详见 compileRoutes.md 的"dev 原子写"章节。
+  // 详见 compileDevRoutes.md 的"dev 原子写"章节。
   const esbuild = await import('esbuild');
   const outbase = path.resolve(rootDir, APP_DIR);
   const result = await esbuild.build({
