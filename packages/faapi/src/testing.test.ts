@@ -72,7 +72,7 @@ describe('业务方测试支持', () => {
       const handler = (query: any) => ({ page: query.page, pageSize: query.pageSize });
       const res = await invokeHandler(handler, ctx);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ page: '2', pageSize: '20' });
+      expect(await res.json()).toEqual({ data: { page: '2', pageSize: '20' } });
     });
 
     it('POST handler 走 body 注入', async () => {
@@ -80,7 +80,7 @@ describe('业务方测试支持', () => {
       const handler = (body: any) => ({ created: true, name: body.name });
       const res = await invokeHandler(handler, ctx, { name: 'Alice' });
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ created: true, name: 'Alice' });
+      expect(await res.json()).toEqual({ data: { created: true, name: 'Alice' } });
     });
 
     it('handler 通过参数名注入接收 ctx', async () => {
@@ -98,13 +98,14 @@ describe('业务方测试支持', () => {
       const ctx = createContext(new Request('http://localhost/api/user/123'), { id: '123' });
       const handler = (params: any) => ({ id: params.id });
       const res = await invokeHandler(handler, ctx);
-      expect(await res.json()).toEqual({ id: '123' });
+      expect(await res.json()).toEqual({ data: { id: '123' } });
     });
 
-    it('handler 返回 null 时转为 204', async () => {
+    it('handler 返回 null 时自动包裹为 { data: null }', async () => {
       const ctx = createContext(new Request('http://localhost/api/test'), {});
       const res = await invokeHandler(() => null, ctx);
-      expect(res.status).toBe(204);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: null });
     });
 
     it('handler 通过 ctx.json 返回自定义响应', async () => {
@@ -141,7 +142,7 @@ describe('业务方测试支持', () => {
       const handler = () => ({ ok: true });
       const res = await invokeHandler(handler, ctx, undefined, [authMiddleware]);
       expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ ok: true });
+      expect(await res.json()).toEqual({ data: { ok: true } });
     });
 
     it('带中间件：鉴权失败被拦截', async () => {
@@ -165,7 +166,7 @@ describe('业务方测试支持', () => {
       };
       const handler = (db: any) => ({ result: db.query() });
       const res = await invokeHandler(handler, ctx, undefined, undefined, injectors);
-      expect(await res.json()).toEqual({ result: 'result' });
+      expect(await res.json()).toEqual({ data: { result: 'result' } });
     });
 
     it('async handler 正确 await', async () => {
@@ -175,7 +176,7 @@ describe('业务方测试支持', () => {
         return { async: true };
       };
       const res = await invokeHandler(handler, ctx);
-      expect(await res.json()).toEqual({ async: true });
+      expect(await res.json()).toEqual({ data: { async: true } });
     });
   });
 });

@@ -11,23 +11,47 @@
 
 ## 转换规则
 
-| 返回值类型 | 转换结果 |
+invokeHandler 在调用 `toResponse` 之前先经过 `wrapResult` 自动包裹，包裹后的值再由 `toResponse` 转为 Response。
+
+**wrapResult 包裹规则**（invokeHandler 层）：
+
+| handler 返回值 | wrapResult 处理 |
 | --- | --- |
-| `Response` | 原样透传（合并 meta headers） |
-| 普通对象/数组 | JSON，Content-Type: application/json，200 |
-| `string` | text/plain，200 |
-| `number`/`boolean` | text/plain，String(value)，200 |
+| `Response` 对象 | 不包裹，原样透传 |
+| 其他值（含 `null`/`undefined`） | 用 `config.response.ok`（默认 `(data) => ({ data })`）包裹 |
+
+`null`/`undefined` 也会被包裹为 `{ data: null }` / `{ data: undefined }`（后者 JSON 序列化后为 `{}`）。如需返回 204 No Content，handler 应显式返回 Response 对象（如 `new Response(null, { status: 204 })`）。
+
+**toResponse 转换规则**（底层，直接调用时）：
+
+| 值类型 | 转换结果 |
+| --- | --- |
+| `Response` | 原样返回（合并 meta headers） |
+| 普通对象/数组 | JSON.stringify，Content-Type: application/json |
+| `string` | text/plain |
+| `number`/`boolean` | text/plain，String(value) |
 | `null`/`undefined` | 204 No Content |
 | `Promise` | await 后再处理 |
-| `ctx.sse()` 已调用 | 使用 SSE Response（text/event-stream），handler 返回值被忽略 |
+| `ReadableStream`/`Buffer`/`Uint8Array` | 二进制 body |
+
+> 注：经 invokeHandler 调用时，handler 返回值已先被 wrapResult 包裹（null/undefined → `{ data: null }`），不会走到 toResponse 的 204 分支。toResponse 的 null/undefined → 204 规则仅对直接调用 toResponse 的场景生效。
+
+### 自动包裹（统一响应包装）
+
+框架默认开启自动包裹：handler return 非 Response 的值时（含 `null`/`undefined`），用 `config.response.ok`（默认 `(data) => ({ data })`）包裹。
+
+- `Response` 对象不包裹（`ctx.ok`/`ctx.fail`/`ctx.json` 等返回的 Response 原样透传）
+- 其他值（含 `null`/`undefined`）用 ok 函数包裹
+
+可通过 `config.response` 自定义包装结构（ok/fail），详见 [config/configTypes.md](../config/configTypes.md)。
+
+`ctx.ok(data)` 显式包裹等价于 `return data`（框架自动包裹），两者响应一致。`ctx.fail({ status?, code?, message })` 返回错误 Response，status 和 code 均可独立省略（无推导关系）。
 
 ## SSE 流式响应
 
 当 handler 调用 `ctx.sse()` 时，invokeHandler 优先使用 SSE Response（忽略 handler 返回值）。SSE Response 的 Content-Type 为 `text/event-stream`，不走 toResponse 的常规转换链。
 
 详见 [runtime/sse.md](../runtime/sse.md)。
-
-> 框架不内置统一响应格式配置,业务方如需统一包装,使用 `ok()` 辅助函数或全局中间件(详见 `.trae/skills/faapi-dev/response.md`)。
 
 ## meta 合并
 

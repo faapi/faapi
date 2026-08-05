@@ -82,8 +82,10 @@ describe('全局注入器', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({
-      injected: 'global-db',
-      rows: ['row1', 'row2'],
+      data: {
+        injected: 'global-db',
+        rows: ['row1', 'row2'],
+      },
     });
   });
 
@@ -96,7 +98,7 @@ describe('全局注入器', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ name: 'alice', role: 'admin' });
+    expect(body).toEqual({ data: { name: 'alice', role: 'admin' } });
   });
 });
 
@@ -149,6 +151,6 @@ describe('全局注入器与目录注入器同名覆盖', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     // 目录注入器返回 alice（来自 profile/middlewares.ts），全局 global-alice 被覆盖
-    expect(body).toEqual({ name: 'alice', role: 'admin' });
+    expect(body).toEqual({ data: { name: 'alice', role: 'admin' } });
   });
 });

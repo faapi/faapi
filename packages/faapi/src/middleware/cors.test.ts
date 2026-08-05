@@ -68,6 +68,22 @@ function createMockContext(
       throw new Error('sse() not supported in cors test mock');
     },
 
+    ok(data: unknown): Response {
+      return new Response(JSON.stringify({ data }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+
+    fail(options: { status?: number; code?: string; message: string }): Response {
+      const error: Record<string, string> = { message: options.message };
+      if (options.code !== undefined) error.code = options.code;
+      return new Response(JSON.stringify({ error }), {
+        status: options.status ?? 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+
     getCookie(name: string): string | undefined {
       return cookies[name];
     },

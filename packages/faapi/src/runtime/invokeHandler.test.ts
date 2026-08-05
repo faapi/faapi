@@ -12,13 +12,16 @@ describe('invokeHandler', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('application/json');
     const body = await response.json();
-    expect(body).toEqual({ message: 'hello' });
+    expect(body).toEqual({ data: { message: 'hello' } });
   });
 
-  it('handler 返回 null 时转为 204 Response', async () => {
+  it('handler 返回 null 时自动包裹为 { data: null }', async () => {
     const handler = () => null;
     const response = await invokeHandler(handler, makeCtx());
-    expect(response.status).toBe(204);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('application/json');
+    const body = await response.json();
+    expect(body).toEqual({ data: null });
   });
 
   it('handler 抛错时错误向上传播', async () => {
@@ -52,7 +55,7 @@ describe('invokeHandler', () => {
     const response = await invokeHandler(handler, ctx);
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ page: '2', pageSize: '20' });
+    expect(body).toEqual({ data: { page: '2', pageSize: '20' } });
   });
 
   it('handler 通过参数名注入接收 body', async () => {
@@ -64,7 +67,7 @@ describe('invokeHandler', () => {
     const response = await invokeHandler(handler, ctx, body);
     expect(response.status).toBe(200);
     const result = await response.json();
-    expect(result).toEqual({ received: { name: 'test' } });
+    expect(result).toEqual({ data: { received: { name: 'test' } } });
   });
 
   it('handler 通过参数名注入接收 ip', async () => {
@@ -75,7 +78,7 @@ describe('invokeHandler', () => {
     const response = await invokeHandler(handler, ctx);
     expect(response.status).toBe(200);
     const result = await response.json();
-    expect(result).toEqual({ clientIp: '203.0.113.10' });
+    expect(result).toEqual({ data: { clientIp: '203.0.113.10' } });
   });
 
   it('ctx.setStatus 修改响应状态码', async () => {
@@ -86,7 +89,7 @@ describe('invokeHandler', () => {
     const response = await invokeHandler(handler, makeCtx());
     expect(response.status).toBe(201);
     const body = await response.json();
-    expect(body).toEqual({ created: true });
+    expect(body).toEqual({ data: { created: true } });
   });
 
   it('ctx.setHeader 修改响应头', async () => {
@@ -140,7 +143,7 @@ describe('invokeHandler', () => {
         const response = await invokeHandler(handler, makeCtx(), undefined, middlewares);
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(body).toEqual({ ok: true });
+        expect(body).toEqual({ data: { ok: true } });
       });
 
       it('中间件链按顺序执行，第一个拦截后不再执行后续', async () => {
@@ -390,7 +393,7 @@ describe('invokeHandler', () => {
         const tokenRes = await invokeHandler(handler, tokenCtx, undefined, middlewares, injectors);
         expect(tokenRes.status).toBe(200);
         const body = await tokenRes.json();
-        expect(body).toEqual({ name: 'alice' });
+        expect(body).toEqual({ data: { name: 'alice' } });
       });
     });
 
@@ -403,7 +406,7 @@ describe('invokeHandler', () => {
         const response = await invokeHandler(handler, makeCtx(), undefined, undefined, injectors);
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(body).toEqual({ connected: true });
+        expect(body).toEqual({ data: { connected: true } });
       });
 
       it('注入器支持异步', async () => {
@@ -417,7 +420,7 @@ describe('invokeHandler', () => {
         const response = await invokeHandler(handler, makeCtx(), undefined, undefined, injectors);
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(body).toEqual({ connected: true });
+        expect(body).toEqual({ data: { connected: true } });
       });
 
       it('注入器按需执行：handler 不需要的参数不触发注入器', async () => {
@@ -447,7 +450,7 @@ describe('invokeHandler', () => {
         };
         const response = await invokeHandler(handler, makeCtx(), undefined, middlewares, injectors);
         const body = await response.json();
-        expect(body).toEqual({ name: 'from-middleware' });
+        expect(body).toEqual({ data: { name: 'from-middleware' } });
       });
 
       it('内置注入优先于注入器（query 不被覆盖）', async () => {
@@ -459,13 +462,15 @@ describe('invokeHandler', () => {
         };
         const response = await invokeHandler(handler, ctx, undefined, undefined, injectors);
         const body = await response.json();
-        expect(body).toEqual({ page: '2' });
+        expect(body).toEqual({ data: { page: '2' } });
       });
 
-      it('无匹配注入器时参数为 undefined', async () => {
+      it('无匹配注入器时参数为 undefined（自动包裹为 { data: undefined } → JSON {}）', async () => {
         const handler = eval('(unknown) => unknown');
         const response = await invokeHandler(handler, makeCtx(), undefined, undefined, {});
-        expect(response.status).toBe(204);
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body).toEqual({});
       });
     });
 
@@ -552,7 +557,7 @@ describe('invokeHandler', () => {
         const response = await invokeHandler(handler, ctx, undefined, middlewares, injectors);
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(body).toEqual({ name: 'alice' });
+        expect(body).toEqual({ data: { name: 'alice' } });
         expect(log).toEqual(['log:before', 'handler', 'log:after']);
       });
 
@@ -641,7 +646,7 @@ describe('invokeHandler', () => {
       const handler = () => ({ ok: true });
       const response = await invokeHandler(handler, ctx);
       expect(response.headers.get('Content-Type')).toBe('application/json');
-      expect(await response.json()).toEqual({ ok: true });
+      expect(await response.json()).toEqual({ data: { ok: true } });
     });
 
     it('SSE Response 合并 ctx.setStatus 设置的状态码', async () => {

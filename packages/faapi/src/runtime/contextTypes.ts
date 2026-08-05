@@ -20,6 +20,32 @@ export interface CookieOptions {
 }
 
 /**
+ * ctx.fail() 的参数类型(对象形式,status 和 code 均可省略)
+ *
+ * - status: HTTP 状态码(可选,省略时默认 500)
+ * - code: 业务错误码(可选,省略时响应 body 里不含 code 字段)
+ * - message: 人类可读错误描述(必填)
+ *
+ * status 和 code 是两个独立维度,无关联:
+ * - status 控制 HTTP 状态码
+ * - code 是 body 里的业务错误码字段
+ *
+ * ```ts
+ * ctx.fail({ message: '出错' })                                  // HTTP 500, { error: { message: '出错' } }
+ * ctx.fail({ status: 404, message: '用户不存在' })                // HTTP 404, { error: { message: '用户不存在' } }
+ * ctx.fail({ status: 404, code: 'USER_NOT_FOUND', message: '用户不存在' }) // HTTP 404, { error: { code: 'USER_NOT_FOUND', message: '用户不存在' } }
+ * ```
+ */
+export interface FailOptions {
+  /** HTTP 状态码(可选,省略时默认 500) */
+  status?: number;
+  /** 业务错误码(可选,省略时响应 body 里不含 code 字段) */
+  code?: string;
+  /** 人类可读错误描述 */
+  message: string;
+}
+
+/**
  * ctx.config 的类型：用户自定义业务配置
  *
  * 默认是 Record<string, unknown>（宽松）。用户可通过 `declare module '@faapi/faapi'` 增强：
@@ -132,6 +158,43 @@ export interface FaapiContext {
    * ```
    */
   sse(): SseWriter;
+
+  /**
+   * 显式包装成功响应(返回 Response 对象)
+   *
+   * 用 config.response.ok 包裹 data 并返回 Response。
+   * 等价于 handler 直接 `return data`(框架自动包裹),但显式调用语义更清晰。
+   *
+   * 返回 Response 对象,不会被框架自动包裹再次包装(避免双重包裹)。
+   *
+   * ```ts
+   * // 以下两种写法等价(假设配置了 response.ok = (data) => ({ data })):
+   * export function GET() {
+   *   return { id: 1 };              // 自动包裹 → { data: { id: 1 } }
+   * }
+   * export function GET2(ctx) {
+   *   return ctx.ok({ id: 1 });      // 显式包裹 → { data: { id: 1 } }
+   * }
+   * ```
+   */
+  ok(data: unknown): Response;
+
+  /**
+   * 返回错误响应(对象形式参数,status 和 code 均可省略)
+   *
+   * @param options.status  HTTP 状态码(可选,省略时默认 500)
+   * @param options.code    业务错误码(可选,省略时响应 body 里不含 code 字段)
+   * @param options.message 人类可读错误描述(必填)
+   *
+   * status 和 code 独立无关联:status 控制 HTTP 状态码,code 是 body 里的业务错误码字段。
+   *
+   * ```ts
+   * return ctx.fail({ message: '出错' });                                   // HTTP 500, { error: { message: '出错' } }
+   * return ctx.fail({ status: 404, message: '用户不存在' });                 // HTTP 404, { error: { message: '用户不存在' } }
+   * return ctx.fail({ status: 404, code: 'USER_NOT_FOUND', message: '用户不存在' }); // HTTP 404, { error: { code: 'USER_NOT_FOUND', message: '用户不存在' } }
+   * ```
+   */
+  fail(options: FailOptions): Response;
 
   /**
    * 读取 cookie 值

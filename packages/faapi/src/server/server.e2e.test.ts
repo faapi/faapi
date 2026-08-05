@@ -119,14 +119,14 @@ describe('HTTP Server E2E', () => {
     const res = await fetchFromServer('/api/auth/login');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ token: 'mock-jwt-token' });
+    expect(body).toEqual({ data: { token: 'mock-jwt-token' } });
   });
 
   it('GET /user/123 返回 200（动态路由）', async () => {
     const res = await fetchFromServer('/api/user/123');
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ id: '1' });
+    expect(body).toEqual({ data: { id: '1' } });
   });
 
   it('GET /unknown 返回 404', async () => {
@@ -162,7 +162,7 @@ describe('HTTP Server E2E', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ ok: true });
+    expect(body).toEqual({ data: { ok: true } });
   });
 
   // ctx 功能 E2E 测试
@@ -174,7 +174,7 @@ describe('HTTP Server E2E', () => {
     });
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body).toEqual({ created: true });
+    expect(body).toEqual({ data: { created: true } });
   });
 
   it('ctx.setHeader 设置自定义响应头', async () => {
@@ -182,7 +182,7 @@ describe('HTTP Server E2E', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('Cache-Control')).toBe('max-age=3600');
     const body = await res.json();
-    expect(body).toEqual({ cached: true });
+    expect(body).toEqual({ data: { cached: true } });
   });
 
   it('ctx.redirect 返回 302 重定向', async () => {
@@ -197,7 +197,7 @@ describe('HTTP Server E2E', () => {
       const res = await fetchFromServer('/api/admin/dashboard');
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ connected: true });
+      expect(body).toEqual({ data: { connected: true } });
     });
 
     it('resolve 鉴权：无 token 返回 401', async () => {
@@ -213,7 +213,7 @@ describe('HTTP Server E2E', () => {
       });
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ name: 'alice', role: 'admin' });
+      expect(body).toEqual({ data: { name: 'alice', role: 'admin' } });
     });
 
     it('error 钩子捕获 handler 错误', async () => {
@@ -230,7 +230,7 @@ describe('HTTP Server E2E', () => {
       const res = await fetchFromServer('/api/health');
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ status: 'ok' });
+      expect(body).toEqual({ data: { status: 'ok' } });
     });
 
     it('HEAD /health 返回 204', async () => {
@@ -450,8 +450,8 @@ describe('HTTP Server E2E', () => {
       });
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.cookies).toEqual({ sessionId: 'sess123', theme: 'dark' });
-      expect(body.sessionId).toBe('sess123');
+      expect(body.data.cookies).toEqual({ sessionId: 'sess123', theme: 'dark' });
+      expect(body.data.sessionId).toBe('sess123');
     });
 
     it('handler 设置 cookie → 响应包含 Set-Cookie 头', async () => {
@@ -527,11 +527,11 @@ describe('HTTP Server E2E', () => {
       await closeServer(rawServer);
     });
 
-    it('handler 返回对象直接作为响应体(无外层包装)', async () => {
+    it('handler 返回对象被框架自动包裹为 { data } 格式', async () => {
       const res = await fetch(`${rawBaseUrl}/api/auth/login`);
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ token: 'mock-jwt-token' });
+      expect(body).toEqual({ data: { token: 'mock-jwt-token' } });
     });
 
     it('Response 原样透传(redirect 等)', async () => {
@@ -608,7 +608,7 @@ describe('HTTP Server E2E', () => {
           await next();
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Unknown error';
-          return ctx.json({ code: 500, message }, 500);
+          return ctx.json({ error: { code: 'INTERNAL_ERROR', message } }, 500);
         }
       };
       const { server: srv } = createServer({
@@ -634,8 +634,8 @@ describe('HTTP Server E2E', () => {
         const res = await fetch(`${customUrl}/nonexistent-route`);
         expect(res.status).toBe(500);
         const body = await res.json();
-        expect(body.code).toBe(500);
-        expect(body.message).toBeTruthy();
+        expect(body.error.code).toBe('INTERNAL_ERROR');
+        expect(body.error.message).toBeTruthy();
       } finally {
         await closeServer(customSrv);
       }

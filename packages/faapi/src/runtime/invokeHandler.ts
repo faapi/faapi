@@ -3,8 +3,29 @@ import type { ResponseMeta } from './contextTypes';
 import type { SseWriter } from './sse';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
+import type { ResponseConfig } from '../config/configTypes';
 import { toResponse } from '../response/toResponse';
 import { injectParamsAsync } from '../injection/injectParams';
+
+/**
+ * 自动包裹 handler 返回值(统一响应包装)
+ *
+ * 规则:
+ * - Response 对象:不包裹(ctx.ok/ctx.fail/ctx.json 等返回的 Response 原样透传)
+ * - 其他值(含 null/undefined):用 config.response.ok(或默认 (data) => ({ data })) 包裹
+ *
+ * ctx.ok() 返回的是 Response 对象,所以 handler 用 `return ctx.ok(data)` 或 `return data`
+ * 最终响应一致(都是 ok(data) 的结果),不会双重包裹。
+ *
+ * 注意:null/undefined 也会被包裹为 { data: null } / { data: undefined }(JSON.stringify
+ * 后者得到 "{}"),不再返回 204 No Content。如需 204,显式返回 Response 对象。
+ */
+function wrapResult(result: unknown, ctx: FaapiContext): unknown {
+  if (result instanceof Response) return result;
+  const responseConfig = (ctx.config as { response?: ResponseConfig }).response;
+  const okFn = responseConfig?.ok ?? ((d: unknown) => ({ data: d }));
+  return okFn(result);
+}
 
 /**
  * 将 ctx.meta（setStatus/setHeader/setCookie 设置的响应元数据）合并到 Response
@@ -144,7 +165,7 @@ export async function invokeHandler(
       const result = await injectParamsAsync(handler, ctx, body, injectors);
       const sseResponse = pickSseAndAutoClose();
       if (sseResponse) return sseResponse;
-      return toResponse(result, meta);
+      return toResponse(wrapResult(result, ctx), meta);
     } catch (err) {
       // handler 抛错时关闭未完成的 SSE 流，避免泄漏
       autoCloseSseOnError();
@@ -158,7 +179,7 @@ export async function invokeHandler(
       const result = await injectParamsAsync(handler, ctx, body, injectors);
       const sseResponse = pickSseAndAutoClose();
       if (sseResponse) return sseResponse;
-      return toResponse(result, meta);
+      return toResponse(wrapResult(result, ctx), meta);
     } catch (err) {
       // handler 抛错时关闭未完成的 SSE 流，避免泄漏
       autoCloseSseOnError();

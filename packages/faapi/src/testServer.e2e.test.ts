@@ -47,25 +47,25 @@ describe('createTestServer', () => {
   it('GET /api/health → 200 + JSON', async () => {
     const res = await fetch(`${ts.baseUrl}/api/health`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: 'ok' });
+    expect(await res.json()).toEqual({ data: { status: 'ok' } });
   });
 
   it('路由匹配 + handler 调用（GET /api/auth/login）', async () => {
     const res = await fetch(`${ts.baseUrl}/api/auth/login`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ token: 'mock-jwt-token' });
+    expect(await res.json()).toEqual({ data: { token: 'mock-jwt-token' } });
   });
 
   it('动态路由匹配（GET /api/user/123）', async () => {
     const res = await fetch(`${ts.baseUrl}/api/user/123`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: '1' });
+    expect(await res.json()).toEqual({ data: { id: '1' } });
   });
 
   it('POST + ctx.setStatus（POST /api/user → 201）', async () => {
     const res = await fetch(`${ts.baseUrl}/api/user`, { method: 'POST' });
     expect(res.status).toBe(201);
-    expect(await res.json()).toEqual({ created: true });
+    expect(await res.json()).toEqual({ data: { created: true } });
   });
 
   it('handler 抛错 → 框架错误兜底（GET /api/error/throw → 500）', async () => {

@@ -14,56 +14,86 @@ CLI 和 server 启动时需要统一的配置结构，包含根目录、app 目�
 
 ## 关键设计
 
-- **统一响应格式**:不通过框架配置实现。推荐业务方在项目内自定义辅助函数 + 显式类型注解,保证 handler 返回类型 = 实际响应类型,避免类型断裂。详见"统一响应格式"章节。
+- **统一响应格式**:框架内置 `config.response` 配置(`ok`/`fail` 可选),handler 直接 `return data` 时由 `invokeHandler.wrapResult` 自动用 `ok` 函数包裹(默认 `{ data }`),错误用 `ctx.fail({ status?, code?, message })` 返回(默认 `{ error: { message, ...code? } }`)。详见"统一响应格式"章节。
 - **错误处理**:handler 抛错 → 框架内置 `formatErrorResponse(err)` 兜底 → 仍失败则最简 500 JSON 响应 → 响应发出后触发 `onError` 副作用。业务方如需自定义错误响应,在全局中间件中 try/catch `next()` 即可。
 - `lifecycle.onError(error, ctx)`:错误已被处理为响应、响应发出后触发的副作用钩子(参考 Fastify onError 语义)。用于日志/告警/链路追踪,**不修改已生成的响应**。自身抛错被捕获并忽略。
 - `extendContext(ctx)`:创建上下文后调用,用户可挂载自定义方法/属性到 ctx;配合 `declare module '@faapi/faapi'` 增强 FaapiContext 类型。
 - `FaapiContextConfig`:空 interface,用户可通过声明合并增强 `ctx.config` 的类型。
 
-## 统一响应格式(参考模式,非框架内置)
+## 统一响应格式(框架内置)
 
-框架不内置统一响应包装配置,也不内置 `ok`/`fail` 工具函数。业务方按需在项目中自定义辅助函数,保证 handler 返回类型 = 实际响应类型(以下为参考实现):
+框架内置 `config.response` 配置(`ResponseConfig`),提供统一响应包装能力:
+
+- **成功响应**:handler `return data`(非 Response,含 null/undefined)时,`invokeHandler.wrapResult` 自动用 `config.response.ok`(默认 `(data) => ({ data })`)包裹。`ctx.ok(data)` 显式包裹等价于 `return data`。
+- **错误响应**:`ctx.fail({ status?, code?, message })` 返回错误 Response,用 `config.response.fail` 包装 body。
+- **`Response` 对象**:原样透传,不被包裹(`ctx.ok`/`ctx.fail`/`ctx.json` 等返回的 Response 均属此类)。
+
+**`error.code` 与 HTTP status 是两个独立维度,无关联**——HTTP status 表达错误大类(4xx/5xx),控制 HTTP 响应状态码;`code` 是响应 body 里的业务错误码字段,定位具体业务错误(如 `'USER_NOT_FOUND'`)。`ctx.fail()` 的 `status` 和 `code` 均可独立省略,无推导关系:
+
+| 调用形式 | HTTP 状态码 | 响应 body |
+| --- | --- | --- |
+| `ctx.fail({ message })` | 500(默认) | `{ error: { message } }`(无 code 字段) |
+| `ctx.fail({ status: 404, message })` | 404 | `{ error: { message } }`(无 code 字段) |
+| `ctx.fail({ code: 'USER_NOT_FOUND', message })` | 500(默认) | `{ error: { code: 'USER_NOT_FOUND', message } }` |
+| `ctx.fail({ status: 404, code: 'USER_NOT_FOUND', message })` | 404 | `{ error: { code: 'USER_NOT_FOUND', message } }` |
+
+响应格式参考业界通用做法(Stripe / Facebook Graph / JSON:API):成功 `{ data: T }`、失败 `{ error: { code?, message } }`(与框架内置 `formatErrorResponse` 结构一致)。
 
 ```ts
-// src/utils/response.ts(用户自定义,非框架代码)
-export function ok<T>(data: T) {
-  return { code: 0, data, message: 'success' } as const;
-}
+// faapi.config.ts
+import type { FaapiConfig } from '@faapi/faapi';
 
-export function fail(message: string, code = 1) {
-  return { code, data: null, message } as const;
-}
-
-// api/user/handler.ts
-import { ok, fail } from '../utils/response';
-
-export interface User { id: number; name: string }
-
-export function GET(): ReturnType<typeof ok<User>> {
-  return ok({ id: 1, name: 'Alice' });
-  // 实际响应: { code: 0, data: { id: 1, name: 'Alice' }, message: 'success' }
-  // handler 类型签名 = 实际响应类型,TypeScript 类型保护完整
-}
+export default {
+  response: {
+    // 自定义成功包装(默认 (data) => ({ data }))
+    ok: (data) => ({ code: 0, data }),
+    // 自定义错误包装(默认:省略的字段不放入 error 对象)
+    // 接收 { status?, code?, message },返回 body
+    fail: ({ status, code, message }) => ({ error: { code, message } }),
+  },
+} satisfies FaapiConfig;
 ```
 
-**为什么不内置统一响应包装配置**:
-- 全局隐式包装是魔法,handler 返回类型 ≠ 实际响应类型,类型系统在响应边界失效
-- AI/schema 静态分析无法感知外层包装结构
-- 辅助函数模式显式、类型一致、可自由定制不同包装结构
+```ts
+// api/user/handler.ts
+export interface User { id: number; name: string }
+
+// 成功响应:直接 return data,框架自动包裹
+export function GET(): User {
+  return { id: 1, name: 'Alice' };
+  // 响应: { data: { id: 1, name: 'Alice' } }
+}
+
+// 错误响应:ctx.fail 返回 Response,不被包裹
+export function POST(ctx, body: { name: string }) {
+  if (!body.name) {
+    return ctx.fail({ status: 400, code: 'NAME_REQUIRED', message: 'name is required' });
+    // 响应: HTTP 400, { error: { code: 'NAME_REQUIRED', message: 'name is required' } }
+  }
+  return { created: true };
+}
+```
 
 **自定义错误响应**:用全局中间件捕获 handler 抛错:
 
 ```ts
 // faapi.config.ts
 import type { FaapiMiddleware } from '@faapi/faapi';
+import { ValidationError } from '@faapi/faapi';
 
 const errorHandler: FaapiMiddleware = async (ctx, next) => {
   try {
     await next();
   } catch (err) {
+    if (err instanceof ValidationError) {
+      // 与框架 formatErrorResponse 格式一致:code 用框架字符串错误码
+      return ctx.json(
+        { error: { code: err.code, message: err.message, issues: err.issues } },
+        err.statusCode,
+      );
+    }
     const message = err instanceof Error ? err.message : String(err);
-    const status = (err as any)?.statusCode ?? 500;
-    ctx.json({ code: status, data: null, message }, status);
+    return ctx.fail({ message });  // status 省略默认 500,code 省略 body 里无 code 字段
   }
 };
 

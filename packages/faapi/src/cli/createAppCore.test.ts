@@ -103,14 +103,14 @@ describe('createAppBase', () => {
   });
 
   it('inject 无服务器注入请求', async () => {
-    // handler 返回 null → 204 无 body → sendNodeResponse 走 res.end() 不走 pipe
-    // （inject 的 mockRes 非 Writable，不支持 pipe）
+    // handler 返回 null → 自动包裹为 { data: null } → 200 JSON body
     writeHandler(`export function GET() { return null; }\n`);
     await compileArtifacts('dist');
     const { app } = await createAppBase(options());
 
     const res = await app.inject({ method: 'GET', path: '/api/hello' });
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: null });
 
     await app.close();
   });

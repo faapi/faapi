@@ -244,7 +244,7 @@ describe('按需编译（Vite 风格）', () => {
       const res = await fetch(`${baseUrl}/api/hello`);
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ hello: 'world' });
+      expect(body).toEqual({ data: { hello: 'world' } });
 
       // 验证按需编译 + schema 生成已触发
       expect(existsSync(handlerJsPath)).toBe(true);
@@ -276,7 +276,7 @@ describe('按需编译（Vite 风格）', () => {
       const res = await fetch(`${baseUrl}/api/user?page=1&pageSize=10`);
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ page: '1', pageSize: '10' });
+      expect(body).toEqual({ data: { page: '1', pageSize: '10' } });
 
       // 无效 query（page=abc 无法 coerce 为 number）→ 校验失败 → 422
       const res2 = await fetch(`${baseUrl}/api/user?page=abc&pageSize=10`);

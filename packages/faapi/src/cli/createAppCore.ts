@@ -48,6 +48,7 @@ const FAAPI_CONFIG_KEYS = new Set([
   'bodyLimit',
   'logger',
   'http2',
+  'response',
 ]);
 
 function isFaapiConfigKey(key: string): boolean {
@@ -262,41 +263,49 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
         : '';
 
       return new Promise<InjectResponse>((resolve, reject) => {
-        const mockRes = {
-          statusCode: 200,
-          _headers: {} as Record<string, string>,
-          _body: Buffer.alloc(0) as Buffer,
-          setHeader(name: string, value: string) {
-            this._headers[name.toLowerCase()] = value;
-          },
-          appendHeader(name: string, value: string) {
-            const key = name.toLowerCase();
-            const existing = this._headers[key];
-            this._headers[key] = existing ? `${existing}, ${value}` : value;
-          },
-          writeHead(status: number, headers?: Record<string, string>) {
-            this.statusCode = status;
-            if (headers) {
-              Object.assign(this._headers, headers);
-            }
-          },
-          end(data?: string | Buffer) {
-            const buf: Buffer = Buffer.isBuffer(data) ? data : Buffer.from(data ?? '');
-            this._body = buf;
-            resolve({
-              status: this.statusCode,
-              headers: new Headers(this._headers as Record<string, string>),
-              body: this.parseBody(),
-            });
-          },
-          parseBody(): unknown {
-            try {
-              return JSON.parse(this._body.toString());
-            } catch {
-              return this._body.toString();
-            }
-          },
+        // mockRes 需为 Writable Stream（PassThrough）以支持 sendNodeResponse 的 pipe 路径
+        // （handler 返回值被自动包裹后产生 JSON body，走 nodeStream.pipe(res)）
+        const chunks: Buffer[] = [];
+        const mockRes = new PassThrough() as PassThrough & {
+          statusCode: number;
+          _headers: Record<string, string>;
+          setHeader(name: string, value: string): void;
+          appendHeader(name: string, value: string): void;
+          writeHead(status: number, headers?: Record<string, string>): void;
         };
+        mockRes.statusCode = 200;
+        mockRes._headers = {};
+        mockRes.setHeader = function (name: string, value: string) {
+          this._headers[name.toLowerCase()] = value;
+        };
+        mockRes.appendHeader = function (name: string, value: string) {
+          const key = name.toLowerCase();
+          const existing = this._headers[key];
+          this._headers[key] = existing ? `${existing}, ${value}` : value;
+        };
+        mockRes.writeHead = function (status: number, headers?: Record<string, string>) {
+          this.statusCode = status;
+          if (headers) {
+            Object.assign(this._headers, headers);
+          }
+        };
+
+        mockRes.on('data', (chunk: Buffer) => chunks.push(chunk));
+        mockRes.on('error', reject);
+        mockRes.on('finish', () => {
+          const body = Buffer.concat(chunks);
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(body.toString());
+          } catch {
+            parsed = body.toString();
+          }
+          resolve({
+            status: mockRes.statusCode,
+            headers: new Headers(mockRes._headers as Record<string, string>),
+            body: parsed,
+          });
+        });
 
         const listeners = server.listeners('request');
         const handler = listeners[listeners.length - 1];

@@ -95,7 +95,7 @@ interface RouteOutputSchema {
 
 ## 已知限制
 
-- **不分析全局中间件包装**:若业务方在全局中间件中修改 handler 返回值(如包装为 `{ code: 0, data, message }`),output 反映的是 handler 原始返回类型,不是客户端实际收到的包装后结构。AI 助手需结合业务中间件理解实际响应。框架不内置统一响应包装配置,推荐业务方使用 `ok()` 辅助函数保持类型一致。
+- **不分析全局中间件包装**:若业务方在全局中间件中修改 handler 返回值(如包装为 `{ data }`),output 反映的是 handler 原始返回类型,不是客户端实际收到的包装后结构。AI 助手需结合业务中间件理解实际响应。框架不内置统一响应包装配置,推荐业务方使用 `ok()` 辅助函数保持类型一致。
 - **不解析推断类型**:handler 无显式返回类型注解时(`export function GET(query) { return query }`),output 为 null。TypeScript 编译器能推断,但 AST 静态分析不深入做数据流推断。
 - **Promise 解包仅一层**:`Promise<Promise<T>>` 不会递归解包(实际代码不会出现)。
 

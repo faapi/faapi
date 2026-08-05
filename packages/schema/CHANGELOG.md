@@ -1,5 +1,19 @@
 # @faapi/schema
 
+## 1.3.0
+
+### Minor Changes
+
+- 新增统一响应包装能力：ctx.ok / ctx.fail 便捷方法 + handler 返回值自动包裹
+
+  - 新增 `ctx.ok(data)`：显式包裹成功响应，等价于 `return data`（框架自动包裹）
+  - 新增 `ctx.fail({ status?, code?, message })`：返回错误响应，status 和 code 均可独立省略（无推导关系）
+  - 新增 `config.response` 配置（`ok` / `fail` 可选）：自定义成功/错误响应包装结构
+  - `invokeHandler.wrapResult` 自动包裹：handler return 非 Response 的值（含 null/undefined）时用 `config.response.ok`（默认 `(data) => ({ data })`）包裹
+  - `Response` 对象原样透传，不被包裹（`ctx.ok`/`ctx.fail`/`ctx.json` 等返回的 Response 均属此类）
+
+  **Breaking**：handler `return data` 的默认响应格式从原样返回变为 `{ data }` 包裹。如需原样返回，用 `return ctx.json(data)`。
+
 ## 1.2.1
 
 ## 1.2.0

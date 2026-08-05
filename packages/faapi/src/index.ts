@@ -1,10 +1,15 @@
-export type { FaapiContext, FaapiContextConfig } from './runtime/contextTypes';
+export type { FaapiContext, FaapiContextConfig, FailOptions } from './runtime/contextTypes';
 export type { FaapiMiddleware } from './middleware/middlewareTypes';
 export type { Injector, InjectorMap } from './middleware/injectorTypes';
 export type { CorsOptions } from './middleware/cors';
 export type { LoggerOptions } from './middleware/logger';
 export type { HelmetOptions } from './middleware/helmet';
-export type { FaapiConfig, LifecycleHooks, LifecycleContext } from './config/configTypes';
+export type {
+  FaapiConfig,
+  LifecycleHooks,
+  LifecycleContext,
+  ResponseConfig,
+} from './config/configTypes';
 export type {
   FaapiPlugin,
   PluginContext,

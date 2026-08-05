@@ -43,6 +43,48 @@ export interface LifecycleContext {
 }
 
 /**
+ * 统一响应包装配置
+ *
+ * 配置后,框架自动:
+ * - 成功响应:handler return 非 Response 的值时,用 ok 函数包裹
+ * - 错误响应:ctx.fail() 用 fail 函数包装 body
+ *
+ * 未配置 response 时,使用框架默认实现:
+ * - ok: (data) => ({ data })
+ * - fail: ({ status, code, message }) => 省略的字段不放入 error 对象
+ *
+ * ```ts
+ * import type { FaapiConfig } from '@faapi/faapi';
+ * export default {
+ *   response: {
+ *     // 自定义成功包装(默认 { data })
+ *     ok: (data) => ({ code: 0, data }),
+ *     // 自定义错误包装(默认 { error: { message, ...code?, ...status? } })
+ *     fail: ({ status, code, message }) => ({ error: { code, message } }),
+ *   },
+ * } satisfies FaapiConfig;
+ * ```
+ */
+export interface ResponseConfig {
+  /**
+   * 成功响应包装函数
+   *
+   * handler return 非 Response 的值时调用。
+   * 默认: (data) => ({ data })
+   */
+  ok?: (data: unknown) => unknown;
+
+  /**
+   * 错误响应包装函数
+   *
+   * ctx.fail() 调用时使用,接收 { status?, code?, message }。
+   * status 和 code 均可能为 undefined(用户调用 ctx.fail 时省略则不传),
+   * 默认实现只把非 undefined 的字段放入 error 对象。
+   */
+  fail?: (error: { status?: number; code?: string; message: string }) => unknown;
+}
+
+/**
  * faapi 配置文件类型
  *
  * 在项目根目录创建 faapi.config.ts：
@@ -85,6 +127,30 @@ export interface FaapiConfig {
   logger?: LoggerOptions | boolean;
   /** HTTP/2 配置，false 禁用（默认 http/1.1） */
   http2?: Http2Options | boolean;
+
+  /**
+   * 统一响应包装配置
+   *
+   * 配置后,框架自动包裹 handler 返回值:
+   * - 成功响应:handler return 非 Response → 用 ok 函数包裹(默认 `{ data }`)
+   * - 错误响应:ctx.fail() 用 fail 函数包装(默认 `{ error: { message, ...code? } }`)
+   *
+   * 未配置 response 时,使用框架默认实现(见 ResponseConfig)。
+   * 配置 response 后,ok/fail 各字段均可选,按需覆盖。
+   *
+   * ```ts
+   * import type { FaapiConfig } from '@faapi/faapi';
+   * export default {
+   *   response: {
+   *     ok: (data) => ({ code: 0, data }),
+   *     fail: ({ status, code, message }) => ({ error: { code, message } }),
+   *   },
+   * } satisfies FaapiConfig;
+   * ```
+   *
+   * 详见 `src/config/configTypes.md` 统一响应包装章节。
+   */
+  response?: ResponseConfig;
 
   /**
    * 全局中间件：对所有路由（HTTP + WebSocket 握手）生效

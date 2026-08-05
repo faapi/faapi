@@ -55,15 +55,15 @@ describe('createTestServer 在 vitest 下让 vi.mock 生效', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     // vi.mock 把 db.source 替换为 'mocked'
-    expect(body.source).toBe('mocked');
+    expect(body.data.source).toBe('mocked');
     // 实际数据仍透传 actual.db.user（mock 时 ...actual.db 展开）
-    expect(body.user.id).toBe('real-user-id');
+    expect(body.data.user.id).toBe('real-user-id');
   });
 
   it('GET /api/alias?id=<real-user-id> 走 mocked 模块', async () => {
     const res = await fetch(`${ts.baseUrl}/api/alias?id=real-user-id`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.source).toBe('mocked');
+    expect(body.data.source).toBe('mocked');
   });
 });

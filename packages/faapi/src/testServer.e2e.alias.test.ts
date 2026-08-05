@@ -40,25 +40,25 @@ describe('createTestServer 在 vitest 下识别 @/ 别名（不 mock）', () => 
     const res = await fetch(`${ts.baseUrl}/api/alias`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.source).toBe('real');
-    expect(body.user).toBeDefined();
-    expect(body.user.id).toBe('real-user-id');
-    expect(body.user.username).toBe('real-user');
+    expect(body.data.source).toBe('real');
+    expect(body.data.user).toBeDefined();
+    expect(body.data.user.id).toBe('real-user-id');
+    expect(body.data.user.username).toBe('real-user');
   });
 
   it('GET /api/alias?id=<real-user-id> 通过别名模块查询用户', async () => {
     const res = await fetch(`${ts.baseUrl}/api/alias?id=real-user-id`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.source).toBe('real');
-    expect(body.user.id).toBe('real-user-id');
+    expect(body.data.source).toBe('real');
+    expect(body.data.user.id).toBe('real-user-id');
   });
 
   it('GET /api/alias?id=<unknown> 返回 user=null', async () => {
     const res = await fetch(`${ts.baseUrl}/api/alias?id=unknown`);
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.source).toBe('real');
-    expect(body.user).toBeNull();
+    expect(body.data.source).toBe('real');
+    expect(body.data.user).toBeNull();
   });
 });

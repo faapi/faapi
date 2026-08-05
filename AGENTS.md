@@ -233,30 +233,88 @@ export const injectors: InjectorMap = {
 
 在项目根目录创建 `faapi.config.ts`，支持生命周期钩子、自定义业务配置、全局中间件等。
 
-**统一响应格式与错误处理**:框架不内置统一响应包装/错误格式化配置(避免 handler 返回类型与实际响应类型断裂)。推荐业务方通过辅助函数 + 全局中间件模式实现:
+**统一响应格式与错误处理**：框架内置自动响应包装（`config.response` 配置），handler `return` 普通值时自动用 `ok` 函数包裹（默认 `{ data: T }`），错误用 `ctx.fail()` 返回（默认 `{ error: { message, ...code? } }`）。响应格式参考业界通用做法（Stripe / Facebook Graph / JSON:API）。
+
+**`error.code` 是业务错误码（字符串），与 HTTP status 是两个独立维度，无关联**——HTTP status 表达错误大类（4xx/5xx），`code` 定位具体业务错误（如 `'USER_NOT_FOUND'`）。两者互补不冗余，但不存在推导关系：`ctx.fail()` 的 `status` 和 `code` 均可独立省略。
 
 ```ts
-// src/utils/response.ts(业务自定义辅助函数)
-export function ok<T>(data: T) {
-  return { code: 0, data, message: 'success' } as const;
+// api/user/handler.ts
+// 1. 成功响应:直接 return 业务数据,框架自动用 config.response.ok 包裹(默认 { data })
+export interface User { id: number; name: string }
+export function GET(): User {
+  return { id: 1, name: 'Alice' };
+  // 响应: { data: { id: 1, name: 'Alice' } }
 }
 
-// api/user/handler.ts(handler 直接返回完整结构,类型一致)
-export interface User { id: number; name: string }
-export function GET(): ReturnType<typeof ok<User>> {
-  return ok({ id: 1, name: 'Alice' });
+// 2. 错误响应:用 ctx.fail({ status?, code?, message }) 返回(对象形式,status 和 code 均可省略)
+export function POST(ctx, body) {
+  if (!body.name) {
+    return ctx.fail({ status: 400, code: 'NAME_REQUIRED', message: 'name is required' });
+    // 响应: HTTP 400, { error: { code: 'NAME_REQUIRED', message: 'name is required' } }
+  }
+  if (!isUnique(body.name)) {
+    return ctx.fail({ status: 409, code: 'USER_NAME_DUPLICATED', message: '用户名已存在' });
+    // 响应: HTTP 409, { error: { code: 'USER_NAME_DUPLICATED', message: '用户名已存在' } }
+  }
+  return { created: true };
 }
 
 // faapi.config.ts(全局错误中间件捕获 handler 抛错)
 import type { FaapiMiddleware } from '@faapi/faapi';
+import { ValidationError } from '@faapi/faapi';
 const errorHandler: FaapiMiddleware = async (ctx, next) => {
   try { await next(); } catch (err) {
+    if (err instanceof ValidationError) {
+      return ctx.fail({
+        status: err.statusCode,
+        code: err.code,            // 框架字符串错误码
+        message: err.message,
+      });
+    }
     const message = err instanceof Error ? err.message : String(err);
-    ctx.json({ code: 500, data: null, message }, 500);
+    return ctx.fail({ message });  // status 省略默认 500,code 省略 body 里无 code 字段
   }
 };
 export default { middlewares: [errorHandler] } satisfies FaapiConfig;
 ```
+
+**自动包裹规则**（`invokeHandler.wrapResult`）：
+
+| handler 返回值 | 处理 |
+| --- | --- |
+| `Response` 对象 | 原样透传（`ctx.ok`/`ctx.fail`/`ctx.json` 等返回的 Response 不被再次包裹） |
+| 其他值（含 `null`/`undefined`） | 用 `config.response.ok` 包裹（默认 `(data) => ({ data })`） |
+
+`null`/`undefined` 也会被包裹为 `{ data: null }` / `{ data: undefined }`（后者 JSON 序列化后为 `{}`），不再返回 204 No Content。如需 204，handler 应显式返回 Response 对象（如 `return new Response(null, { status: 204 })`）。
+
+`ctx.ok(data)` 显式包裹等价于 `return data`（框架自动包裹），两者响应一致。`ctx.fail()` 返回的是 `Response` 对象，不会被再次包裹。
+
+**`ctx.fail()` 的 `status` 和 `code` 独立可省略**：
+
+| 调用形式 | HTTP 状态码 | 响应 body |
+| --- | --- | --- |
+| `ctx.fail({ message })` | 500（默认） | `{ error: { message } }`（无 code 字段） |
+| `ctx.fail({ status: 404, message })` | 404 | `{ error: { message } }`（无 code 字段） |
+| `ctx.fail({ code: 'USER_NOT_FOUND', message })` | 500（默认） | `{ error: { code: 'USER_NOT_FOUND', message } }` |
+| `ctx.fail({ status: 404, code: 'USER_NOT_FOUND', message })` | 404 | `{ error: { code: 'USER_NOT_FOUND', message } }` |
+
+> `status` 省略时 HTTP 状态码默认 500；`code` 省略时响应 body 里不含 `code` 字段。两者无推导关系，独立控制。
+
+**自定义包装结构**（`config.response`，可选）：
+
+```ts
+import type { FaapiConfig } from '@faapi/faapi';
+export default {
+  response: {
+    // 自定义成功包装(默认 (data) => ({ data }))
+    ok: (data) => ({ code: 0, data }),
+    // 自定义错误包装(默认:省略的字段不放入 error 对象)
+    fail: ({ status, code, message }) => ({ error: { code, message } }),
+  },
+} satisfies FaapiConfig;
+```
+
+`config.response` 的 `ok` / `fail` 字段均可选，按需覆盖；未配置时用框架默认实现。详见 `src/config/configTypes.md`。
 
 完整配置示例:
 
@@ -286,6 +344,12 @@ export default {
   // 扩展 ctx：挂载自定义方法/属性，配合 declare module '@faapi/faapi' 增强 FaapiContext 类型
   extendContext(ctx) {
     ctx.t = (key: string) => key; // 示例：i18n
+  },
+
+  // 统一响应包装（可选，未配置时用框架默认 { data } / { error: { message, ...code? } }）
+  response: {
+    // ok: (data) => ({ data }),                  // 默认,可省略
+    // fail: ({ status, code, message }) => ({ error: { message, ...code? } }), // 默认,可省略
   },
 
   // CORS 配置
@@ -375,14 +439,18 @@ export function GET(ctx) {
 
 | 方法 | 说明 | 示例 |
 |------|------|------|
-| `ctx.json(data, status?)` | 返回 JSON 响应 | `return ctx.json({ error: 'Not found' }, 404)` |
+| `ctx.ok(data)` | 显式包裹成功响应（等价于 `return data`，框架自动包裹） | `return ctx.ok({ id: 1 })` |
+| `ctx.fail({ status, code?, message })` | 返回错误响应（对象形式，`code` 可缺省按 `status` 推导） | `return ctx.fail({ status: 404, message: '用户不存在' })` |
+| `ctx.json(data, status?)` | 返回 JSON 响应（不包裹，原样序列化） | `return ctx.json({ error: 'Not found' }, 404)` |
 | `ctx.html(html, status?)` | 返回 HTML 响应 | `return ctx.html('<h1>Hello</h1>')` |
 | `ctx.redirect(url, status?)` | 返回重定向响应 | `return ctx.redirect('/login')` |
 | `ctx.sse()` | 创建 SSE writer，流式推送事件 | `const sse = ctx.sse(); sse.send({data:'chunk'}); sse.close()` |
 
+`ctx.ok(data)` 和 `ctx.fail(...)` 返回的是 `Response` 对象，不会被自动包裹再次包装。handler 直接 `return` 普通值时框架自动用 `config.response.ok` 包裹（默认 `{ data }`），与 `return ctx.ok(data)` 响应一致。
+
 `ctx.sse()` 返回 `SseWriter`，handler 通过 `sse.send({ data, event?, id?, retry? })` 推送事件，`sse.close()` 关闭流。框架自动构造 `text/event-stream` Response，与 `ctx.json`/`ctx.html` 互斥。`SseWriter` 提供 `aborted` 属性检测客户端断开；handler 返回或抛错时框架自动 close 兜底，避免连接泄漏。详见 `src/runtime/sse.md`。
 
-handler 返回值直接序列化为响应(原始数据);错误响应由内置 `formatErrorResponse` 兜底(参考 `src/errors/formatErrorResponse.ts`)。
+handler 抛错时由内置 `formatErrorResponse` 兜底（参考 `src/errors/formatErrorResponse.ts`）；建议业务方在全局中间件中用 `try/catch` 捕获并通过 `ctx.fail()` 返回业务化错误响应。
 
 ### 5.6 设计决策
 
