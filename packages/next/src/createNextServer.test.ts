@@ -7,13 +7,26 @@ import type { RequestHandler, UpgradeHandler } from '@faapi/faapi';
 // Mock next 模块
 const mockNextHandle = vi.fn();
 const mockNextUpgradeHandler = vi.fn();
+const mockNextFactory = vi.fn(() => ({
+  getRequestHandler: () => mockNextHandle,
+  getUpgradeHandler: () => mockNextUpgradeHandler,
+  prepare: async () => {},
+}));
 
 vi.mock('next', () => ({
-  default: vi.fn(() => ({
-    getRequestHandler: () => mockNextHandle,
-    getUpgradeHandler: () => mockNextUpgradeHandler,
-    prepare: async () => {},
-  })),
+  default: mockNextFactory,
+}));
+
+// Mock next/constants（phase 常量，loadConfig 用）
+vi.mock('next/constants', () => ({
+  PHASE_DEVELOPMENT_SERVER: 'phase-development-server',
+  PHASE_PRODUCTION_SERVER: 'phase-production-server',
+}));
+
+// Mock next/dist/server/config（loadConfig）
+const mockLoadConfig = vi.fn();
+vi.mock('next/dist/server/config', () => ({
+  default: mockLoadConfig,
 }));
 
 import nextPlugin from './createNextServer';
@@ -35,6 +48,8 @@ afterEach(async () => {
   );
   servers.length = 0;
   vi.clearAllMocks();
+  // mockLoadConfig 默认返回 undefined（模拟 loadConfig 失败/无 next.config.ts）
+  mockLoadConfig.mockResolvedValue(undefined);
 });
 
 /** 创建 mock PluginContext，捕获 wrapHandler/wrapUpgradeHandler 调用 */
@@ -359,5 +374,90 @@ describe('@faapi/next 插件 - 默认导出', () => {
     const { default: importedPlugin } = await import('./createNextServer');
     expect(importedPlugin).toBe(nextPlugin);
     expect(importedPlugin.name).toBe('@faapi/next');
+  });
+});
+
+describe('@faapi/next 插件 - trustHostHeader 自动开启', () => {
+  it('默认（不传 trustHostHeader）开启 trustHostHeader，加载用户配置并合并', async () => {
+    // 模拟用户 next.config.ts 已有配置（含 experimental 和其他字段）
+    mockLoadConfig.mockResolvedValue({
+      images: { remotePatterns: [{ protocol: 'https', hostname: '**' }] },
+      experimental: { trustHostHeader: false, anotherExp: true },
+    });
+    const { ctx } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    expect(mockLoadConfig).toHaveBeenCalledWith('phase-development-server', '/tmp/test', {
+      silent: true,
+    });
+    // next() 被调用时 conf 包含 experimental.trustHostHeader=true
+    expect(mockNextFactory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conf: expect.objectContaining({
+          experimental: expect.objectContaining({ trustHostHeader: true }),
+        }),
+      }),
+    );
+    // 用户的其他配置被保留
+    const calls = mockNextFactory.mock.calls as unknown as Array<
+      [{ conf: Record<string, unknown> }]
+    >;
+    const callArg = calls[0][0];
+    expect(callArg.conf.images).toEqual({
+      remotePatterns: [{ protocol: 'https', hostname: '**' }],
+    });
+    expect(callArg.conf.experimental).toHaveProperty('anotherExp', true);
+  });
+
+  it('用户已在 next.config.ts 显式开启 trustHostHeader=true 时不重复设置', async () => {
+    mockLoadConfig.mockResolvedValue({
+      experimental: { trustHostHeader: true, taint: true },
+    });
+    const { ctx } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    expect(mockNextFactory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conf: expect.objectContaining({
+          experimental: expect.objectContaining({ trustHostHeader: true, taint: true }),
+        }),
+      }),
+    );
+  });
+
+  it('trustHostHeader: false 时不加载 next.config.ts，不传 conf', async () => {
+    const { ctx } = createMockContext({ trustHostHeader: false });
+    await nextPlugin.setup(ctx);
+
+    expect(mockLoadConfig).not.toHaveBeenCalled();
+    expect(mockNextFactory).toHaveBeenCalledWith(
+      expect.not.objectContaining({ conf: expect.anything() }),
+    );
+  });
+
+  it('loadConfig 失败时退回不传 conf，打印警告', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockLoadConfig.mockRejectedValue(new Error('config not found'));
+
+    const { ctx } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    expect(mockNextFactory).toHaveBeenCalledWith(
+      expect.not.objectContaining({ conf: expect.anything() }),
+    );
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('experimental.trustHostHeader'),
+    );
+    consoleWarnSpy.mockRestore();
+  });
+
+  it('prod 模式用 PHASE_PRODUCTION_SERVER 加载配置', async () => {
+    mockLoadConfig.mockResolvedValue({ experimental: {} });
+    const { ctx } = createMockContext({ dev: false });
+    await nextPlugin.setup(ctx);
+
+    expect(mockLoadConfig).toHaveBeenCalledWith('phase-production-server', '/tmp/test', {
+      silent: true,
+    });
   });
 });

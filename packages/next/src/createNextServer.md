@@ -58,15 +58,38 @@ project/
 export default {
   plugins: [
     ['@faapi/next', {
-      dev: true,           // 开发模式，默认 NODE_ENV !== 'production'
-      dir: '.',            // Next.js 项目目录，默认 '.'
-      apiPrefix: '/api',   // faapi API 路径前缀，默认 '/api'
+      dev: true,            // 开发模式，默认 NODE_ENV !== 'production'
+      dir: '.',             // Next.js 项目目录，默认 '.'
+      apiPrefix: '/api',    // faapi API 路径前缀，默认 '/api'
+      trustHostHeader: true, // 自动开启 experimental.trustHostHeader，默认 true
     }],
   ],
 } satisfies FaapiConfig;
 ```
 
-### 3. API 前缀
+### 3. 反向代理场景（trustHostHeader）
+
+当应用部署在 Nginx/Caddy 等反向代理后时，Next.js 默认用固定的 `localhost:3000` 构造 `initURL`（仅从 `X-Forwarded-Proto` 取协议，但忽略代理透传的 `Host` 头），导致 SSR 阶段构造的 URL 指向错误域名（如 `https://localhost:3000/path` 而非 `https://llm.tulun.top/path`），引发重定向循环、链接错误等问题。
+
+**默认行为**：插件默认 `trustHostHeader: true`，通过 Next.js 内部 `loadConfig`（`next/dist/server/config`）加载用户 `next.config.ts`，合并 `experimental.trustHostHeader = true` 后通过 `next()` 的 `conf` 选项传入。
+
+- 用户在 `next.config.ts` 中的其他配置（`images`/`rewrites`/`redirects` 等）都会被保留。
+- 若用户已显式开启 `trustHostHeader: true`，插件不会重复设置。
+- `loadConfig` 失败时退回不传 `conf`（Next.js 自行加载 `next.config.ts`），并打印警告提示手动配置。
+
+**关闭自动开启**：非反向代理场景或需手动控制时设为 `false`，插件不会读取 `next.config.ts`，直接用 `next({ dev, dir })` 启动。
+
+```ts
+export default {
+  plugins: [
+    ['@faapi/next', { trustHostHeader: false }],
+  ],
+} satisfies FaapiConfig;
+```
+
+> 注：插件 `proxy.ts` 的请求头重建方案（v0.1.4+）已能在 HTTP handler 层绕过此问题，`trustHostHeader` 是在 Next.js 内部 URL 构造层的更彻底方案，两者互补。
+
+### 4. API 前缀
 
 `apiPrefix` 决定哪些请求走 faapi（默认 `/api`）。faapi 路由 URL 由文件路径推导（`src/api/user/handler.ts` → `/api/user`），因此 `apiPrefix` 应与 faapi 路由前缀保持一致，默认 `/api` 无需额外配置。
 
@@ -79,6 +102,7 @@ export default {
 - **WS 分流**：通过 `ctx.wrapUpgradeHandler` 注册，faapi WS 路由走原始 handler，其余走 Next.js HMR
 - **dev 模式自动推断**：`NODE_ENV !== 'production'` 即 dev 模式
 - **配置分离**：faapi 配置在 `faapi.config.ts`，Next.js 配置在 `next.config.ts`
+- **trustHostHeader 自动开启**：默认用 Next.js `loadConfig` 加载 `next.config.ts` 并合并 `experimental.trustHostHeader=true`，解决反向代理下 `initURL` 构造错误。传 `conf` 后 Next.js 跳过自身配置加载，所以必须先加载用户配置以保留其他字段（`images`/`rewrites` 等）。`loadConfig` 失败时降级为不传 `conf`，由 Next.js 自行加载
 
 ## 请求分流规则
 

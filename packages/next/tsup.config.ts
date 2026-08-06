@@ -8,5 +8,5 @@ export default defineConfig({
   splitting: false,
   sourcemap: true,
   platform: 'node',
-  external: ['node:*', '@faapi/faapi', 'next'],
+  external: ['node:*', '@faapi/faapi', 'next', 'next/*'],
 });
