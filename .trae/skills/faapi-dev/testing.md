@@ -167,8 +167,11 @@ expect(res.status).toBe(404);
 |------|----------|
 | 不走 schema 校验（zod.js 由 build 生成） | 用 E2E 测试（`createProdApp` + `app.inject`） |
 | 不走全局中间件（`faapi.config.ts` 配置的） | 显式传入中间件数组，或用 `createProdApp` 启动完整 app |
+| 不走 formatErrorResponse 兜底（handler 抛错会 re-throw，不会自动转 500 Response） | 显式传入错误处理中间件，或用 `createProdApp + app.inject` / `createTestServer` |
 | SSE / 流式响应测试 | 测试 SSE 时用 E2E |
 | 文件上传（files/fields） | 自行构造 `body = { files: [], fields: {} }` 传入 |
+
+> 注：`invokeHandler` 定位为轻量单元测试入口，handler 抛错时会原样 re-throw（不走 `formatErrorResponse` 兜底，也不走 schema 校验）。原因：`invokeHandler` 接收的是 handler 函数本身而非 route 记录，无法定位 `zod.js`；测试时也未必 build 过。如需测试完整错误兜底链，用 E2E 测试或显式传入错误处理中间件。
 
 ## 完整请求链路测试
 
@@ -342,5 +345,5 @@ it('vi.mock 生效：handler 看到 mocked 数据', async () => {
 - [ ] 纯逻辑测试直接调用 handler，不走框架
 - [ ] 注入/中间件/序列化测试用 `createContext` + `invokeHandler`
 - [ ] 完整链路测试用 `createProdApp` + `app.inject`（需 build 产物）
-- [ ] handler 抛错测试用 `expect(...).rejects.toThrow()`
+- [ ] handler 抛错测试用 `expect(...).rejects.toThrow()`（`invokeHandler` 会原样 re-throw，不走 `formatErrorResponse` 兜底，不能用 `res.status === 500` 断言）
 - [ ] async handler 用 `await invokeHandler(...)`

@@ -1,5 +1,11 @@
 # @faapi/faapi
 
+## 1.3.1
+
+### Patch Changes
+
+- 补充 invokeHandler 的 ctx.ok / ctx.fail 单元测试覆盖：自动包裹、与 return data 一致性、Response 不被再次包裹、合并 setStatus/setHeader、自定义 config.response.ok/fail、status 与 code 独立可省略（无推导关系）、中间件组合（放行/拦截/try-catch 后用 ctx.fail）。同步 faapi-dev 技能 testing.md：局限性表新增"不走 formatErrorResponse 兜底"行，并说明 handler 抛错时 re-throw 的设计原因（invokeHandler 接收函数而非 route，无法定位 zod.js）。
+
 ## 1.3.0
 
 ### Minor Changes

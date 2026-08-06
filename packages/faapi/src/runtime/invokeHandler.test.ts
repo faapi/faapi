@@ -779,4 +779,232 @@ describe('invokeHandler', () => {
       expect(body).toBe('data: partial\n\n');
     });
   });
+
+  describe('ctx.ok / ctx.fail 自动包裹与错误响应', () => {
+    describe('ctx.ok', () => {
+      it('ctx.ok(data) 返回 200 + { data: T }', async () => {
+        const handler = (context: any) => context.ok({ id: 1, name: 'Alice' });
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.status).toBe(200);
+        expect(response.headers.get('Content-Type')).toBe('application/json');
+        const body = await response.json();
+        expect(body).toEqual({ data: { id: 1, name: 'Alice' } });
+      });
+
+      it('ctx.ok(data) 与 return data 响应一致（不会双重包裹）', async () => {
+        const ctx1 = makeCtx();
+        const ctx2 = makeCtx();
+        const viaOk = await invokeHandler((context: any) => context.ok({ id: 1 }), ctx1);
+        const viaReturn = await invokeHandler(() => ({ id: 1 }), ctx2);
+        expect(viaOk.status).toBe(viaReturn.status);
+        const okBody = await viaOk.json();
+        const returnBody = await viaReturn.json();
+        expect(okBody).toEqual(returnBody);
+        // 关键：不会变成 { data: { data: { id: 1 } } }
+        expect(okBody).toEqual({ data: { id: 1 } });
+      });
+
+      it('ctx.ok 返回的 Response 不被 wrapResult 再次包裹', async () => {
+        const handler = (context: any) => context.ok({ nested: true });
+        const response = await invokeHandler(handler, makeCtx());
+        const body = await response.json();
+        // 不是 { data: { data: { nested: true } } }
+        expect(body).toEqual({ data: { nested: true } });
+        expect(body).not.toHaveProperty('data.data');
+      });
+
+      it('ctx.ok 合并 ctx.setStatus 设置的状态码', async () => {
+        const handler = (context: any) => {
+          context.setStatus(201);
+          return context.ok({ created: true });
+        };
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.status).toBe(201);
+        const body = await response.json();
+        expect(body).toEqual({ data: { created: true } });
+      });
+
+      it('ctx.ok 合并 ctx.setHeader 设置的响应头', async () => {
+        const handler = (context: any) => {
+          context.setHeader('X-Custom', 'ok-header');
+          return context.ok({ ok: true });
+        };
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.headers.get('X-Custom')).toBe('ok-header');
+        expect(response.headers.get('Content-Type')).toBe('application/json');
+      });
+
+      it('ctx.ok 使用自定义 config.response.ok', async () => {
+        const ctx = createContext(
+          new Request('http://localhost/api/test'),
+          {},
+          {
+            response: {
+              ok: (data: unknown) => ({ code: 0, data }),
+            },
+          },
+        );
+        const handler = (context: any) => context.ok({ id: 1 });
+        const response = await invokeHandler(handler, ctx);
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body).toEqual({ code: 0, data: { id: 1 } });
+      });
+    });
+
+    describe('ctx.fail', () => {
+      it('ctx.fail({ message }) 默认 status 500，body 不含 code 字段', async () => {
+        const handler = (context: any) => context.fail({ message: '出错' });
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.status).toBe(500);
+        expect(response.headers.get('Content-Type')).toBe('application/json');
+        const body = await response.json();
+        expect(body).toEqual({ error: { message: '出错' } });
+        expect(body.error).not.toHaveProperty('code');
+      });
+
+      it('ctx.fail({ status, message }) body 不含 code 字段', async () => {
+        const handler = (context: any) => context.fail({ status: 404, message: '用户不存在' });
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.status).toBe(404);
+        const body = await response.json();
+        expect(body).toEqual({ error: { message: '用户不存在' } });
+        expect(body.error).not.toHaveProperty('code');
+      });
+
+      it('ctx.fail({ code, message }) 无 status → HTTP 500', async () => {
+        const handler = (context: any) =>
+          context.fail({ code: 'AUTH_EXPIRED', message: '登录已过期' });
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.status).toBe(500);
+        const body = await response.json();
+        expect(body).toEqual({ error: { code: 'AUTH_EXPIRED', message: '登录已过期' } });
+      });
+
+      it('ctx.fail({ status, code, message }) 完整字段', async () => {
+        const handler = (context: any) =>
+          context.fail({ status: 404, code: 'USER_NOT_FOUND', message: '用户不存在' });
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.status).toBe(404);
+        const body = await response.json();
+        expect(body).toEqual({
+          error: { code: 'USER_NOT_FOUND', message: '用户不存在' },
+        });
+      });
+
+      it('ctx.fail 返回的 Response 不被 wrapResult 包裹为 { data }', async () => {
+        const handler = (context: any) =>
+          context.fail({ status: 400, code: 'NAME_REQUIRED', message: 'name is required' });
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        // 不是 { data: { error: ... } }
+        expect(body).not.toHaveProperty('data');
+        expect(body).toEqual({
+          error: { code: 'NAME_REQUIRED', message: 'name is required' },
+        });
+      });
+
+      it('ctx.fail 合并 ctx.setStatus 设置的状态码', async () => {
+        // fail 自身用 options.status 设 Response.status，
+        // 但 setStatus 的 meta.status 优先级更高（toResponse 合并时覆盖）
+        const handler = (context: any) => {
+          context.setStatus(503);
+          return context.fail({ status: 500, message: '服务降级' });
+        };
+        const response = await invokeHandler(handler, makeCtx());
+        expect(response.status).toBe(503);
+        const body = await response.json();
+        expect(body).toEqual({ error: { message: '服务降级' } });
+      });
+
+      it('ctx.fail 使用自定义 config.response.fail', async () => {
+        const ctx = createContext(
+          new Request('http://localhost/api/test'),
+          {},
+          {
+            response: {
+              fail: ({
+                status,
+                code,
+                message,
+              }: {
+                status?: number;
+                code?: string;
+                message: string;
+              }) => ({
+                error: { code: code ?? 'UNKNOWN', message, status },
+              }),
+            },
+          },
+        );
+        const handler = (context: any) => context.fail({ status: 400, message: 'invalid' });
+        const response = await invokeHandler(handler, ctx);
+        expect(response.status).toBe(400);
+        const body = await response.json();
+        // 自定义 fail 把 code 补成 UNKNOWN
+        expect(body).toEqual({
+          error: { code: 'UNKNOWN', message: 'invalid', status: 400 },
+        });
+      });
+    });
+
+    describe('ok / fail 与中间件组合', () => {
+      it('中间件 await next() 后放行到 ctx.ok 的 handler', async () => {
+        const handler = (context: any) => context.ok({ via: 'ok' });
+        const middlewares: FaapiMiddleware[] = [
+          async (_ctx, next) => {
+            await next();
+          },
+        ];
+        const response = await invokeHandler(handler, makeCtx(), undefined, middlewares);
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body).toEqual({ data: { via: 'ok' } });
+      });
+
+      it('中间件拦截优先于 ctx.ok（不执行 handler）', async () => {
+        let handlerCalled = false;
+        const handler = (context: any) => {
+          handlerCalled = true;
+          return context.ok({ ok: true });
+        };
+        const middlewares: FaapiMiddleware[] = [
+          async () =>
+            new Response(JSON.stringify({ error: 'blocked' }), {
+              status: 403,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+        ];
+        const response = await invokeHandler(handler, makeCtx(), undefined, middlewares);
+        expect(response.status).toBe(403);
+        expect(handlerCalled).toBe(false);
+      });
+
+      it('中间件 try/catch 捕获 handler 抛错后用 ctx.fail 返回错误响应', async () => {
+        const handler = () => {
+          throw new Error('something broke');
+        };
+        const middlewares: FaapiMiddleware[] = [
+          async (ctx, next) => {
+            try {
+              await next();
+            } catch (err) {
+              return ctx.fail({
+                status: 500,
+                code: 'INTERNAL_ERROR',
+                message: (err as Error).message,
+              });
+            }
+          },
+        ];
+        const response = await invokeHandler(handler, makeCtx(), undefined, middlewares);
+        expect(response.status).toBe(500);
+        const body = await response.json();
+        expect(body).toEqual({
+          error: { code: 'INTERNAL_ERROR', message: 'something broke' },
+        });
+      });
+    });
+  });
 });
