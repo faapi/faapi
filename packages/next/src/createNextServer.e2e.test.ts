@@ -124,7 +124,7 @@ describe('@faapi/next e2e - HTTP 分流', () => {
     const res = await fetch(`${baseUrl}/api/health`);
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ status: 'ok', source: 'faapi' });
+    expect(data).toEqual({ data: { status: 'ok', source: 'faapi' } });
   });
 
   it('/ 走 Next.js 渲染首页 HTML', async () => {
@@ -163,7 +163,7 @@ describe('@faapi/next e2e - faapi API 路由', () => {
     const res = await fetch(`${baseUrl}/api/user/123`);
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ id: '123', source: 'faapi' });
+    expect(data).toEqual({ data: { id: '123', source: 'faapi' } });
   });
 
   it('/api/user POST 正常请求返回创建结果', async () => {
@@ -174,7 +174,7 @@ describe('@faapi/next e2e - faapi API 路由', () => {
     });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ created: true, name: 'alice', source: 'faapi' });
+    expect(data).toEqual({ data: { created: true, name: 'alice', source: 'faapi' } });
   });
 
   it('/api/user POST 缺 name 必填字段返回 400', async () => {
