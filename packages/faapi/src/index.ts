@@ -75,4 +75,5 @@ export {
 export { createDevApp, type DevApp } from './cli/createDevApp';
 export { createProdApp, type ProdApp } from './cli/createProdApp';
 export { createApp, type App, type CreateAppOptions } from './cli/createApp';
+export { getApp } from './cli/createAppCore';
 export type { InjectOptions, InjectResponse } from './cli/createAppCore';

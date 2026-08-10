@@ -1,7 +1,7 @@
 import type { Server } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import type { RouteManifest, WsRouteManifest, RoutesRef } from '../router/routeTypes';
 import { sortRoutes } from '../router/sortRoutes';
 import { detectRouteConflicts } from '../router/detectRouteConflicts';
@@ -35,6 +35,50 @@ const DEFAULT_PORT = 3000;
 const ROUTES_FILE = 'faapi-routes.js';
 /** 路由源码目录（写死为 src，路由 .ts 文件位于 src/api/ 下） */
 const PATTERNS = ['src/api/**/*.ts'];
+
+/**
+ * 当前 app 单例（模块级变量）
+ *
+ * 由 `createAppBase` 设置，`app.close()` 时置 null。
+ * 业务方通过 `getApp()` 读取，避免重复创建实例（如 Next.js RSC 中拿不到 app 引用的问题）。
+ *
+ * 注意：单例仅指向"最近一次创建且未关闭的 app"。测试场景下创建多个临时 app 时，
+ * 单例会被覆盖，但 close 时只有当单例仍指向当前 app 才置 null，避免被后续 app 误清。
+ */
+let currentApp: AppBase | null = null;
+
+/**
+ * 获取当前 faapi app 单例
+ *
+ * 用于在无法直接拿到 app 引用的场景（如 Next.js Server Component）中访问 app。
+ *
+ * @returns 当前 app 实例
+ * @throws 未初始化时抛错（需先调 `createProdApp()` / `createDevApp()`，或 `faapi dev` / `node dist/main` 启动）
+ *
+ * @example
+ * ```ts
+ * // Next.js RSC 中调用 faapi API（同进程，跳过 HTTP loopback）
+ * import { getApp } from '@faapi/faapi';
+ * import { headers } from 'next/headers';
+ *
+ * const app = getApp();
+ * const h = await headers();
+ * const res = await app.inject({
+ *   method: 'GET',
+ *   path: '/api/user',
+ *   headers: { cookie: h.get('cookie') ?? '', authorization: h.get('authorization') ?? '' },
+ * });
+ * const data = res.body;  // 已解析
+ * ```
+ */
+export function getApp(): AppBase {
+  if (!currentApp) {
+    throw new Error(
+      '[faapi] No app instance. Call createProdApp() / createDevApp() first, or run `faapi dev` / `node dist/main`.',
+    );
+  }
+  return currentApp;
+}
 
 /** FaapiConfig 的内置 key 集合（排除自定义业务配置） */
 const FAAPI_CONFIG_KEYS = new Set([
@@ -81,8 +125,11 @@ export interface AppBase {
   /**
    * 无服务器测试注入
    *
-   * 构建一个模拟请求直接走完整请求链路，不绑定端口。
-   * 需要在 listen() 之前调用（server 未启动时）。
+   * 构建一个模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 /
+   * schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body }`。
+   *
+   * `listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景
+   * （配合 `getApp()` 拿到 app 实例）。
    */
   inject(options?: InjectOptions): Promise<InjectResponse>;
 }
@@ -314,16 +361,12 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           return;
         }
 
-        const mockReq: PassThrough & {
+        const mockReq: Readable & {
           method?: string;
           url?: string;
           headers?: Record<string, string | undefined>;
           socket?: { remoteAddress?: string };
-        } = new PassThrough({
-          read() {
-            this.push(null);
-          },
-        });
+        } = Readable.from(body !== undefined ? [Buffer.from(JSON.stringify(body))] : []);
         mockReq.method = method;
         mockReq.url = `${reqPath}${queryStr}`;
         mockReq.headers = {
@@ -332,9 +375,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           'content-type': body !== undefined ? 'application/json' : undefined,
         };
         mockReq.socket = { remoteAddress: '127.0.0.1' };
-        if (body !== undefined) {
-          mockReq.push(JSON.stringify(body));
-        }
 
         handler(
           mockReq as unknown as import('node:http').IncomingMessage,
@@ -363,6 +403,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）
       if (!server.listening) {
         app.server = null;
+        // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
+        if (currentApp === app) currentApp = null;
         return;
       }
 
@@ -370,11 +412,16 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
         server.close((err) => {
           if (err) console.error('Error closing server:', err);
           app.server = null;
+          // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
+          if (currentApp === app) currentApp = null;
           resolve();
         });
       });
     },
   };
+
+  // 设置单例（覆盖之前的实例；测试场景下多次创建会覆盖，close 时只清自己）
+  currentApp = app;
 
   /** 更新路由引用（app + routesRef + 闭包变量） */
   const ctx: AppContext = {

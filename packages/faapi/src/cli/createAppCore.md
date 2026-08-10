@@ -1,6 +1,6 @@
 # createAppCore
 
-一句话概括：dev/prod 共享的应用基础编排核心——完成「配置加载 → 路由清单水合 → 创建 server → 插件加载」，返回 `AppBase`（listen/close/inject）+ `AppContext`（供 dev 扩展 reloadRoutes）。
+一句话概括：dev/prod 共享的应用基础编排核心——完成「配置加载 → 路由清单水合 → 创建 server → 插件加载」，返回 `AppBase`（listen/close/inject）+ `AppContext`（供 dev 扩展 reloadRoutes）；另导出 `getApp()` 用于在拿不到 app 引用的场景（如 Next.js RSC）访问单例。
 
 ## 为什么需要
 
@@ -17,6 +17,7 @@ dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`（热�
 - `createDevApp`（dev 模式）调 `createAppBase` 获取 `app` + `ctx`，基于 `ctx.updateRoutes` 实现 `reloadRoutes`
 - `createProdApp`（prod 模式）调 `createAppBase` 仅取 `app`，丢弃 `ctx`
 - 编程式调用场景（自定义启动器、测试场景）
+- `getApp()` 用于拿不到 app 引用的场景（如 Next.js Server Component 同进程调用 faapi API）
 
 `dist` 由 `process.env.FAAPI_DIST` 决定：`faapi dev` 设为 `.faapi`，`node dist/main` 不设（默认 `dist`）。
 
@@ -34,10 +35,42 @@ dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`（热�
 | 方法 | 说明 |
 |------|------|
 | `listen(port?)` | 启动 HTTP server，打印路由表，执行 `onReady` 钩子，注册优雅关闭信号（仅当配置了 `onClose`） |
-| `close()` | 幂等关闭 server，执行 `onClose` 钩子，`app.server` 置 null |
-| `inject(options?)` | 无服务器测试注入——构造模拟请求直接走完整请求链路，不绑定端口；需在 `listen()` 前调用 |
+| `close()` | 幂等关闭 server，执行 `onClose` 钩子，`app.server` 置 null；若单例仍指向当前 app 则置 null |
+| `inject(options?)` | 无服务器测试注入——构造模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body }`。`listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景（配合 `getApp()` 拿到 app 实例） |
 
 端口优先级：`listen()` 参数 > `options.port` > `PORT` 环境变量 > 默认 `3000`。
+
+### getApp()
+
+```ts
+export function getApp(): AppBase;
+```
+
+获取当前 faapi app 单例。用于在无法直接拿到 app 引用的场景（如 Next.js Server Component）中访问 app。
+
+- **未初始化时抛错**（强约束，立刻发现问题）
+- **`createAppBase` 末尾设置单例**（覆盖之前的实例）
+- **`close()` 时清 null**（仅当单例仍指向当前 app，避免被后续 app 误清）
+
+**Next.js RSC 场景用法**：
+
+```ts
+// app/page.tsx
+import { getApp } from '@faapi/faapi';
+import { headers } from 'next/headers';
+
+async function Page() {
+  const h = await headers();
+  const app = getApp();
+  const res = await app.inject({
+    method: 'GET',
+    path: '/api/user',
+    headers: { cookie: h.get('cookie') ?? '', authorization: h.get('authorization') ?? '' },
+  });
+  const data = res.body;  // 已解析，无需 await res.json()
+  return <div>{data.name}</div>;
+}
+```
 
 ### AppContext
 

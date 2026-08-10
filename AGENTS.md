@@ -592,6 +592,41 @@ it('GET 返回分页数据', async () => {
 
 详见 `src/testing.md`。
 
+#### Next.js Server Component 同进程调用（getApp + app.inject）
+
+业务方在 Next.js Server Component 等"拿不到 faapi app 引用"的场景中，可通过 `getApp()` 获取 app 单例，配合 `app.inject()` 同进程调用 faapi API（避免 HTTP loopback）：
+
+```ts
+// app/page.tsx（Next.js RSC）
+import { getApp } from '@faapi/faapi';
+import { headers } from 'next/headers';
+
+async function Page() {
+  const h = await headers();
+  const app = getApp();  // 拿到 faapi 启动时创建的单例
+
+  const res = await app.inject({
+    method: 'GET',
+    path: '/api/user',
+    headers: {
+      cookie: h.get('cookie') ?? '',               // 透传 cookie（鉴权/会话）
+      authorization: h.get('authorization') ?? '', // 透传 token
+    },
+  });
+
+  const data = res.body;  // 已解析，无需 await res.json()
+  return <div>{data.name}</div>;
+}
+```
+
+**关键点**：
+- `getApp()` 未初始化时抛错（强约束）；`createAppBase` 末尾设置单例，`close()` 时清 null
+- `app.inject()` 走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），`listen()` 前后均可调用
+- 返回 `{ status, headers, body }`——`body` 已 JSON.parse，无需手动 `await res.json()`
+- 需手动透传请求头（cookie / authorization 等）从 `next/headers` 到 `inject` 的 `headers` 参数
+
+详见 `src/cli/createAppCore.md`。
+
 ## 6. 约定
 
 ### 6.1 文件命名

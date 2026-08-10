@@ -1,5 +1,38 @@
 # @faapi/faapi
 
+## 1.5.0
+
+### Minor Changes
+
+- 新增 `getApp()` 函数 + 修复 `app.inject()` 的 POST body bug，支持 Next.js Server Component 同进程调用。
+
+  ## 新增 `getApp()`
+
+  获取当前 faapi app 单例。用于在无法直接拿到 app 引用的场景（如 Next.js Server Component）中访问 app。
+
+  - 未初始化时抛错（强约束）
+  - `createAppBase` 末尾设置单例，`close()` 时清 null
+
+  ```ts
+  // Next.js RSC 中同进程调用 faapi API（避免 HTTP loopback）
+  import { getApp } from '@faapi/faapi';
+  import { headers } from 'next/headers';
+
+  const app = getApp();
+  const res = await app.inject({
+    method: 'GET',
+    path: '/api/user',
+    headers: { cookie: (await headers()).get('cookie') ?? '' },
+  });
+  const data = res.body; // 已解析
+  ```
+
+  ## 修复 `app.inject()` 的 POST body bug
+
+  `inject` 内部用 `PassThrough` 构造 mock 请求流，`read()` 钩子立即 `push(null)` 表示 EOF，之后 `push(body)` 无效——导致 POST 请求 body 丢失、handler 永久等待。
+
+  修复：改用 `Readable.from([Buffer.from(JSON.stringify(body))])`，异步迭代器与 `Readable.toWeb(req)` 正确配合。
+
 ## 1.4.0
 
 ## 1.3.1
