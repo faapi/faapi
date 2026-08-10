@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { logger } from './logger';
 import { invokeHandler } from '../runtime/invokeHandler';
-import { createContext } from '../runtime/createContext';
+import { createTestContext } from '../runtime/createContext';
 import type { FaapiMiddleware } from './middlewareTypes';
 
 describe('logger middleware', () => {
-  const makeCtx = (method = 'GET', path = '/api/test') =>
-    createContext(new Request(`http://localhost${path}`, { method }), {});
+  const makeCtx = (method = 'GET', path = '/api/test') => createTestContext({ method, path });
 
   it('logs method, path, status, duration on successful request', async () => {
     const logs: string[] = [];

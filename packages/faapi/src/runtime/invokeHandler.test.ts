@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { invokeHandler } from './invokeHandler';
-import { createContext } from './createContext';
+import { createTestContext } from './createContext';
 import type { FaapiMiddleware, InjectorMap } from '../index';
 
 describe('invokeHandler', () => {
-  const makeCtx = () => createContext(new Request('http://localhost/api/test'), {});
+  const makeCtx = () => createTestContext({ path: '/api/test' });
 
   it('handler 返回对象时转为 JSON Response', async () => {
     const handler = () => ({ message: 'hello' });
@@ -45,8 +45,7 @@ describe('invokeHandler', () => {
   });
 
   it('handler 通过参数名注入接收 query', async () => {
-    const request = new Request('http://localhost/api/test?page=2&pageSize=20');
-    const ctx = createContext(request, {});
+    const ctx = createTestContext({ path: '/api/test', query: { page: '2', pageSize: '20' } });
 
     const handler = (query: any) => {
       return { page: query.page, pageSize: query.pageSize };
@@ -71,7 +70,7 @@ describe('invokeHandler', () => {
   });
 
   it('handler 通过参数名注入接收 ip', async () => {
-    const ctx = createContext(new Request('http://localhost/api/test'), {}, {}, '203.0.113.10');
+    const ctx = createTestContext({ path: '/api/test', ip: '203.0.113.10' });
 
     const handler = (ip: unknown) => ({ clientIp: ip });
 
@@ -384,12 +383,10 @@ describe('invokeHandler', () => {
         expect(noTokenRes.status).toBe(401);
 
         // 有 token → 200 + 注入用户
-        const tokenCtx = createContext(
-          new Request('http://localhost/api/test', {
-            headers: { authorization: 'Bearer test-token' },
-          }),
-          {},
-        );
+        const tokenCtx = createTestContext({
+          path: '/api/test',
+          headers: { authorization: 'Bearer test-token' },
+        });
         const tokenRes = await invokeHandler(handler, tokenCtx, undefined, middlewares, injectors);
         expect(tokenRes.status).toBe(200);
         const body = await tokenRes.json();
@@ -454,8 +451,7 @@ describe('invokeHandler', () => {
       });
 
       it('内置注入优先于注入器（query 不被覆盖）', async () => {
-        const request = new Request('http://localhost/api/test?page=2');
-        const ctx = createContext(request, {});
+        const ctx = createTestContext({ path: '/api/test', query: { page: '2' } });
         const handler = eval('(query) => ({ page: query.page })');
         const injectors: InjectorMap = {
           query: () => ({ page: 'should-not-win' }),
@@ -548,12 +544,10 @@ describe('invokeHandler', () => {
           user: (ctx) => (ctx as any).user,
         };
 
-        const ctx = createContext(
-          new Request('http://localhost/api/test', {
-            headers: { authorization: 'Bearer token' },
-          }),
-          {},
-        );
+        const ctx = createTestContext({
+          path: '/api/test',
+          headers: { authorization: 'Bearer token' },
+        });
         const response = await invokeHandler(handler, ctx, undefined, middlewares, injectors);
         expect(response.status).toBe(200);
         const body = await response.json();
@@ -835,15 +829,14 @@ describe('invokeHandler', () => {
       });
 
       it('ctx.ok 使用自定义 config.response.ok', async () => {
-        const ctx = createContext(
-          new Request('http://localhost/api/test'),
-          {},
-          {
+        const ctx = createTestContext({
+          path: '/api/test',
+          config: {
             response: {
               ok: (data: unknown) => ({ code: 0, data }),
             },
           },
-        );
+        });
         const handler = (context: any) => context.ok({ id: 1 });
         const response = await invokeHandler(handler, ctx);
         expect(response.status).toBe(200);
@@ -919,10 +912,9 @@ describe('invokeHandler', () => {
       });
 
       it('ctx.fail 使用自定义 config.response.fail', async () => {
-        const ctx = createContext(
-          new Request('http://localhost/api/test'),
-          {},
-          {
+        const ctx = createTestContext({
+          path: '/api/test',
+          config: {
             response: {
               fail: ({
                 status,
@@ -937,7 +929,7 @@ describe('invokeHandler', () => {
               }),
             },
           },
-        );
+        });
         const handler = (context: any) => context.fail({ status: 400, message: 'invalid' });
         const response = await invokeHandler(handler, ctx);
         expect(response.status).toBe(400);

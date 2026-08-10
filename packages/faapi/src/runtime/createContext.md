@@ -1,16 +1,39 @@
 # createContext
 
-一句话概括：从 Request 创建请求上下文。
+一句话概括：从 Request 创建请求上下文；另导出 `createTestContext` 作为测试专用语法糖（接受选项对象，内部构造 Request）。
 
 ## 为什么需要
 
 将 Web 标准 Request 对象转换为 faapi 上下文，提取 params、query、headers 等信息。
 
+`createContext(request, params, config?, ip?)` 是运行时与测试共用的同构入口——运行时 `createServer` 从真实 `IncomingMessage` 构造 Request 调用，测试时业务方也可直接调用。`createTestContext(options)` 是测试专用便捷封装，接受 `{ method?, path, query?, headers?, params?, config?, ip? }` 对象，内部构造 Request 调 `createContext`，免去手写 `new Request('http://localhost/...')` 的样板代码（无意义 host、query 拼接 URL、headers 构造）。
+
 ## 使用场景
 
-- 请求处理时创建上下文
+- 请求处理时创建上下文（`createContext`，运行时 + 测试同构）
+- 测试时便捷创建上下文（`createTestContext`，纯测试语法糖）
 - 提取请求相关信息（含内联读取 `user-agent` 请求头存到 `ctx.ua`；`ctx.ip` 由调用方从 `IncomingMessage` 提取后传入）
 - 执行 config.extendContext 扩展钩子（用户可挂载自定义 ctx 方法）
+
+## createTestContext
+
+```ts
+import { createTestContext } from '@faapi/faapi';
+
+const ctx = createTestContext({
+  method: 'POST',                              // 默认 'GET'
+  path: '/api/user',                            // 必填，无需写 host
+  query: { page: 1, tags: ['a', 'b'] },        // 对象形式，自动拼接 URL（数组生成同名多值参数）
+  headers: { authorization: 'Bearer xxx' },    // 请求头对象
+  params: { id: '123' },                        // 动态路由参数，默认 {}
+  config: { db: { host: '...' } },              // 业务配置，默认 {}
+  ip: '1.2.3.4',                                // 客户端 IP，默认 ''
+});
+```
+
+**body 不在此处理**：`createContext` 本身不读 `request.body`，body 注入由 `invokeHandler` 的第 3 个参数负责。POST/PUT/PATCH 测试时 body 单独传给 `invokeHandler`，避免在两处传 body 产生混淆。
+
+**为什么不合并进 createContext**：`createContext` 保持 `(request: Request)` 签名使运行时与测试同构；`createTestContext` 是纯测试便捷封装，不引入运行时分支。
 
 ## ctx.ok / ctx.fail 挂载
 

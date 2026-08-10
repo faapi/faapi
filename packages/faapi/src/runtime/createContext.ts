@@ -184,3 +184,64 @@ export function createContext(
 
   return ctx;
 }
+
+/**
+ * 测试专用：从选项对象创建 FaapiContext，免去手写 `new Request(url)` 的样板代码
+ *
+ * 与 createContext 的关系：createTestContext 内部构造 Request 后调 createContext，
+ * 语义完全一致，仅是测试场景的语法糖——不写无意义的 host、query 用对象形式、headers 直接传对象。
+ *
+ * 为什么不合并进 createContext：createContext 运行时也从真实 HTTP 请求构造 Request，
+ * 保持 `(request: Request)` 签名使运行时与测试同构；createTestContext 是纯测试便捷封装，
+ * 不引入运行时分支。
+ *
+ * body 不在此处理：createContext 本身不读 `request.body`，body 注入由 `invokeHandler`
+ * 的第 3 个参数负责。POST/PUT/PATCH 测试时 body 单独传给 invokeHandler，避免在两处传 body 产生混淆。
+ *
+ * @param options 请求选项（path 必填，其余可选）
+ * @returns FaapiContext
+ */
+export function createTestContext(options: CreateTestContextOptions): FaapiContext {
+  const { method = 'GET', path, query, headers, params = {}, config = {}, ip = '' } = options;
+
+  // 用 URL 解析 + 拼 query，避免手动拼接字符串的转义问题
+  const url = new URL(`http://localhost${path}`);
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          url.searchParams.append(key, String(item));
+        }
+      } else {
+        url.searchParams.set(key, String(value));
+      }
+    }
+  }
+
+  const request = new Request(url.toString(), {
+    method,
+    headers: headers as HeadersInit | undefined,
+  });
+
+  return createContext(request, params, config, ip);
+}
+
+/**
+ * createTestContext 的选项
+ */
+export interface CreateTestContextOptions {
+  /** 请求方法，默认 'GET' */
+  method?: string;
+  /** 请求路径，必填，如 '/api/user'（无需写 host） */
+  path: string;
+  /** 查询参数，对象形式，自动拼接到 URL（值会被 String() 转换；数组生成同名多值参数） */
+  query?: Record<string, string | number | boolean | Array<string | number | boolean>>;
+  /** 请求头 */
+  headers?: Record<string, string>;
+  /** 动态路由参数，默认 {} */
+  params?: Record<string, string>;
+  /** 业务配置（来自 faapi.config.ts），默认 {} */
+  config?: Record<string, unknown>;
+  /** 客户端 IP，默认 '' */
+  ip?: string;
+}

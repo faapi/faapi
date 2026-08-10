@@ -1,6 +1,6 @@
 # 业务方测试支持
 
-一句话概括：公开导出 `createContext` / `invokeHandler`，业务方可在测试中走框架真实注入与序列化逻辑，无需启动 HTTP 服务器。
+一句话概括：通过 `@faapi/faapi/testing` 子路径导出 `createTestContext` / `invokeHandler`，业务方可在测试中走框架真实注入与序列化逻辑，无需启动 HTTP 服务器。
 
 ## 为什么需要
 
@@ -13,31 +13,49 @@ faapi 的 handler 是"函数即接口"——按参数名自动注入 `query`/`bo
 
 ## 公开 API
 
+测试 API 通过 `@faapi/faapi/testing` 子路径导入，与主入口 `@faapi/faapi` 分离：
+
 ```ts
-import { createContext, invokeHandler } from '@faapi/faapi';
+import { createTestContext, invokeHandler } from '@faapi/faapi/testing';
 ```
 
 | 函数 | 说明 | 参数 |
 |------|------|------|
-| `createContext(request, params, config?, ip?)` | 从 Web Request 创建 FaapiContext | `request: Request`<br>`params: Record<string, string>`<br>`config?: Record<string, unknown>`（业务配置，默认 `{}`）<br>`ip?: string`（客户端 IP，默认 `''`） |
+| `createTestContext(options)` | 测试入口：接受选项对象，免写 `new Request('http://localhost/...')` 的样板代码 | `options: { method?, path, query?, headers?, params?, config?, ip? }` |
 | `invokeHandler(handler, ctx, body?, middlewares?, injectors?)` | 调用 handler，走注入 + 中间件 + 序列化，返回 Response | `handler: (...args) => unknown`<br>`ctx: FaapiContext`<br>`body?: unknown`（已解析的请求体）<br>`middlewares?: FaapiMiddleware[]`<br>`injectors?: InjectorMap` |
 
 `invokeHandler` 内部已调用 `toResponse` 将 handler 返回值转为 `Response`，业务方拿到的就是 `Response` 对象，可直接用 `res.status` / `await res.json()` 断言。
+
+### createTestContext 选项
+
+```ts
+const ctx = createTestContext({
+  method: 'POST',                              // 默认 'GET'
+  path: '/api/user',                            // 必填，无需写 host
+  query: { page: 1, tags: ['a', 'b'] },        // 对象形式，自动拼接 URL（数组生成同名多值参数）
+  headers: { authorization: 'Bearer xxx' },    // 请求头对象
+  params: { id: '123' },                        // 动态路由参数，默认 {}
+  config: { db: { host: '...' } },              // 业务配置，默认 {}
+  ip: '1.2.3.4',                                // 客户端 IP，默认 ''
+});
+```
+
+**body 不在 createTestContext 处理**：`createTestContext` 不读请求体，body 注入由 `invokeHandler` 第 3 参数负责。POST/PUT/PATCH 测试时 body 单独传给 `invokeHandler`，避免在两处传 body 产生混淆。
 
 ## 使用场景
 
 ### 场景 1：测试 GET handler（query 注入）
 
 ```ts
-import { createContext, invokeHandler } from '@faapi/faapi';
+import { createTestContext, invokeHandler } from '@faapi/faapi/testing';
 import { GET } from './handler';
 
 it('GET 返回分页数据', async () => {
-  const ctx = createContext(
-    new Request('http://localhost/api/user?page=1&pageSize=10'),
-    {},                    // params
-    { db: { host: '...' } }, // config（业务配置）
-  );
+  const ctx = createTestContext({
+    path: '/api/user',
+    query: { page: 1, pageSize: 10 },  // 对象形式，无需拼 URL
+    config: { db: { host: '...' } },
+  });
   const res = await invokeHandler(GET, ctx);
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ page: '1', pageSize: '10' });
@@ -49,14 +67,11 @@ it('GET 返回分页数据', async () => {
 ### 场景 2：测试 POST handler（body 注入）
 
 ```ts
-import { createContext, invokeHandler } from '@faapi/faapi';
+import { createTestContext, invokeHandler } from '@faapi/faapi/testing';
 import { POST } from './handler';
 
 it('POST 创建用户', async () => {
-  const ctx = createContext(
-    new Request('http://localhost/api/user', { method: 'POST' }),
-    {},
-  );
+  const ctx = createTestContext({ method: 'POST', path: '/api/user' });
   const res = await invokeHandler(POST, ctx, { name: 'Alice', email: 'a@b.c' });
   expect(await res.json()).toEqual({ created: true, name: 'Alice' });
 });
@@ -65,7 +80,7 @@ it('POST 创建用户', async () => {
 ### 场景 3：测试带中间件 + 注入器的 handler
 
 ```ts
-import { createContext, invokeHandler } from '@faapi/faapi';
+import { createTestContext, invokeHandler } from '@faapi/faapi/testing';
 import type { FaapiMiddleware, InjectorMap } from '@faapi/faapi';
 import { GET } from './handler';
 
@@ -81,18 +96,16 @@ const injectors: InjectorMap = {
 };
 
 it('带鉴权 + 注入器', async () => {
-  const ctx = createContext(
-    new Request('http://localhost/api/admin', {
-      headers: { authorization: 'Bearer xxx' },
-    }),
-    {},
-  );
+  const ctx = createTestContext({
+    path: '/api/admin',
+    headers: { authorization: 'Bearer xxx' },
+  });
   const res = await invokeHandler(GET, ctx, undefined, [authMiddleware], injectors);
   expect(res.status).toBe(200);
 });
 
 it('无 token 被中间件拦截', async () => {
-  const ctx = createContext(new Request('http://localhost/api/admin'), {});
+  const ctx = createTestContext({ path: '/api/admin' });
   const res = await invokeHandler(GET, ctx, undefined, [authMiddleware], injectors);
   expect(res.status).toBe(401);
 });
@@ -101,14 +114,14 @@ it('无 token 被中间件拦截', async () => {
 ### 场景 4：测试动态路由参数
 
 ```ts
-import { createContext, invokeHandler } from '@faapi/faapi';
+import { createTestContext, invokeHandler } from '@faapi/faapi/testing';
 import { GET } from './handler';  // src/api/user/[id]/handler.ts
 
 it('params 注入', async () => {
-  const ctx = createContext(
-    new Request('http://localhost/api/user/123'),
-    { id: '123' },          // params
-  );
+  const ctx = createTestContext({
+    path: '/api/user/123',
+    params: { id: '123' },
+  });
   const res = await invokeHandler(GET, ctx);
   expect(await res.json()).toEqual({ id: '123' });
 });
@@ -117,11 +130,10 @@ it('params 注入', async () => {
 ### 场景 5：测试 ctx 便捷方法
 
 ```ts
-import { createContext, invokeHandler } from '@faapi/faapi';
-import { GET } from './handler';
+import { createTestContext, invokeHandler } from '@faapi/faapi/testing';
 
 it('handler 通过 ctx.json 返回自定义响应', async () => {
-  const ctx = createContext(new Request('http://localhost/api/error'), {});
+  const ctx = createTestContext({ path: '/api/error' });
   function handler(context: any) {
     return context.json({ error: 'Not found' }, 404);
   }
@@ -145,7 +157,7 @@ it('handler 通过 ctx.json 返回自定义响应', async () => {
 | 方式 | 适用场景 | 启动服务器 | 依赖产物 | 走注入 | 走中间件 | 走 schema |
 |------|---------|-----------|---------|--------|---------|-----------|
 | **直接调用 handler** | 纯逻辑测试 | 否 | 否 | 否 | 否 | 否 |
-| **`createContext` + `invokeHandler`** | 注入/中间件/序列化测试 | 否 | 否 | ✅ | ✅（显式传入） | 否 |
+| **`createTestContext` + `invokeHandler`** | 注入/中间件/序列化测试 | 否 | 否 | ✅ | ✅（显式传入） | 否 |
 | `createProdApp` + `app.inject()` | 完整请求链路（无端口） | 否 | ✅ | ✅ | ✅ | ✅ |
 | **`createTestServer` + `fetch`** | **E2E（含 SSE/WS/CORS）** | **✅（listen 0）** | **自动生成** | **✅** | **✅** | **✅** |
 | `connectWs` + `queue.next()` | WS 路由测试 | — | — | — | — | — |
@@ -158,7 +170,7 @@ it('handler 通过 ctx.json 返回自定义响应', async () => {
 ### createTestServer
 
 ```ts
-import { createTestServer } from '@faapi/faapi';
+import { createTestServer } from '@faapi/faapi/testing';
 
 const ts = await createTestServer({ rootDir: process.cwd() });
 // ts.baseUrl = http://localhost:<随机端口>
@@ -177,7 +189,7 @@ await ts.close();  // afterAll
 ### connectWs（WebSocket 路由测试）
 
 ```ts
-import { createTestServer, connectWs } from '@faapi/faapi';
+import { createTestServer, connectWs } from '@faapi/faapi/testing';
 
 const ts = await createTestServer({ rootDir: process.cwd() });
 afterAll(() => ts.close());

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createContext } from './createContext';
+import { createContext, createTestContext } from './createContext';
 
 describe('createContext', () => {
   it('从 Request 创建 context，path 正确', () => {
@@ -227,5 +227,138 @@ describe('createContext', () => {
       expect((ctx as any).meta.headers['X-Custom']).toBe('value');
       expect((ctx as any).meta.headers['etag']).toBe('"v1"');
     });
+  });
+});
+
+describe('createTestContext', () => {
+  it('仅传 path 时默认 GET 方法，path 正确', () => {
+    const ctx = createTestContext({ path: '/api/users' });
+    expect(ctx.method).toBe('GET');
+    expect(ctx.path).toBe('/api/users');
+  });
+
+  it('method 选项生效', () => {
+    const ctx = createTestContext({ method: 'POST', path: '/api/users' });
+    expect(ctx.method).toBe('POST');
+  });
+
+  it('query 对象形式正确拼接到 URL（string 值）', () => {
+    const ctx = createTestContext({
+      path: '/api/users',
+      query: { name: 'alice', age: '30' },
+    });
+    expect(ctx.query.get('name')).toBe('alice');
+    expect(ctx.query.get('age')).toBe('30');
+  });
+
+  it('query 支持 number/boolean 值（自动 String() 转换）', () => {
+    const ctx = createTestContext({
+      path: '/api/users',
+      query: { page: 1, active: true },
+    });
+    expect(ctx.query.get('page')).toBe('1');
+    expect(ctx.query.get('active')).toBe('true');
+  });
+
+  it('query 数组值生成同名多值参数', () => {
+    const ctx = createTestContext({
+      path: '/api/users',
+      query: { tags: ['a', 'b'] },
+    });
+    expect(ctx.query.getAll('tags')).toEqual(['a', 'b']);
+  });
+
+  it('headers 对象形式可访问', () => {
+    const ctx = createTestContext({
+      path: '/api/users',
+      headers: { 'Content-Type': 'application/json', 'X-Custom': 'test' },
+    });
+    expect(ctx.headers.get('content-type')).toBe('application/json');
+    expect(ctx.headers.get('x-custom')).toBe('test');
+  });
+
+  it('params 传入正确', () => {
+    const ctx = createTestContext({
+      path: '/api/users/123',
+      params: { id: '123' },
+    });
+    expect(ctx.params).toEqual({ id: '123' });
+  });
+
+  it('config 传入正确（ctx.config 可读）', () => {
+    const ctx = createTestContext({
+      path: '/api/users',
+      config: { db: { host: 'localhost' } },
+    });
+    expect((ctx.config as any).db).toEqual({ host: 'localhost' });
+  });
+
+  it('ip 传入正确', () => {
+    const ctx = createTestContext({
+      path: '/api/users',
+      ip: '203.0.113.1',
+    });
+    expect(ctx.ip).toBe('203.0.113.1');
+  });
+
+  it('未传 ip 时默认空字符串', () => {
+    const ctx = createTestContext({ path: '/api/users' });
+    expect(ctx.ip).toBe('');
+  });
+
+  it('user-agent 请求头原样透传到 ctx.ua', () => {
+    const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)';
+    const ctx = createTestContext({
+      path: '/api/users',
+      headers: { 'user-agent': ua },
+    });
+    expect(ctx.ua).toBe(ua);
+  });
+
+  it('cookie 请求头正确解析到 ctx.cookies', () => {
+    const ctx = createTestContext({
+      path: '/api/users',
+      headers: { cookie: 'session=abc; lang=zh' },
+    });
+    expect(ctx.cookies.session).toBe('abc');
+    expect(ctx.cookies.lang).toBe('zh');
+  });
+
+  it('与 createContext 等价：相同选项产出相同 ctx 字段', () => {
+    const opts = {
+      method: 'POST' as const,
+      path: '/api/users/123',
+      query: { page: 1 },
+      headers: { authorization: 'Bearer xxx' },
+      params: { id: '123' },
+      config: { db: { host: 'h' } },
+      ip: '1.2.3.4',
+    };
+    const fromTest = createTestContext(opts);
+    const request = new Request('http://localhost/api/users/123?page=1', {
+      method: 'POST',
+      headers: { authorization: 'Bearer xxx' },
+    });
+    const fromCreate = createContext(request, { id: '123' }, { db: { host: 'h' } }, '1.2.3.4');
+
+    expect(fromTest.method).toBe(fromCreate.method);
+    expect(fromTest.path).toBe(fromCreate.path);
+    expect(fromTest.query.get('page')).toBe(fromCreate.query.get('page'));
+    expect(fromTest.headers.get('authorization')).toBe(fromCreate.headers.get('authorization'));
+    expect(fromTest.params).toEqual(fromCreate.params);
+    expect(fromTest.ip).toBe(fromCreate.ip);
+    expect((fromTest.config as any).db).toEqual((fromCreate.config as any).db);
+  });
+
+  it('config.extendContext 钩子生效（与 createContext 一致）', () => {
+    const ctx = createTestContext({
+      path: '/api/test',
+      config: {
+        extendContext(c: any) {
+          c.custom = 'value';
+        },
+      },
+    });
+    expect((ctx as any).custom).toBe('value');
   });
 });

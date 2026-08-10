@@ -570,23 +570,25 @@ export function WS(ctx: WsContext): WsEventHandlers {
 
 ### 5.10 业务方测试支持
 
-框架公开导出 `createContext` / `invokeHandler`，业务方可在不启动 HTTP 服务器、不依赖 build 产物的前提下，走框架真实的注入、中间件、序列化逻辑测试 handler。
+框架通过 `@faapi/faapi/testing` 子路径导出 `createTestContext` / `invokeHandler`，业务方可在不启动 HTTP 服务器、不依赖 build 产物的前提下，走框架真实的注入、中间件、序列化逻辑测试 handler。测试 API 与主入口 `@faapi/faapi` 分离，便于生产代码与测试代码导入分离。
 
 ```ts
-import { createContext, invokeHandler } from '@faapi/faapi';
+import { createTestContext, invokeHandler } from '@faapi/faapi/testing';
 import { GET } from './handler';
 
 it('GET 返回分页数据', async () => {
-  const ctx = createContext(
-    new Request('http://localhost/api/user?page=1&pageSize=10'),
-    {},                      // params
-    { db: { host: '...' } }, // config
-  );
+  const ctx = createTestContext({
+    path: '/api/user',
+    query: { page: 1, pageSize: 10 },  // 对象形式，无需手写 URL
+    config: { db: { host: '...' } },
+  });
   const res = await invokeHandler(GET, ctx);
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({ page: '1', pageSize: '10' });
 });
 ```
+
+`createTestContext(options)` 是测试入口，接受 `{ method?, path, query?, headers?, params?, config?, ip? }` 对象，免去手写 `new Request('http://localhost/...')` 的样板代码。
 
 `invokeHandler(handler, ctx, body?, middlewares?, injectors?)` 支持传入中间件链和注入器，可测试鉴权拦截、依赖注入等场景。不走 schema 校验（zod.js 由 build 生成）；如需测试完整请求链路（含 schema、全局中间件），用 `createProdApp` + `app.inject()`（需先 `faapi build`）。
 

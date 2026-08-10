@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { FaapiMiddleware, InjectorMap } from './index';
-import { createContext, invokeHandler } from './index';
+import { createTestContext } from './runtime/createContext';
+import { invokeHandler } from './runtime/invokeHandler';
 
 /**
  * 业务方测试支持：公开导出 createContext / invokeHandler
@@ -11,12 +12,11 @@ import { createContext, invokeHandler } from './index';
 describe('业务方测试支持', () => {
   describe('createContext', () => {
     it('从 Request 创建 ctx，含 query/headers/method/path', () => {
-      const ctx = createContext(
-        new Request('http://localhost/api/user?page=1&pageSize=10', {
-          headers: { 'x-custom': 'yes' },
-        }),
-        {},
-      );
+      const ctx = createTestContext({
+        path: '/api/user',
+        query: { page: '1', pageSize: '10' },
+        headers: { 'x-custom': 'yes' },
+      });
       expect(ctx.method).toBe('GET');
       expect(ctx.path).toBe('/api/user');
       expect(ctx.query.get('page')).toBe('1');
@@ -25,41 +25,38 @@ describe('业务方测试支持', () => {
     });
 
     it('注入 params（动态路由参数）', () => {
-      const ctx = createContext(new Request('http://localhost/api/user/123'), { id: '123' });
+      const ctx = createTestContext({ path: '/api/user/123', params: { id: '123' } });
       expect(ctx.params).toEqual({ id: '123' });
     });
 
     it('注入业务 config', () => {
-      const ctx = createContext(
-        new Request('http://localhost/'),
-        {},
-        {
+      const ctx = createTestContext({
+        path: '/',
+        config: {
           db: { host: 'localhost', port: 5432 },
         },
-      );
+      });
       expect(ctx.config.db).toEqual({ host: 'localhost', port: 5432 });
     });
 
     it('注入 ip', () => {
-      const ctx = createContext(new Request('http://localhost/'), {}, {}, '1.2.3.4');
+      const ctx = createTestContext({ path: '/', ip: '1.2.3.4' });
       expect(ctx.ip).toBe('1.2.3.4');
     });
 
     it('从 user-agent 头读取 ua', () => {
-      const ctx = createContext(
-        new Request('http://localhost/', { headers: { 'user-agent': 'curl/8.0' } }),
-        {},
-      );
+      const ctx = createTestContext({
+        path: '/',
+        headers: { 'user-agent': 'curl/8.0' },
+      });
       expect(ctx.ua).toBe('curl/8.0');
     });
 
     it('解析 cookie 头', () => {
-      const ctx = createContext(
-        new Request('http://localhost/', {
-          headers: { cookie: 'session=abc; theme=dark' },
-        }),
-        {},
-      );
+      const ctx = createTestContext({
+        path: '/',
+        headers: { cookie: 'session=abc; theme=dark' },
+      });
       expect(ctx.cookies.session).toBe('abc');
       expect(ctx.cookies.theme).toBe('dark');
       expect(ctx.getCookie('session')).toBe('abc');
@@ -68,7 +65,7 @@ describe('业务方测试支持', () => {
 
   describe('invokeHandler', () => {
     it('GET handler 走 query 注入', async () => {
-      const ctx = createContext(new Request('http://localhost/api/test?page=2&pageSize=20'), {});
+      const ctx = createTestContext({ path: '/api/test', query: { page: '2', pageSize: '20' } });
       const handler = (query: any) => ({ page: query.page, pageSize: query.pageSize });
       const res = await invokeHandler(handler, ctx);
       expect(res.status).toBe(200);
@@ -76,7 +73,7 @@ describe('业务方测试支持', () => {
     });
 
     it('POST handler 走 body 注入', async () => {
-      const ctx = createContext(new Request('http://localhost/api/test', { method: 'POST' }), {});
+      const ctx = createTestContext({ method: 'POST', path: '/api/test' });
       const handler = (body: any) => ({ created: true, name: body.name });
       const res = await invokeHandler(handler, ctx, { name: 'Alice' });
       expect(res.status).toBe(200);
@@ -84,7 +81,7 @@ describe('业务方测试支持', () => {
     });
 
     it('handler 通过参数名注入接收 ctx', async () => {
-      const ctx = createContext(new Request('http://localhost/api/test'), {});
+      const ctx = createTestContext({ path: '/api/test' });
       let receivedCtx: unknown;
       const handler = (context: any) => {
         receivedCtx = context;
@@ -95,21 +92,21 @@ describe('业务方测试支持', () => {
     });
 
     it('handler 通过参数名注入接收 params', async () => {
-      const ctx = createContext(new Request('http://localhost/api/user/123'), { id: '123' });
+      const ctx = createTestContext({ path: '/api/user/123', params: { id: '123' } });
       const handler = (params: any) => ({ id: params.id });
       const res = await invokeHandler(handler, ctx);
       expect(await res.json()).toEqual({ data: { id: '123' } });
     });
 
     it('handler 返回 null 时自动包裹为 { data: null }', async () => {
-      const ctx = createContext(new Request('http://localhost/api/test'), {});
+      const ctx = createTestContext({ path: '/api/test' });
       const res = await invokeHandler(() => null, ctx);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ data: null });
     });
 
     it('handler 通过 ctx.json 返回自定义响应', async () => {
-      const ctx = createContext(new Request('http://localhost/api/test'), {});
+      const ctx = createTestContext({ path: '/api/test' });
       function handler(context: any) {
         return context.json({ error: 'Not found' }, 404);
       }
@@ -119,7 +116,7 @@ describe('业务方测试支持', () => {
     });
 
     it('handler 抛错时错误向上传播', async () => {
-      const ctx = createContext(new Request('http://localhost/api/test'), {});
+      const ctx = createTestContext({ path: '/api/test' });
       const handler = () => {
         throw new Error('handler error');
       };
@@ -127,12 +124,10 @@ describe('业务方测试支持', () => {
     });
 
     it('带中间件：鉴权通过', async () => {
-      const ctx = createContext(
-        new Request('http://localhost/api/admin', {
-          headers: { authorization: 'Bearer xxx' },
-        }),
-        {},
-      );
+      const ctx = createTestContext({
+        path: '/api/admin',
+        headers: { authorization: 'Bearer xxx' },
+      });
       const authMiddleware: FaapiMiddleware = async (ctx, next) => {
         if (!ctx.headers.get('authorization')) {
           return new Response('Unauthorized', { status: 401 });
@@ -146,7 +141,7 @@ describe('业务方测试支持', () => {
     });
 
     it('带中间件：鉴权失败被拦截', async () => {
-      const ctx = createContext(new Request('http://localhost/api/admin'), {});
+      const ctx = createTestContext({ path: '/api/admin' });
       const authMiddleware: FaapiMiddleware = async (ctx, next) => {
         if (!ctx.headers.get('authorization')) {
           return new Response('Unauthorized', { status: 401 });
@@ -159,7 +154,7 @@ describe('业务方测试支持', () => {
     });
 
     it('带注入器：自定义参数注入', async () => {
-      const ctx = createContext(new Request('http://localhost/api/test'), {});
+      const ctx = createTestContext({ path: '/api/test' });
       const mockDb = { query: () => 'result' };
       const injectors: InjectorMap = {
         db: () => mockDb,
@@ -170,7 +165,7 @@ describe('业务方测试支持', () => {
     });
 
     it('async handler 正确 await', async () => {
-      const ctx = createContext(new Request('http://localhost/api/test'), {});
+      const ctx = createTestContext({ path: '/api/test' });
       const handler = async () => {
         await new Promise((r) => setTimeout(r, 10));
         return { async: true };

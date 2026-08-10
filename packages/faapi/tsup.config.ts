@@ -3,7 +3,7 @@ import { defineConfig } from 'tsup';
 export default defineConfig([
   // 运行时入口：保持外部依赖
   {
-    entry: ['src/index.ts'],
+    entry: ['src/index.ts', 'src/testing.ts'],
     format: ['esm'],
     dts: true,
     clean: true,
