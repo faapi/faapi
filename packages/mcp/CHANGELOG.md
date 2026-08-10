@@ -1,5 +1,12 @@
 # @faapi/mcp
 
+## 2.0.0
+
+### Patch Changes
+
+- Updated dependencies [1258e39]
+  - @faapi/faapi@2.0.0
+
 ## 1.5.0
 
 ## 1.4.0
