@@ -40,9 +40,13 @@ const PATTERNS = ['src/api/**/*.ts'];
  * 当前 app 单例的 globalThis key
  *
  * 用 `Symbol.for` 创建全局 symbol，确保跨模块实例共享同一个 key——
- * Next.js 16 默认用 Turbopack 作为 dev 和 build 的 bundler，其 runtime 与主进程的
- * Node.js 原生 module cache 是两套独立缓存（dev/prod 都如此），用模块级变量无法跨实例
- * 共享，必须借助 `globalThis`。
+ * Next.js 16 默认用 Turbopack 作为 `next dev` 的 bundler，Turbopack dev server runtime
+ * 与主进程的 Node.js 原生 module cache 是两套独立缓存，用模块级变量无法跨实例共享，
+ * 必须借助 `globalThis`。
+ *
+ * 注：生产模式（`node dist/main` + `next build`）不受此问题影响——`next build` 产物是
+ * 普通 JS 文件，运行时通过 Node.js 原生 require 加载，与主进程共享 module cache。
+ * 此机制主要解决 dev 模式下 RSC 调用 `getApp()` 的问题，对生产模式无副作用。
  */
 const APP_INSTANCE_KEY = Symbol.for('faapi.app.instance');
 
@@ -70,8 +74,8 @@ function setCurrentApp(app: AppBase | null): void {
  *
  * 用于在无法直接拿到 app 引用的场景（如 Next.js Server Component）中访问 app。
  *
- * 通过 `globalThis` 共享单例，确保 Next.js Turbopack runtime 加载的 `@faapi/faapi`
- * 模块实例与主进程 `faapi dev`/`node dist/main` 设置单例的实例能读到同一个 app 引用。
+ * 通过 `globalThis` 共享单例，确保 Next.js 16 Turbopack dev server runtime 加载的
+ * `@faapi/faapi` 模块实例与主进程 `faapi dev` 设置单例的实例能读到同一个 app 引用。
  *
  * @returns 当前 app 实例
  * @throws 未初始化时抛错（需先调 `createProdApp()` / `createDevApp()`，或 `faapi dev` / `node dist/main` 启动）
@@ -443,7 +447,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   };
 
   // 设置单例（覆盖之前的实例；测试场景下多次创建会覆盖，close 时只清自己）
-  // 通过 globalThis 存储，确保 Next.js Turbopack runtime 加载的模块实例也能读到
+  // 通过 globalThis 存储，确保 Next.js Turbopack dev server runtime 加载的模块实例也能读到
   setCurrentApp(app);
 
   /** 更新路由引用（app + routesRef + 闭包变量） */
