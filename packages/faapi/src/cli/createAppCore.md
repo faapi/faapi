@@ -51,6 +51,7 @@ export function getApp(): AppBase;
 - **未初始化时抛错**（强约束，立刻发现问题）
 - **`createAppBase` 末尾设置单例**（覆盖之前的实例）
 - **`close()` 时清 null**（仅当单例仍指向当前 app，避免被后续 app 误清）
+- **通过 `globalThis` + `Symbol.for('faapi.app.instance')` 共享单例**——Next.js 16 默认用 Turbopack 作为 `next dev` 和 `next build` 的 bundler，其 runtime 与主进程的 Node.js 原生 module cache 是两套独立缓存（dev 和生产模式都如此），模块级变量无法跨实例共享。用 `globalThis` 确保 RSC chunk 中的 `getApp()` 能读到主进程 `faapi dev`/`node dist/main` 设置的 app 引用。
 
 **Next.js RSC 场景用法**：
 

@@ -232,6 +232,29 @@ describe('getApp', () => {
     // app1 仍可正常 close（虽然单例已 null，不会误清）
     await app1.close();
   });
+
+  it('单例通过 globalThis + Symbol.for 跨模块实例共享', async () => {
+    // 模拟 Next.js Turbopack 场景：RSC chunk 加载的 @faapi/faapi 是另一个模块实例，
+    // 模块级变量无法共享，必须通过 globalThis + Symbol.for 跨实例读取。
+    // 此测试确保该 key 稳定，防止未来重构破坏 Next.js RSC 场景。
+    const filePath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
+    mkdirSync(join(filePath, '..'), { recursive: true });
+    writeFileSync(filePath, `export function GET() { return { ok: true }; }\n`, 'utf-8');
+    await compileArtifacts('dist');
+
+    const { app } = await createAppBase(options());
+
+    // 通过 Symbol.for('faapi.app.instance') 能从 globalThis 读到同一个 app 实例
+    const key = Symbol.for('faapi.app.instance');
+    const shared = (globalThis as Record<symbol, unknown>)[key];
+    expect(shared).toBe(app);
+    expect(getApp()).toBe(shared);
+
+    await app.close();
+
+    // close 后 globalThis 上的引用也被清除
+    expect((globalThis as Record<symbol, unknown>)[key]).toBeUndefined();
+  });
 });
 
 /**

@@ -37,20 +37,41 @@ const ROUTES_FILE = 'faapi-routes.js';
 const PATTERNS = ['src/api/**/*.ts'];
 
 /**
- * 当前 app 单例（模块级变量）
+ * 当前 app 单例的 globalThis key
  *
- * 由 `createAppBase` 设置，`app.close()` 时置 null。
- * 业务方通过 `getApp()` 读取，避免重复创建实例（如 Next.js RSC 中拿不到 app 引用的问题）。
+ * 用 `Symbol.for` 创建全局 symbol，确保跨模块实例共享同一个 key——
+ * Next.js 16 默认用 Turbopack 作为 dev 和 build 的 bundler，其 runtime 与主进程的
+ * Node.js 原生 module cache 是两套独立缓存（dev/prod 都如此），用模块级变量无法跨实例
+ * 共享，必须借助 `globalThis`。
+ */
+const APP_INSTANCE_KEY = Symbol.for('faapi.app.instance');
+
+/**
+ * 读取当前 app 单例（从 globalThis 取，跨模块实例共享）
  *
  * 注意：单例仅指向"最近一次创建且未关闭的 app"。测试场景下创建多个临时 app 时，
  * 单例会被覆盖，但 close 时只有当单例仍指向当前 app 才置 null，避免被后续 app 误清。
  */
-let currentApp: AppBase | null = null;
+function getCurrentApp(): AppBase | null {
+  return (globalThis as Record<symbol, AppBase | undefined>)[APP_INSTANCE_KEY] ?? null;
+}
+
+/** 设置/清除当前 app 单例（写入 globalThis，跨模块实例共享） */
+function setCurrentApp(app: AppBase | null): void {
+  if (app === null) {
+    delete (globalThis as Record<symbol, AppBase | undefined>)[APP_INSTANCE_KEY];
+  } else {
+    (globalThis as Record<symbol, AppBase | undefined>)[APP_INSTANCE_KEY] = app;
+  }
+}
 
 /**
  * 获取当前 faapi app 单例
  *
  * 用于在无法直接拿到 app 引用的场景（如 Next.js Server Component）中访问 app。
+ *
+ * 通过 `globalThis` 共享单例，确保 Next.js Turbopack runtime 加载的 `@faapi/faapi`
+ * 模块实例与主进程 `faapi dev`/`node dist/main` 设置单例的实例能读到同一个 app 引用。
  *
  * @returns 当前 app 实例
  * @throws 未初始化时抛错（需先调 `createProdApp()` / `createDevApp()`，或 `faapi dev` / `node dist/main` 启动）
@@ -72,12 +93,13 @@ let currentApp: AppBase | null = null;
  * ```
  */
 export function getApp(): AppBase {
-  if (!currentApp) {
+  const app = getCurrentApp();
+  if (!app) {
     throw new Error(
       '[faapi] No app instance. Call createProdApp() / createDevApp() first, or run `faapi dev` / `node dist/main`.',
     );
   }
-  return currentApp;
+  return app;
 }
 
 /** FaapiConfig 的内置 key 集合（排除自定义业务配置） */
@@ -404,7 +426,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       if (!server.listening) {
         app.server = null;
         // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
-        if (currentApp === app) currentApp = null;
+        if (getCurrentApp() === app) setCurrentApp(null);
         return;
       }
 
@@ -413,7 +435,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           if (err) console.error('Error closing server:', err);
           app.server = null;
           // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
-          if (currentApp === app) currentApp = null;
+          if (getCurrentApp() === app) setCurrentApp(null);
           resolve();
         });
       });
@@ -421,7 +443,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   };
 
   // 设置单例（覆盖之前的实例；测试场景下多次创建会覆盖，close 时只清自己）
-  currentApp = app;
+  // 通过 globalThis 存储，确保 Next.js Turbopack runtime 加载的模块实例也能读到
+  setCurrentApp(app);
 
   /** 更新路由引用（app + routesRef + 闭包变量） */
   const ctx: AppContext = {
