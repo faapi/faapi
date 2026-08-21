@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDevApp } from './createDevApp';
@@ -12,6 +12,7 @@ import { generateSchemaFiles } from './generateSchemaFiles';
 import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
 import { invalidateSchemaCache } from '../validator/validateInput';
+import { getTool, listTools, clearToolRegistry } from '../injection/toolRegistry';
 
 /**
  * createDevApp 测试：dev 模式启动 API（含 reloadRoutes 热替换）
@@ -49,6 +50,7 @@ describe('createDevApp', () => {
     invalidateSchemaCache();
     invalidateMiddlewareCache();
     invalidateProgramCache();
+    clearToolRegistry();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -107,6 +109,63 @@ describe('createDevApp', () => {
 
     await app.reloadRoutes();
     expect(app.routes.length).toBe(initialCount + 1);
+    await app.close();
+  });
+
+  it('reloadTools 重新扫描 tools + 重生成 faapi-tools.js（新增 tool 后生效）', async () => {
+    writeHandler();
+    await compileArtifacts('.faapi');
+
+    const app = await createDevApp({ rootDir: tempDir });
+
+    // 初始无 tool → faapi-tools.js 不存在或为空，toolRegistry 为空
+    expect(listTools()).toHaveLength(0);
+
+    // 写入第一个 tool + 编译（watcher 触发时的行为模拟）
+    const toolPath = join(tempDir, 'src/tools/weather/handler.ts');
+    mkdirSync(join(toolPath, '..'), { recursive: true });
+    writeFileSync(
+      toolPath,
+      `export interface WeatherInput { city: string }
+/** 获取天气 */
+export function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
+      'utf-8',
+    );
+    await compileDevRoutes({ rootDir: tempDir, dist: '.faapi', files: [toolPath] });
+
+    await app.reloadTools();
+
+    // faapi-tools.js 已生成，包含新 tool
+    const toolsPath = join(tempDir, '.faapi', 'faapi-tools.js');
+    expect(existsSync(toolsPath)).toBe(true);
+    const toolsContent = readFileSync(toolsPath, 'utf-8');
+    expect(toolsContent).toContain('weather.getWeather');
+    expect(toolsContent).toContain('获取天气');
+
+    // toolRegistry 已重新水合（reloadTools 调 loadAndHydrateTools）
+    expect(listTools()).toHaveLength(1);
+    const tool = getTool('weather.getWeather');
+    expect(tool).toBeDefined();
+    expect(tool!.description).toBe('获取天气');
+
+    await app.close();
+
+    // close 后 toolRegistry 清空
+    expect(listTools()).toHaveLength(0);
+  });
+
+  it('reloadTools 无 tool 文件时生成空清单', async () => {
+    writeHandler();
+    await compileArtifacts('.faapi');
+
+    const app = await createDevApp({ rootDir: tempDir });
+    await app.reloadTools();
+
+    const toolsPath = join(tempDir, '.faapi', 'faapi-tools.js');
+    expect(existsSync(toolsPath)).toBe(true);
+    const toolsContent = readFileSync(toolsPath, 'utf-8');
+    expect(toolsContent).toContain('export const tools = []');
+
     await app.close();
   });
 

@@ -24,9 +24,10 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 | 统一响应格式 / 自定义错误响应 | [response.md](./response.md) | `ok()` 辅助函数、全局错误中间件 |
 | 配置生命周期钩子 | [lifecycle.md](./lifecycle.md) | `lifecycle: { onReady, onClose, onError }` |
 | 扩展 ctx | [extend-context.md](./extend-context.md) | `extendContext(ctx) { ... }` |
-| 写插件 / 集成 Next.js | [plugins.md](./plugins.md) | `@faapi/next` 集成 |
+| 写插件 / 集成 Next.js / 启用 @faapi/agent | [plugins.md](./plugins.md) | `@faapi/next` / `@faapi/agent` 集成 |
 | 多环境配置 | [multi-env.md](./multi-env.md) | `.env` / `.env.production` |
 | 写 WebSocket / SSE / 流式响应 | [realtime.md](./realtime.md) | `WS` 导出 / `ctx.sse()` |
+| 写 agent / tool / 多 agent 协作 / LLM 驱动业务 | [agent.md](./agent.md) | `src/agents/<name>/handler.ts` / `src/tools/<name>/handler.ts` / `agent` 参数注入 |
 | ETag / compression / rateLimit / cluster 等自实现功能 | [recipes.md](./recipes.md) | 业务方自行实现中间件示例 |
 | dev 启动失败 / 路由不生效 / 400/500 错误 排查 | [debug.md](./debug.md) | 排查问题 |
 | 测试 handler / 中间件 / 注入器 / E2E / WebSocket 路由 | [testing.md](./testing.md) | `createContext` + `invokeHandler` 无服务器测试 / `createTestServer` + `fetch` E2E / `connectWs` WS 路由 |

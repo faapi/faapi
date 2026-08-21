@@ -13,6 +13,7 @@
 - **配置文件编译** `faapi.config.ts` → `dist/faapi-config.js`（`compileConfig`，多环境差异通过 `.env` 文件实现，见 `loadEnv`）
 - 生成 `dist/**/zod.js`（每个 handler 一个 zod schema 模块）
 - 生成 `dist/faapi-routes.js`（序列化路由清单）
+- 生成 `dist/faapi-tools.js`（序列化 tool 清单）+ tool handler 的 `zod.js`
 
 ## 构建步骤
 
@@ -24,7 +25,8 @@
 4. **扫描路由**（`scanRoutes` 从产物 `.js` import 拿方法名，filePath 保持源码 `.ts`）+ 排序 + 冲突检测
 5. **生成 schema 文件**（`generateSchemaFiles` → `dist/**/zod.js`，AST 从源码 `.ts`）
 6. **生成路由清单**（`serializeRoutes` + `writeRoutesModule` → `dist/faapi-routes.js`）
-7. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp, loadEnv } from '@faapi/faapi'` + 兜底 `NODE_ENV=production` + `loadEnv(cwd)` + `createProdApp()` + `listen()`；`--dist` 选项写入 `main.js`，端口由运行时 `PORT` 环境变量决定）
+7. **生成 tool 清单 + schema**（`scanTools` 扫描 `src/tools` + `generateToolArtifacts` AST 增强 → `dist/faapi-tools.js` + 每个 tool 的 `zod.js`）
+8. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp, loadEnv } from '@faapi/faapi'` + 兜底 `NODE_ENV=production` + `loadEnv(cwd)` + `createProdApp()` + `listen()`；`--dist` 选项写入 `main.js`，端口由运行时 `PORT` 环境变量决定）
 
 ## 编译模式
 
@@ -40,12 +42,15 @@
 dist/
 ├── main.js                   # 启动入口（零入口设计：build 阶段自动生成，import createProdApp + listen）
 ├── faapi-routes.js           # 路由清单（序列化，含 middlewarePaths）
+├── faapi-tools.js            # tool 清单（序列化，含 description/inputTypeName）
 ├── faapi-config.js           # 配置入口产物（import faapi.config.js + export base）
 ├── faapi.config.js           # config 源编译产物（保留相对 import 指向项目模块）
 ├── faapi-helpers.js          # coerce 公用函数（仅当存在 number/boolean 字段时生成）
 ├── api/hello/handler.js      # 编译后的路由（相对 import 已重写为 .js 后缀）
 ├── api/hello/zod.js          # zod schema 模块（与 handler.js 同级）
 ├── api/hello/middlewares.js  # 中间件（独立编译）
+├── tools/weather/handler.js  # 编译后的 tool（与路由对称，打平 src 前缀）
+├── tools/weather/zod.js      # tool zod schema 模块（与 handler.js 同级）
 ├── lib/errors.js             # 项目模块（与 routes 共享，instanceof 跨 config/routes 生效）
 └── ...
 ```
@@ -98,5 +103,7 @@ PORT=8080 node dist/main    # 运行时指定端口
 - `generateSchemaFiles.ts` - 为每个 handler 生成 zod.js
 - `generateRoutes.ts` - 序列化路由清单与水合还原
 - `scanRoutes.ts` - 扫描路由
+- `../tools/scanTools.ts` - 扫描 tools（导出 `TOOL_PATTERNS`）
+- `./generateToolArtifacts.ts` - 生成 `faapi-tools.js` + tool zod.js
 - `readTsconfig.ts` - 读取 tsconfig paths 配置
 - `resolveAlias.ts` - 按 paths 配置解析别名 specifier

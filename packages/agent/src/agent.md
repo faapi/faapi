@@ -1,0 +1,168 @@
+# agent
+
+一句话概括：Agent 类——按 `agent.name` 查找元数据、组装 tool 列表（tools + defaultTools + sub-agent）、提供 `run` / `stream` / `asTool`,把 [reactLoop](./reactLoop.md) 与 faapi 核心的 agent/tool 注册表粘合起来。
+
+## 为什么需要
+
+[reactLoop](./reactLoop.md)（Phase 3.3）是纯循环引擎——它只接收 `ReactLoopConfig`（provider + systemPrompt + tools + executeTool + maxTurns），不关心 tool 从哪来、如何加载、sub-agent 如何递归。需要一个组件负责「组装 config」和「执行 tool」：
+
+- **组装 tool 列表**——从 faapi 核心的 `agentRegistry.resolveAgentTools` + `resolveSubAgents` + 全局 `defaultTools` 合并出 `LLMToolDefinition[]`,带每个 tool 的 input schema（JSON Schema）
+- **执行 tool**——`reactLoop` 调 `executeTool(name, args)` 时,Agent 路由：
+  - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
+  - `agent.` 前缀 → 递归构造 sub-agent 调用（含 `maxAgentDepth` 防护）
+- **递归防护**——`maxAgentDepth` 限制 agent 调用 agent 的深度,防止无限递归
+- **自定义 run**——agent handler 导出 `run` 函数时,sub-agent 调用走自定义逻辑而非默认 reactLoop
+
+Agent 类把这些「胶水」逻辑集中在一处,reactLoop 保持纯函数。
+
+## 使用场景
+
+- **Phase 3.5 集成**：faapi 核心 agent 注入器构造 `Agent` 实例（注入真实注册表/加载器访问器），包装为 `AgentHandle`（含可调用 `run` / `stream`）注入到 handler 的 `agent` 参数
+- **sub-agent 递归**：reactLoop 执行 `agent.<name>` tool 时,Agent 构造子 Agent（depth+1）并调其 `run`
+- **agent-as-tool**：父 agent 通过 `asTool()` 把自身包装为 `AgentToolDescriptor`,加入 LLM 可见 tool 列表
+
+## 设计
+
+### 核心类型
+
+| 类型 | 说明 |
+| --- | --- |
+| `AgentDeps` | Agent 运行时依赖（provider + agentName + rootDir + config + 注册表/加载器访问器 + 可选 schema 解析器） |
+| `AgentRuntimeConfig` | 全局 agent 配置覆盖（maxTurns / maxAgentDepth / defaultTools） |
+| `ToolSchemaResolution` | tool schema 解析结果（jsonSchema 给 LLM + validate 给执行前校验） |
+| `AgentRecursionError` | sub-agent 递归超 `maxAgentDepth` 时抛出 |
+
+### 依赖注入（DI）
+
+Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `AgentDeps` 接收访问器函数。原因：
+
+- **可测试**——测试传 mock 访问器,无需启动真实注册表（与 [reactLoop.test](./reactLoop.test.ts) 同构）
+- **解耦**——Agent 类不依赖核心运行时模块,核心模块变化不影响 Agent 逻辑
+- **phase 边界**——Phase 3.4 实现 Agent 类逻辑,Phase 3.5 注入真实访问器（核心导出注册表/加载器后接线）
+
+`AgentDeps` 访问器签名与 faapi 核心对称：
+
+| 访问器 | 对应核心模块 | 说明 |
+| --- | --- | --- |
+| `getAgent(name)` | [agentRegistry.getAgent](../../faapi/src/injection/agentRegistry.md) | 查 agent 元数据（systemPrompt / model / maxTurns / filePath / hasRun 等） |
+| `getTool(name)` | [toolRegistry.getTool](../../faapi/src/injection/toolRegistry.md) | 查 tool 元数据（filePath / functionName / inputTypeName） |
+| `resolveAgentTools(name)` | [agentRegistry.resolveAgentTools](../../faapi/src/injection/agentRegistry.md) | agent 显式声明的 tools 引用 |
+| `resolveSubAgents(name)` | [agentRegistry.resolveSubAgents](../../faapi/src/injection/agentRegistry.md) | agent 可调用 sub-agent 列表 |
+| `loadToolModule(...)` | [loadToolModule](../../faapi/src/loader/loadToolModule.md) | 动态 import tool handler |
+| `loadAgentModule(...)` | [loadAgentModule](../../faapi/src/loader/loadAgentModule.md) | 动态 import agent handler（取自定义 run / 动态 config 字段） |
+| `resolveToolSchema?(tool)` | Phase 3.5 实现 | tool input 的 JSON Schema + 校验函数（基于 `zod.js` + `z.toJSONSchema`） |
+
+### `Agent` 类方法
+
+```ts
+class Agent {
+  constructor(deps: AgentDeps, depth?: number);  // depth 默认 1（根 agent）
+  async run(input: string): Promise<ReactLoopResult>;
+  async *stream(input: string): AsyncIterable<ReactLoopStreamChunk>;
+  asTool(): AgentToolDescriptor | undefined;
+}
+```
+
+- `run(input)` —— 组装 `ReactLoopConfig` → 调 `reactLoop(input, config)`
+- `stream(input)` —— 组装 config → 调 `reactLoopStream(input, config)`
+- `asTool()` —— 把自身包装为 `AgentToolDescriptor`（`kind: 'agent'` / `name: 'agent.<name>'` / `metadata`）
+
+### config 组装流程
+
+`run` / `stream` 内部先组装 `ReactLoopConfig`：
+
+1. `getAgent(deps.agentName)` 取元数据,未注册抛 `AgentError`
+2. `buildToolDefinitions()`（async,因 schema 解析）组装 `LLMToolDefinition[]`
+3. config 字段优先级：agent 元数据（`systemPrompt` / `model` / `maxTurns`）> 全局 `AgentRuntimeConfig`
+
+### `buildToolDefinitions()` —— tool 列表组装
+
+合并三个来源（按 `name` 去重,先入者保留）：
+
+1. **agent.tools 引用** —— `resolveAgentTools(agentName)` 返回 agent 显式声明的 `tools` 引用（不再自动包含所有共享 tool）
+2. **全局 `defaultTools`** —— `deps.config.defaultTools` 中的 tool 名,逐个 `getTool` 查找补入
+3. **sub-agent** —— `resolveSubAgents(agentName)` 每个包装为 `agent.<name>`（input 为自由 schema `{ type: 'object' }`）
+
+每个常规 tool 的 `input`：
+- `resolveToolSchema?(tool)` 提供 → 用其 `jsonSchema`
+- 未提供 / tool 无 `inputTypeName` → 自由 schema `{ type: 'object' }`
+
+### `executeTool(name, args)` —— tool 执行路由
+
+```ts
+if (name.startsWith('agent.')) {
+  return executeSubAgent(name.slice(6), args);  // sub-agent 递归
+}
+const tool = getTool(name);
+if (!tool) throw new Error(`Tool "${name}" not found`);
+// 可选 input 校验
+const schemaRes = await resolveToolSchema?(tool);
+let callArgs = args;
+if (schemaRes) {
+  const v = schemaRes.validate(args);
+  if (!v.ok) return { error: v.error };  // 校验失败,错误回传 LLM 让其重试
+  callArgs = v.value ?? args;
+}
+const mod = await loadToolModule(tool.filePath, tool.functionName, rootDir);
+return await mod.handler(callArgs);
+```
+
+- **常规 tool 校验失败**：不抛错,返回 `{ error }` 对象——reactLoop 把它 stringify 后作为 tool 结果回传 LLM,LLM 可据此修正参数重试（与 [reactLoop](./reactLoop.md) 的「tool 错误回传 LLM」语义一致）
+- **tool 未找到 / 加载失败**：抛错,被 reactLoop catch 后同样回传 LLM
+
+### `executeSubAgent(subName, args)` —— sub-agent 递归
+
+```ts
+const newDepth = this.depth + 1;
+const maxDepth = deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
+if (newDepth > maxDepth) throw new AgentRecursionError(maxDepth, newDepth);
+
+const subAgent = new Agent({ ...deps, agentName: subName }, newDepth);
+const meta = deps.getAgent(subName);
+if (meta?.hasRun) {
+  const mod = await deps.loadAgentModule(meta.filePath, meta.hasConfig, meta.hasRun, deps.rootDir);
+  if (mod.run) return await mod.run(args);  // 自定义 run,直接传 args 对象
+}
+return await subAgent.run(typeof args === 'string' ? args : JSON.stringify(args));
+```
+
+- **`maxAgentDepth`**：默认 3。depth 从 1（根）开始,sub-agent 为 2、3...,超出抛 `AgentRecursionError`
+- **自定义 run**：sub-agent handler 导出 `run` 时（`hasRun=true`）,调用 `mod.run(args)` 跳过默认 reactLoop——业务方完全控制 sub-agent 逻辑
+- **默认 reactLoop**：sub-agent 无 `run` 时,调 `subAgent.run(JSON.stringify(args))`——agent-as-tool input 为开放式 JSON,stringify 后作为 user 消息喂给 sub-agent 的 LLM
+
+### 错误处理
+
+| 错误 | 类型 | 处理 |
+| --- | --- | --- |
+| agent 未注册 | `AgentError` | `run`/`stream` 抛错（调用方负责捕获） |
+| sub-agent 递归超限 | `AgentRecursionError` | 抛错,被父 reactLoop catch 后回传 LLM |
+| tool 未找到 / 加载失败 | `Error` | 抛错,被 reactLoop catch 后回传 LLM |
+| tool input 校验失败 | 返回 `{ error }` | 不抛错,作为 tool 结果回传 LLM 重试 |
+| LLM provider 抛错 | 透传 | reactLoop 不 catch,立即传播 |
+
+### `asTool()` —— agent 包装为 tool
+
+```ts
+asTool(): AgentToolDescriptor | undefined {
+  const meta = deps.getAgent(deps.agentName);
+  if (!meta) return undefined;
+  return {
+    kind: 'agent',
+    name: `agent.${meta.name}`,
+    agentName: meta.name,
+    description: meta.description,
+    metadata: meta,
+  };
+}
+```
+
+与 [agentRegistry.asTool](../../faapi/src/injection/agentRegistry.md) 同构——Agent 类自带此方法便于在注入器场景直接调用（不必再过注册表）。
+
+## 相关模块
+
+- [reactLoop](./reactLoop.md) —— Phase 3.3,Agent 的 `run`/`stream` 委托给它
+- [provider](./provider.md) —— Phase 3.2,Agent 构造时持有的 `LLMProvider` 实例
+- faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) —— `AgentDeps` 访问器的真实实现来源（Phase 3.5 接线）
+- faapi 核心 [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— tool 元数据查询
+- faapi 核心 [loadAgentModule](../../faapi/src/loader/loadAgentModule.md) / [loadToolModule](../../faapi/src/loader/loadToolModule.md) —— 动态加载 handler
+- faapi 核心 [extractAgentMetadata](../../faapi/src/ast/extractAgentMetadata.md) / [extractToolMetadata](../../faapi/src/ast/extractToolMetadata.md) —— 元数据类型定义

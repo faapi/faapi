@@ -3,9 +3,18 @@ import type { InjectorMap } from '../middleware/injectorTypes';
 import { resolveInjection, type InjectionType } from './resolveInjection';
 import { queryToObject } from '../utils/queryToObject';
 import type { MultipartResult } from '../utils/parseMultipart';
+import { listAgents } from './agentRegistry';
+import { getAgentHandle } from './agentHandle';
 
 /**
  * 根据注入类型获取对应的值（内置）
+ *
+ * Phase 2.3 扩展 `agent` / `agents`：
+ * - `agents` → `listAgents()`（所有已注册 agent 元数据列表）
+ * - `agent` → `getAgentHandle(ctx)`（Phase 3.5：调 `@faapi/agent` 插件注册的工厂）
+ *
+ * Phase 3.5 的 `@faapi/agent` 插件通过 [agentHandle](./agentHandle.md) 工厂注册机制
+ * 提供 `AgentHandle`（含可调用 `run` / `stream`）。未注册工厂时返回 `undefined`。
  */
 function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?: unknown): unknown {
   switch (type) {
@@ -39,6 +48,12 @@ function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?:
         return (body as MultipartResult).fields;
       }
       return {};
+    // Phase 2.3：注入所有已注册 agent 元数据列表
+    case 'agents':
+      return listAgents();
+    // Phase 3.5：调 @faapi/agent 插件注册的工厂获取 AgentHandle
+    case 'agent':
+      return getAgentHandle(ctx);
     default:
       return undefined;
   }

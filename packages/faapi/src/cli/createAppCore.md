@@ -1,6 +1,6 @@
 # createAppCore
 
-一句话概括：dev/prod 共享的应用基础编排核心——完成「配置加载 → 路由清单水合 → 创建 server → 插件加载」，返回 `AppBase`（listen/close/inject）+ `AppContext`（供 dev 扩展 reloadRoutes）；另导出 `getApp()` 用于在拿不到 app 引用的场景（如 Next.js RSC）访问单例。
+一句话概括：dev/prod 共享的应用基础编排核心——完成「配置加载 → 路由清单水合 → tool 清单水合 → 创建 server → 插件加载」，返回 `AppBase`（listen/close/inject）+ `AppContext`（供 dev 扩展 reloadRoutes）；另导出 `getApp()` 用于在拿不到 app 引用的场景（如 Next.js RSC）访问单例。
 
 ## 为什么需要
 
@@ -89,14 +89,17 @@ async function Page() {
 ## 关键行为
 
 - 路由清单缺失（`<dist>/faapi-routes.js` 不存在）→ 抛错（含 build/dev 提示）
+- tool 清单缺失（`<dist>/faapi-tools.js` 不存在）→ 跳过水合，toolRegistry 保持空（tool 是可选能力，纯 API 项目无 tool）
 - 路由冲突 → 仅 `console.warn`，不阻断启动
-- `listen` 内仅当配置了 `lifecycle.onClose` 时注册 SIGTERM/SIGINT 优雅关闭
-- `close` 幂等（`closed` 标志）；HTTP/2 连接清理方法 feature-detect
+- `listen` 打印路由表 + tool 清单（有 tool 时），仅当配置了 `lifecycle.onClose` 时注册 SIGTERM/SIGINT 优雅关闭
+- `close` 幂等（`closed` 标志）；`close` 时清理 toolRegistry 单例（与 app 单例清理对称）；HTTP/2 连接清理方法 feature-detect
 - `inject` 无 handler 时 reject；`JSON.parse` 失败回退为字符串
+
+`loadAndHydrateTools(rootDir, dist)` 导出供 `reloadTools` 热替换后重新水合——读 `faapi-tools.js` → `hydrateTools` → `hydrateToolRegistry`。
 
 ## 相关模块
 
-- `createDevApp.ts` - dev 模式启动，基于 `createAppBase` 增加 `reloadRoutes`
+- `createDevApp.ts` - dev 模式启动，基于 `createAppBase` 增加 `reloadRoutes` + `reloadTools`（重新生成 + 重新水合 tool 清单）
 - `createProdApp.ts` - prod 模式启动，直接委托 `createAppBase`
 - `createApp.ts` - `createProdApp` 的向后兼容别名
 - `loadConfig.ts` - 读 `<dist>/faapi-config.js`
@@ -104,4 +107,6 @@ async function Page() {
 - `loadPlugins.ts` - 加载插件并返回 handler/upgrade 包装器
 - `startServer.ts` - `applyPluginWrappers` 应用包装器到 server
 - `generateRoutes.ts` - `hydrateRoutes` 水合序列化路由清单
-- `importWithCacheBust.ts` - 加载路由清单（watch 模式带时间戳绕缓存）
+- `generateToolArtifacts.ts` - `hydrateTools` 水合序列化 tool 清单 + 生成 `faapi-tools.js`
+- `toolRegistry.ts` - tool 注册表单例（`hydrateToolRegistry` / `getTool` / `listTools`）
+- `importWithCacheBust.ts` - 加载路由/tool 清单（watch 模式带时间戳绕缓存）

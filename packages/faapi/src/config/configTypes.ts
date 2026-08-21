@@ -85,6 +85,103 @@ export interface ResponseConfig {
 }
 
 /**
+ * LLM 提供方配置（Phase 2.4）
+ *
+ * 定义如何连接 LLM 服务（OpenAI 兼容 API），由 Phase 3.2 的 `@faapi/agent` 插件读取。
+ * 支持 `provider` 标识 + OpenAI 兼容字段（apiKey / model / baseURL），
+ * 额外字段透传给 LLM API（如 temperature / max_tokens）。
+ *
+ * `model` 是默认模型，agent 自身 `config.model` 可覆盖。
+ */
+export interface LlmConfig {
+  /**
+   * LLM 提供方标识（如 'openai' / 'anthropic'）
+   *
+   * Phase 3.2 的 provider 模块按此值选择对应的 LLM 适配器。
+   */
+  provider: string;
+  /**
+   * API key（从 `process.env` 读取，避免硬编码）
+   *
+   * 如 `process.env.OPENAI_API_KEY`。
+   */
+  apiKey?: string;
+  /**
+   * 默认模型（如 'gpt-4o'），agent 自身 `config.model` 优先
+   */
+  model?: string;
+  /**
+   * API 基础 URL（可选，用于 OpenAI 兼容 API 如 Azure OpenAI / 中转服务）
+   *
+   * 未设置时用 provider 对应的官方默认值（如 'https://api.openai.com/v1'）。
+   */
+  baseURL?: string;
+  /**
+   * 其他透传参数（如 temperature / max_tokens / top_p）
+   *
+   * 这些字段原样传给 LLM API，由 provider 适配器处理。
+   */
+  [key: string]: unknown;
+}
+
+/**
+ * agent 子系统全局配置（Phase 2.4）
+ *
+ * 提供 agent 子系统的全局默认值，所有字段均可选，未设置时用框架默认值。
+ * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置。
+ *
+ * ```ts
+ * import type { FaapiConfig } from '@faapi/faapi';
+ * export default {
+ *   agent: {
+ *     llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+ *     defaultAgent: 'researcher',
+ *     maxTurns: 10,
+ *     maxAgentDepth: 3,
+ *     defaultTools: ['weather.getWeather'],
+ *   },
+ * } satisfies FaapiConfig;
+ * ```
+ *
+ * 详见 `src/config/configTypes.md` agent 配置块章节。
+ */
+export interface AgentConfig {
+  /**
+   * LLM 提供方配置（Phase 3.2 由 @faapi/agent 插件使用）
+   *
+   * 未设置时 Phase 3.x 插件无法调用 LLM，agent 的 `run` 函数仍可手动实现。
+   */
+  llm?: LlmConfig;
+  /**
+   * 默认 agent 名，用于 `agent` 参数注入（[injectParams](../injection/injectParams.md) Phase 2.3）
+   *
+   * Phase 2.3 的 `agent` 参数注入暂返回 `undefined`，Phase 3.x 的 @faapi/agent 插件
+   * 读取此值从 [agentRegistry](../injection/agentRegistry.md) 查找对应 agent 元数据，
+   * 注入 `AgentHandle`（含可调用 `run`）。
+   */
+  defaultAgent?: string;
+  /**
+   * 默认 tool 列表，所有 agent 都可用（无需在每个 agent 的 `tools` 重复声明）
+   *
+   * 与 agent 自身 `tools` 合并（都加入可用 tool 集合，去重）。
+   * 由 `@faapi/agent` 插件在 setup 时合并到 agent 的 tool 引用列表。
+   */
+  defaultTools?: string[];
+  /**
+   * 默认最大对话轮数（覆盖 agent 自身 `config.maxTurns`，agent 自身配置优先）
+   *
+   * Phase 3.3 的 reactLoop 使用此值作为递归深度防护。
+   */
+  maxTurns?: number;
+  /**
+   * agent 调用 agent 的最大递归深度（防护无限递归，Phase 3.3 reactLoop 使用）
+   *
+   * 默认值由 Phase 3.x 的 @faapi/agent 插件定义（如 3）。
+   */
+  maxAgentDepth?: number;
+}
+
+/**
  * faapi 配置文件类型
  *
  * 在项目根目录创建 faapi.config.ts：
@@ -217,6 +314,32 @@ export interface FaapiConfig {
    * ```
    */
   plugins?: PluginDeclaration[];
+
+  /**
+   * agent 子系统全局配置（Phase 2.4）
+   *
+   * 提供 agent 子系统的全局默认值：LLM 提供方、默认 agent、默认共享 tool、
+   * 最大对话轮数、agent 调用 agent 的最大递归深度。
+   *
+   * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置。
+   * `defaultTools` 与 agent 自身 `tools` 合并（去重）。
+   *
+   * ```ts
+   * import type { FaapiConfig } from '@faapi/faapi';
+   * export default {
+   *   agent: {
+   *     llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+   *     defaultAgent: 'researcher',
+   *     defaultTools: ['weather.getWeather'],
+   *     maxTurns: 10,
+   *     maxAgentDepth: 3,
+   *   },
+   * } satisfies FaapiConfig;
+   * ```
+   *
+   * 详见 `src/config/configTypes.md` agent 配置块章节。
+   */
+  agent?: AgentConfig;
 
   /**
    * 扩展 ctx：在每次请求创建上下文后调用，可挂载自定义方法（如 ctx.xml、ctx.stream）

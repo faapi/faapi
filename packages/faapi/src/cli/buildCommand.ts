@@ -1,6 +1,12 @@
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { detectRouteConflicts } from '../router/detectRouteConflicts';
+import { scanTools } from '../tools/scanTools';
+import { TOOL_PATTERNS } from '../tools/scanTools';
+import { generateToolArtifacts } from './generateToolArtifacts';
+import { scanAgents } from '../agents/scanAgents';
+import { DEFAULT_AGENT_PATTERNS } from '../agents/scanAgents';
+import { generateAgentArtifacts } from './generateAgentArtifacts';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { compileBuildRoutes } from './compileBuildRoutes';
@@ -66,7 +72,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   console.log(`- Output: ${outdir}`);
 
   // 1. 编译 TypeScript（逐文件编译，与 dev 一致）
-  console.log('\n[1/6] Compiling TypeScript (bundle: false)...');
+  console.log('\n[1/8] Compiling TypeScript (bundle: false)...');
   const result = await compileBuildRoutes({
     rootDir,
     dist: outdir,
@@ -80,7 +86,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
 
   // 2. 编译配置文件（faapi.config.ts → <dist>/faapi-config.js）
   //    重新编译以确保使用最新源码（步骤 0 的编译是为了读 config）
-  console.log('\n[2/6] Compiling config...');
+  console.log('\n[2/8] Compiling config...');
   const configResult = await compileConfig({ rootDir, dist: outdir });
   if (configResult.generated) {
     console.log(`  Written to ${configResult.outputFile}`);
@@ -89,7 +95,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   }
 
   // 3. 扫描路由（扫描源码 .ts 文件列表，但 import 产物 .js 拿方法名）
-  console.log('\n[3/6] Scanning routes...');
+  console.log('\n[3/8] Scanning routes...');
   const { routes, wsRoutes } = await scanRoutes(rootDir, PATTERNS, outdir);
   const sorted = sortRoutes(routes);
   console.log(`  Found ${sorted.length} routes, ${wsRoutes.length} WS routes`);
@@ -107,22 +113,40 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   }
 
   // 4. 生成 schema 文件
-  console.log('\n[4/6] Generating schema...');
+  console.log('\n[4/8] Generating schema...');
   await generateSchemaFiles(sorted, rootDir, outdir);
   console.log(`  Schema: zod.js files under ${path.resolve(rootDir, outdir)}`);
 
   // 5. 生成路由清单（prd 启动时直接读取，不再 scanRoutes）
-  console.log('\n[5/6] Generating routes manifest...');
+  console.log('\n[5/8] Generating routes manifest...');
   const routesPath = path.resolve(rootDir, outdir, 'faapi-routes.js');
   const serialized = serializeRoutes(sorted, wsRoutes, rootDir, outdir);
   await writeRoutesModule(serialized, routesPath);
   console.log(`  Written to ${routesPath}`);
 
-  // 6. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
+  // 6. 生成 tool 清单 + schema（scanTools 读源码 + 正则提取函数名，generateToolArtifacts 做 AST 增强）
+  //    与路由对称——生成 faapi-tools.js（tool 清单）+ 每个 tool handler 的 zod.js
+  //    无 tool 文件时 scanTools 返回空列表，generateToolArtifacts 写入空清单
+  console.log('\n[6/8] Generating tool manifest and schema...');
+  const tools = await scanTools(rootDir, TOOL_PATTERNS, outdir);
+  const toolMeta = await generateToolArtifacts(tools, rootDir, outdir);
+  console.log(`  Found ${toolMeta.length} tool(s)`);
+  console.log(`  Tool manifest: ${path.resolve(rootDir, outdir, 'faapi-tools.js')}`);
+
+  // 7. 生成 agent 清单（scanAgents 读源码 + 正则检测 config/run，generateAgentArtifacts 做 AST 增强）
+  //    agent 不生成 zod.js（无输入参数，config 块字段在 AST 阶段已提取为字面量）
+  //    无 agent 文件时 scanAgents 返回空列表，generateAgentArtifacts 写入空清单
+  console.log('\n[7/8] Generating agent manifest...');
+  const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS, outdir);
+  const agentMeta = await generateAgentArtifacts(agents, rootDir, outdir);
+  console.log(`  Found ${agentMeta.length} agent(s)`);
+  console.log(`  Agent manifest: ${path.resolve(rootDir, outdir, 'faapi-agents.js')}`);
+
+  // 8. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
   //    内部 import @faapi/faapi 的 createProdApp + loadEnv + listen
   //    运行时 `node <dist>/main` 直接启动：loadEnv 加载 .env → createProdApp 水合产物 → listen
   //    --dist 选项写入 main.js（非默认 dist 时），端口由运行时 PORT 环境变量决定
-  console.log('\n[6/6] Generating entry file...');
+  console.log('\n[8/8] Generating entry file...');
   const mainPath = path.resolve(rootDir, outdir, 'main.js');
   // 非默认 dist 时写入 createProdApp 参数，让 prod 启动时能定位到产物目录
   const createProdAppArgs =

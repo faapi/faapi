@@ -2,6 +2,10 @@ import ts from 'typescript';
 
 /**
  * 参数注入类型
+ *
+ * Phase 2.3 扩展 `agent` / `agents`：
+ * - `agent` —— 默认 agent 元数据（Phase 2.4 实现 `config.defaultAgent` 后注入值）
+ * - `agents` —— 所有已注册 agent 的元数据列表（`agentRegistry.listAgents()`）
  */
 export type InjectionType =
   | 'query'
@@ -15,6 +19,8 @@ export type InjectionType =
   | 'ua'
   | 'files'
   | 'fields'
+  | 'agent'
+  | 'agents'
   | 'unknown';
 
 /**
@@ -32,6 +38,13 @@ export interface InjectionItem {
  * `form` 与 `body` 互斥：handler 声明其一即可。`form` 适用于
  * `application/x-www-form-urlencoded` 请求体（值均为 string，schema coerce=true）；
  * `body` 适用于 JSON 请求体（coerce=false）。两者共享 `resolveInput` 的解析结果。
+ *
+ * Phase 2.3 添加 `agent` / `agents`：
+ * - `agent` → 注入默认 agent 元数据（Phase 2.4 实现，暂返回 `undefined`）
+ * - `agents` → 注入所有已注册 agent 元数据列表（`agentRegistry.listAgents()`）
+ *
+ * Phase 3.x 的 `@faapi/agent` 插件通过注入器机制增强为 `AgentHandle`
+ * （含可调用 `run` 函数），覆盖内置的元数据注入。
  */
 export const PARAM_TYPE_MAP: Record<string, InjectionType> = {
   query: 'query',
@@ -46,6 +59,8 @@ export const PARAM_TYPE_MAP: Record<string, InjectionType> = {
   ua: 'ua',
   files: 'files',
   fields: 'fields',
+  agent: 'agent', // Phase 2.3
+  agents: 'agents', // Phase 2.3
 };
 
 /**

@@ -3,6 +3,12 @@ import { compileConfig } from './compileConfig';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
+import { scanTools } from '../tools/scanTools';
+import { TOOL_PATTERNS } from '../tools/scanTools';
+import { generateToolArtifacts } from './generateToolArtifacts';
+import { scanAgents } from '../agents/scanAgents';
+import { DEFAULT_AGENT_PATTERNS } from '../agents/scanAgents';
+import { generateAgentArtifacts } from './generateAgentArtifacts';
 import { loadConfig } from '../config/loadConfig';
 import { loadEnv } from './loadEnv';
 import { startWatcher } from './watcher';
@@ -76,12 +82,23 @@ export async function devCommand(options?: DevCommandOptions): Promise<void> {
   console.log('- Generating route manifest and schema...');
   await generateRouteArtifacts(rootDir, PATTERNS, devDist);
 
-  // 5. 启动 dev 应用（createDevApp + listen，含 reloadRoutes 热替换能力）
+  // 5. 生成 tool 清单（scanTools 不 import，仅读源码 + 正则提取函数名）
+  //    按需模式跳过 zod.js 生成——首次请求时按需生成（与路由 schema 策略一致）
+  console.log('- Generating tool manifest...');
+  await generateToolArtifactsForDev(rootDir, devDist);
+
+  // 6. 生成 agent 清单（scanAgents 不 import，仅读源码 + 正则检测 config/run）
+  //    agent 不生成 zod.js（无输入参数），无 skipSchema 选项
+  //    无 agent 文件时 scanAgents 返回空列表，generateAgentArtifacts 写入空清单
+  console.log('- Generating agent manifest...');
+  await generateAgentArtifactsForDev(rootDir, devDist);
+
+  // 7. 启动 dev 应用（createDevApp + listen，含 reloadRoutes/reloadTools/reloadAgents 热替换能力）
   console.log('- Starting dev app...');
   const app = await createDevApp({ rootDir, port: options?.port });
   await app.listen();
 
-  // 6. 启动 watcher（文件变化时增量编译 + 重生成 config + 调 app.reloadRoutes）
+  // 8. 启动 watcher（文件变化时增量编译 + 重生成 config + 调 app.reloadRoutes/reloadTools/reloadAgents）
   startWatcher({ rootDir, app, devDist });
 }
 
@@ -104,4 +121,28 @@ export async function generateRouteArtifacts(
   const routesPath = path.resolve(rootDir, dist, ROUTES_FILE);
   const serialized = serializeRoutes(sorted, wsRoutes, rootDir, dist);
   await writeRoutesModule(serialized, routesPath);
+}
+
+/**
+ * 生成 tool 产物：faapi-tools.js（仅 tool 清单，不含 zod.js）
+ *
+ * 与 `generateRouteArtifacts` 对称——dev 按需模式跳过 zod.js 生成，
+ * 首次请求时按需生成（tool zod.js 的按需生成由 toolRegistry 在 Phase 1.6+ 接入）。
+ * 无 tool 文件时 scanTools 返回空列表，generateToolArtifacts 写入空清单。
+ */
+export async function generateToolArtifactsForDev(rootDir: string, dist: string): Promise<void> {
+  const tools = await scanTools(rootDir, TOOL_PATTERNS, dist);
+  await generateToolArtifacts(tools, rootDir, dist, { skipSchema: true });
+}
+
+/**
+ * 生成 agent 产物：faapi-agents.js（仅 agent 清单，不含 zod.js）
+ *
+ * 与 `generateToolArtifactsForDev` 对称——agent 不生成 zod.js（无输入参数，
+ * config 块字段在 AST 阶段已提取为字面量）。无 agent 文件时 scanAgents 返回空列表，
+ * generateAgentArtifacts 写入空清单。
+ */
+export async function generateAgentArtifactsForDev(rootDir: string, dist: string): Promise<void> {
+  const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS, dist);
+  await generateAgentArtifacts(agents, rootDir, dist);
 }

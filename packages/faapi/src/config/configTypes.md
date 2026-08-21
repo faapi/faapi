@@ -10,7 +10,50 @@ CLI 和 server 启动时需要统一的配置结构，包含根目录、app 目�
 
 - CLI 参数解析后生成 FaapiConfig
 - server 启动时读取 FaapiConfig
-- 扩展点：lifecycle（onReady/onClose/onError）、extendContext（扩展 ctx 方法）、cors（跨域配置）、helmet（安全头）、bodyLimit（请求体限制）、logger（结构化日志）、http2（HTTP/2 支持）、middlewares（全局中间件）、injectors（全局注入器）、plugins（应用级插件）
+- 扩展点：lifecycle（onReady/onClose/onError）、extendContext（扩展 ctx 方法）、cors（跨域配置）、helmet（安全头）、bodyLimit（请求体限制）、logger（结构化日志）、http2（HTTP/2 支持）、middlewares（全局中间件）、injectors（全局注入器）、plugins（应用级插件）、agent（Phase 2.4，agent 子系统全局配置）
+
+## agent 配置块（Phase 2.4）
+
+`config.agent` 提供 agent 子系统的全局默认配置，所有字段均可选，未设置时用框架默认值：
+
+| 字段 | 类型 | 说明 | 默认值 |
+| --- | --- | --- | --- |
+| `llm` | `LlmConfig` | LLM 提供方配置（provider + apiKey + 默认 model + baseURL） | `undefined`（Phase 3.2 由 @faapi/agent 插件使用） |
+| `defaultAgent` | `string` | 默认 agent 名，用于 `agent` 参数注入（[injectParams](../injection/injectParams.md) Phase 2.3） | `undefined`（agent 参数注入返回 undefined） |
+| `defaultTools` | `string[]` | 默认共享 tool 列表，所有 agent 都可用（无需在每个 agent 的 `tools` 重复声明） | `undefined`（无默认共享 tool） |
+| `maxTurns` | `number` | 默认最大对话轮数，覆盖 agent 自身 `config.maxTurns`（agent 自身配置优先于全局） | `undefined`（用 agent 自身 maxTurns 或 Phase 3.x 默认值） |
+| `maxAgentDepth` | `number` | agent 调用 agent 的最大递归深度（防护无限递归，Phase 3.3 reactLoop 使用） | `undefined`（Phase 3.x 用默认值，如 3） |
+
+```ts
+// faapi.config.ts
+import type { FaapiConfig } from '@faapi/faapi';
+
+export default {
+  agent: {
+    // LLM 提供方配置（Phase 3.2 由 @faapi/agent 插件读取）
+    llm: {
+      provider: 'openai',
+      apiKey: process.env.OPENAI_API_KEY,
+      model: 'gpt-4o',
+      baseURL: 'https://api.openai.com/v1', // 可选，默认 OpenAI 官方
+    },
+    // 默认 agent 名（Phase 2.3 的 agent 参数注入读取此值）
+    defaultAgent: 'researcher',
+    // 默认共享 tool（所有 agent 都可用，无需在每个 agent 重复声明 tools）
+    defaultTools: ['weather.getWeather'],
+    // 默认最大对话轮数（agent 自身 config.maxTurns 优先）
+    maxTurns: 10,
+    // agent 调用 agent 的最大递归深度（Phase 3.3 reactLoop 防护）
+    maxAgentDepth: 3,
+  },
+} satisfies FaapiConfig;
+```
+
+**优先级**：agent 自身 `config.maxTurns` / `config.model` 优先于全局 `agent.maxTurns` / `agent.llm.model`。`defaultTools` 与 agent 自身 `tools` 合并（都加入可用 tool 集合，去重）。
+
+**与 injectParams 的集成**：Phase 2.3 的 `agent` 参数注入暂返回 `undefined`，Phase 3.x 的 `@faapi/agent` 插件读取 `config.agent.defaultAgent`，从 [agentRegistry](../injection/agentRegistry.md) 查找对应 agent 元数据，注入 `AgentHandle`（含可调用 `run`）。
+
+
 
 ## 关键设计
 

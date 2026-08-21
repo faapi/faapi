@@ -9,8 +9,15 @@ import { createServer } from '../server/createServer';
 import { applyPluginWrappers } from '../server/startServer';
 import { loadConfig } from '../config/loadConfig';
 import { hydrateRoutes, type SerializedRouteManifest } from './generateRoutes';
+import { hydrateTools, type SerializedToolRecord } from './generateToolArtifacts';
+import { hydrateAgents, type SerializedAgentRecord } from './generateAgentArtifacts';
 import { loadPlugins } from './loadPlugins';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
+import { hydrateToolRegistry, clearToolRegistry } from '../injection/toolRegistry';
+import { hydrateAgentRegistry, clearAgentRegistry } from '../injection/agentRegistry';
+import { clearAgentHandleFactory } from '../injection/agentHandle';
+import type { ToolMetadata } from '../ast/extractToolMetadata';
+import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { FaapiConfig } from '../config/configTypes';
 
 export interface InjectOptions {
@@ -31,10 +38,63 @@ export interface InjectResponse {
 const DEFAULT_DIST = 'dist';
 /** 默认端口 */
 const DEFAULT_PORT = 3000;
-/** 路由清单文件名（build/dev 启动时生成） */
+/** 路由清单文件名（build/dev 启动时生成，必需产物） */
 const ROUTES_FILE = 'faapi-routes.js';
+/** tool 清单文件名（build/dev 启动时生成，可选产物——无 tool 的项目不生成） */
+const TOOLS_FILE = 'faapi-tools.js';
+/** agent 清单文件名（build/dev 启动时生成，可选产物——无 agent 的项目不生成） */
+const AGENTS_FILE = 'faapi-agents.js';
 /** 路由源码目录（写死为 src，路由 .ts 文件位于 src/api/ 下） */
 const PATTERNS = ['src/api/**/*.ts'];
+
+/**
+ * 加载 faapi-tools.js 并水合到 toolRegistry（单例）
+ *
+ * 与路由清单不同，tool 是可选能力——纯 API 项目可能没有 `faapi-tools.js`，
+ * 此时不报错，返回空数组，toolRegistry 保持空。
+ *
+ * dev 按需模式下 `reloadTools` 也会调用此函数重新水合（`setLoadTimestamp` 已在外层设置）。
+ *
+ * @returns 水合后的 ToolMetadata[]（供调用方日志/调试）
+ */
+export async function loadAndHydrateTools(rootDir: string, dist: string): Promise<ToolMetadata[]> {
+  const toolsPath = path.resolve(rootDir, dist, TOOLS_FILE);
+  if (!fs.existsSync(toolsPath)) {
+    return [];
+  }
+  const serialized = (await importWithCacheBust(toolsPath)) as unknown as {
+    tools: SerializedToolRecord[];
+  };
+  const hydrated = hydrateTools(serialized.tools ?? []);
+  hydrateToolRegistry(hydrated);
+  return hydrated;
+}
+
+/**
+ * 加载 faapi-agents.js 并水合到 agentRegistry（单例）
+ *
+ * 与 `loadAndHydrateTools` 对称——agent 是可选能力,纯 API 项目可能没有 `faapi-agents.js`,
+ * 此时不报错,返回空数组,agentRegistry 保持空。
+ *
+ * dev 按需模式下 `reloadAgents` 也会调用此函数重新水合（`setLoadTimestamp` 已在外层设置）。
+ *
+ * @returns 水合后的 AgentMetadata[]（供调用方日志/调试）
+ */
+export async function loadAndHydrateAgents(
+  rootDir: string,
+  dist: string,
+): Promise<AgentMetadata[]> {
+  const agentsPath = path.resolve(rootDir, dist, AGENTS_FILE);
+  if (!fs.existsSync(agentsPath)) {
+    return [];
+  }
+  const serialized = (await importWithCacheBust(agentsPath)) as unknown as {
+    agents: SerializedAgentRecord[];
+  };
+  const hydrated = hydrateAgents(serialized.agents ?? []);
+  hydrateAgentRegistry(hydrated);
+  return hydrated;
+}
 
 /**
  * 当前 app 单例的 globalThis key
@@ -234,6 +294,12 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     }
   }
 
+  // 水合 tool 清单（可选产物——无 tool 的项目跳过，toolRegistry 保持空）
+  const tools = await loadAndHydrateTools(rootDir, dist);
+
+  // 水合 agent 清单（可选产物——无 agent 的项目跳过，agentRegistry 保持空）
+  const agents = await loadAndHydrateAgents(rootDir, dist);
+
   // 自定义业务配置（排除内置 key）
   const pluginConfig: Record<string, unknown> = config
     ? Object.fromEntries(Object.entries(config).filter(([k]) => !isFaapiConfigKey(k)))
@@ -295,6 +361,21 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
             console.log('- WebSocket routes:');
             for (const route of wsRoutes) {
               console.log(`  WS     ${route.urlPath}  ${route.filePath}`);
+            }
+          }
+          if (tools.length > 0) {
+            console.log(`- Loaded ${tools.length} tool(s):`);
+            for (const tool of tools) {
+              console.log(`  ${tool.name}  ${tool.filePath}`);
+            }
+          }
+          if (agents.length > 0) {
+            console.log(`- Loaded ${agents.length} agent(s):`);
+            for (const agent of agents) {
+              const exports: string[] = [];
+              if (agent.hasConfig) exports.push('config');
+              if (agent.hasRun) exports.push('run');
+              console.log(`  ${agent.name} [${exports.join('+')}]  ${agent.filePath}`);
             }
           }
 
@@ -425,6 +506,11 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       if (config?.lifecycle?.onClose) {
         await config.lifecycle.onClose({ rootDir, routes: sorted, server });
       }
+
+      // 清理 tool / agent 注册表 + agent handle 工厂（与 app 单例清理对称）
+      clearToolRegistry();
+      clearAgentRegistry();
+      clearAgentHandleFactory();
 
       // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）
       if (!server.listening) {

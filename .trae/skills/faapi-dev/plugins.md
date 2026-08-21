@@ -76,6 +76,7 @@ ctx.wrapHandler((original) => (req, res) => {
 |------|------|
 | `@faapi/schema` | 路由 schema 生成 + 通过 MCP 协议暴露给 AI 助手 |
 | `@faapi/next` | Next.js + faapi 集成,`/api/*` 走 faapi,其余走 Next.js |
+| `@faapi/agent` | agent 子系统——注册 agent handle 工厂,handler 的 `agent` 参数注入可调用的 [AgentHandle](./agent.md)（LLM 驱动 ReAct 循环 + tool calling + sub-agent 递归） |
 
 ## 集成 Next.js
 
@@ -172,6 +173,30 @@ async function Page() {
 - `app.inject()` 走完整请求链路(CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler),`listen()` 前后均可调用——`listen()` 后调用即用于 RSC 等同进程场景
 - 返回 `{ status, headers, body }`——`body` 已 `JSON.parse`,无需手动 `await res.json()`
 - 需手动透传请求头(cookie / authorization 等)从 `next/headers` 到 `inject` 的 `headers` 参数
+
+## 启用 @faapi/agent（agent 子系统）
+
+```ts
+export default {
+  agent: {
+    llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+    defaultAgent: 'researcher',
+    maxTurns: 10,
+    maxAgentDepth: 3,
+    defaultTools: ['weather.getWeather'],
+  },
+  plugins: ['@faapi/agent'],
+} satisfies FaapiConfig;
+```
+
+插件 setup 时：
+1. 读 `config.agent.llm` → `createProvider` → LLM provider 实例（单例）
+2. 读 `config.agent.defaultAgent` / `maxTurns` / `maxAgentDepth` / `defaultTools`
+3. 注册 agent handle 工厂——handler 的 `agent` 参数注入 `AgentHandle` 实例（含 `run` / `stream` / `asTool`）
+
+`config.agent.llm` 或 `defaultAgent` 未配置时跳过工厂注册并 warn，`agent` 参数注入 `undefined`。
+
+详见 [agent.md](./agent.md)。
 
 ## 自定义插件
 

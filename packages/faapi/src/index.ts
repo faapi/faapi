@@ -9,6 +9,8 @@ export type {
   LifecycleHooks,
   LifecycleContext,
   ResponseConfig,
+  AgentConfig,
+  LlmConfig,
 } from './config/configTypes';
 export type {
   FaapiPlugin,
@@ -34,6 +36,31 @@ export type { RuntimeType, PropertyType, TypeConstraint } from './ast/resolveTyp
 export { SchemaExtractionError, resolveTypeNode } from './ast/resolveTypeNode';
 export { getInputTypeForMethod } from './runtime/inputType';
 export { collectRouteSchemaSources, type RouteSchemaSource } from './cli/collectRouteSchemaSources';
+
+// agent 运行时集成面（供 @faapi/agent 等扩展包消费）
+// 类型导出——描述返回结构,运行时擦除
+// 运行时访问器——@faapi/agent 插件 setup 时导入,构造 AgentDeps 注入到 Agent 类
+export type { AgentMetadata, AgentPathMeta } from './ast/extractAgentMetadata';
+export type { ToolMetadata, ToolPathMeta } from './ast/extractToolMetadata';
+export type { AgentToolDescriptor } from './injection/agentRegistry';
+export type { AgentModule } from './loader/loadAgentModule';
+export type { ToolModule } from './loader/loadToolModule';
+export type { ToolSchemaModule } from './loader/loadToolSchema';
+// 注册表访问器（单例模块,createAppBase 水合后可直接 import 调用）
+export { getAgent, resolveAgentTools, resolveSubAgents } from './injection/agentRegistry';
+export { getTool } from './injection/toolRegistry';
+// 动态加载器（dev 按需编译模式需 rootDir,prod 模式直接 import 产物）
+export { loadAgentModule } from './loader/loadAgentModule';
+export { loadToolModule } from './loader/loadToolModule';
+export { loadToolSchema } from './loader/loadToolSchema';
+
+// agent handle 工厂注册（Phase 3.5）——@faapi/agent 插件 setup 时注册,
+// injectParams 在 agent 参数注入时调工厂获取 AgentHandle
+export {
+  registerAgentHandleFactory,
+  clearAgentHandleFactory,
+  type AgentHandleFactory,
+} from './injection/agentHandle';
 
 export { cors } from './middleware/cors';
 export { logger } from './middleware/logger';

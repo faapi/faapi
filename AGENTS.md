@@ -133,7 +133,7 @@ PORT=8080 node dist/main
 
 **统一产物驱动（无 dev/prod if 分支）**：
 
-dev 和 prod 生成完全一致的产物三元组（`faapi-config.js` + `faapi-routes.js` + 各 handler 的 `zod.js`），`createAppBase`（dev/prod 共享编排核心）和 `loadConfig` 走完全相同的读产物代码路径，差异仅由 `FAAPI_DIST` 环境变量（路径参数 / 数据）驱动，不存在 `if (isDev)` 控制流分支。
+dev 和 prod 生成完全一致的产物集（`faapi-config.js` + `faapi-routes.js` + `faapi-tools.js` + 各 handler/tool 的 `zod.js`），`createAppBase`（dev/prod 共享编排核心）和 `loadConfig` 走完全相同的读产物代码路径，差异仅由 `FAAPI_DIST` 环境变量（路径参数 / 数据）驱动，不存在 `if (isDev)` 控制流分支。
 
 | 产物 | dev 模式 | prod 模式 |
 |------|---------|----------|
@@ -141,15 +141,16 @@ dev 和 prod 生成完全一致的产物三元组（`faapi-config.js` + `faapi-r
 | `faapi-config.js`（配置入口产物，import config 源产物 + export base） | `.faapi/faapi-config.js` | `dist/faapi-config.js` |
 | `faapi.config.js`（config 源编译产物，保留相对 import 指向项目模块） | `.faapi/faapi.config.js` | `dist/faapi.config.js` |
 | `faapi-routes.js`（路由清单） | `.faapi/faapi-routes.js` | `dist/faapi-routes.js` |
+| `faapi-tools.js`（tool 清单，可选——无 tool 的项目生成空清单） | `.faapi/faapi-tools.js` | `dist/faapi-tools.js` |
 | `zod.js`（schema 模块） | `.faapi/**/zod.js` | `dist/**/zod.js` |
 | `faapi-helpers.js`（coerce 公用函数，仅有 number/boolean 字段时生成） | `.faapi/faapi-helpers.js` | `dist/faapi-helpers.js` |
 | `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
 
-- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `createDevApp()` + `listen()`（含 `reloadRoutes` 热替换能力），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` 热替换路由）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
-- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 每个 handler 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
-- `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`createProdApp()` 读 `FAAPI_DIST`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
+- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `generateToolArtifacts` 生成 `faapi-tools.js`（**仅 tool 清单，不预生成 zod.js**），调 `createDevApp()` + `listen()`（含 `reloadRoutes`/`reloadTools` 热替换能力 + toolRegistry 水合），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` / `app.reloadTools()` 热替换路由/tool）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
+- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 生成 `dist/faapi-tools.js`（tool 清单，可选）+ 每个 handler/tool 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
+- `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`createProdApp()` 读 `FAAPI_DIST`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单 + 水合 `dist/faapi-tools.js` tool 清单到 `toolRegistry`，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
 
-`FAAPI_DIST` 是路径参数而非模式标志——`createAppBase` 内部无 `if (isDev)` 分支，统一水合 `faapi-routes.js`、统一 `loadConfig(dist)` 读配置、统一按需 import `zod.js`。dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`，prod 的 `createProdApp` 直接返回 `createAppBase` 结果。
+`FAAPI_DIST` 是路径参数而非模式标志——`createAppBase` 内部无 `if (isDev)` 分支，统一水合 `faapi-routes.js` + `faapi-tools.js`、统一 `loadConfig(dist)` 读配置、统一按需 import `zod.js`。dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes` + `reloadTools`（重新生成 + 重新水合 tool 清单），prod 的 `createProdApp` 直接返回 `createAppBase` 结果。
 
 **统一编译模式（dev/prod 一致，bundle: false 逐文件编译）**：
 
@@ -374,6 +375,21 @@ export default {
     { path: './my-plugin' },                    // 本地路径
   ],
 
+  // agent 子系统全局配置（Phase 2.4，所有字段均可选）
+  // agent 自身 config.maxTurns / config.model 优先于全局配置
+  agent: {
+    llm: {                                       // LLM 提供方（Phase 3.2 由 @faapi/agent 插件读取）
+      provider: 'openai',
+      apiKey: process.env.OPENAI_API_KEY,
+      model: 'gpt-4o',
+      baseURL: 'https://api.openai.com/v1',     // 可选，默认 OpenAI 官方
+    },
+    defaultAgent: 'researcher',                  // 默认 agent 名（agent 参数注入读取此值）
+    defaultTools: ['weather.getWeather'], // 默认 tool（与 agent 显式声明的 tools 合并）
+    maxTurns: 10,                                // 默认最大对话轮数
+    maxAgentDepth: 3,                            // agent 调用 agent 的最大递归深度
+  },
+
   // 自定义业务配置（任意 key，通过 ctx.config 访问）
   db: { host: 'localhost', port: 5432 },
   redis: { host: '127.0.0.1', port: 6379 },
@@ -503,6 +519,8 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 | `ua` | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
+| `agent` | 默认 agent 元数据（Phase 2.4 实现 `config.defaultAgent` 后注入值，暂返回 `undefined`） | `GET(agent)` |
+| `agents` | 所有已注册 agent 的元数据列表（`AgentMetadata[]`，来自 `agentRegistry.listAgents()`） | `GET(agents)` |
 
 `form` 与 `body` 互斥：handler 声明其一即可。`form` 共享 `body` 的解析结果（`resolveInput` 已按 Content-Type 解析 form-urlencoded 为 `Record<string, string>`），差异仅在 schema 校验——`form` 的 schema coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串），`body` 的 schema coerce=false。schema 名仍为 `POSTBody`（form 共享 body 的 schema key），通过 `RouteSchemaSource.coerce=true` 显式覆盖。
 

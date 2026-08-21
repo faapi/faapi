@@ -17,15 +17,19 @@ faapi 的核心设计是"函数即接口"。框架根据 handler 参数名自动
 | `ua` | ua | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） |
 | `files` | files | multipart 上传文件列表（UploadedFile[]） |
 | `fields` | fields | multipart 表单字段（Record<string, string>） |
+| `agent` | agent | 默认 agent 元数据（Phase 2.4 实现 `config.defaultAgent`，暂返回 `undefined`） |
+| `agents` | agents | 所有已注册 agent 的元数据列表（`agentRegistry.listAgents()`，Phase 2.3） |
 | 其他 | unknown | 不注入（由中间件 resolve 提供） |
 
 ## 模块
 
 | 模块 | 说明 |
 | --- | --- |
-| [resolveInjection.ts](./resolveInjection.md) | 运行时参数名解析 |
+| [resolveInjection.ts](./resolveInjection.md) | 运行时参数名解析（含 `agent` / `agents` 识别，Phase 2.3） |
 | [analyzeInjection.ts](./analyzeInjection.md) | AST 参数注入分析 |
-| [injectParams.ts](./injectParams.md) | 参数注入执行 |
+| [injectParams.ts](./injectParams.md) | 参数注入执行（含 `agents` 元数据注入，Phase 2.3） |
+| [toolRegistry.ts](./toolRegistry.md) | tool 注册表单例（`faapi-tools.js` 水合 + 按名查询） |
+| [agentRegistry.ts](./agentRegistry.md) | agent 注册表单例（`faapi-agents.js` 水合 + `asTool` / `resolveAgentTools` / `resolveSubAgents`） |
 
 ## 边界
 

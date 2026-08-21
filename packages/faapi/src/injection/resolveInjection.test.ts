@@ -50,6 +50,18 @@ describe('resolveInjection', () => {
       const result = resolveInjection(fn);
       expect(result).toEqual([{ name: 'ua', type: 'ua', hasType: false }]);
     });
+
+    it('识别 agent 参数（Phase 2.3）', () => {
+      const fn = eval('(agent) => {}');
+      const result = resolveInjection(fn);
+      expect(result).toEqual([{ name: 'agent', type: 'agent', hasType: false }]);
+    });
+
+    it('识别 agents 参数（Phase 2.3）', () => {
+      const fn = eval('(agents) => {}');
+      const result = resolveInjection(fn);
+      expect(result).toEqual([{ name: 'agents', type: 'agents', hasType: false }]);
+    });
   });
 
   describe('多参数支持', () => {

@@ -62,6 +62,12 @@ export function startWatcher(options: WatchOptions): void {
 
       // 3. 调 app.reloadRoutes()（scanRoutes + generateSchemaFiles + 清缓存 + 更新引用）
       await app.reloadRoutes();
+      // 4. 调 app.reloadTools()（scanTools + 重生成 faapi-tools.js + 清缓存）
+      //    与 reloadRoutes 分离——tool 清单独立重建，无 tool 文件时 scanTools 返回空（快速跳过）
+      await app.reloadTools();
+      // 5. 调 app.reloadAgents()（scanAgents + 重生成 faapi-agents.js + 清缓存）
+      //    与 reloadTools 分离——agent 清单独立重建，无 agent 文件时 scanAgents 返回空（快速跳过）
+      await app.reloadAgents();
 
       const recompiledCount = filesToCompile.length;
       console.log(

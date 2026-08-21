@@ -179,4 +179,62 @@ export default [
     // listen() 无参，端口由运行时 PORT 环境变量决定
     expect(mainContent).toContain('await app.listen()');
   }, 15000);
+
+  it('tool 产物生成：faapi-tools.js + tool zod.js', async () => {
+    // tool 1
+    writeFile(
+      'src/tools/weather/handler.ts',
+      `export interface WeatherInput { city: string }
+/** 获取天气 */
+export function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
+    );
+    // tool 2
+    writeFile(
+      'src/tools/web-search/handler.ts',
+      `export interface SearchInput { query: string }
+/** 网页搜索 */
+export function search(input: SearchInput) { return 'result'; }\n`,
+    );
+    // 路由（build 需要至少一个路由文件才不提前 return）
+    writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
+    writeFile(
+      'tsconfig.json',
+      `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
+    );
+
+    await buildCommand({ rootDir: tempDir });
+
+    // faapi-tools.js 存在
+    expect(existsSync(join(tempDir, OUT, 'faapi-tools.js'))).toBe(true);
+
+    // tool handler.js 编译产物存在（src/** 全量编译覆盖 tools）
+    expect(existsSync(join(tempDir, OUT, 'tools/weather/handler.js'))).toBe(true);
+    expect(existsSync(join(tempDir, OUT, 'tools/web-search/handler.js'))).toBe(true);
+
+    // tool zod.js 生成（与 handler.js 同级）
+    expect(existsSync(join(tempDir, OUT, 'tools/weather/zod.js'))).toBe(true);
+    expect(existsSync(join(tempDir, OUT, 'tools/web-search/zod.js'))).toBe(true);
+
+    // faapi-tools.js 内容包含 tool 清单
+    const toolsContent = readFileSync(join(tempDir, OUT, 'faapi-tools.js'), 'utf-8');
+    expect(toolsContent).toContain('weather.getWeather');
+    expect(toolsContent).toContain('web-search.search');
+    expect(toolsContent).toContain('获取天气'); // description
+    expect(toolsContent).toContain('WeatherInput'); // inputTypeName
+  }, 15000);
+
+  it('无 tool 文件时生成空 faapi-tools.js', async () => {
+    writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
+    writeFile(
+      'tsconfig.json',
+      `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
+    );
+
+    await buildCommand({ rootDir: tempDir });
+
+    // faapi-tools.js 存在（空清单）
+    expect(existsSync(join(tempDir, OUT, 'faapi-tools.js'))).toBe(true);
+    const toolsContent = readFileSync(join(tempDir, OUT, 'faapi-tools.js'), 'utf-8');
+    expect(toolsContent).toContain('export const tools = []');
+  }, 15000);
 });

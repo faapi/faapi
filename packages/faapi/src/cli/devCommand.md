@@ -15,8 +15,9 @@ dev 模式与 `faapi build`（产线构建）为两套独立代码路径，仅�
 3. `compileConfig` 编译配置源码 → `.faapi/faapi-config.js`
 4. `loadConfig(rootDir, '.faapi')` 读应用行为配置
 5. `generateRouteArtifacts` 生成 `.faapi/faapi-routes.js`（**仅路由清单，不编译 handler.js，不生成 zod.js**——按需模式）
-6. `createDevApp({ rootDir, port })` + `app.listen()` 启动 dev 应用（含 reloadRoutes 热替换能力）
-7. `startWatcher({ rootDir, app, devDist: '.faapi' })`（文件变化时增量编译 + 重生成 config + 调 `app.reloadRoutes()`）
+6. `generateToolArtifactsForDev` 生成 `.faapi/faapi-tools.js`（**仅 tool 清单，不生成 tool zod.js**——按需模式）
+7. `createDevApp({ rootDir, port })` + `app.listen()` 启动 dev 应用（含 reloadRoutes/reloadTools 热替换能力）
+8. `startWatcher({ rootDir, app, devDist: '.faapi' })`（文件变化时增量编译 + 重生成 config + 调 `app.reloadRoutes()` + `app.reloadTools()`）
 
 CLI 选项（`--port`）优先于环境变量（`PORT`）。
 
@@ -60,13 +61,24 @@ dev 启动时**只编译配置和路由清单**，不全量编译 handler.js / �
 
 **与 `buildCommand` 的差异**：build 阶段全量生成 zod.js（`generateSchemaFiles`），dev 阶段跳过（按需生成）。两者产物三元组结构一致，仅 zod.js 生成时机不同。
 
+## generateToolArtifactsForDev
+
+`devCommand` 导出 `generateToolArtifactsForDev(rootDir, dist)` 函数，**仅生成 tool 清单**：
+
+1. `scanTools` 扫描 tools（读源码 + 正则提取函数名，零 import——详见 [scanTools](../tools/scanTools.md)）
+2. `generateToolArtifacts` 生成 `faapi-tools.js`（`skipSchema: true`——按需模式跳过 zod.js）
+
+与 `generateRouteArtifacts` 对称——dev 按需模式仅生成清单，tool zod.js 首次请求时按需生成。无 tool 文件时 `scanTools` 返回空列表，`generateToolArtifacts` 写入空清单。
+
 ## 相关模块
 
 - [compileOnDemand](./compileOnDemand.md) — 按需编译核心：`ensureCompiled` / `ensureSchemaGenerated` / `deleteSchemaFiles`
-- `createDevApp.ts` - `devCommand` 直接调用，启动 dev 应用（含 reloadRoutes）
+- `createDevApp.ts` - `devCommand` 直接调用，启动 dev 应用（含 reloadRoutes/reloadTools）
 - `createAppCore.ts` - `createDevApp` 的共享编排核心（createAppBase）
 - `compileDevRoutes.ts` - 按需编译时由 `ensureCompiled` 单文件调用
 - `compileConfig.ts` - 编译配置源码为 `.faapi/faapi-config.js`
 - `generateRoutes.ts` - `generateRouteArtifacts` 生成 `faapi-routes.js`
 - `generateSchemaFiles.ts` - 按需生成时由 `ensureSchemaGenerated` 单文件调用
-- `watcher.ts` - `devCommand` 启动的文件 watcher，接收 app 引用，调 `app.reloadRoutes()`
+- `../tools/scanTools.ts` - `generateToolArtifactsForDev` 扫描 tools（导出 `TOOL_PATTERNS`）
+- `./generateToolArtifacts.ts` - `generateToolArtifactsForDev` 生成 `faapi-tools.js` + tool zod.js
+- `watcher.ts` - `devCommand` 启动的文件 watcher，接收 app 引用，调 `app.reloadRoutes()` + `app.reloadTools()`

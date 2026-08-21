@@ -1,9 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { injectParamsAsync } from './injectParams';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { MultipartResult } from '../utils/parseMultipart';
+import type { AgentMetadata } from '../ast/extractAgentMetadata';
+import { hydrateAgentRegistry, clearAgentRegistry } from './agentRegistry';
 
 describe('injectParams', () => {
+  beforeEach(() => {
+    clearAgentRegistry();
+  });
+
+  afterEach(() => {
+    clearAgentRegistry();
+  });
+
   const createMockContext = (overrides?: Partial<FaapiContext>): FaapiContext => {
     const url = new URL('http://localhost:3000/test?page=1&pageSize=10');
     return {
@@ -274,6 +284,94 @@ describe('injectParams', () => {
       };
       expect(result.query).toEqual({ page: '1', pageSize: '10' });
       expect(result.ctx).toBe(ctx);
+    });
+  });
+
+  describe('agent/agents 注入（Phase 2.3）', () => {
+    const researcher: AgentMetadata = {
+      name: 'researcher',
+      description: '研究助手',
+      filePath: 'dist/agents/researcher/handler.js',
+      hasConfig: true,
+      hasRun: false,
+      systemPrompt: 'You are a researcher',
+    };
+    const writer: AgentMetadata = {
+      name: 'writer',
+      description: '写作助手',
+      filePath: 'dist/agents/writer/handler.js',
+      hasConfig: false,
+      hasRun: true,
+    };
+
+    it('agents 参数注入所有已注册 agent 元数据列表', async () => {
+      hydrateAgentRegistry([researcher, writer]);
+      const ctx = createMockContext();
+      const fn = eval('(agents) => agents');
+      const result = (await injectParamsAsync(fn, ctx)) as AgentMetadata[];
+      expect(result).toHaveLength(2);
+      const names = result.map((a) => a.name);
+      expect(names).toContain('researcher');
+      expect(names).toContain('writer');
+    });
+
+    it('agents 元数据字段完整透传', async () => {
+      hydrateAgentRegistry([researcher]);
+      const ctx = createMockContext();
+      const fn = eval('(agents) => agents');
+      const [agent] = (await injectParamsAsync(fn, ctx)) as AgentMetadata[];
+      expect(agent.name).toBe('researcher');
+      expect(agent.description).toBe('研究助手');
+      expect(agent.filePath).toBe('dist/agents/researcher/handler.js');
+      expect(agent.hasConfig).toBe(true);
+      expect(agent.hasRun).toBe(false);
+      expect(agent.systemPrompt).toBe('You are a researcher');
+    });
+
+    it('空注册表时 agents 注入空数组', async () => {
+      const ctx = createMockContext();
+      const fn = eval('(agents) => agents');
+      const result = (await injectParamsAsync(fn, ctx)) as AgentMetadata[];
+      expect(result).toEqual([]);
+    });
+
+    it('agent 参数暂返回 undefined（Phase 2.4 实现前）', async () => {
+      hydrateAgentRegistry([researcher]);
+      const ctx = createMockContext();
+      const fn = eval('(agent) => agent');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBeUndefined();
+    });
+
+    it('agent 参数在空注册表时也返回 undefined', async () => {
+      const ctx = createMockContext();
+      const fn = eval('(agent) => agent');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBeUndefined();
+    });
+
+    it('agents 与 query 混合注入', async () => {
+      hydrateAgentRegistry([researcher, writer]);
+      const ctx = createMockContext();
+      const fn = eval('(query, agents) => ({ query, agents })');
+      const result = (await injectParamsAsync(fn, ctx)) as {
+        query: unknown;
+        agents: AgentMetadata[];
+      };
+      expect(result.query).toEqual({ page: '1', pageSize: '10' });
+      expect(result.agents).toHaveLength(2);
+    });
+
+    it('agents 与 ctx 混合注入', async () => {
+      hydrateAgentRegistry([researcher]);
+      const ctx = createMockContext();
+      const fn = eval('(ctx, agents) => ({ ctx, agents })');
+      const result = (await injectParamsAsync(fn, ctx)) as {
+        ctx: unknown;
+        agents: AgentMetadata[];
+      };
+      expect(result.ctx).toBe(ctx);
+      expect(result.agents).toHaveLength(1);
     });
   });
 

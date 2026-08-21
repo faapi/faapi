@@ -33,6 +33,8 @@ GET(query: Query, db: Db)
 | `ua` | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
+| `agent` | 默认 agent 的 [AgentHandle](https://github.com/faapi/faapi/blob/main/packages/agent/src/agentHandle.ts) 实例（含 `run`/`stream`/`asTool`）；`@faapi/agent` 插件未加载或 `config.agent.llm`/`defaultAgent` 未配置时注入 `undefined` | `POST(agent: AgentHandle \| undefined, body)` |
+| `agents` | 所有已注册 agent 的元数据列表（`AgentMetadata[]`） | `GET(agents)` |
 
 **`form` 与 `body` 互斥**：handler 声明其一即可。`form` 适用于 `Content-Type: application/x-www-form-urlencoded` 的请求体，框架按 URL 表单解析为 `Record<string, string>`，schema 校验时 coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串）。`body` 适用于 JSON 请求体，coerce=false。
 
@@ -104,6 +106,32 @@ export default {
 ```
 
 **覆盖规则**:目录注入器覆盖同名全局注入器。详见 [config.md](./config.md)。
+
+## agent / agents 参数（agent 子系统）
+
+`agent` / `agents` 是 agent 子系统的内置注入参数（详见 [agent.md](./agent.md)）。需先安装 `@faapi/agent` 并在 `faapi.config.ts` 声明 `plugins: ['@faapi/agent']` + `config.agent.llm` / `defaultAgent`，否则 `agent` 注入 `undefined`。
+
+```ts
+// src/api/chat/handler.ts
+import type { AgentHandle } from '@faapi/agent';
+
+export interface ChatBody { input: string }
+
+export async function POST(agent: AgentHandle | undefined, body: ChatBody) {
+  if (!agent) return new Response('agent unavailable', { status: 503 });
+  const result = await agent.run(body.input);
+  return { content: result.content, turns: result.turns };
+}
+```
+
+```ts
+// src/api/agents/handler.ts —— agents 元数据列表
+import type { AgentMetadata } from '@faapi/faapi';
+
+export function GET(agents: AgentMetadata[]) {
+  return agents.map(a => ({ name: a.name, description: a.description }));
+}
+```
 
 ## handler 接收注入
 

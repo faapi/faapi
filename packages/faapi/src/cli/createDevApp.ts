@@ -1,7 +1,13 @@
 import type { AppBase, CreateAppOptions } from './createAppCore';
-import { createAppBase } from './createAppCore';
+import { createAppBase, loadAndHydrateTools, loadAndHydrateAgents } from './createAppCore';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
+import { scanTools } from '../tools/scanTools';
+import { TOOL_PATTERNS } from '../tools/scanTools';
+import { generateToolArtifacts } from './generateToolArtifacts';
+import { scanAgents } from '../agents/scanAgents';
+import { DEFAULT_AGENT_PATTERNS } from '../agents/scanAgents';
+import { generateAgentArtifacts } from './generateAgentArtifacts';
 import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
 import { invalidateSchemaCache } from '../validator/validateInput';
@@ -13,10 +19,14 @@ import {
   isDevOnDemandEnabled,
 } from './compileOnDemand';
 
-/** dev 应用接口（AppBase + reloadRoutes 热替换） */
+/** dev 应用接口（AppBase + reloadRoutes/reloadTools/reloadAgents 热替换） */
 export interface DevApp extends AppBase {
   /** 重新水合路由清单 + 清 schema 缓存 + 更新 server 路由引用（dev 热替换用） */
   reloadRoutes(): Promise<void>;
+  /** 重新扫描 tools + 重生成 faapi-tools.js + 清缓存（dev 热替换用） */
+  reloadTools(): Promise<void>;
+  /** 重新扫描 agents + 重生成 faapi-agents.js + 清缓存（dev 热替换用） */
+  reloadAgents(): Promise<void>;
 }
 
 /**
@@ -70,6 +80,36 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
 
     // 更新 app 和 server 路由引用
     ctx.updateRoutes(sorted, reScanned.wsRoutes);
+  };
+
+  devApp.reloadTools = async (): Promise<void> => {
+    // 更新模块加载时间戳（ESM import 绕过缓存，让 faapi-tools.js 重新读取）
+    setLoadTimestamp(Date.now());
+    // 清 Program 缓存（tool 源码可能变化，AST 需重新分析）
+    invalidateProgramCache();
+    // 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
+    const tools = await scanTools(ctx.rootDir, TOOL_PATTERNS, ctx.dist);
+    // 重生成 faapi-tools.js（含 AST 增强：description / inputTypeName）
+    // 按需模式跳过 zod.js 生成——首次请求时按需生成（与 reloadRoutes 的策略一致）
+    await generateToolArtifacts(tools, ctx.rootDir, ctx.dist, {
+      skipSchema: isDevOnDemandEnabled(),
+    });
+    // 重新水合 faapi-tools.js 到 toolRegistry（reload 后需更新注册表）
+    await loadAndHydrateTools(ctx.rootDir, ctx.dist);
+  };
+
+  devApp.reloadAgents = async (): Promise<void> => {
+    // 更新模块加载时间戳（ESM import 绕过缓存，让 faapi-agents.js 重新读取）
+    setLoadTimestamp(Date.now());
+    // 清 Program 缓存（agent 源码可能变化，AST 需重新分析）
+    invalidateProgramCache();
+    // 重新扫描 agents（零 import，仅读源码 + 正则检测 config/run 导出）
+    const agents = await scanAgents(ctx.rootDir, DEFAULT_AGENT_PATTERNS, ctx.dist);
+    // 重生成 faapi-agents.js（含 AST 增强：description / @agent 覆盖 / config 块字段）
+    // agent 不生成 zod.js（无输入参数），无 skipSchema 选项
+    await generateAgentArtifacts(agents, ctx.rootDir, ctx.dist);
+    // 重新水合 faapi-agents.js 到 agentRegistry（reload 后需更新注册表）
+    await loadAndHydrateAgents(ctx.rootDir, ctx.dist);
   };
 
   return devApp;

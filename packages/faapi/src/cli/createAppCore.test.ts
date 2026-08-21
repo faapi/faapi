@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createAppBase, getApp, type CreateAppOptions } from './createAppCore';
@@ -9,9 +9,12 @@ import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
+import { scanTools, TOOL_PATTERNS } from '../tools/scanTools';
+import { generateToolArtifacts, writeToolsModule, serializeTools } from './generateToolArtifacts';
 import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
 import { invalidateSchemaCache } from '../validator/validateInput';
+import { getTool, listTools, clearToolRegistry } from '../injection/toolRegistry';
 
 /**
  * createAppBase 测试：dev/prod 共享编排核心
@@ -41,6 +44,7 @@ describe('createAppBase', () => {
     invalidateSchemaCache();
     invalidateMiddlewareCache();
     invalidateProgramCache();
+    clearToolRegistry();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -83,6 +87,79 @@ describe('createAppBase', () => {
 
   it('缺失 faapi-routes.js 抛错', async () => {
     await expect(createAppBase(options())).rejects.toThrow(/faapi-routes\.js 不存在/);
+  });
+
+  it('tool 清单水合：faapi-tools.js 存在时填充 toolRegistry', async () => {
+    writeHandler();
+    // 写两个 tool（统一放在 src/tools/ 下，agent 通过 config.tools 显式声明使用哪些）
+    const sharedToolPath = join(tempDir, 'src/tools/weather/handler.ts');
+    mkdirSync(join(sharedToolPath, '..'), { recursive: true });
+    writeFileSync(
+      sharedToolPath,
+      `export interface WeatherInput { city: string }\n/** 获取天气 */\nexport function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
+      'utf-8',
+    );
+    const otherToolPath = join(tempDir, 'src/tools/web-search/handler.ts');
+    mkdirSync(join(otherToolPath, '..'), { recursive: true });
+    writeFileSync(
+      otherToolPath,
+      `export interface SearchInput { query: string }\n/** 网页搜索 */\nexport function search(input: SearchInput) { return 'result'; }\n`,
+      'utf-8',
+    );
+
+    await compileArtifacts('dist');
+    // 生成 tool 产物（faapi-tools.js + zod.js）
+    const tools = await scanTools(tempDir, TOOL_PATTERNS, 'dist');
+    await generateToolArtifacts(tools, tempDir, 'dist');
+
+    expect(existsSync(join(tempDir, 'dist', 'faapi-tools.js'))).toBe(true);
+
+    const { app } = await createAppBase(options());
+
+    // toolRegistry 已水合
+    expect(listTools()).toHaveLength(2);
+    const weather = getTool('weather.getWeather');
+    expect(weather).toBeDefined();
+    expect(weather!.description).toBe('获取天气');
+    expect(weather!.filePath).toBe('dist/tools/weather/handler.js');
+    const search = getTool('web-search.search');
+    expect(search).toBeDefined();
+
+    await app.close();
+
+    // close 后 toolRegistry 清空
+    expect(listTools()).toHaveLength(0);
+    expect(getTool('weather.getWeather')).toBeUndefined();
+  });
+
+  it('tool 清单缺失：无 faapi-tools.js 时跳过水合，不报错', async () => {
+    writeHandler();
+    await compileArtifacts('dist');
+    // 不生成 faapi-tools.js（纯 API 项目）
+    expect(!existsSync(join(tempDir, 'dist', 'faapi-tools.js'))).toBe(true);
+
+    clearToolRegistry();
+    const { app } = await createAppBase(options());
+
+    // 无 tool，注册表为空，不报错
+    expect(listTools()).toHaveLength(0);
+    expect(getTool('any.tool')).toBeUndefined();
+
+    await app.close();
+  });
+
+  it('空 faapi-tools.js（tools 数组为空）正常水合', async () => {
+    writeHandler();
+    await compileArtifacts('dist');
+    // 手动写一个空 tools 清单
+    await writeToolsModule(serializeTools([], 'dist'), join(tempDir, 'dist', 'faapi-tools.js'));
+
+    clearToolRegistry();
+    const { app } = await createAppBase(options());
+
+    expect(listTools()).toHaveLength(0);
+
+    await app.close();
   });
 
   it('ctx.updateRoutes 同步更新 app.routes 和 routesRef', async () => {

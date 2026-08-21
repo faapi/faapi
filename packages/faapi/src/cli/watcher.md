@@ -1,10 +1,10 @@
 # watcher
 
-一句话概括：监听源码 `.ts`/`.js` 变化，增量编译 + 重生成 config 产物 + 调 `app.reloadRoutes()` 实现 dev 模式热更新。
+一句话概括：监听源码 `.ts`/`.js` 变化，增量编译 + 重生成 config 产物 + 调 `app.reloadRoutes()` + `app.reloadTools()` 实现 dev 模式热更新。
 
 ## 为什么需要
 
-开发模式下，用户修改 `handler.ts` 或 `middlewares.ts` 后需要立即看到效果，无需手动重启服务。`watcher` 封装文件监听和增量编译，配合 `createDevApp.reloadRoutes()` 完成热替换。
+开发模式下，用户修改 `handler.ts` 或 `middlewares.ts` 或 `tools/**/handler.ts` 后需要立即看到效果，无需手动重启服务。`watcher` 封装文件监听和增量编译，配合 `createDevApp.reloadRoutes()` + `reloadTools()` 完成热替换。
 
 ## 使用场景
 
@@ -16,14 +16,14 @@
 
 | 方法 | 说明 |
 |------|------|
-| `startWatcher(options)` | 启动 watch 模式，增量编译 + 重生成 config + 调 `app.reloadRoutes()` |
+| `startWatcher(options)` | 启动 watch 模式，增量编译 + 重生成 config + 调 `app.reloadRoutes()` + `app.reloadTools()` |
 
 ### WatchOptions
 
 | 字段 | 说明 |
 |------|------|
 | `rootDir` | 项目根目录 |
-| `app` | dev 应用实例（`DevApp`，调用 `app.reloadRoutes()` 热替换） |
+| `app` | dev 应用实例（`DevApp`，调用 `app.reloadRoutes()` + `app.reloadTools()` 热替换） |
 | `devDist` | dev 产物目录（固定为 `.faapi`），用于增量编译与配置重生成 |
 
 ## 监听范围
@@ -58,6 +58,12 @@ chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ign
    - **按需模式**：`deleteSchemaFiles` 删 stale zod.js + `clearGeneratedSchemas` 清按需生成缓存（下次请求触发 `ensureSchemaGenerated` 重建）
    - **非按需模式**：`generateSchemaFiles` 全量重新生成 zod.js + `invalidateSchemaCache` 清空模块缓存
    - `ctx.updateRoutes` 更新 `app.routes` / `app.wsRoutes` 和 `routesRef.current` / `routesRef.wsCurrent`（server 使用最新路由）
+4. **调 `app.reloadTools()`**（由 `createDevApp` 提供，完成以下工作）：
+   - `setLoadTimestamp(Date.now())` 让 `faapi-tools.js` 重新读取绕过 ESM 缓存
+   - `invalidateProgramCache()` 清 Program 缓存（tool 源码 AST 需重新分析）
+   - `scanTools` 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
+   - `generateToolArtifacts` 重生成 `faapi-tools.js`（按需模式跳过 zod.js，首次请求按需生成）
+   - 无 tool 文件时 `scanTools` 返回空，`generateToolArtifacts` 写入空清单（开销极低）
 
 ### 与 `createDevApp.reloadRoutes()` 的分工
 
@@ -65,9 +71,10 @@ chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ign
 |------|---------|
 | 增量编译变化的文件 | `watcher`（`compileDevRoutes` with `files`） |
 | 重生成 `faapi-config.js` | `watcher`（`compileConfig`） |
-| 清缓存 + 重新扫描 + 按需模式下删 stale zod.js + 更新引用 | `createDevApp.reloadRoutes()` |
+| 清缓存 + 重新扫描路由 + 按需模式下删 stale zod.js + 更新引用 | `createDevApp.reloadRoutes()` |
+| 重新扫描 tools + 重生成 `faapi-tools.js` + 清 Program 缓存 | `createDevApp.reloadTools()` |
 
-watcher 是 CLI 侧的薄封装，核心重建逻辑在 `createDevApp.reloadRoutes()` 中。
+watcher 是 CLI 侧的薄封装，核心重建逻辑在 `createDevApp.reloadRoutes()` + `reloadTools()` 中。
 
 ### app 引用传递
 
@@ -83,9 +90,11 @@ unlink（文件删除）不增量编译（无文件可编译），但触发 `rel
 
 ## 相关模块
 
-- `createDevApp.ts` - 提供 `app.reloadRoutes()`，watcher 调用它完成热替换
+- `createDevApp.ts` - 提供 `app.reloadRoutes()` + `app.reloadTools()`，watcher 调用它们完成热替换
 - `createAppCore.ts` - `createDevApp` 的共享编排核心（createAppBase）
 - `compileDevRoutes.ts` - 增量编译
 - `compileConfig.ts` - 重生成 `faapi-config.js`
 - `devCommand.ts` - 启动 watcher 的入口，传递 app 引用
 - `compileOnDemand.ts` - 按需模式下 `reloadRoutes` 调 `deleteSchemaFiles` + `clearCompiledFiles` + `clearGeneratedSchemas`
+- `../tools/scanTools.ts` - `reloadTools` 重新扫描 tools（导出 `TOOL_PATTERNS`）
+- `./generateToolArtifacts.ts` - `reloadTools` 重生成 `faapi-tools.js` + tool zod.js

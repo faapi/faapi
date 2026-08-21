@@ -38,6 +38,14 @@ export default {
   logger: { log: pinoLogger.info },
   // HTTP/2
   http2: { key: '/path/to/key.pem', cert: '/path/to/cert.pem' },
+  // agent 子系统配置 → [agent.md](./agent.md)
+  agent: {
+    llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+    defaultAgent: 'researcher',
+    maxTurns: 10,
+    maxAgentDepth: 3,
+    defaultTools: ['weather.getWeather'],
+  },
 
   // 自定义业务配置(任意 key)
   db: { host, port },
@@ -45,7 +53,7 @@ export default {
 } satisfies FaapiConfig;
 ```
 
-框架内置 key：`cors` / `lifecycle` / `middlewares` / `injectors` / `extendContext` / `plugins` / `helmet` / `bodyLimit` / `logger` / `http2`。业务配置用其他 key（db、redis 等），不与框架 key 冲突。
+框架内置 key：`cors` / `lifecycle` / `middlewares` / `injectors` / `extendContext` / `plugins` / `helmet` / `bodyLimit` / `logger` / `http2` / `agent`。业务配置用其他 key（db、redis 等），不与框架 key 冲突。
 
 > 统一响应格式与自定义错误响应通过辅助函数 + 全局中间件实现,详见 [response.md](./response.md)。
 
@@ -98,6 +106,40 @@ export default {
 ```
 
 > 注：`http2: true` 时 `key`/`cert` 为 undefined，会创建无证书的 HTTP/2 secure server。生产环境建议在反向代理（nginx/Caddy）层终止 TLS，faapi 仅监听 HTTP；如需 faapi 直接终止 TLS，必须显式提供 `key`/`cert`。
+
+## agent — agent 子系统全局配置
+
+agent 子系统需配合 `@faapi/agent` 插件使用（详见 [agent.md](./agent.md)）：
+
+```ts
+export default {
+  agent: {
+    llm: {                                    // LLM 提供方配置
+      provider: 'openai',                     // 目前支持 'openai'（OpenAI 兼容 API）
+      apiKey: process.env.OPENAI_API_KEY,     // 从 .env 读取
+      model: 'gpt-4o',                        // 默认模型
+      // baseURL: 'https://api.openai.com/v1', // 可选，OpenAI 兼容 API（Azure / 中转服务）
+      // temperature: 0.7,                     // 透传给 LLM API
+    },
+    defaultAgent: 'researcher',               // handler 的 `agent` 参数注入读取此值
+    maxTurns: 10,                             // 默认最大对话轮数（agent 自身 config.maxTurns 优先）
+    maxAgentDepth: 3,                         // agent 调用 agent 的最大递归深度（默认 3）
+    defaultTools: ['weather.getWeather'], // 所有 agent 共享的 tool（与 agent 自身 tools 合并）
+  },
+  plugins: ['@faapi/agent'],                  // 必须显式声明插件
+} satisfies FaapiConfig;
+```
+
+| 字段 | 缺失行为 |
+|------|---------|
+| `agent` 整块 | 不注册 agent handle 工厂，`agent` 参数注入 `undefined` |
+| `agent.llm` | 不注册工厂，打印警告 |
+| `agent.defaultAgent` | 不注册工厂，打印警告 |
+| `agent.maxTurns` | 用 agent 自身 `config.maxTurns`，都无时用框架默认 |
+| `agent.maxAgentDepth` | 用默认值 3 |
+| `agent.defaultTools` | 不追加共享 tool |
+
+agent 自身的 `config` 块字段（`systemPrompt` / `tools` / `agents` / `model` / `maxTurns`）优先于全局配置，详见 [agent.md](./agent.md)。
 
 ## 自定义业务配置 (ctx.config)
 
@@ -167,7 +209,7 @@ export default {
 };
 ```
 
-框架内置 key:`cors`/`lifecycle`/`middlewares`/`injectors`/`extendContext`/`plugins`/`helmet`/`bodyLimit`/`logger`/`http2`。业务配置用其他 key。
+框架内置 key:`cors`/`lifecycle`/`middlewares`/`injectors`/`extendContext`/`plugins`/`helmet`/`bodyLimit`/`logger`/`http2`/`agent`。业务配置用其他 key。
 
 ## 检查清单
 

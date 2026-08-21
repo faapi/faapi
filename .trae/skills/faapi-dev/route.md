@@ -15,6 +15,8 @@
 
 路由源码目录固定为 `src/`，扫描 `src/api/**/*.ts`。
 
+> **agent handler / tool handler 不走 HTTP 路由**。`src/agents/<name>/handler.ts` 和 `src/tools/<name>/handler.ts` 是 agent 子系统的独立约定（导出 `config` 块 / 具名 tool 函数），不暴露 HTTP 端点。HTTP 接口仍写在 `src/api/` 下，通过 `agent` 参数注入调用 agent。详见 [agent.md](./agent.md)。
+
 ## URL 推导规则
 
 ```
