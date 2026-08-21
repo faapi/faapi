@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { helmet } from './helmet';
 import { invokeHandler } from '../runtime/invokeHandler';
 import { createTestContext } from '../runtime/createContext';
+import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
 import type { HelmetOptions } from './helmet';
 
 /**
@@ -20,7 +21,9 @@ describe('helmet middleware', () => {
   /** 调用 helmet，返回 ctx（headers 已写入 meta） */
   async function runHelmet(opts?: HelmetOptions) {
     const mw = helmet(opts);
-    const ctx = makeCtx();
+    // createTestContext 内部构造 ctx 时已挂载 meta（ResponseMeta），但公共类型 FaapiContext 不暴露 meta
+    // 此处断言以读取中间件写入的响应头元数据（与 cors.test.ts 一致的处理方式）
+    const ctx = makeCtx() as FaapiContext & { meta: ResponseMeta };
     const handler = () => ({ ok: true });
     const response = await invokeHandler(handler, ctx, undefined, [mw]);
     return { ctx, response };

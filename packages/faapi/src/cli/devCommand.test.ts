@@ -19,7 +19,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // mock 全部依赖
 vi.mock('./compileConfig', () => ({
-  compileConfig: vi.fn(async () => {}),
+  compileConfig: vi.fn(async () => ({ generated: false, outputFile: '' })),
 }));
 vi.mock('../config/loadConfig', () => ({
   loadConfig: vi.fn(async () => ({})),
@@ -165,6 +165,7 @@ describe('devCommand', () => {
       const calls: string[] = [];
       vi.mocked(compileConfig).mockImplementation(async () => {
         calls.push('compileConfig');
+        return { generated: false, outputFile: '' };
       });
       vi.mocked(loadConfig).mockImplementation(async () => {
         calls.push('loadConfig');
