@@ -93,14 +93,9 @@ function detectAgentExports(source: string): { hasConfig: boolean; hasRun: boole
  *
  * @param rootDir 项目根目录
  * @param patterns glob patterns（源码 .ts 路径，匹配 agent handler 文件）
- * @param _dist 产物目录（dist 或 .faapi）。保留参数与 [scanTools](../tools/scanTools.md) API 对称，当前未使用。
  * @returns `AgentManifestList`
  */
-export async function scanAgents(
-  rootDir: string,
-  patterns: string[],
-  _dist?: string,
-): Promise<AgentManifestList> {
+export async function scanAgents(rootDir: string, patterns: string[]): Promise<AgentManifestList> {
   const files = await fg(patterns, {
     cwd: rootDir,
     onlyFiles: true,

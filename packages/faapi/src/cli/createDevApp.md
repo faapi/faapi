@@ -52,7 +52,7 @@ function createDevApp(options?: CreateAppOptions): Promise<DevApp>
 
 1. `setLoadTimestamp(Date.now())` — 更新模块加载时间戳（让 `faapi-tools.js` 重新读取绕过 ESM 缓存）
 2. `invalidateProgramCache()` — 清 Program 缓存（tool 源码可能变化，AST 需重新分析）
-3. `scanTools(rootDir, TOOL_PATTERNS, dist)` — 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
+3. `scanTools(rootDir, TOOL_PATTERNS)` — 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
 4. `generateToolArtifacts(tools, rootDir, dist, { skipSchema: isDevOnDemandEnabled() })` — 重生成 `faapi-tools.js`（含 AST 增强：description / inputTypeName）
    - 按需模式跳过 zod.js 生成——首次请求时按需生成（与 `reloadRoutes` 的策略一致）
    - 非按需模式全量生成 tool zod.js

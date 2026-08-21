@@ -15,7 +15,7 @@ import { getTool } from './toolRegistry';
  * Phase 2.2 扩展三类能力：
  * - `asTool(name)` — agent 包装为 `AgentToolDescriptor` 供 LLM 当 tool 调用
  * - `resolveAgentTools(name)` — 解析 agent 可用 tool 集合（agent 显式声明的 `tools` 引用）
- * - `resolveSubAgents(name)` — 解析 agent 可调用的子 agent 集合（来自 `config.agents`）
+ * - `resolveSubAgents(name)` — 解析 agent 可调用的子 agent 集合（来自 `agent.agents` 字段）
  *
  * 详见 [agentRegistry.md](./agentRegistry.md)。
  */

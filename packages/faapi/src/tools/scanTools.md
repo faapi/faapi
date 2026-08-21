@@ -40,13 +40,6 @@ src/
 - 文件内的所有 `export function` / `export const =` 函数声明都识别为 tool（一个文件可声明多个 tool）
 - 排除保留导出名：`default` / `config` / `run`（agent 系统保留，非 tool）
 
-### dist 参数
-
-`scanTools` 接受可选的 `dist` 参数（`dist` 或 `.faapi`），与 [scanRoutes](../router/scanRoutes.md) 一致：
-
-- **传入 dist（dev/build 模式）**：扫描源码 `.ts` 文件列表，**正则提取函数导出名**（不 import 模块）。`filePath` 保持源码路径（如 `src/tools/weather/handler.ts`），AST schema 提取需要 `.ts`
-- **不传 dist（旧模式，CLI 不再使用）**：扫描源码 `.ts`，保留兼容入口（仅 e2e/测试）
-
 ## 函数导出识别（正则）
 
 `TOOL_EXPORT_RE` 匹配源码中导出的函数名（任意合法标识符，区别于路由的固定 HTTP 方法名）：

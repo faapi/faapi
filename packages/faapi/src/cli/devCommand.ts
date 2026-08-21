@@ -131,7 +131,7 @@ export async function generateRouteArtifacts(
  * 无 tool 文件时 scanTools 返回空列表，generateToolArtifacts 写入空清单。
  */
 export async function generateToolArtifactsForDev(rootDir: string, dist: string): Promise<void> {
-  const tools = await scanTools(rootDir, TOOL_PATTERNS, dist);
+  const tools = await scanTools(rootDir, TOOL_PATTERNS);
   await generateToolArtifacts(tools, rootDir, dist, { skipSchema: true });
 }
 
@@ -143,6 +143,6 @@ export async function generateToolArtifactsForDev(rootDir: string, dist: string)
  * generateAgentArtifacts 写入空清单。
  */
 export async function generateAgentArtifactsForDev(rootDir: string, dist: string): Promise<void> {
-  const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS, dist);
+  const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS);
   await generateAgentArtifacts(agents, rootDir, dist);
 }

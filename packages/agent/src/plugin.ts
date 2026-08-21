@@ -41,10 +41,42 @@ import {
   type FaapiPlugin,
   type PluginContext,
   type AgentConfig,
+  type ToolMetadata,
 } from '@faapi/faapi';
 import { z } from 'zod';
 import { Agent, type AgentRuntimeConfig, type ToolSchemaResolution } from './agent';
 import { createProvider } from './provider';
+
+/**
+ * 加载 tool 的 zod.js → 生成 JSON Schema + 校验函数
+ *
+ * 模块级函数（非 setup 内闭包）——setup 时用 `rootDir` 偏函数绑定一次,
+ * 工厂内直接复用,避免每次请求重建闭包。
+ *
+ * 详见 [plugin.md](./plugin.md) 的 resolveToolSchema 实现。
+ *
+ * @param tool tool 元数据（含 filePath / inputTypeName）
+ * @param rootDir 项目根目录（用于 dev 按需编译模式）
+ * @returns `ToolSchemaResolution` 或 `undefined`（zod.js 不存在 / tool 无 inputTypeName）
+ */
+async function resolveToolSchemaImpl(
+  tool: ToolMetadata,
+  rootDir: string,
+): Promise<ToolSchemaResolution | undefined> {
+  const schemaMod = await loadToolSchema(tool, rootDir);
+  if (!schemaMod) return undefined;
+  const schema = schemaMod.schema as z.ZodType;
+  return {
+    jsonSchema: z.toJSONSchema(schema),
+    validate: (input) => {
+      const result = schema.safeParse(input);
+      if (result.success) {
+        return { ok: true as const, value: result.data as Record<string, unknown> };
+      }
+      return { ok: false as const, error: result.error.message };
+    },
+  } satisfies ToolSchemaResolution;
+}
 
 /**
  * 从 PluginContext.config 读取 agent 配置
@@ -95,6 +127,8 @@ const agentPlugin: FaapiPlugin = {
 
     const rootDir = ctx.rootDir;
     const defaultAgent = agentConfig.defaultAgent;
+    // resolveToolSchema 偏函数（setup 内创建一次，工厂内复用，避免每次请求重建闭包）
+    const resolveToolSchema = (tool: ToolMetadata) => resolveToolSchemaImpl(tool, rootDir);
 
     // 注册 agent handle 工厂——每次请求时构造 Agent 实例
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生
@@ -114,23 +148,8 @@ const agentPlugin: FaapiPlugin = {
         loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, rootDir),
         loadAgentModule: (filePath, hasConfig, hasRun) =>
           loadAgentModule(filePath, hasConfig, hasRun, rootDir),
-        // resolveToolSchema：加载 tool 的 zod.js → z.toJSONSchema 生成 JSON Schema 发给 LLM
-        // + safeParse 校验 LLM 返回的参数（失败回传 LLM 重试，不调 handler）
-        resolveToolSchema: async (tool) => {
-          const schemaMod = await loadToolSchema(tool, rootDir);
-          if (!schemaMod) return undefined;
-          const schema = schemaMod.schema as z.ZodType;
-          return {
-            jsonSchema: z.toJSONSchema(schema),
-            validate: (input) => {
-              const result = schema.safeParse(input);
-              if (result.success) {
-                return { ok: true as const, value: result.data as Record<string, unknown> };
-              }
-              return { ok: false as const, error: result.error.message };
-            },
-          } satisfies ToolSchemaResolution;
-        },
+        // tool schema 解析（zod.js → JSON Schema + safeParse 校验）
+        resolveToolSchema,
       });
     });
 

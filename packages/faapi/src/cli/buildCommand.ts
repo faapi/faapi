@@ -128,7 +128,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   //    与路由对称——生成 faapi-tools.js（tool 清单）+ 每个 tool handler 的 zod.js
   //    无 tool 文件时 scanTools 返回空列表，generateToolArtifacts 写入空清单
   console.log('\n[6/8] Generating tool manifest and schema...');
-  const tools = await scanTools(rootDir, TOOL_PATTERNS, outdir);
+  const tools = await scanTools(rootDir, TOOL_PATTERNS);
   const toolMeta = await generateToolArtifacts(tools, rootDir, outdir);
   console.log(`  Found ${toolMeta.length} tool(s)`);
   console.log(`  Tool manifest: ${path.resolve(rootDir, outdir, 'faapi-tools.js')}`);
@@ -137,7 +137,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   //    agent 不生成 zod.js（无输入参数，config 块字段在 AST 阶段已提取为字面量）
   //    无 agent 文件时 scanAgents 返回空列表，generateAgentArtifacts 写入空清单
   console.log('\n[7/8] Generating agent manifest...');
-  const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS, outdir);
+  const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS);
   const agentMeta = await generateAgentArtifacts(agents, rootDir, outdir);
   console.log(`  Found ${agentMeta.length} agent(s)`);
   console.log(`  Agent manifest: ${path.resolve(rootDir, outdir, 'faapi-agents.js')}`);

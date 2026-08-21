@@ -60,6 +60,9 @@ PluginContext { config.agent, rootDir }
 工厂每次请求时被 `injectParams` 调用,构造一个新的 [Agent](./agent.md) 实例：
 
 ```ts
+// setup 内创建一次，工厂内复用（避免每次请求重建闭包）
+const resolveToolSchema = (tool) => resolveToolSchemaImpl(tool, rootDir);
+
 registerAgentHandleFactory(() => {
   return new Agent({
     provider,                    // 闭包捕获（setup 时创建,单例）
@@ -74,6 +77,7 @@ registerAgentHandleFactory(() => {
       loadToolModule(filePath, functionName, rootDir),  // 包装注入 rootDir
     loadAgentModule: (filePath, hasConfig, hasRun) =>
       loadAgentModule(filePath, hasConfig, hasRun, rootDir),  // 包装注入 rootDir
+    resolveToolSchema,           // setup 内创建的偏函数（工厂内复用）
   });
 });
 ```
@@ -106,14 +110,18 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 
 ### resolveToolSchema 实现
 
-`AgentDeps.resolveToolSchema` 加载 tool 的 `zod.js`（由 faapi 核心 [loadToolSchema](../../faapi/src/loader/loadToolSchema.md) 加载），用 zod v4 内置的 `z.toJSONSchema` 生成 JSON Schema 发给 LLM，`schema.safeParse` 校验 LLM 返回的参数：
+`resolveToolSchemaImpl` 是模块级函数（非 setup 内闭包）——setup 时用 `rootDir` 偏函数绑定一次,工厂内直接复用,避免每次请求重建闭包。
+
+它加载 tool 的 `zod.js`（由 faapi 核心 [loadToolSchema](../../faapi/src/loader/loadToolSchema.md) 加载），用 zod v4 内置的 `z.toJSONSchema` 生成 JSON Schema 发给 LLM，`schema.safeParse` 校验 LLM 返回的参数：
 
 - `jsonSchema`：`z.toJSONSchema(schema)` → tool 参数的 JSON Schema（发给 LLM）
 - `validate`：`schema.safeParse(input)` → 成功返回 coerce 后的 value，失败返回 error 消息
 
+> Agent 类内部按 `tool.name` 缓存 schema 解析结果（[agent.md](./agent.md) 的 schema 缓存章节）,`buildToolDefinitions` 与 `executeTool` 共用——`resolveToolSchemaImpl` 对同一 tool 只被调用一次。
+
 校验失败时 `executeTool` 返回 `{ error }` 对象（不调 handler），reactLoop stringify 后回传 LLM 重试。
 
-zod.js 缺失（tool 无 `inputTypeName` 或 `zod.js` 不存在）时 `loadToolSchema` 返回 `undefined`，`resolveToolSchema` 也返回 `undefined`，agent 用自由 schema `{ type: 'object' }`，LLM 自由传参。
+zod.js 缺失（tool 无 `inputTypeName` 或 `zod.js` 不存在）时 `loadToolSchema` 返回 `undefined`，`resolveToolSchemaImpl` 也返回 `undefined`，agent 用自由 schema `{ type: 'object' }`，LLM 自由传参。
 
 ## 相关模块
 

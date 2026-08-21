@@ -165,19 +165,6 @@ describe('scanTools', () => {
     }
   });
 
-  it('传入 dist 参数(扫描源码 .ts,正则提取)', async () => {
-    const { dir, write, cleanup } = setupTmp();
-    write('src/tools/weather/handler.ts', 'export function getWeather(input) { return "sunny"; }');
-    try {
-      const tools = await scanTools(dir, ['src/tools/**/*.ts'], 'dist');
-      expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('weather.getWeather');
-      expect(tools[0].filePath).toBe('src/tools/weather/handler.ts'); // 保留源码路径
-    } finally {
-      cleanup();
-    }
-  });
-
   it('仅扫描 handler.ts,忽略同目录其他 .ts 文件', async () => {
     const { dir, write, cleanup } = setupTmp();
     write('src/tools/weather/handler.ts', 'export function getWeather(input) { return "sunny"; }');

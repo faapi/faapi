@@ -73,22 +73,21 @@ tool 执行错误回传 LLM 是业界惯例（OpenAI Agents SDK / LangChain / Cr
 
 ### `maxAgentDepth` 防护
 
-reactLoop 本身不跟踪 agent 递归深度——`maxAgentDepth` 防护在 [Agent 类](./agent.md) 的 `executeTool` 实现中：
+reactLoop 本身不跟踪 agent 递归深度——`maxAgentDepth` 防护在 [Agent 类](./agent.md) 的 `executeSubAgent` 实现中：
 
 ```ts
-// Agent 类的 executeTool（简化）
-async function executeTool(name: string, args: Record<string, unknown>) {
-  if (name.startsWith('agent.')) {
-    if (currentDepth >= maxAgentDepth) throw new Error('Max agent depth exceeded');
-    const subAgent = getAgent(name.slice(6));
-    return subAgent.run(args, { depth: currentDepth + 1 });
-  }
-  const tool = getTool(name);
-  return loadToolModule(tool.filePath, tool.functionName).then(m => m.handler(args));
+// Agent 类的 executeSubAgent（简化,详见 agent.md）
+private async executeSubAgent(subName: string, args: Record<string, unknown>) {
+  const newDepth = this.depth + 1;
+  const maxDepth = this.deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;  // 默认 3
+  if (newDepth > maxDepth) throw new AgentRecursionError(maxDepth, newDepth);
+  // 构造子 agent（depth+1）并调其 run
+  const subAgent = new Agent({ ...this.deps, agentName: subName }, newDepth);
+  return subAgent.run(typeof args === 'string' ? args : JSON.stringify(args));
 }
 ```
 
-reactLoop 调 `executeTool` 时，若子 agent 超出深度限制，`executeTool` 抛错，reactLoop catch 后把错误消息回传 LLM。
+reactLoop 调 `executeTool` 时,`agent.` 前缀的 tool 名触发 `executeSubAgent`——若子 agent 超出深度限制,抛 `AgentRecursionError`,reactLoop catch 后把错误消息回传 LLM。
 
 ### 与 provider 的关系
 

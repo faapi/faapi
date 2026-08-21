@@ -363,6 +363,53 @@ describe('Agent', () => {
       await agent.run('weather?');
       expect(handler).toHaveBeenCalledWith({ city: '北京' });
     });
+
+    it('resolveToolSchema 对同一 tool 只调用一次（schema 缓存）', async () => {
+      const handler = vi.fn(async (args: Record<string, unknown>) => ({
+        ok: true,
+        city: args.city,
+      }));
+      const resolveToolSchemaImpl = vi.fn(async () => ({
+        jsonSchema: { type: 'object', properties: { city: { type: 'string' } } },
+        validate: (
+          input: Record<string, unknown>,
+        ): { ok: true; value: Record<string, unknown> } => ({ ok: true, value: input }),
+      }));
+      const { provider } = createMockProvider([
+        // 第一轮：LLM 请求调用 weather tool
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+          stopReason: 'tool_calls',
+        }),
+        // 第二轮：LLM 再次请求调用同一 tool
+        llmResponse({
+          toolCalls: [{ id: 'c2', name: 'weather.getWeather', arguments: { city: '上海' } }],
+          stopReason: 'tool_calls',
+        }),
+        // 第三轮：最终答案
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async (filePath, functionName) => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName,
+          }),
+          resolveToolSchemaImpl,
+        }),
+      );
+
+      await agent.run('weather?');
+
+      // buildToolDefinitions 调用 1 次,两次 executeTool 命中缓存——总共只调用 1 次
+      expect(resolveToolSchemaImpl).toHaveBeenCalledTimes(1);
+      // handler 两次 tool_call 都执行
+      expect(handler).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('executeTool — sub-agent 递归', () => {

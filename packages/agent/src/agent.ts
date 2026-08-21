@@ -141,6 +141,16 @@ export class Agent {
   private readonly deps: AgentDeps;
   /** 当前递归深度（根 agent 为 1，sub-agent 递增） */
   private readonly depth: number;
+  /**
+   * tool schema 解析缓存（按 tool.name 缓存，含 undefined 结果）
+   *
+   * `buildToolDefinitions` 组装 LLM tool 列表时解析一次 schema（取 jsonSchema），
+   * `executeTool` 执行前校验时复用同一份 schema（取 validate）——
+   * 避免每次 tool 执行都重新 `loadToolSchema` + `z.toJSONSchema`。
+   *
+   * 实例级缓存：sub-agent 各有独立 cache（tool 集合可能不同）。
+   */
+  private readonly schemaCache = new Map<string, ToolSchemaResolution | undefined>();
 
   /**
    * @param deps 运行时依赖（访问器 + provider + config）
@@ -202,6 +212,25 @@ export class Agent {
   // ─── 内部方法 ────────────────────────────────────────
 
   /**
+   * 查询 tool schema（带缓存）
+   *
+   * `buildToolDefinitions` 与 `executeTool` 共用此方法——
+   * 首次调用触发 `deps.resolveToolSchema`（加载 zod.js + 生成 JSON Schema），
+   * 后续命中缓存直接返回（含 `undefined` 结果，用 `has` 区分未解析 vs 解析为空）。
+   *
+   * `deps.resolveToolSchema` 未提供时直接返回 `undefined`，不写缓存。
+   */
+  private async getToolSchema(tool: ToolMetadata): Promise<ToolSchemaResolution | undefined> {
+    if (!this.deps.resolveToolSchema) return undefined;
+    if (this.schemaCache.has(tool.name)) {
+      return this.schemaCache.get(tool.name);
+    }
+    const resolved = await this.deps.resolveToolSchema(tool);
+    this.schemaCache.set(tool.name, resolved);
+    return resolved;
+  }
+
+  /**
    * 组装 ReactLoopConfig
    *
    * 1. 查 agent 元数据（未注册抛 AgentError）
@@ -246,7 +275,7 @@ export class Agent {
     // 1. resolveAgentTools（agent 显式声明的 tools 引用）
     for (const tool of this.deps.resolveAgentTools(this.deps.agentName)) {
       if (definitions.has(tool.name)) continue;
-      const schemaRes = await this.deps.resolveToolSchema?.(tool);
+      const schemaRes = await this.getToolSchema(tool);
       definitions.set(tool.name, {
         name: tool.name,
         description: tool.description,
@@ -261,7 +290,7 @@ export class Agent {
         if (definitions.has(toolName)) continue; // 去重
         const tool = this.deps.getTool(toolName);
         if (!tool) continue; // 未找到的 tool 名静默跳过
-        const schemaRes = await this.deps.resolveToolSchema?.(tool);
+        const schemaRes = await this.getToolSchema(tool);
         definitions.set(tool.name, {
           name: tool.name,
           description: tool.description,
@@ -308,7 +337,7 @@ export class Agent {
     }
 
     // 可选 input 校验
-    const schemaRes = await this.deps.resolveToolSchema?.(tool);
+    const schemaRes = await this.getToolSchema(tool);
     let callArgs = args;
     if (schemaRes) {
       const result = schemaRes.validate(args);

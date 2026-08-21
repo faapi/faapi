@@ -84,8 +84,16 @@ class Agent {
 3. **sub-agent** —— `resolveSubAgents(agentName)` 每个包装为 `agent.<name>`（input 为自由 schema `{ type: 'object' }`）
 
 每个常规 tool 的 `input`：
-- `resolveToolSchema?(tool)` 提供 → 用其 `jsonSchema`
+- `getToolSchema(tool)`（带缓存）提供 → 用其 `jsonSchema`
 - 未提供 / tool 无 `inputTypeName` → 自由 schema `{ type: 'object' }`
+
+### schema 缓存
+
+`getToolSchema(tool)` 按 `tool.name` 缓存 `resolveToolSchema` 的解析结果（含 `undefined`）：
+`buildToolDefinitions` 首次解析后写入缓存,`executeTool` 执行前校验时直接命中——
+避免每次 tool 执行都重新 `loadToolSchema` + `z.toJSONSchema`。
+
+实例级缓存：sub-agent 各有独立 cache（tool 集合可能不同）；`deps.resolveToolSchema` 未提供时不写缓存。
 
 ### `executeTool(name, args)` —— tool 执行路由
 
@@ -95,15 +103,15 @@ if (name.startsWith('agent.')) {
 }
 const tool = getTool(name);
 if (!tool) throw new Error(`Tool "${name}" not found`);
-// 可选 input 校验
-const schemaRes = await resolveToolSchema?(tool);
+// 可选 input 校验（复用 buildToolDefinitions 的 schema 缓存）
+const schemaRes = await getToolSchema(tool);
 let callArgs = args;
 if (schemaRes) {
   const v = schemaRes.validate(args);
   if (!v.ok) return { error: v.error };  // 校验失败,错误回传 LLM 让其重试
   callArgs = v.value ?? args;
 }
-const mod = await loadToolModule(tool.filePath, tool.functionName, rootDir);
+const mod = await loadToolModule(tool.filePath, tool.functionName);
 return await mod.handler(callArgs);
 ```
 
@@ -120,7 +128,7 @@ if (newDepth > maxDepth) throw new AgentRecursionError(maxDepth, newDepth);
 const subAgent = new Agent({ ...deps, agentName: subName }, newDepth);
 const meta = deps.getAgent(subName);
 if (meta?.hasRun) {
-  const mod = await deps.loadAgentModule(meta.filePath, meta.hasConfig, meta.hasRun, deps.rootDir);
+  const mod = await deps.loadAgentModule(meta.filePath, meta.hasConfig, meta.hasRun);
   if (mod.run) return await mod.run(args);  // 自定义 run,直接传 args 对象
 }
 return await subAgent.run(typeof args === 'string' ? args : JSON.stringify(args));

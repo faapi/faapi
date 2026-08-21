@@ -36,7 +36,7 @@
 
 ```ts
 interface LLMProvider {
-  complete(request: LLMCompleteRequest): Promise<LMResponse>;
+  complete(request: LLMCompleteRequest): Promise<LLMResponse>;
   stream(request: LLMCompleteRequest): AsyncIterable<LLMStreamChunk>;
 }
 ```

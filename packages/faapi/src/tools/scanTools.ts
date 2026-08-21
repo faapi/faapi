@@ -124,14 +124,8 @@ function buildToolName(namespace: string, functionName: string): string {
  *
  * @param rootDir 项目根目录
  * @param patterns glob patterns（源码 .ts 路径，匹配 src/tools 下 tool 文件）
- * @param _dist 产物目录（dist 或 .faapi）。传入时 scanTools 不 import 任何模块；
- *                不传时为旧模式兼容入口（仅 testServer/单测使用）。当前未使用，保留为 API 兼容。
  */
-export async function scanTools(
-  rootDir: string,
-  patterns: string[],
-  _dist?: string,
-): Promise<ToolManifestList> {
+export async function scanTools(rootDir: string, patterns: string[]): Promise<ToolManifestList> {
   const files = await fg(patterns, {
     cwd: rootDir,
     onlyFiles: true,

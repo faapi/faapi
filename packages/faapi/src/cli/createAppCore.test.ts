@@ -109,7 +109,7 @@ describe('createAppBase', () => {
 
     await compileArtifacts('dist');
     // 生成 tool 产物（faapi-tools.js + zod.js）
-    const tools = await scanTools(tempDir, TOOL_PATTERNS, 'dist');
+    const tools = await scanTools(tempDir, TOOL_PATTERNS);
     await generateToolArtifacts(tools, tempDir, 'dist');
 
     expect(existsSync(join(tempDir, 'dist', 'faapi-tools.js'))).toBe(true);

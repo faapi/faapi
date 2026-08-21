@@ -88,7 +88,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     // 清 Program 缓存（tool 源码可能变化，AST 需重新分析）
     invalidateProgramCache();
     // 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
-    const tools = await scanTools(ctx.rootDir, TOOL_PATTERNS, ctx.dist);
+    const tools = await scanTools(ctx.rootDir, TOOL_PATTERNS);
     // 重生成 faapi-tools.js（含 AST 增强：description / inputTypeName）
     // 按需模式跳过 zod.js 生成——首次请求时按需生成（与 reloadRoutes 的策略一致）
     await generateToolArtifacts(tools, ctx.rootDir, ctx.dist, {
@@ -104,7 +104,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     // 清 Program 缓存（agent 源码可能变化，AST 需重新分析）
     invalidateProgramCache();
     // 重新扫描 agents（零 import，仅读源码 + 正则检测 config/run 导出）
-    const agents = await scanAgents(ctx.rootDir, DEFAULT_AGENT_PATTERNS, ctx.dist);
+    const agents = await scanAgents(ctx.rootDir, DEFAULT_AGENT_PATTERNS);
     // 重生成 faapi-agents.js（含 AST 增强：description / @agent 覆盖 / config 块字段）
     // agent 不生成 zod.js（无输入参数），无 skipSchema 选项
     await generateAgentArtifacts(agents, ctx.rootDir, ctx.dist);

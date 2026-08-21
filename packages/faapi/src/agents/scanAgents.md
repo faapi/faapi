@@ -101,13 +101,11 @@ Agent conflict: "researcher" declared in both src/agents/researcher/handler.ts a
 export async function scanAgents(
   rootDir: string,
   patterns: string[],
-  _dist?: string,
 ): Promise<AgentManifestList>;
 ```
 
 - `rootDir` — 项目根目录
 - `patterns` — glob patterns（默认 `DEFAULT_AGENT_PATTERNS`）
-- `_dist` — 产物目录（保留参数，与 scanTools API 对称，当前未使用）
 
 ## 相关模块
 
