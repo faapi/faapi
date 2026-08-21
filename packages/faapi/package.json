@@ -27,6 +27,7 @@
   "scripts": {
     "build": "tsup",
     "test": "NODE_OPTIONS=--max-old-space-size=8192 vitest run --passWithNoTests",
+    "test:cov": "NODE_OPTIONS=--max-old-space-size=8192 vitest run --coverage --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

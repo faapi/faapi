@@ -12,6 +12,15 @@ import {
 } from './generateZodSchema';
 
 /**
+ * 源码 → 提取类型 Map 的缓存。
+ *
+ * `ts.createProgram` 需加载 TypeScript lib.d.ts 系列文件（~700-950ms/次），
+ * 82 个测试全量创建 Program 会超过 vitest 60s RPC 超时。按源码字符串缓存提取结果，
+ * 相同源码的测试（如 4 个 Date 测试都用 `export interface Q { createdAt: Date; }`）复用同一次 Program。
+ */
+const sourceTypesCache = new Map<string, ReturnType<typeof extractAllTypes>>();
+
+/**
  * 从 TypeScript 源码提取类型信息并生成 zod schema 代码
  *
  * 流程：写源码到临时文件 → createProgram → extractAllTypes → generateZodSchemaSource
@@ -19,18 +28,22 @@ import {
  * @param coerce 透传给 generateZodSchemaSource 的第 4 个参数（query/params 场景为 true）
  */
 function makeZodSchema(source: string, typeName: string, coerce = false): string {
-  const dir = join(tmpdir(), `faapi-zod-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, 'test.ts');
-  writeFileSync(file, source);
-  const program = createProgram(file);
-  const allTypes = extractAllTypes(program, file);
+  let allTypes = sourceTypesCache.get(source);
+  if (!allTypes) {
+    const dir = join(tmpdir(), `faapi-zod-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'test.ts');
+    writeFileSync(file, source);
+    const program = createProgram(file);
+    allTypes = extractAllTypes(program, file);
+    sourceTypesCache.set(source, allTypes);
+    // 不 rmSync：program 内部引用了文件路径，保留以避免运行时读取失败；
+    // 进程退出时 tmpdir 由 OS 清理
+  }
   const info = allTypes.get(typeName);
   if (!info) throw new Error(`类型 ${typeName} 未找到`);
-  const resolveType: TypeResolver = (name: string) => allTypes.get(name)?.runtimeType;
-  const sourceCode = generateZodSchemaSource(info, resolveType, undefined, coerce);
-  rmSync(dir, { recursive: true, force: true });
-  return sourceCode;
+  const resolveType: TypeResolver = (name: string) => allTypes!.get(name)?.runtimeType;
+  return generateZodSchemaSource(info, resolveType, undefined, coerce);
 }
 
 /**
