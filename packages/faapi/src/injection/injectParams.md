@@ -13,23 +13,23 @@
 - 执行参数校验
 - 注入 agent 元数据（Phase 2.3 扩展）
 
-## 内置注入处理（Phase 2.3 扩展）
+## 内置注入处理
 
 | 注入类型 | 处理 | 返回值 |
 | --- | --- | --- |
 | `query` / `params` / `headers` / `context` / `cookies` / `ip` / `ua` / `body` / `form` / `files` / `fields` | 同步从 ctx/body 取值 | 见 `getBuiltinInjectionValue` |
-| `agents` | 同步从 [agentRegistry](./agentRegistry.md) 取值 | `AgentMetadata[]`（所有已注册 agent） |
-| `agent` | 暂不处理（Phase 2.4 实现） | `undefined` |
+| `agents` | 同步从 [agentRegistry](./agentRegistry.md) 取值 | `AgentCore[]`（所有已注册 agent 的 LLM 可见元数据，合并文件型 + DB skill） |
+| `agent` | 调 [agentHandle](./agentHandle.md) 工厂 `getAgentHandle(ctx)` 取值 | `AgentHandle` 实例（`@faapi/agent` 插件未注册时返回 `undefined`） |
 
-`agent` / `agents` 注入在 Phase 2.3 添加：
-- `agents` → `listAgents()` —— 注入所有 agent 元数据列表，handler 可遍历查询可用 agent
-- `agent` → `undefined` —— Phase 2.4 实现 `config.defaultAgent` 后注入默认 agent 元数据
+`agent` / `agents` 注入的行为：
+- `agents` → `listAgents()` —— 注入所有 agent LLM 可见元数据列表（`AgentCore[]`），handler 可遍历查询可用 agent
+- `agent` → `getAgentHandle(ctx)` —— 通过 [agentHandle](./agentHandle.md) 工厂机制注入 `AgentHandle`（含可调用 `run`/`stream`/`asTool`）
 
-Phase 3.x 的 `@faapi/agent` 插件通过 `faapi.config.ts` 的 `injectors` 注册 `agent` / `agents` 注入器，覆盖内置的元数据注入，提供 `AgentHandle`（含可调用 `run` 函数）。
+`@faapi/agent` 插件在 setup 时调 `registerAgentHandleFactory` 注册工厂,工厂在每次请求时构造 [Agent](../../agent/src/agent.md) 实例作为 `AgentHandle` 返回。未注册工厂时返回 `undefined`。
 
 ## 注入优先级
 
-内置注入优先于注入器（避免 `query` / `body` 等被覆盖）。但 `agent` 注入类型暂返回 `undefined`，业务方需通过注入器机制提供 AgentHandle 实例——内置占位，注入器覆盖。
+内置注入优先于注入器（避免 `query` / `body` 等被覆盖）。`agent` 注入通过 [agentHandle](./agentHandle.md) 的工厂注册机制实现（核心提供注册点，`@faapi/agent` 插件提供工厂），不通过注入器机制。
 
 ## 相关模块
 

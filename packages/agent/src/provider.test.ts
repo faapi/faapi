@@ -6,7 +6,7 @@ describe('createProvider', () => {
     const provider = createProvider({
       provider: 'openai',
       apiKey: 'sk-test',
-      model: 'gpt-4o',
+      models: { 'gpt-4o': {} },
     });
     expect(provider).toBeDefined();
     expect(typeof provider.complete).toBe('function');
@@ -17,6 +17,7 @@ describe('createProvider', () => {
     const provider: LLMProvider = createProvider({
       provider: 'openai',
       apiKey: 'sk-test',
+      models: {},
     });
     // 接口契约:complete 与 stream 都是函数
     expect(provider.complete).toBeInstanceOf(Function);
@@ -28,6 +29,7 @@ describe('createProvider', () => {
       createProvider({
         provider: 'anthropic',
         apiKey: 'sk-test',
+        models: {},
       }),
     ).toThrowError(/Unsupported LLM provider: anthropic/);
   });
@@ -37,6 +39,7 @@ describe('createProvider', () => {
       createProvider({
         provider: '',
         apiKey: 'sk-test',
+        models: {},
       }),
     ).toThrowError(/Unsupported LLM provider/);
   });
@@ -44,13 +47,13 @@ describe('createProvider', () => {
   it('provider 未设置(undefined)抛错', () => {
     expect(() =>
       // 故意省略 provider,触发不支持的 provider 路径
-      createProvider({ apiKey: 'sk-test' } as never),
+      createProvider({ apiKey: 'sk-test', models: {} } as never),
     ).toThrowError(/Unsupported LLM provider/);
   });
 
   it('不同 apiKey 实例互不影响(每次调用返回独立 provider)', () => {
-    const a = createProvider({ provider: 'openai', apiKey: 'sk-a' });
-    const b = createProvider({ provider: 'openai', apiKey: 'sk-b' });
+    const a = createProvider({ provider: 'openai', apiKey: 'sk-a', models: {} });
+    const b = createProvider({ provider: 'openai', apiKey: 'sk-b', models: {} });
     expect(a).not.toBe(b);
     // 两个 provider 都满足接口
     expect(typeof a.complete).toBe('function');

@@ -59,8 +59,8 @@ export {
   type ToolSchemaResolution,
 } from './agent';
 
-// AgentHandle 接口（Phase 3.5）——handler 的 agent 参数类型,Agent 满足此接口
-export { type AgentHandle } from './agentHandle';
+// AgentHandle 接口 + AgentRunOptions（Phase 3.5）——handler 的 agent 参数类型,Agent 满足此接口
+export { type AgentHandle, type AgentRunOptions } from './agentHandle';
 
 // 默认导出：faapi 插件（Phase 3.5）——在 faapi.config.ts 的 plugins 中声明 '@faapi/agent' 即启用
 export { default } from './plugin';

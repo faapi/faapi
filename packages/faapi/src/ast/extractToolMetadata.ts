@@ -1,7 +1,33 @@
 import ts from 'typescript';
 
 /**
- * Tool 完整元数据
+ * Tool 的 LLM 可见核心字段
+ *
+ * 描述"tool 是什么"——LLM 真正需要消费的字段(发往 LLM 的 tool 定义只含
+ * `name` / `description` / input schema),**不含**代码本体加载细节
+ * (`filePath` / `functionName` / `inputTypeName`)。
+ *
+ * 与 [AgentCore](./extractAgentMetadata.md) 对称——LLM-facing 字段与代码加载
+ * 细节分离,便于未来扩展(如 DB-driven tool 只实现 `ToolCore` 即可)。
+ *
+ * `toolRegistry` 查询入口 / `@faapi/agent` 子包的 `buildToolDefinitions`
+ * 都消费 `ToolCore` 字段组装 LLM tool 列表。
+ */
+export interface ToolCore {
+  /** tool 名(`@tool` JSDoc 覆盖值 或 路径推导值) */
+  name: string;
+  /** JSDoc 描述(tool 描述,对 LLM 可见),无 JSDoc 或 JSDoc 无自由文本时为 `undefined` */
+  description?: string;
+}
+
+/**
+ * Tool 完整元数据(文件型 tool)
+ *
+ * 继承 [ToolCore](./extractToolMetadata.md) 的 LLM 字段,额外扩展**代码本体加载细节**:
+ * - `filePath` — `loadToolModule` 加载 `handler.js` 产物定位函数用
+ * - `functionName` — 源码导出函数名(不受 `@tool` 覆盖影响,AST 定位 + 运行时 resolveExport 用)
+ * - `inputTypeName` — 第一个参数的 TypeReference 名(供 [extractTypeInfo](./extractHandlerTypes.md)
+ *   生成 zod schema;运行时 `resolveToolSchema` 据此定位 `zod.js`)
  *
  * 由 [extractToolMetadata](./extractToolMetadata.md) 产出,合并路径推导字段
  * (来自 [scanTools](../tools/scanTools.md) 的 `ToolManifest`)与 AST 提取字段
@@ -9,15 +35,11 @@ import ts from 'typescript';
  *
  * 字段来源:
  * - `name` — `@tool` JSDoc 覆盖值,或 `pathMeta.name`(路径推导)
- * - `filePath` / `functionName` — 由 `pathMeta` 透传
  * - `description` — JSDoc 注释块自由文本(对 LLM 可见)
+ * - `filePath` / `functionName` — 由 `pathMeta` 透传
  * - `inputTypeName` — 第一个参数的 TypeReference 名(供 [extractTypeInfo](./extractHandlerTypes.md) 生成 zod schema)
  */
-export interface ToolMetadata {
-  /** tool 名(`@tool` JSDoc 覆盖值 或 路径推导值) */
-  name: string;
-  /** JSDoc 描述(tool 描述,对 LLM 可见),无 JSDoc 或 JSDoc 无自由文本时为 `undefined` */
-  description?: string;
+export interface ToolMetadata extends ToolCore {
   /** 第一个参数的 interface/type 名(用于生成 zod schema),
    *  无参数/参数无类型标注/参数为内联类型字面量时为 `undefined` */
   inputTypeName?: string;

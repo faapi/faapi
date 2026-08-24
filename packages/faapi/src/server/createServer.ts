@@ -8,7 +8,7 @@ import { createSecureServer as createHttp2SecureServer } from 'node:http2';
 import { readFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import path from 'node:path';
-import type { RouteManifest, WsRouteManifest, RoutesRef } from '../router/routeTypes';
+import type { RouteManifest, RouteMatch, WsRouteManifest, RoutesRef } from '../router/routeTypes';
 import { matchRoute, matchDynamicPath } from '../router/matchRoute';
 import { loadRouteModule } from '../loader/loadRouteModule';
 import { createContext } from '../runtime/createContext';
@@ -16,7 +16,12 @@ import { resolveInput } from '../runtime/resolveInput';
 import { invokeHandler, compose, mergeMeta } from '../runtime/invokeHandler';
 import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
 import { sendNodeResponse } from '../response/sendNodeResponse';
-import { RouteNotFoundError, MethodNotAllowedError, ValidationError } from '../errors/httpErrors';
+import {
+  RouteNotFoundError,
+  MethodNotAllowedError,
+  ValidationError,
+  PayloadTooLargeError,
+} from '../errors/httpErrors';
 import { validateInput } from '../validator/validateInput';
 import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
 import { getClientIp } from '../utils/getClientIp';
@@ -71,39 +76,86 @@ function toWebRequest(req: IncomingMessage, bodyLimit: number = DEFAULT_BODY_LIM
 }
 
 /**
- * 限制 ReadableStream 的总字节数，超过限制时抛错
+ * 限制 ReadableStream 的总字节数，超过限制时通过 controller.error 抛 PayloadTooLargeError
+ *
+ * 错误传播路径：controller.error → Request body 读取方（resolveInput）抛 →
+ * handleRequest catch → formatErrorResponse（命中 PayloadTooLargeError 分支）→ 413 响应
+ *
+ * 健壮性处理：
+ * - reader.read() 抛错（客户端断开等）→ controller.error + releaseLock，避免泄漏
+ * - 超限或异常后释放 reader lock，避免悬挂引用
+ * - 取消时同步 cancel 上游 reader
  */
 function limitStreamSize(
   stream: ReadableStream<Uint8Array>,
   maxSize: number,
 ): ReadableStream<Uint8Array> {
   let totalSize = 0;
-  const reader = stream.getReader();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let errored = false;
+
+  const releaseReader = (): void => {
+    if (reader) {
+      try {
+        reader.releaseLock();
+      } catch {
+        // 锁已释放或 reader 已 closed，忽略
+      }
+      reader = undefined;
+    }
+  };
+
+  const failStream = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    err: unknown,
+  ): void => {
+    if (errored) return;
+    errored = true;
+    controller.error(err instanceof Error ? err : new Error(String(err)));
+    releaseReader();
+  };
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
-      const { done, value } = await reader.read();
-      if (done) {
-        controller.close();
-        reader.releaseLock();
-        return;
+      if (!reader) reader = stream.getReader();
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          releaseReader();
+          return;
+        }
+        totalSize += value.byteLength;
+        if (totalSize > maxSize) {
+          // error 让流进入 errored 状态，下游 read() 会 reject
+          failStream(controller, new PayloadTooLargeError(maxSize));
+          return;
+        }
+        controller.enqueue(value);
+      } catch (err) {
+        // reader.read() 抛错（客户端断开、底层流异常等）
+        failStream(controller, err);
       }
-      totalSize += value.byteLength;
-      if (totalSize > maxSize) {
-        controller.error(new Error(`请求体超过大小限制 ${maxSize} 字节`));
-        reader.releaseLock();
-        return;
-      }
-      controller.enqueue(value);
     },
     cancel(reason) {
-      reader.cancel(reason);
+      if (reader) {
+        try {
+          reader.cancel(reason);
+        } catch {
+          // 忽略上游 cancel 失败
+        }
+        releaseReader();
+      }
     },
   });
 }
 
 /**
- * 检查指定路径是否有其他方法的路由（用于 405 响应）
+ * 查找路径的所有允许方法（用于 405 响应）
+ *
+ * 性能：每次 404 请求都会遍历所有路由 + 对动态路由执行 matchDynamicPath。
+ * 大项目（>100 路由）有一定开销,但 404 非热路径——正常业务请求不会命中此分支,
+ * 可接受。如未来出现 404 高频场景,可考虑构建「path → allowedMethods」反向索引。
  */
 function findAllowedMethods(routes: RouteManifest, path: string): string[] {
   const methods = new Set<string>();
@@ -252,6 +304,161 @@ export function createServer(options: CreateServerOptions): {
   return { server, routesRef };
 }
 
+/**
+ * 准备请求上下文：Node IncomingMessage → Web Request + FaapiContext
+ *
+ * 提取为独立函数，让 handleRequest 主流程聚焦于路由 + 中间件调度，
+ * 便于单测与未来扩展（如自定义 context 字段来源）。
+ */
+function prepareRequest(
+  req: IncomingMessage,
+  config: Record<string, unknown> | undefined,
+  bodyLimit: number,
+): {
+  request: Request;
+  ctx: FaapiContext;
+  meta: ResponseMeta;
+  method: string;
+  urlPath: string;
+} {
+  const request = toWebRequest(req, bodyLimit);
+  const method = request.method.toUpperCase();
+  const urlPath = new URL(request.url).pathname;
+  const ctx = createContext(request, {}, config, getClientIp(req));
+  const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
+  return { request, ctx, meta, method, urlPath };
+}
+
+/**
+ * 路由匹配——命中返回 MatchResult，未命中抛 RouteNotFoundError / MethodNotAllowedError
+ *
+ * 抛错语义让调用方 try/catch 即可，无需在主流程里分支处理 null。
+ */
+function resolveRouteOrThrow(routes: RouteManifest, method: string, urlPath: string): RouteMatch {
+  const match = matchRoute(routes, method, urlPath);
+  if (match) return match;
+
+  // 检查是否有其他方法匹配该路径 → 405
+  const allowedMethods = findAllowedMethods(routes, urlPath);
+  if (allowedMethods.length > 0) {
+    throw new MethodNotAllowedError(method, urlPath, allowedMethods);
+  }
+
+  // 路由未匹配 → 404
+  throw new RouteNotFoundError(urlPath);
+}
+
+/**
+ * 路由执行管线：作为外层中间件链的 finalHandler
+ *
+ * 包含：路由匹配 → handler.js 加载 → 参数解析 → zod.js 按需生成 + 校验 →
+ * 中间件按需加载 → 注入器合并 → handler 调用。
+ *
+ * 错误抛出由外层 handleRequest 的 try/catch 接管，经 formatErrorResponse 转换为响应。
+ */
+function createRoutePipeline(opts: {
+  routes: RouteManifest;
+  method: string;
+  urlPath: string;
+  ctx: FaapiContext;
+  request: Request;
+  rootDir: string;
+  dist: string;
+  globalMiddlewares: FaapiMiddleware[] | undefined;
+  globalInjectors: InjectorMap | undefined;
+}): () => Promise<Response> {
+  const { routes, method, urlPath, ctx, request, rootDir, dist, globalInjectors } = opts;
+  return async () => {
+    // 1. 路由匹配（未命中抛 RouteNotFound / MethodNotAllowed）
+    const match = resolveRouteOrThrow(routes, method, urlPath);
+    ctx.params = match.params;
+    const { route } = match;
+
+    // 2. 加载 handler.js（dev 按需编译 + import，prod 直接 import）
+    const absoluteFilePath = path.resolve(rootDir, route.filePath);
+    const routeModule = await loadRouteModule(absoluteFilePath, route.method, rootDir);
+
+    // 3. 参数解析（query / body / form / files 等）
+    const input = await resolveInput(route.method, request);
+
+    // 4. schema 校验（运行时按 route.filePath 计算 zod.js 路径 + safeParse）
+    const inputType = getInputTypeForMethod(route.method);
+    const schemaPath = getRuntimeSchemaPath(route.filePath, dist, rootDir);
+
+    // Dev 按需模式：zod.js 不存在或 stale 时触发按需生成
+    if (isDevOnDemandEnabled()) {
+      const devDist = getDevDist();
+      if (devDist) {
+        await ensureSchemaGenerated(schemaPath, route.filePath, routes, rootDir, dist);
+      }
+    }
+
+    const result = await validateInput(schemaPath, route.method, inputType, input);
+    if (!result.valid) {
+      throw new ValidationError('参数校验失败', result.issues);
+    }
+    const body = hasBody(route.method) ? result.data : undefined;
+
+    // 5. 中间件按需加载（Vite 风格）：route.middlewares 为 undefined 时从 middlewarePaths 加载
+    //    首次请求加载后缓存到 route 上，后续请求直接复用
+    if (route.middlewares === undefined && route.injectors === undefined && route.middlewarePaths) {
+      const bundle = await loadMergedMiddlewares(route.middlewarePaths);
+      if (bundle) {
+        route.middlewares = bundle.middlewares;
+        route.injectors = bundle.injectors;
+      } else {
+        // 标记为已加载（空中间件），避免重复加载
+        route.middlewares = [];
+        route.injectors = {};
+      }
+    }
+
+    // 6. 注入器合并：全局注入器为基线，目录注入器覆盖同名
+    const mergedInjectors = globalInjectors
+      ? { ...globalInjectors, ...route.injectors }
+      : route.injectors;
+
+    // 7. handler 调用（含目录中间件洋葱模型 + 自动响应包装）
+    return await invokeHandler(routeModule.handler, ctx, body, route.middlewares, mergedInjectors);
+  };
+}
+
+/**
+ * 发送成功响应
+ */
+async function sendSuccessResponse(response: Response, res: ServerResponse): Promise<void> {
+  await sendNodeResponse(response, res);
+}
+
+/**
+ * 发送错误响应 + 触发 onError 副作用
+ *
+ * 错误处理兜底链(参考 Fastify 语义):
+ *   1. 框架内置 formatErrorResponse 兜底(handler 抛错时)——读 ctx.config.response.fail
+ *      自定义包装函数,确保错误格式与 ctx.fail() 主动错误响应一致
+ *   2. 内置兜底仍抛错 → 最简 500 JSON 响应
+ *   3. 响应发出后 → onError 触发副作用(不修改已发出的响应)
+ *   注:业务方如需进一步自定义错误响应,在全局中间件中 try/catch next() 即可
+ */
+async function sendErrorResponse(
+  err: unknown,
+  meta: ResponseMeta,
+  res: ServerResponse,
+  onError: ((error: unknown, ctx: FaapiContext) => Promise<void> | void) | undefined,
+  ctx: FaapiContext,
+): Promise<void> {
+  await sendNodeResponse(mergeMeta(buildErrorResponse(err, ctx.config), meta), res);
+
+  // 响应已发出，触发 onError 副作用（日志/告警/链路追踪），自身抛错被忽略
+  if (onError) {
+    try {
+      await onError(err, ctx);
+    } catch {
+      // onError 自身抛错不影响已发出的响应
+    }
+  }
+}
+
 async function handleRequest(
   routes: RouteManifest,
   rootDir: string,
@@ -265,118 +472,39 @@ async function handleRequest(
   globalInjectors: InjectorMap | undefined,
   bodyLimit: number,
 ): Promise<void> {
-  const request = toWebRequest(req, bodyLimit);
-  const method = request.method.toUpperCase();
-  const urlPath = new URL(request.url).pathname;
-  const ctx = createContext(request, {}, config, getClientIp(req));
-  const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
+  // 1. 准备请求上下文（toWebRequest + createContext）
+  const { request, ctx, meta, method, urlPath } = prepareRequest(req, config, bodyLimit);
 
-  // 路由处理管线：作为 CORS 中间件的 next
-  // 包含路由匹配、静态文件、参数校验、handler 调用、响应格式化
-  const routePipeline = async (): Promise<Response> => {
-    // 尝试匹配路由
-    const match = matchRoute(routes, method, urlPath);
+  // 2. 创建路由执行管线（路由匹配 + 校验 + 中间件加载 + handler 调用）
+  const routePipeline = createRoutePipeline({
+    routes,
+    method,
+    urlPath,
+    ctx,
+    request,
+    rootDir,
+    dist,
+    globalMiddlewares,
+    globalInjectors,
+  });
 
-    if (!match) {
-      // 检查是否有其他方法匹配该路径
-      const allowedMethods = findAllowedMethods(routes, urlPath);
-      if (allowedMethods.length > 0) {
-        throw new MethodNotAllowedError(method, urlPath, allowedMethods);
-      }
-
-      // 路由未匹配，返回 404
-      throw new RouteNotFoundError(urlPath);
-    }
-
-    // 匹配成功，填充路由参数
-    ctx.params = match.params;
-    const { route } = match;
-
-    // 处理 API 路由（handler.ts）
-    const absoluteFilePath = path.resolve(rootDir, route.filePath);
-    const routeModule = await loadRouteModule(absoluteFilePath, route.method, rootDir);
-    const input = await resolveInput(route.method, request);
-
-    // 参数校验（运行时按 route.filePath 计算 zod.js 路径，import 并 safeParse）
-    const inputType = getInputTypeForMethod(route.method);
-    const schemaPath = getRuntimeSchemaPath(route.filePath, dist, rootDir);
-
-    // Dev 按需模式：zod.js 不存在或 stale 时触发按需生成（阶段 3）
-    if (isDevOnDemandEnabled()) {
-      const devDist = getDevDist();
-      if (devDist) {
-        await ensureSchemaGenerated(schemaPath, route.filePath, routes, rootDir, dist);
-      }
-    }
-
-    const result = await validateInput(schemaPath, route.method, inputType, input);
-    if (!result.valid) {
-      throw new ValidationError('参数校验失败', result.issues);
-    }
-
-    const body = hasBody(route.method) ? result.data : undefined;
-
-    // 按需加载中间件：route.middlewares 为 undefined 时从 middlewarePaths 加载（Vite 风格）
-    // 启动时 hydrateRoutes 不预加载中间件，首次请求时加载并缓存到 route 上
-    if (route.middlewares === undefined && route.injectors === undefined && route.middlewarePaths) {
-      const bundle = await loadMergedMiddlewares(route.middlewarePaths);
-      if (bundle) {
-        route.middlewares = bundle.middlewares;
-        route.injectors = bundle.injectors;
-      } else {
-        // 标记为已加载（空中间件），避免重复加载
-        route.middlewares = [];
-        route.injectors = {};
-      }
-    }
-
-    // 合并注入器：全局注入器为基线，目录注入器覆盖同名
-    const mergedInjectors = globalInjectors
-      ? { ...globalInjectors, ...route.injectors }
-      : route.injectors;
-    const response = await invokeHandler(
-      routeModule.handler,
-      ctx,
-      body,
-      route.middlewares,
-      mergedInjectors,
-    );
-
-    return response;
-  };
+  // 3. 组装外层中间件链：CORS → helmet → logger → 全局 → routePipeline
+  //    顺序：CORS → helmet → logger → 全局 → routePipeline（含目录中间件 + handler）
+  const outerMiddlewares: FaapiMiddleware[] = [];
+  if (configMiddlewares.length > 0) outerMiddlewares.push(...configMiddlewares);
+  if (globalMiddlewares && globalMiddlewares.length > 0) {
+    outerMiddlewares.push(...globalMiddlewares);
+  }
 
   try {
-    let response: Response;
-    // 外层中间件链：配置中间件（CORS/helmet/logger）+ 全局中间件
-    // 顺序：CORS → helmet → logger → 全局 → routePipeline（含目录中间件 + handler）
-    const outerMiddlewares: FaapiMiddleware[] = [];
-    if (configMiddlewares.length > 0) outerMiddlewares.push(...configMiddlewares);
-    if (globalMiddlewares && globalMiddlewares.length > 0) {
-      outerMiddlewares.push(...globalMiddlewares);
-    }
-
-    if (outerMiddlewares.length > 0) {
-      response = await compose(outerMiddlewares, ctx, routePipeline);
-    } else {
-      response = await routePipeline();
-    }
-    await sendNodeResponse(response, res);
+    // 4. 执行（有外层中间件走 compose 洋葱模型，否则直接跑 routePipeline）
+    const response =
+      outerMiddlewares.length > 0
+        ? await compose(outerMiddlewares, ctx, routePipeline)
+        : await routePipeline();
+    // 5. 发送响应
+    await sendSuccessResponse(response, res);
   } catch (err: unknown) {
-    // 错误处理兜底链(参考 Fastify 语义):
-    //   1. 框架内置 formatErrorResponse 兜底(handler 抛错时)
-    //   2. 内置兜底仍抛错 → 最简 500 JSON 响应
-    //   3. 响应发出后 → onError 触发副作用(不修改已发出的响应)
-    //   注:业务方如需自定义错误响应,在全局中间件中 try/catch next() 即可
-    const errorResponse = buildErrorResponse(err);
-    await sendNodeResponse(mergeMeta(errorResponse, meta), res);
-
-    // 响应已发出，触发 onError 副作用（日志/告警），自身抛错被忽略
-    if (onError) {
-      try {
-        await onError(err, ctx);
-      } catch {
-        // onError 自身抛错不影响已发出的响应
-      }
-    }
+    await sendErrorResponse(err, meta, res, onError, ctx);
   }
 }

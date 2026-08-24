@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { AgentMetadata } from '../ast/extractAgentMetadata';
+import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import {
   hydrateAgentRegistry,
   clearAgentRegistry,
   getAgent,
+  getAgentEntry,
   listAgents,
   asTool,
   resolveAgentTools,
@@ -12,6 +13,7 @@ import {
   type AgentToolDescriptor,
 } from './agentRegistry';
 import { hydrateToolRegistry, clearToolRegistry } from './toolRegistry';
+import { clearSkillRegistry, upsertSkill, removeSkill } from './skillRegistry';
 
 /**
  * agentRegistry 测试：单例注册表的查询 API
@@ -26,18 +28,19 @@ describe('agentRegistry', () => {
   beforeEach(() => {
     clearAgentRegistry();
     clearToolRegistry();
+    clearSkillRegistry();
   });
 
   afterEach(() => {
     clearAgentRegistry();
     clearToolRegistry();
+    clearSkillRegistry();
   });
 
   const researcher: AgentMetadata = {
     name: 'researcher',
     description: '研究助手',
     filePath: 'dist/agents/researcher/handler.js',
-    hasConfig: true,
     hasRun: false,
     systemPrompt: 'You are a researcher',
     tools: ['web-search.search'],
@@ -50,7 +53,6 @@ describe('agentRegistry', () => {
     name: 'writer',
     description: '写作助手',
     filePath: 'dist/agents/writer/handler.js',
-    hasConfig: false,
     hasRun: true,
   };
 
@@ -107,12 +109,11 @@ describe('agentRegistry', () => {
   describe('getAgent', () => {
     it('按名查找', () => {
       hydrateAgentRegistry([researcher]);
-      const agent = getAgent('researcher');
+      const agent = getAgentEntry('researcher');
       expect(agent).toBeDefined();
       expect(agent!.name).toBe('researcher');
       expect(agent!.description).toBe('研究助手');
       expect(agent!.filePath).toBe('dist/agents/researcher/handler.js');
-      expect(agent!.hasConfig).toBe(true);
       expect(agent!.hasRun).toBe(false);
       expect(agent!.systemPrompt).toBe('You are a researcher');
       expect(agent!.tools).toEqual(['web-search.search']);
@@ -132,9 +133,8 @@ describe('agentRegistry', () => {
 
     it('查找仅 hasRun 的 agent', () => {
       hydrateAgentRegistry([writer]);
-      const agent = getAgent('writer');
+      const agent = getAgentEntry('writer');
       expect(agent).toBeDefined();
-      expect(agent!.hasConfig).toBe(false);
       expect(agent!.hasRun).toBe(true);
       expect(agent!.systemPrompt).toBeUndefined();
     });
@@ -202,7 +202,6 @@ describe('agentRegistry', () => {
       const noDesc: AgentMetadata = {
         name: 'plain',
         filePath: 'dist/agents/plain/handler.js',
-        hasConfig: false,
         hasRun: true,
       };
       hydrateAgentRegistry([noDesc]);
@@ -233,7 +232,6 @@ describe('agentRegistry', () => {
       const writerWithTools: AgentMetadata = {
         name: 'writer',
         filePath: 'dist/agents/writer/handler.js',
-        hasConfig: true,
         hasRun: false,
         tools: ['web-search.search'],
       };
@@ -249,7 +247,6 @@ describe('agentRegistry', () => {
       const agent: AgentMetadata = {
         name: 'researcher',
         filePath: 'dist/agents/researcher/handler.js',
-        hasConfig: true,
         hasRun: false,
         tools: ['nonexistent.tool', 'weather.getWeather'],
       };
@@ -296,7 +293,6 @@ describe('agentRegistry', () => {
       const agent: AgentMetadata = {
         name: 'writer',
         filePath: 'dist/agents/writer/handler.js',
-        hasConfig: true,
         hasRun: false,
         tools: ['web-search.search'],
       };
@@ -333,7 +329,6 @@ describe('agentRegistry', () => {
       const agent: AgentMetadata = {
         name: 'orchestrator',
         filePath: 'dist/agents/orchestrator/handler.js',
-        hasConfig: true,
         hasRun: false,
         agents: ['writer', 'nonexistent'],
       };
@@ -363,13 +358,11 @@ describe('agentRegistry', () => {
       const reviewer: AgentMetadata = {
         name: 'reviewer',
         filePath: 'dist/agents/reviewer/handler.js',
-        hasConfig: false,
         hasRun: true,
       };
       const orchestrator: AgentMetadata = {
         name: 'orchestrator',
         filePath: 'dist/agents/orchestrator/handler.js',
-        hasConfig: true,
         hasRun: false,
         agents: ['researcher', 'writer', 'reviewer'],
       };
@@ -393,6 +386,122 @@ describe('agentRegistry', () => {
       expect(_.agentName).toBe('researcher');
       expect(_.description).toBe('研究助手');
       expect(_.metadata).toBe(researcher);
+    });
+  });
+
+  describe('skill fallback — DB-driven skill 自动发现', () => {
+    /**
+     * skillRegistry 是业务方运行时动态注册的 DB-driven skill 来源,
+     * agentRegistry 的查询函数在文件 registry 未命中时 fallback 到 skillRegistry。
+     * 优先级:skill 优先,文件型回退(同名时 skill 覆盖文件型 agent)。
+     */
+    const translator: AgentCore = {
+      name: 'translator',
+      description: '翻译助手',
+      systemPrompt: '你是一个翻译助手',
+      tools: ['translate.detect', 'translate.convert'],
+      agents: [],
+      model: 'gpt-4o',
+      maxTurns: 5,
+    };
+
+    it('getAgent fallback 命中 skill', () => {
+      upsertSkill(translator);
+      // 文件 registry 没注册 translator,fallback 命中 skill
+      expect(getAgent('translator')).toEqual(translator);
+    });
+
+    it('getAgent 文件 registry 命中时不查 skill', () => {
+      hydrateAgentRegistry([researcher]);
+      // 文件 registry 已有 researcher,即使 skill 也有同名,优先返回 skill
+      // (skill 优先级更高,override 语义)
+      upsertSkill({ ...researcher, systemPrompt: 'skill-override' });
+      const result = getAgent('researcher')!;
+      expect(result.systemPrompt).toBe('skill-override');
+    });
+
+    it('getAgent 两个 registry 都未命中返回 undefined', () => {
+      expect(getAgent('nonexistent')).toBeUndefined();
+    });
+
+    it('listAgents 合并文件型 + skill,同名时 skill 覆盖', () => {
+      hydrateAgentRegistry([researcher, writer]);
+      upsertSkill(translator);
+      // 同名时 skill 覆盖文件型
+      upsertSkill({ ...researcher, systemPrompt: 'skill-override' });
+
+      const list = listAgents();
+      // researcher(被覆盖) + writer + translator = 3
+      expect(list).toHaveLength(3);
+      const names = list.map((a) => a.name).sort();
+      expect(names).toEqual(['researcher', 'translator', 'writer']);
+
+      // researcher 是 skill 版本(systemPrompt 被覆盖)
+      const r = list.find((a) => a.name === 'researcher')!;
+      expect(r.systemPrompt).toBe('skill-override');
+    });
+
+    it('listAgents 两个 registry 都空返回空数组', () => {
+      expect(listAgents()).toEqual([]);
+    });
+
+    it('resolveAgentTools fallback 命中 skill 的 tools 引用', () => {
+      hydrateToolRegistry([
+        {
+          name: 'translate.detect',
+          functionName: 'detect',
+          description: '检测语言',
+          filePath: 'dist/tools/translate/handler.js',
+        },
+        {
+          name: 'translate.convert',
+          functionName: 'convert',
+          description: '翻译',
+          filePath: 'dist/tools/translate/handler.js',
+        },
+      ]);
+      upsertSkill(translator);
+
+      const tools = resolveAgentTools('translator');
+      expect(tools).toHaveLength(2);
+      expect(tools.map((t) => t.name).sort()).toEqual(['translate.convert', 'translate.detect']);
+    });
+
+    it('resolveAgentTools skill 未注册返回空数组', () => {
+      expect(resolveAgentTools('nonexistent')).toEqual([]);
+    });
+
+    it('asTool fallback 命中 skill', () => {
+      upsertSkill(translator);
+      const tool = asTool('translator');
+      expect(tool).toBeDefined();
+      expect(tool!.kind).toBe('agent');
+      expect(tool!.name).toBe('agent.translator');
+      expect(tool!.agentName).toBe('translator');
+      expect(tool!.description).toBe('翻译助手');
+      expect(tool!.metadata).toEqual(translator);
+    });
+
+    it('asTool skill 未注册返回 undefined', () => {
+      expect(asTool('nonexistent')).toBeUndefined();
+    });
+
+    it('removeSkill 后 agentRegistry 不再 fallback 命中', () => {
+      upsertSkill(translator);
+      expect(getAgent('translator')).toBeDefined();
+
+      removeSkill('translator');
+      expect(getAgent('translator')).toBeUndefined();
+    });
+
+    it('reloadAgents 不影响 skillRegistry(dev 模式安全)', () => {
+      // 模拟 dev watcher 触发 reloadAgents:重新 hydrate 文件 registry
+      upsertSkill(translator);
+      hydrateAgentRegistry([researcher]); // 重新整体替换文件 registry
+
+      // skillRegistry 不受影响,translator 仍可被发现
+      expect(getAgent('translator')).toEqual(translator);
+      expect(getAgent('researcher')).toEqual(researcher);
     });
   });
 });

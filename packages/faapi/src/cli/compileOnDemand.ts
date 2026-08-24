@@ -22,6 +22,11 @@ import type { RouteManifest } from '../router/routeTypes';
  * - `ensureSchemaGenerated`：zod.js 存在且 mtime ≥ 源码 mtime → 跳过生成
  * - 首次调用后写入内存 Set，后续直接跳过（避免 fs.statSync 调用）
  * - watcher 触发时清除内存 Set，mtime 重新评估
+ *
+ * 并发去重（mutex）：
+ * - 同一文件的并发编译请求会共享同一个 in-flight Promise，避免重复触发 esbuild
+ * - 同一 schemaPath 的并发生成请求同理
+ * - watcher 触发 clear 时同步清空 in-flight Map
  */
 
 /**
@@ -39,21 +44,70 @@ function isProductFresh(sourceAbsPath: string, productAbsPath: string): boolean 
   }
 }
 
+// ─── DevOnDemand 状态封装 ────────────────────────────────────────────
+
+/**
+ * 按需编译运行时状态
+ *
+ * 封装原本散落的 4 个模块级可变状态 + 2 个 mutex Map,避免全局污染 +
+ * 便于测试隔离(_resetDevOnDemandState 重置回初始状态)。
+ *
+ * faapi 单进程单 server 设计下,单例 state 已足够。多实例测试场景通过
+ * _resetDevOnDemandState 在 beforeEach / afterEach 中清空状态。
+ */
+interface DevOnDemandState {
+  /** 是否启用 dev 按需编译模式（prod 始终 false） */
+  enabled: boolean;
+  /** dev 模式产物目录（仅 enabled 时使用） */
+  distDir: string | undefined;
+  /** 已编译文件缓存（源码绝对路径） */
+  compiledFiles: Set<string>;
+  /** 已生成 schema 缓存（schemaPath 绝对路径） */
+  generatedSchemas: Set<string>;
+  /** handler.js 编译 mutex：同一 sourceAbsPath 的并发请求共享同一 Promise */
+  inFlightCompilations: Map<string, Promise<void>>;
+  /** zod.js 生成 mutex：同一 schemaPath 的并发请求共享同一 Promise */
+  inFlightSchemaGenerations: Map<string, Promise<void>>;
+}
+
+function createDevOnDemandState(): DevOnDemandState {
+  return {
+    enabled: false,
+    distDir: undefined,
+    compiledFiles: new Set(),
+    generatedSchemas: new Set(),
+    inFlightCompilations: new Map(),
+    inFlightSchemaGenerations: new Map(),
+  };
+}
+
+const state: DevOnDemandState = createDevOnDemandState();
+
+/**
+ * 重置 dev on demand 状态（仅测试用）
+ *
+ * 清空所有缓存 + mutex + 标记位,让下一次测试从干净状态开始。
+ * 生产代码不应调用此函数——会丢失已编译产物的缓存。
+ */
+export function _resetDevOnDemandState(): void {
+  state.enabled = false;
+  state.distDir = undefined;
+  state.compiledFiles.clear();
+  state.generatedSchemas.clear();
+  state.inFlightCompilations.clear();
+  state.inFlightSchemaGenerations.clear();
+}
+
 // ─── handler.js 按需编译 ────────────────────────────────────────────
 
 /**
- * 编译状态缓存：源文件绝对路径 → 是否已按需编译过
- *
- * 用于避免重复编译同一文件（首次请求编译后，后续请求命中缓存跳过编译）。
- * watcher 文件变化时通过 clearCompiledFiles 清除全部条目（reloadRoutes 统一处理）。
- */
-const compiledFiles = new Set<string>();
-
-/**
  * 清空所有按需编译缓存（reloadRoutes 时调用）
+ *
+ * 同时清空 in-flight mutex Map，避免 watcher 重置后旧 Promise 永久阻塞。
  */
 export function clearCompiledFiles(): void {
-  compiledFiles.clear();
+  state.compiledFiles.clear();
+  state.inFlightCompilations.clear();
 }
 
 /**
@@ -66,6 +120,10 @@ export function clearCompiledFiles(): void {
  * 2. 产物存在且 mtime ≥ 源码 mtime → 跳过（复用已有产物，如 watcher 已编译）
  * 3. 产物不存在或 stale → 编译 → 加入内存 Set
  *
+ * 并发去重（mutex）：
+ * - 同一 sourceAbsPath 的并发请求共享同一 in-flight Promise
+ * - 第二个请求 await 后返回 false（表示「别的请求已触发编译,本次不需要再触发」）
+ *
  * @param sourceAbsPath 源码 .ts 绝对路径
  * @param rootDir 项目根目录
  * @param dist 产物目录（dev 模式为 '.faapi'）
@@ -77,8 +135,17 @@ export async function ensureCompiled(
   rootDir: string,
   dist: string,
 ): Promise<boolean> {
+  // mutex: 同一文件正在被别的请求编译 → 等待并返回 false
+  const inFlight = state.inFlightCompilations.get(sourceAbsPath);
+  if (inFlight) {
+    await inFlight.catch(() => {
+      // 别的请求编译失败时不在这里抛——让本请求按正常流程自己重试
+    });
+    return false;
+  }
+
   // 内存缓存命中：跳过
-  if (compiledFiles.has(sourceAbsPath)) {
+  if (state.compiledFiles.has(sourceAbsPath)) {
     return false;
   }
 
@@ -90,19 +157,29 @@ export async function ensureCompiled(
   // mtime 缓存：产物已存在且最新 → 复用（watcher 已编译过的情况）
   const productPath = prodSourcePathToProductPath(sourceAbsPath, rootDir, dist);
   if (productPath && isProductFresh(sourceAbsPath, productPath)) {
-    compiledFiles.add(sourceAbsPath);
+    state.compiledFiles.add(sourceAbsPath);
     return false;
   }
 
-  // 编译失败时抛错（不吞错误），让调用方拿到原始 cause
-  await compileDevRoutes({
-    rootDir,
-    dist,
-    files: [sourceAbsPath],
-    logLevel: 'silent',
-  });
-  compiledFiles.add(sourceAbsPath);
-  return true;
+  // 触发编译：注册 in-flight Promise 防止并发重复编译
+  const compilePromise = (async () => {
+    // 编译失败时抛错（不吞错误），让调用方拿到原始 cause
+    await compileDevRoutes({
+      rootDir,
+      dist,
+      files: [sourceAbsPath],
+      logLevel: 'silent',
+    });
+    state.compiledFiles.add(sourceAbsPath);
+  })();
+
+  state.inFlightCompilations.set(sourceAbsPath, compilePromise);
+  try {
+    await compilePromise;
+    return true;
+  } finally {
+    state.inFlightCompilations.delete(sourceAbsPath);
+  }
 }
 
 /**
@@ -125,18 +202,13 @@ function prodSourcePathToProductPath(
 // ─── zod.js 按需生成 ────────────────────────────────────────────────
 
 /**
- * schema 生成状态缓存：schemaPath → 是否已按需生成过
- *
- * 与 compiledFiles 类似，避免重复生成 zod.js。
- * watcher 触发时通过 clearGeneratedSchemas 清除。
- */
-const generatedSchemas = new Set<string>();
-
-/**
  * 清空所有 schema 生成缓存（reloadRoutes 时调用）
+ *
+ * 同时清空 in-flight mutex Map。
  */
 export function clearGeneratedSchemas(): void {
-  generatedSchemas.clear();
+  state.generatedSchemas.clear();
+  state.inFlightSchemaGenerations.clear();
 }
 
 /**
@@ -151,6 +223,10 @@ export function clearGeneratedSchemas(): void {
  * 1. 内存 Set 命中 → 跳过
  * 2. zod.js 存在且 mtime ≥ 源码 mtime → 跳过（复用已有产物）
  * 3. zod.js 不存在或 stale → 生成 → 加入内存 Set
+ *
+ * 并发去重（mutex）：
+ * - 同一 schemaPath 的并发请求共享同一 in-flight Promise
+ * - 第二个请求 await 后返回 false
  *
  * @param schemaPath zod.js 绝对路径
  * @param routeFilePath route.filePath（产物路径，如 '.faapi/api/hello/handler.js'）
@@ -167,8 +243,17 @@ export async function ensureSchemaGenerated(
   rootDir: string,
   dist: string,
 ): Promise<boolean> {
+  // mutex: 同一 schemaPath 正在被别的请求生成 → 等待并返回 false
+  const inFlight = state.inFlightSchemaGenerations.get(schemaPath);
+  if (inFlight) {
+    await inFlight.catch(() => {
+      // 别的请求生成失败时不在这里抛——让本请求按正常流程自己重试
+    });
+    return false;
+  }
+
   // 内存缓存命中：跳过
-  if (generatedSchemas.has(schemaPath)) {
+  if (state.generatedSchemas.has(schemaPath)) {
     return false;
   }
 
@@ -181,7 +266,7 @@ export async function ensureSchemaGenerated(
 
   // mtime 缓存：zod.js 已存在且最新 → 复用
   if (isProductFresh(sourceAbsPath, schemaPath)) {
-    generatedSchemas.add(schemaPath);
+    state.generatedSchemas.add(schemaPath);
     return false;
   }
 
@@ -196,10 +281,20 @@ export async function ensureSchemaGenerated(
   const sourceRelPath = path.relative(rootDir, sourceAbsPath).replace(/\\/g, '/');
   const sourceRoutes = fileRoutes.map((r) => ({ ...r, filePath: sourceRelPath }));
 
-  // 生成失败时抛错（不吞错误），由 createServer 错误处理链接管
-  await generateSchemaFiles(sourceRoutes, rootDir, dist);
-  generatedSchemas.add(schemaPath);
-  return true;
+  // 触发生成：注册 in-flight Promise 防止并发重复生成
+  const generatePromise = (async () => {
+    // 生成失败时抛错（不吞错误），由 createServer 错误处理链接管
+    await generateSchemaFiles(sourceRoutes, rootDir, dist);
+    state.generatedSchemas.add(schemaPath);
+  })();
+
+  state.inFlightSchemaGenerations.set(schemaPath, generatePromise);
+  try {
+    await generatePromise;
+    return true;
+  } finally {
+    state.inFlightSchemaGenerations.delete(schemaPath);
+  }
 }
 
 /**
@@ -273,14 +368,12 @@ export function prodPathToSourcePath(prodAbsPath: string, rootDir: string, dist:
  *
  * prod 模式（node dist/main）始终为 false——产物在 build 阶段已固化，import 失败即报错。
  */
-let devOnDemandEnabled = false;
-
 export function setDevOnDemandEnabled(enabled: boolean): void {
-  devOnDemandEnabled = enabled;
+  state.enabled = enabled;
 }
 
 export function isDevOnDemandEnabled(): boolean {
-  return devOnDemandEnabled;
+  return state.enabled;
 }
 
 /**
@@ -288,12 +381,10 @@ export function isDevOnDemandEnabled(): boolean {
  *
  * 由 devCommand 设置，loadRouteModule / loadWsHandler / createServer 通过 getDevDist() 读取。
  */
-let devDistDir: string | undefined;
-
 export function setDevDist(dist: string): void {
-  devDistDir = dist;
+  state.distDir = dist;
 }
 
 export function getDevDist(): string | undefined {
-  return devDistDir;
+  return state.distDir;
 }

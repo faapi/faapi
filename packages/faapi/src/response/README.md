@@ -8,14 +8,15 @@
 | --- | --- |
 | [toResponse.ts](./toResponse.ts) | 将 handler 返回值统一转换为 Response |
 | [sendNodeResponse.ts](./sendNodeResponse.ts) | 将 Web Response 写入 Node.js ServerResponse |
+| [responseFormatter.ts](./responseFormatter.ts) | 集中响应包装规则（ok/fail 函数），让 handler return 自动包裹、ctx.fail()、formatErrorResponse 三路径共享 |
 
 ## 转换规则
 
-invokeHandler 在调用 `toResponse` 之前先经过 `wrapResult` 自动包裹，包裹后的值再由 `toResponse` 转为 Response。
+invokeHandler 在调用 `toResponse` 之前先经过 `wrapResult`（实现委托给 `responseFormatter.wrapOkResult`）自动包裹，包裹后的值再由 `toResponse` 转为 Response。
 
-**wrapResult 包裹规则**（invokeHandler 层）：
+**wrapOkResult 包裹规则**（responseFormatter 层）：
 
-| handler 返回值 | wrapResult 处理 |
+| handler 返回值 | wrapOkResult 处理 |
 | --- | --- |
 | `Response` 对象 | 不包裹，原样透传 |
 | 其他值（含 `null`/`undefined`） | 用 `config.response.ok`（默认 `(data) => ({ data })`）包裹 |

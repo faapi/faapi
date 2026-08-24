@@ -18,9 +18,9 @@ CLI 和 server 启动时需要统一的配置结构，包含根目录、app 目�
 
 | 字段 | 类型 | 说明 | 默认值 |
 | --- | --- | --- | --- |
-| `llm` | `LlmConfig` | LLM 提供方配置（provider + apiKey + 默认 model + baseURL） | `undefined`（Phase 3.2 由 @faapi/agent 插件使用） |
+| `llms` | `Record<string, LlmConfig>` | LLM provider 配置映射（嵌套级联：key 是 provider 名，值含 `models`）。plugin setup 时遍历调 `createProvider` 创建实例存 Map | `undefined`（Phase 3.2 由 @faapi/agent 插件使用） |
+| `defaultLlm` | `string` | 默认 provider key（`agent.run` 不传 `options.model` 时用此 key 的 provider） | `undefined`（用 `llms` 第一个 key） |
 | `defaultAgent` | `string` | 默认 agent 名，用于 `agent` 参数注入（[injectParams](../injection/injectParams.md) Phase 2.3） | `undefined`（agent 参数注入返回 undefined） |
-| `defaultTools` | `string[]` | 默认共享 tool 列表，所有 agent 都可用（无需在每个 agent 的 `tools` 重复声明） | `undefined`（无默认共享 tool） |
 | `maxTurns` | `number` | 默认最大对话轮数，覆盖 agent 自身 `config.maxTurns`（agent 自身配置优先于全局） | `undefined`（用 agent 自身 maxTurns 或 Phase 3.x 默认值） |
 | `maxAgentDepth` | `number` | agent 调用 agent 的最大递归深度（防护无限递归，Phase 3.3 reactLoop 使用） | `undefined`（Phase 3.x 用默认值，如 3） |
 
@@ -30,17 +30,27 @@ import type { FaapiConfig } from '@faapi/faapi';
 
 export default {
   agent: {
-    // LLM 提供方配置（Phase 3.2 由 @faapi/agent 插件读取）
-    llm: {
-      provider: 'openai',
-      apiKey: process.env.OPENAI_API_KEY,
-      model: 'gpt-4o',
-      baseURL: 'https://api.openai.com/v1', // 可选，默认 OpenAI 官方
+    // LLM provider 配置（嵌套级联：key 是 provider 名，models 挂在该 provider 下）
+    llms: {
+      openai: {
+        provider: 'openai',
+        apiKey: process.env.OPENAI_API_KEY,
+        baseURL: 'https://api.openai.com/v1', // 可选，默认 OpenAI 官方
+        models: {
+          'gpt-4o': {},                            // 用 provider 级默认
+          'gpt-4o-mini': { temperature: 0.5 },     // 覆盖 temperature
+        },
+      },
+      anthropic: {
+        provider: 'anthropic',
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        models: { 'claude-3-5-sonnet': {} },
+      },
     },
+    // 默认 provider key（不传时用 llms 第一个 key）
+    defaultLlm: 'openai',
     // 默认 agent 名（Phase 2.3 的 agent 参数注入读取此值）
     defaultAgent: 'researcher',
-    // 默认共享 tool（所有 agent 都可用，无需在每个 agent 重复声明 tools）
-    defaultTools: ['weather.getWeather'],
     // 默认最大对话轮数（agent 自身 config.maxTurns 优先）
     maxTurns: 10,
     // agent 调用 agent 的最大递归深度（Phase 3.3 reactLoop 防护）
@@ -49,7 +59,9 @@ export default {
 } satisfies FaapiConfig;
 ```
 
-**优先级**：agent 自身 `config.maxTurns` / `config.model` 优先于全局 `agent.maxTurns` / `agent.llm.model`。`defaultTools` 与 agent 自身 `tools` 合并（都加入可用 tool 集合，去重）。
+**嵌套级联结构**：provider 在外层，model 在 `models` 下挂多个。provider 级字段（`apiKey` / `baseURL`）共享给所有 model；model 级字段在 `models[modelName]` 里覆盖。handler 通过 `agent.run(input, { model: 'gpt-4o' })` 切换 model（详见 [agentHandle](../../agent/src/agentHandle.md) 的 Run-level 覆盖优先级表）。
+
+**优先级**：`agent.run` 的 `options.model` > agent 自身 `config.maxTurns` / `config.model` > 全局 `agent.maxTurns` / `agent.defaultLlm` + `llms[defaultLlm]`。tool 引用列表只在每个 agent 自身的 `config.tools` 里显式声明（无全局共享 defaultTools，显式优于隐式）。
 
 **与 injectParams 的集成**：Phase 2.3 的 `agent` 参数注入暂返回 `undefined`，Phase 3.x 的 `@faapi/agent` 插件读取 `config.agent.defaultAgent`，从 [agentRegistry](../injection/agentRegistry.md) 查找对应 agent 元数据，注入 `AgentHandle`（含可调用 `run`）。
 

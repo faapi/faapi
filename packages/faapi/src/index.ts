@@ -11,6 +11,7 @@ export type {
   ResponseConfig,
   AgentConfig,
   LlmConfig,
+  LlmModelConfig,
 } from './config/configTypes';
 export type {
   FaapiPlugin,
@@ -40,15 +41,30 @@ export { collectRouteSchemaSources, type RouteSchemaSource } from './cli/collect
 // agent 运行时集成面（供 @faapi/agent 等扩展包消费）
 // 类型导出——描述返回结构,运行时擦除
 // 运行时访问器——@faapi/agent 插件 setup 时导入,构造 AgentDeps 注入到 Agent 类
-export type { AgentMetadata, AgentPathMeta } from './ast/extractAgentMetadata';
-export type { ToolMetadata, ToolPathMeta } from './ast/extractToolMetadata';
+export type { AgentCore, AgentMetadata, AgentPathMeta } from './ast/extractAgentMetadata';
+export type { ToolCore, ToolMetadata, ToolPathMeta } from './ast/extractToolMetadata';
 export type { AgentToolDescriptor } from './injection/agentRegistry';
 export type { AgentModule } from './loader/loadAgentModule';
 export type { ToolModule } from './loader/loadToolModule';
 export type { ToolSchemaModule } from './loader/loadToolSchema';
 // 注册表访问器（单例模块,createAppBase 水合后可直接 import 调用）
-export { getAgent, resolveAgentTools, resolveSubAgents } from './injection/agentRegistry';
+// getAgent 返回 AgentCore(LLM 可见字段);getAgentEntry 返回 AgentMetadata(含 filePath/hasRun,供加载 handler.js)
+export {
+  getAgent,
+  getAgentEntry,
+  resolveAgentTools,
+  resolveSubAgents,
+} from './injection/agentRegistry';
 export { getTool } from './injection/toolRegistry';
+// skill 注册表（运行时 DB-driven skills,业务方 plugin 接入外部源时调）
+// agentRegistry.getAgent 等查询函数会 fallback 到 skillRegistry 自动发现
+export {
+  hydrateSkillRegistry,
+  upsertSkill,
+  removeSkill,
+  getSkill,
+  listSkills,
+} from './injection/skillRegistry';
 // 动态加载器（dev 按需编译模式需 rootDir,prod 模式直接 import 产物）
 export { loadAgentModule } from './loader/loadAgentModule';
 export { loadToolModule } from './loader/loadToolModule';

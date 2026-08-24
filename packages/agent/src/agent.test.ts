@@ -1,7 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Agent, AgentError } from './agent';
 import type { AgentDeps, AgentRuntimeConfig, ToolSchemaResolution } from './agent';
-import type { AgentMetadata, ToolMetadata, ToolModule, AgentModule } from '@faapi/faapi';
+import type {
+  AgentCore,
+  AgentMetadata,
+  LlmConfig,
+  ToolMetadata,
+  ToolModule,
+  AgentModule,
+} from '@faapi/faapi';
 import type {
   LLMProvider,
   LLMResponse,
@@ -14,12 +21,24 @@ import type {
 
 // ─── Mock 数据构造器 ─────────────────────────────────
 
-/** 构造 AgentMetadata */
-function agentMeta(opts: Partial<AgentMetadata> = {}): AgentMetadata {
+/** 构造 AgentCore（LLM 可见字段,不含 filePath/hasRun/hasConfig） */
+function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
+  return {
+    name: opts.name ?? 'researcher',
+    description: opts.description,
+    systemPrompt: opts.systemPrompt,
+    tools: opts.tools,
+    agents: opts.agents,
+    model: opts.model,
+    maxTurns: opts.maxTurns,
+  };
+}
+
+/** 构造 AgentMetadata（AgentCore + filePath/hasRun,无 hasConfig,供 getAgentEntry mock） */
+function agentEntry(opts: Partial<AgentMetadata> = {}): AgentMetadata {
   return {
     name: opts.name ?? 'researcher',
     filePath: opts.filePath ?? 'dist/agents/researcher/handler.js',
-    hasConfig: opts.hasConfig ?? true,
     hasRun: opts.hasRun ?? false,
     description: opts.description,
     systemPrompt: opts.systemPrompt,
@@ -115,20 +134,38 @@ async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
   return result;
 }
 
-/** 构造 AgentDeps（mock 访问器） */
+/** 默认测试用 llms 配置（含 'gpt-4o' / 'gpt-4o-mini' 两个 model,便于 options.model 切换测试） */
+function defaultLlms(): Record<string, LlmConfig> {
+  return {
+    openai: {
+      provider: 'openai',
+      apiKey: 'test-key',
+      models: { 'gpt-4o': {}, 'gpt-4o-mini': {} },
+    },
+  };
+}
+
+/** 构造 AgentDeps（mock 访问器）
+ *
+ * @param opts.provider 默认 provider 实例（也会放入 providers Map 的 defaultLlm key 下）
+ * @param opts.llms 可选,覆盖默认 llms 配置（用于多 provider 测试）
+ * @param opts.defaultLlm 可选,覆盖默认 defaultLlm key（默认 'openai'）
+ * @param opts.extraProviders 可选,额外加入 providers Map 的 provider（key 是 provider 名）
+ */
 function createDeps(opts: {
   provider: LLMProvider;
+  llms?: Record<string, LlmConfig>;
+  defaultLlm?: string;
+  extraProviders?: Record<string, LLMProvider>;
   agentName?: string;
-  agent: AgentMetadata;
+  agent: AgentCore;
+  agentEntry?: AgentMetadata;
   tools?: ToolMetadata[];
-  subAgents?: AgentMetadata[];
+  subAgents?: AgentCore[];
+  subAgentEntries?: AgentMetadata[];
   config?: AgentRuntimeConfig;
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
-  loadAgentModuleImpl?: (
-    filePath: string,
-    hasConfig: boolean,
-    hasRun: boolean,
-  ) => Promise<AgentModule>;
+  loadAgentModuleImpl?: (filePath: string, hasRun: boolean) => Promise<AgentModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
 }): AgentDeps {
@@ -136,13 +173,28 @@ function createDeps(opts: {
   for (const t of opts.tools ?? []) {
     toolsByName.set(t.name, t);
   }
+  const llms = opts.llms ?? defaultLlms();
+  const defaultLlm = opts.defaultLlm ?? 'openai';
+  const providers = new Map<string, LLMProvider>([[defaultLlm, opts.provider]]);
+  if (opts.extraProviders) {
+    for (const [name, p] of Object.entries(opts.extraProviders)) {
+      providers.set(name, p);
+    }
+  }
   return {
-    provider: opts.provider,
+    providers,
+    defaultProvider: opts.provider,
+    llms,
+    defaultLlm,
     agentName: opts.agentName ?? opts.agent.name,
     rootDir: '/project',
     config: opts.config,
     getAgent: (name) =>
       name === opts.agent.name ? opts.agent : opts.subAgents?.find((a) => a.name === name),
+    getAgentEntry: (name) =>
+      name === opts.agent.name
+        ? opts.agentEntry
+        : opts.subAgentEntries?.find((a) => a.name === name),
     getTool: opts.getToolImpl ?? ((name) => toolsByName.get(name)),
     resolveAgentTools: (name) => (name === opts.agent.name ? (opts.tools ?? []) : []),
     resolveSubAgents: (name) => (name === opts.agent.name ? (opts.subAgents ?? []) : []),
@@ -150,9 +202,9 @@ function createDeps(opts: {
       opts.loadToolModuleImpl
         ? opts.loadToolModuleImpl(filePath, functionName)
         : Promise.reject(new Error(`loadToolModule not mocked for ${filePath}`)),
-    loadAgentModule: async (filePath, hasConfig, hasRun) =>
+    loadAgentModule: async (filePath, hasRun) =>
       opts.loadAgentModuleImpl
-        ? opts.loadAgentModuleImpl(filePath, hasConfig, hasRun)
+        ? opts.loadAgentModuleImpl(filePath, hasRun)
         : Promise.reject(new Error(`loadAgentModule not mocked for ${filePath}`)),
     resolveToolSchema: opts.resolveToolSchemaImpl
       ? (tool) => opts.resolveToolSchemaImpl!(tool)
@@ -423,7 +475,9 @@ describe('Agent', () => {
         llmResponse({ content: 'final', stopReason: 'stop' }),
       ]);
 
-      const writerMeta = agentMeta({
+      // getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath/hasRun）
+      const writerCore = agentMeta({ name: 'writer' });
+      const writerEntryMeta = agentEntry({
         name: 'writer',
         filePath: 'dist/agents/writer/handler.js',
         hasRun: true,
@@ -434,11 +488,11 @@ describe('Agent', () => {
         createDeps({
           provider: parentProvider,
           agent: researcherMeta,
-          subAgents: [writerMeta],
-          loadAgentModuleImpl: async (filePath, _hasConfig, _hasRun) => {
+          subAgents: [writerCore],
+          subAgentEntries: [writerEntryMeta],
+          loadAgentModuleImpl: async (filePath, _hasRun) => {
             if (filePath.includes('writer')) {
               return {
-                config: undefined,
                 run: (async (args: unknown) => `drafted: ${JSON.stringify(args)}`) as (
                   ...args: unknown[]
                 ) => unknown,
@@ -473,15 +527,18 @@ describe('Agent', () => {
         llmResponse({ content: 'parent-final', stopReason: 'stop' }),
       ]);
 
-      const writerMeta = agentMeta({ name: 'writer', hasRun: false });
+      // getAgentEntry 返回 hasRun: false → 跳过自定义 run,走默认 reactLoop
+      const writerCore = agentMeta({ name: 'writer' });
+      const writerEntryMeta = agentEntry({ name: 'writer', hasRun: false });
       const researcherMeta = agentMeta({ name: 'researcher', agents: ['writer'] });
 
       const agent = new Agent(
         createDeps({
           provider: parentProvider,
           agent: researcherMeta,
-          subAgents: [writerMeta],
-          loadAgentModuleImpl: async () => ({ config: undefined, run: undefined }),
+          subAgents: [writerCore],
+          subAgentEntries: [writerEntryMeta],
+          loadAgentModuleImpl: async () => ({ run: undefined }),
         }),
       );
 
@@ -507,14 +564,14 @@ describe('Agent', () => {
         llmResponse({ content: 'recovered from recursion error', stopReason: 'stop' }),
       ]);
 
-      const writerMeta = agentMeta({ name: 'writer', hasRun: false });
+      const writerMeta = agentMeta({ name: 'writer' });
       const agent = new Agent(
         createDeps({
           provider,
           agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
           subAgents: [writerMeta],
           config: { maxAgentDepth: 1 }, // 根 depth=1, 子 depth=2 > 1 抛错
-          loadAgentModuleImpl: async () => ({ config: undefined, run: undefined }),
+          loadAgentModuleImpl: async () => ({ run: undefined }),
         }),
       );
 
@@ -543,9 +600,9 @@ describe('Agent', () => {
         createDeps({
           provider,
           agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer', hasRun: false })],
+          subAgents: [agentMeta({ name: 'writer' })],
           config: { maxAgentDepth: 3 }, // 根1 → 子2,未超限
-          loadAgentModuleImpl: async () => ({ config: undefined, run: undefined }),
+          loadAgentModuleImpl: async () => ({ run: undefined }),
         }),
       );
 
@@ -555,17 +612,11 @@ describe('Agent', () => {
   });
 
   describe('buildToolDefinitions — tool 列表组装', () => {
-    it('合并 resolveAgentTools + defaultTools + sub-agents,去重', async () => {
+    it('合并 resolveAgentTools + sub-agents,去重', async () => {
       const sharedTool = toolMeta({ name: 'shared.ping', functionName: 'ping' });
-      const defaultTool = toolMeta({
-        name: 'default.calc',
-        functionName: 'calc',
-        filePath: 'dist/tools/calc/handler.js',
-      });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
       ]);
-      const allTools = [sharedTool, defaultTool];
 
       const agent = new Agent(
         createDeps({
@@ -574,10 +625,9 @@ describe('Agent', () => {
             name: 'researcher',
             agents: ['writer'],
           }),
-          tools: [sharedTool], // resolveAgentTools 仅返回 sharedTool
+          tools: [sharedTool],
           subAgents: [agentMeta({ name: 'writer', description: '写作 agent' })],
-          config: { defaultTools: ['default.calc', 'shared.ping'] }, // shared.ping 重复
-          getToolImpl: (name) => allTools.find((t) => t.name === name),
+          getToolImpl: (name) => (name === 'shared.ping' ? sharedTool : undefined),
         }),
       );
 
@@ -586,10 +636,9 @@ describe('Agent', () => {
       const request = completeCalls.mock.calls[0][0];
       const toolNames = (request.tools as LLMToolDefinition[]).map((t) => t.name);
       expect(toolNames).toContain('shared.ping');
-      expect(toolNames).toContain('default.calc');
       expect(toolNames).toContain('agent.writer');
-      // 去重:shared.ping 只出现一次
-      expect(toolNames.filter((n) => n === 'shared.ping')).toHaveLength(1);
+      // 无 defaultTools,只有 resolveAgentTools + sub-agent
+      expect(toolNames).toHaveLength(2);
     });
 
     it('resolveToolSchema 提供 jsonSchema,未提供时用 { type: object }', async () => {
@@ -706,6 +755,269 @@ describe('Agent', () => {
       const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
       // depth 是私有的,通过 maxAgentDepth 行为间接验证(见 maxAgentDepth 用例)
       expect(agent).toBeDefined();
+    });
+  });
+
+  describe('run() / stream() — options 覆盖', () => {
+    it('options.model 覆盖 agent 元数据 model', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ model: 'gpt-4' }),
+        }),
+      );
+
+      await agent.run('hi', { model: 'gpt-4o-mini' });
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.model).toBe('gpt-4o-mini');
+    });
+
+    it('不传 options 时 model 用 agent 元数据（行为不变）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ model: 'gpt-4' }),
+        }),
+      );
+
+      await agent.run('hi');
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.model).toBe('gpt-4');
+    });
+
+    it('options.model 用 llms key 切换 provider（不调默认 provider）', async () => {
+      const overrideCalls = vi.fn();
+      const overrideProvider: LLMProvider = {
+        complete: async () => {
+          overrideCalls();
+          return {
+            message: { role: 'assistant', content: 'from-override' },
+            stopReason: 'stop' as LLMStopReason,
+            usage: undefined,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const { provider: defaultProvider, completeCalls: defaultCalls } = createMockProvider([
+        llmResponse({ content: 'from-default', stopReason: 'stop' }),
+      ]);
+
+      // 双 provider llms:openai(默认) + anthropic(覆盖)
+      const llms: Record<string, LlmConfig> = {
+        openai: { provider: 'openai', apiKey: 'k1', models: { 'gpt-4o': {} } },
+        anthropic: { provider: 'anthropic', apiKey: 'k2', models: { 'claude-3': {} } },
+      };
+
+      const agent = new Agent(
+        createDeps({
+          provider: defaultProvider,
+          llms,
+          extraProviders: { anthropic: overrideProvider },
+          agent: agentMeta(),
+        }),
+      );
+
+      // model='anthropic' 精确匹配 llms key → 切到 anthropic provider
+      const result = await agent.run('hi', { model: 'anthropic' });
+
+      expect(result.content).toBe('from-override');
+      expect(overrideCalls).toHaveBeenCalledTimes(1);
+      expect(defaultCalls).not.toHaveBeenCalled();
+    });
+
+    it('options.model 用 provider/model 一体化形式切换', async () => {
+      const overrideCalls = vi.fn();
+      const overrideProvider: LLMProvider = {
+        complete: async (req) => {
+          overrideCalls(req);
+          return {
+            message: { role: 'assistant', content: 'from-anthropic' },
+            stopReason: 'stop' as LLMStopReason,
+            usage: undefined,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const { provider: defaultProvider } = createMockProvider([
+        llmResponse({ content: 'from-default', stopReason: 'stop' }),
+      ]);
+
+      const llms: Record<string, LlmConfig> = {
+        openai: { provider: 'openai', apiKey: 'k1', models: { 'gpt-4o': {} } },
+        anthropic: { provider: 'anthropic', apiKey: 'k2', models: { 'claude-3': {} } },
+      };
+
+      const agent = new Agent(
+        createDeps({
+          provider: defaultProvider,
+          llms,
+          extraProviders: { anthropic: overrideProvider },
+          agent: agentMeta(),
+        }),
+      );
+
+      // 'anthropic/claude-3' → 拆 [anthropic, claude-3],切到 anthropic provider + claude-3 model
+      const result = await agent.run('hi', { model: 'anthropic/claude-3' });
+
+      expect(result.content).toBe('from-anthropic');
+      const request = overrideCalls.mock.calls[0][0];
+      expect(request.model).toBe('claude-3');
+    });
+
+    it('options.model 用纯 model 名切换（在 llms 里唯一匹配）', async () => {
+      const overrideCalls = vi.fn();
+      const overrideProvider: LLMProvider = {
+        complete: async () => {
+          overrideCalls();
+          return {
+            message: { role: 'assistant', content: 'from-anthropic' },
+            stopReason: 'stop' as LLMStopReason,
+            usage: undefined,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const { provider: defaultProvider } = createMockProvider([
+        llmResponse({ content: 'from-default', stopReason: 'stop' }),
+      ]);
+
+      const llms: Record<string, LlmConfig> = {
+        openai: { provider: 'openai', apiKey: 'k1', models: { 'gpt-4o': {} } },
+        anthropic: { provider: 'anthropic', apiKey: 'k2', models: { 'claude-3-sonnet': {} } },
+      };
+
+      const agent = new Agent(
+        createDeps({
+          provider: defaultProvider,
+          llms,
+          extraProviders: { anthropic: overrideProvider },
+          agent: agentMeta(),
+        }),
+      );
+
+      // 'claude-3-sonnet' 在 anthropic.models 里唯一 → 切到 anthropic provider + 该 model
+      const result = await agent.run('hi', { model: 'claude-3-sonnet' });
+
+      expect(result.content).toBe('from-anthropic');
+      expect(overrideCalls).toHaveBeenCalledTimes(1);
+    });
+
+    it('options.model 纯 model 名在多 provider 歧义时抛 AgentError', async () => {
+      const { provider: defaultProvider } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      // 'gpt-4o' 同时在 openai 和 anthropic 的 models 里 → 歧义
+      const llms: Record<string, LlmConfig> = {
+        openai: { provider: 'openai', apiKey: 'k1', models: { 'gpt-4o': {} } },
+        anthropic: { provider: 'anthropic', apiKey: 'k2', models: { 'gpt-4o': {} } },
+      };
+      const overrideProvider: LLMProvider = {
+        complete: async () => ({ message: { role: 'assistant', content: '' }, stopReason: 'stop' }),
+        stream: () => {
+          throw new Error('not mocked');
+        },
+      };
+
+      const agent = new Agent(
+        createDeps({
+          provider: defaultProvider,
+          llms,
+          extraProviders: { anthropic: overrideProvider },
+          agent: agentMeta(),
+        }),
+      );
+
+      await expect(agent.run('hi', { model: 'gpt-4o' })).rejects.toThrowError(AgentError);
+    });
+
+    it('options.model 未声明的 provider/model 抛 AgentError', async () => {
+      const { provider: defaultProvider } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider: defaultProvider,
+          agent: agentMeta(),
+        }),
+      );
+
+      // 'unknown-llm/gpt-x' 的 provider 不在 llms 里
+      await expect(agent.run('hi', { model: 'unknown-llm/gpt-x' })).rejects.toThrowError(
+        AgentError,
+      );
+      // 'unknown-model' 纯 model 名,不在任何 provider 的 models 里
+      await expect(agent.run('hi', { model: 'unknown-model' })).rejects.toThrowError(AgentError);
+    });
+
+    it('options.temperature / maxTokens 透传给 provider', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+        }),
+      );
+
+      await agent.run('hi', { temperature: 0.1, maxTokens: 50 });
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.temperature).toBe(0.1);
+      expect(request.maxTokens).toBe(50);
+    });
+
+    it('stream 也支持 options 覆盖 model', async () => {
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'x' }, { finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ model: 'gpt-4' }),
+        }),
+      );
+
+      await collect(agent.stream('hi', { model: 'gpt-4o-mini' }));
+
+      const request = streamCalls.mock.calls[0][0];
+      expect(request.model).toBe('gpt-4o-mini');
+    });
+
+    it('options 不修改 agent 状态（下一次 run 仍用默认 model）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'first', stopReason: 'stop' }),
+        llmResponse({ content: 'second', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ model: 'gpt-4' }),
+        }),
+      );
+
+      await agent.run('hi', { model: 'gpt-4o-mini' });
+      await agent.run('hi');
+
+      const firstRequest = completeCalls.mock.calls[0][0];
+      const secondRequest = completeCalls.mock.calls[1][0];
+      expect(firstRequest.model).toBe('gpt-4o-mini');
+      expect(secondRequest.model).toBe('gpt-4');
     });
   });
 });

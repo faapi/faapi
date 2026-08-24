@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-agent 调用 agent（sub-agent）、handler 注入 agent、reactLoop 加载 agent 时都需要按名查找 agent 元数据（`filePath` / `hasConfig` / `hasRun` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` 等）。`faapi-agents.js` 是序列化产物（`SerializedAgentRecord[]`），启动时需还原为 `AgentMetadata[]` 并放入可查询的注册表。
+agent 调用 agent（sub-agent）、handler 注入 agent、reactLoop 加载 agent 时都需要按名查找 agent 元数据（`filePath` / `hasRun` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` 等）。`faapi-agents.js` 是序列化产物（`SerializedAgentRecord[]`），启动时需还原为 `AgentMetadata[]` 并放入可查询的注册表。
 
 与 [toolRegistry](./toolRegistry.md) 对称——单例 + 全量替换，避免传递引用。agent 运行时（`@faapi/agent` 子包）和 faapi 核心的 agent 注入器都能直接 import 此模块访问。
 
@@ -29,16 +29,34 @@ Phase 2.2 在基础查询 API 上扩展三个能力，对应 agent 三类用法�
 ### 单例 + 全量替换
 
 - `hydrateAgentRegistry(agents)` —— 全量替换注册表内容（启动 + reload 调用）
-- `clearAgentRegistry()` —— 清空（app close 时调用，与 `clearToolRegistry` / `setCurrentApp(null)` 对称）
+- `clearAgentRegistry()` —— 清空（app close 时调用，与 `clearToolRegistry` / `clearSkillRegistry` / `setCurrentApp(null)` 对称）
 
 全量替换而非增量注册：agent 清单来自编译期产物，reload 时整体重新生成，增量追踪反而复杂（与 `hydrateToolRegistry` 同构）。
 
-### 基础查询 API
+### skill fallback — DB-driven skill 自动发现
 
-| 方法 | 说明 |
-| --- | --- |
-| `getAgent(name)` | 按名查找单个 agent（如 `researcher`），未找到返回 `undefined` |
-| `listAgents()` | 返回所有已注册 agent（副本，修改不影响内部状态） |
+`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 在文件 registry 未命中（或被覆盖）时 fallback 到 [skillRegistry](./skillRegistry.md)，自动发现业务方运行时动态注册的 DB-driven skill。**`getAgentEntry` 不 fallback**——DB skill 无源文件，不走 `loadAgentModule`，调用方应改用 `getAgent` 拿 `AgentCore` 字段。
+
+**fallback 优先级**：`skillRegistry.getSkill(name)` 优先 → 文件 registry 回退。**同名时 skill 覆盖文件型 agent**，给业务方提供 override 能力（在 DB 里改一份 systemPrompt 即可覆盖文件型 agent，无需改源码）。
+
+`listAgents` 合并两个 registry，按 `name` 去重（skill 优先）——`@faapi/agent` 的注入器 `agents` 参数自动看到合并列表。
+
+`reloadAgents`（dev watcher 触发）只重新 hydrate 文件 registry，**不影响 skillRegistry**——业务方 DB skill 不会因为 dev 改文件而丢失。
+
+### 基础查询 API — Core/Entry 双查询模式
+
+agent 元数据分两层接口，对应两类使用方（详见 [extractAgentMetadata](../ast/extractAgentMetadata.md)）：
+
+- **`AgentCore`** —— `name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?`（LLM 可见字段，不含代码加载细节）。文件型 agent 与 DB-driven skill 都实现此接口。
+- **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`（加载 `handler.js` 用）/ `hasRun`（是否导出 `run` 函数）。仅文件型 agent 实现，DB skill 无源文件不实现。
+
+| 方法 | 返回类型 | 用途 | 是否 fallback skillRegistry |
+| --- | --- | --- | --- |
+| `getAgent(name)` | `AgentCore \| undefined` | LLM-facing 场景：`agents` 注入器、`asTool` 描述、`resolveAgentTools` / `resolveSubAgents` 解析 | 是 |
+| `getAgentEntry(name)` | `AgentMetadata \| undefined` | 框架内部：`@faapi/agent` 子包加载 `handler.js`、检查 `hasRun` 决定走 `run` 函数还是单轮 prompt | 否（DB skill 无文件，不走 `loadAgentModule`） |
+| `listAgents()` | `AgentCore[]` | 返回所有已注册 agent（合并文件型 + DB skill，按 `name` 去重；副本，修改不影响内部状态） | 是 |
+
+**调用方选择**：消费 LLM 可见字段（`systemPrompt` / `tools` / `agents` / `model` / `maxTurns`）的代码用 `getAgent`；需要 `filePath` / `hasRun` 加载源码的代码用 `getAgentEntry`。
 
 ### Phase 2.2 扩展能力
 
@@ -48,7 +66,7 @@ Phase 2.2 在基础查询 API 上扩展三个能力，对应 agent 三类用法�
 
 - `name` 默认 `agent.<agentName>`（前缀避免与常规 tool 冲突，reactLoop 据此识别 sub-agent 递归）
 - `description` 透传 `agent.description`
-- `metadata` 持有完整 `AgentMetadata` 引用（reactLoop 取 `systemPrompt` / `model` / `maxTurns` / `filePath`）
+- `metadata` 持有 `AgentCore` 引用（reactLoop 取 `systemPrompt` / `model` / `maxTurns`）；`filePath` / `hasRun` 由 `@faapi/agent` 子包通过 `getAgentEntry` 单独获取
 - 不含 input schema——agent `run` 函数参数为开放式（任意 JSON），无类型约束；Phase 3.x 可扩展
 - 未注册返回 `undefined`
 
@@ -60,7 +78,7 @@ reactLoop 把 `AgentToolDescriptor` 与 `ToolMetadata` 合并为统一 tool 列�
 
 - **agent 显式声明的 `tools`**：`agent.tools` 列表中的 tool 名，按名从 `toolRegistry.getTool()` 查找
 
-不再自动合并全局 `defaultTools`——`defaultTools` 的合并由 `@faapi/agent` 的 `Agent.buildToolDefinitions` 在更上层完成（与 sub-agent 一起按 `name` 去重）。`resolveAgentTools` 只关心 agent 自身显式声明的部分，职责单一。
+不再合并全局共享 tool（已移除 `defaultTools`）——sub-agent 的合并由 `@faapi/agent` 的 `Agent.buildToolDefinitions` 在更上层完成（按 `name` 去重）。`resolveAgentTools` 只关心 agent 自身显式声明的部分，职责单一。
 
 `tools` 中未在 toolRegistry 找到的 tool 名静默跳过（tool 可选可用，不强制存在）。
 
@@ -68,7 +86,7 @@ agent 未注册返回空数组。
 
 #### `resolveSubAgents(name)` — 解析子 agent 集合
 
-读 `agent.agents` 字段（[extractAgentMetadata](../ast/extractAgentMetadata.md) 提取的字面量列表），按名查找已注册 agent，返回 `AgentMetadata[]`。
+读 `agent.agents` 字段（[extractAgentMetadata](../ast/extractAgentMetadata.md) 提取的字面量列表），按名查找已注册 agent，返回 `AgentCore[]`（LLM-facing 字段，供 `@faapi/agent` 子包包装为 `AgentToolDescriptor`；`filePath` / `hasRun` 由子包通过 `getAgentEntry` 单独获取）。
 
 - `agents` 字段未设置 / 含未注册的 agent 名 → 跳过
 - agent 未注册返回空数组
@@ -88,6 +106,6 @@ reactLoop 组装 LLM tool 列表：`resolveAgentTools(name)` 的 `ToolMetadata[]
 
 - [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 生成 `faapi-agents.js`
 - [extractAgentMetadata](../ast/extractAgentMetadata.md) - `AgentMetadata` 类型定义
-- [loadAgentModule](../loader/loadAgentModule.md) - 按 `filePath` + `hasConfig` + `hasRun` 按需加载 agent handler
+- [loadAgentModule](../loader/loadAgentModule.md) - 按 `filePath` + `hasRun` 按需加载 agent handler
 - [createAppCore](../cli/createAppCore.md) - 启动时水合入口（`loadAndHydrateAgents`）
 - [toolRegistry](./toolRegistry.md) - tool 注册表（对称模块，`resolveAgentTools` 在此按 agent.tools 解析可用 tool）

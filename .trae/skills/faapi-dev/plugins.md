@@ -179,22 +179,30 @@ async function Page() {
 ```ts
 export default {
   agent: {
-    llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+    // llms 嵌套级联：provider 在外层,model 挂在 models 下
+    llms: {
+      openai: {
+        provider: 'openai',
+        apiKey: process.env.OPENAI_API_KEY,
+        models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
+      },
+    },
+    defaultLlm: 'openai',
     defaultAgent: 'researcher',
     maxTurns: 10,
     maxAgentDepth: 3,
-    defaultTools: ['weather.getWeather'],
   },
   plugins: ['@faapi/agent'],
 } satisfies FaapiConfig;
 ```
 
 插件 setup 时：
-1. 读 `config.agent.llm` → `createProvider` → LLM provider 实例（单例）
-2. 读 `config.agent.defaultAgent` / `maxTurns` / `maxAgentDepth` / `defaultTools`
-3. 注册 agent handle 工厂——handler 的 `agent` 参数注入 `AgentHandle` 实例（含 `run` / `stream` / `asTool`）
+1. 读 `config.agent.llms` → 遍历每项调 `createProvider` → 构建 `providers: Map<string, LLMProvider>`
+2. 读 `config.agent.defaultLlm`（未设时取 `llms` 第一个 key）→ 默认 provider
+3. 读 `config.agent.defaultAgent` / `maxTurns` / `maxAgentDepth`
+4. 注册 agent handle 工厂——handler 的 `agent` 参数注入 `AgentHandle` 实例（含 `run` / `stream` / `asTool`，运行时 `options.model` 支持字符串 key 切换 provider/model）
 
-`config.agent.llm` 或 `defaultAgent` 未配置时跳过工厂注册并 warn，`agent` 参数注入 `undefined`。
+`config.agent.llms` 或 `defaultAgent` 未配置时跳过工厂注册并 warn，`agent` 参数注入 `undefined`。
 
 详见 [agent.md](./agent.md)。
 

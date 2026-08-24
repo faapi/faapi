@@ -5,6 +5,7 @@ import {
   MethodNotAllowedError,
   InternalError,
   ModuleLoadError,
+  PayloadTooLargeError,
 } from './httpErrors';
 import { FaapiError } from './FaapiError';
 
@@ -171,5 +172,22 @@ describe('ModuleLoadError', () => {
     expect(error.code).toBe('MODULE_LOAD_ERROR');
     expect(error.statusCode).toBe(500);
     expect(error.message).toBe('Failed to load module ./routes/users.ts: syntax error');
+  });
+});
+
+describe('PayloadTooLargeError', () => {
+  it('构造正确，statusCode 为 413', () => {
+    const error = new PayloadTooLargeError(10 * 1024 * 1024);
+    expect(error).toBeInstanceOf(FaapiError);
+    expect(error.name).toBe('PayloadTooLargeError');
+    expect(error.code).toBe('PAYLOAD_TOO_LARGE');
+    expect(error.statusCode).toBe(413);
+    expect(error.message).toBe('Request body exceeds size limit of 10485760 bytes');
+  });
+
+  it('不同 maxSize 生成不同 message', () => {
+    const small = new PayloadTooLargeError(100);
+    expect(small.message).toBe('Request body exceeds size limit of 100 bytes');
+    expect(small.statusCode).toBe(413);
   });
 });

@@ -1,6 +1,6 @@
 # extractToolMetadata
 
-一句话概括：从 tool handler.ts 源文件提取单个 tool 的 JSDoc 描述、`@tool` 覆盖名、第一个参数的 interface 名,产出完整的 `ToolMetadata` 结构供产物生成阶段消费。
+一句话概括：从 tool handler.ts 源文件提取单个 tool 的 JSDoc 描述、`@tool` 覆盖名、第一个参数的 interface 名,产出完整的 `ToolMetadata`(继承 `ToolCore` + 代码加载细节)供产物生成阶段消费。
 
 ## 为什么需要
 
@@ -10,6 +10,15 @@
 2. **第一个参数的 interface 名**——用于调用 `extractTypeInfo` 生成 zod schema,实现 tool 输入参数的运行时校验(与路由 body/query 同构)。
 
 这些信息必须用 TypeScript AST 提取(JSDoc 和类型标注在运行时被擦除)。本模块在 dev/build 启动时对每个 `ToolManifest` 调用一次,把路径推导字段(name/filePath/functionName)与 AST 提取字段(description/inputTypeName)合并为完整的 `ToolMetadata`,供 [generateToolArtifacts](../cli/generateToolArtifacts.md) 直接序列化。
+
+## Core / Metadata 分层
+
+`ToolCore` 描述 LLM 可见字段(不含代码加载细节),`ToolMetadata` 继承 `ToolCore` 额外含代码加载细节:
+
+- **`ToolCore`** —— `name` / `description`。描述"tool 是什么",发往 LLM 的 tool 定义只含此层字段(`name` / `description` / input schema)。`toolRegistry.getTool` 返回的 `ToolMetadata` 包含 `ToolCore` 字段。
+- **`ToolMetadata extends ToolCore`** —— 额外含 `filePath`(`loadToolModule` 加载 handler.js 用) / `functionName`(源码导出函数名,AST 定位 + 运行时 resolveExport 用,不受 `@tool` 覆盖影响) / `inputTypeName`(第一个参数 interface 名,供 [extractTypeInfo](./extractHandlerTypes.md) 生成 zod schema)。仅文件型 tool 实现。
+
+与 [extractAgentMetadata](./extractAgentMetadata.md) 的 `AgentCore` / `AgentMetadata` 分层同构——LLM-facing 字段与代码加载细节分离,便于未来扩展(如 DB-driven tool 只实现 `ToolCore` 即可)。
 
 ## 使用场景
 
@@ -64,14 +73,20 @@ JSDoc 中 `@tool <name>` 标签的值,覆盖路径推导的 `name`:
 ## API
 
 ```ts
-interface ToolMetadata {
+// LLM 可见核心字段(文件型 tool 实现,DB-driven tool 未来只实现此层)
+interface ToolCore {
   name: string;             // @tool 覆盖值 或 pathMeta.name
   description?: string;      // JSDoc 描述,无 JSDoc 时 undefined
+}
+
+// 文件型 tool 完整元数据(继承 ToolCore + 代码加载细节)
+interface ToolMetadata extends ToolCore {
   inputTypeName?: string;    // 第一个参数 interface 名,无/内联/无标注时 undefined
   filePath: string;          // 从 pathMeta 透传(相对路径)
   functionName: string;     // 从 pathMeta 透传(源码导出名)
 }
 
+// 路径推导的元数据(scanTools 产出)
 interface ToolPathMeta {
   name: string;              // 路径推导的 tool 名(如 "weather.getWeather")
   filePath: string;          // 源码相对路径(如 "src/tools/weather/handler.ts")
@@ -99,4 +114,6 @@ function extractToolMetadata(
 - [createProgram](./createProgram.md) - 创建 TypeScript Program
 - [extractHandlerTypes](./extractHandlerTypes.md) - 下游消费 `inputTypeName` 提取完整类型结构
 - [generateToolArtifacts](../cli/generateToolArtifacts.md) - 下游消费 `ToolMetadata[]` 生成 `faapi-tools.js` + `zod.js`
+- [toolRegistry](../injection/toolRegistry.md) - `getTool` 返回 `ToolMetadata`(含 `ToolCore` 字段),供 agent 运行时按名查找
+- [extractAgentMetadata](./extractAgentMetadata.md) - agent 元数据提取(对称设计参考,同样有 `AgentCore`/`AgentMetadata` 分层)
 - [analyzeInjection](../injection/analyzeInjection.md) - 路由 handler 参数提取(对称设计参考)

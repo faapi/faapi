@@ -6,6 +6,7 @@ import {
   MethodNotAllowedError,
   InternalError,
   ModuleLoadError,
+  PayloadTooLargeError,
 } from './httpErrors';
 import { FaapiError } from './FaapiError';
 
@@ -160,6 +161,22 @@ describe('formatErrorResponse', () => {
       error: {
         code: 'CUSTOM_CODE',
         message: 'custom error',
+      },
+    });
+  });
+
+  it('PayloadTooLargeError 返回 413 和 PAYLOAD_TOO_LARGE code', async () => {
+    const error = new PayloadTooLargeError(1024);
+    const response = formatErrorResponse(error);
+
+    expect(response.status).toBe(413);
+    expect(response.headers.get('Content-Type')).toBe('application/json');
+
+    const body = await response.json();
+    expect(body).toEqual({
+      error: {
+        code: 'PAYLOAD_TOO_LARGE',
+        message: 'Request body exceeds size limit of 1024 bytes',
       },
     });
   });

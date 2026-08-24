@@ -7,7 +7,15 @@
  *
  * export default {
  *   agent: {
- *     llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+ *     llms: {
+ *       openai: {
+ *         provider: 'openai',
+ *         apiKey: process.env.OPENAI_API_KEY,
+ *         baseURL: 'https://api.openai.com/v1',
+ *         models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
+ *       },
+ *     },
+ *     defaultLlm: 'openai',
  *     defaultAgent: 'researcher',
  *     maxTurns: 10,
  *   },
@@ -16,14 +24,15 @@
  * ```
  *
  * 插件 setup 时：
- * 1. 读 `config.agent.llm` → `createProvider` → LLMProvider 实例（单例）
- * 2. 读 `config.agent.defaultAgent` / `maxTurns` / `maxAgentDepth` / `defaultTools`
- * 3. 从 `@faapi/faapi` import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools /
+ * 1. 遍历 `config.agent.llms` → 每项调 `createProvider` → `Map<providerKey, LLMProvider>`
+ * 2. 读 `config.agent.defaultLlm` → `defaultProvider`（未设时用 `llms` 第一个 key）
+ * 3. 读 `config.agent.defaultAgent` / `maxTurns` / `maxAgentDepth`
+ * 4. 从 `@faapi/faapi` import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools /
  *    resolveSubAgents / loadAgentModule / loadToolModule）
- * 4. `registerAgentHandleFactory` 注册工厂——每次请求时构造 [Agent](./agent.md) 实例注入到
+ * 5. `registerAgentHandleFactory` 注册工厂——每次请求时构造 [Agent](./agent.md) 实例注入到
  *    handler 的 `agent` 参数
  *
- * 配置缺失时（`agent.llm` 或 `agent.defaultAgent` 未设置）跳过工厂注册并打印警告,
+ * 配置缺失时（`agent.llms` 或 `agent.defaultAgent` 未设置）跳过工厂注册并打印警告,
  * handler 的 `agent` 参数注入 `undefined`。
  *
  * 详见 [plugin.md](./plugin.md)。
@@ -32,6 +41,7 @@
 import {
   registerAgentHandleFactory,
   getAgent,
+  getAgentEntry,
   getTool,
   resolveAgentTools,
   resolveSubAgents,
@@ -45,6 +55,7 @@ import {
 } from '@faapi/faapi';
 import { z } from 'zod';
 import { Agent, type AgentRuntimeConfig, type ToolSchemaResolution } from './agent';
+import type { LLMProvider } from './provider';
 import { createProvider } from './provider';
 
 /**
@@ -102,9 +113,9 @@ const agentPlugin: FaapiPlugin = {
     const agentConfig = readAgentConfig(ctx);
 
     // 必要配置检查——缺失时跳过工厂注册,agent 参数注入 undefined
-    if (!agentConfig?.llm) {
+    if (!agentConfig?.llms) {
       console.warn(
-        '! @faapi/agent: config.agent.llm not configured, agent parameter injection disabled',
+        '! @faapi/agent: config.agent.llms not configured, agent parameter injection disabled',
       );
       return;
     }
@@ -115,14 +126,28 @@ const agentPlugin: FaapiPlugin = {
       return;
     }
 
-    // 创建 LLM provider（单例,所有请求共享）
-    const provider = createProvider(agentConfig.llm);
+    // 创建 LLM provider 实例 Map（key 是 provider 名,来自 config.agent.llms）
+    // 单例,所有请求共享;每个 provider 实例对应一个 LlmConfig
+    const llms = agentConfig.llms;
+    const providers = new Map<string, LLMProvider>();
+    for (const [name, llmConfig] of Object.entries(llms)) {
+      providers.set(name, createProvider(llmConfig));
+    }
+
+    // 默认 provider：config.agent.defaultLlm 优先,否则取 llms 第一个 key
+    const defaultLlm = agentConfig.defaultLlm ?? Object.keys(llms)[0];
+    const defaultProvider = providers.get(defaultLlm);
+    if (!defaultProvider) {
+      console.warn(
+        `! @faapi/agent: config.agent.defaultLlm "${defaultLlm}" not found in llms, agent parameter injection disabled`,
+      );
+      return;
+    }
 
     // 全局 agent 运行时配置覆盖
     const runtimeConfig: AgentRuntimeConfig = {
       maxTurns: agentConfig.maxTurns,
       maxAgentDepth: agentConfig.maxAgentDepth,
-      defaultTools: agentConfig.defaultTools,
     };
 
     const rootDir = ctx.rootDir;
@@ -134,27 +159,31 @@ const agentPlugin: FaapiPlugin = {
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生
     registerAgentHandleFactory(() => {
       return new Agent({
-        provider,
+        providers,
+        defaultProvider,
+        llms,
+        defaultLlm,
         agentName: defaultAgent,
         rootDir,
         config: runtimeConfig,
         // 注册表/加载器访问器——从 @faapi/faapi import 的单例模块
         // createAppBase 启动时已水合 agentRegistry / toolRegistry
+        // getAgent 返回 AgentCore(LLM-facing);getAgentEntry 返回 AgentMetadata(含 filePath/hasRun,供加载 handler.js)
         getAgent,
+        getAgentEntry,
         getTool,
         resolveAgentTools,
         resolveSubAgents,
         // 加载器包装：注入 rootDir 用于 dev 按需编译模式
         loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, rootDir),
-        loadAgentModule: (filePath, hasConfig, hasRun) =>
-          loadAgentModule(filePath, hasConfig, hasRun, rootDir),
+        loadAgentModule: (filePath, hasRun) => loadAgentModule(filePath, hasRun, rootDir),
         // tool schema 解析（zod.js → JSON Schema + safeParse 校验）
         resolveToolSchema,
       });
     });
 
     console.log(
-      `- @faapi/agent: default agent "${defaultAgent}" available via agent parameter injection`,
+      `- @faapi/agent: default agent "${defaultAgent}" (provider: ${defaultLlm}) available via agent parameter injection`,
     );
   },
 };

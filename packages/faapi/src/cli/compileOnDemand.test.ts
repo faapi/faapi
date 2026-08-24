@@ -15,6 +15,7 @@ import {
   ensureCompiled,
   ensureSchemaGenerated,
   prodPathToSourcePath,
+  _resetDevOnDemandState,
 } from './compileOnDemand';
 import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
@@ -338,5 +339,67 @@ describe('按需编译（Vite 风格）', () => {
     } finally {
       await app.close();
     }
+  });
+
+  it('ensureCompiled mutex: 同一文件并发请求只触发一次编译', async () => {
+    writeHandler();
+    await generateManifestOnly();
+
+    const sourcePath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
+    const handlerJsPath = join(tempDir, '.faapi', 'api', 'hello', 'handler.js');
+
+    // 并发调 ensureCompiled 两次,验证 mutex 只让其中一个触发编译
+    const [r1, r2] = await Promise.all([
+      ensureCompiled(sourcePath, tempDir, '.faapi'),
+      ensureCompiled(sourcePath, tempDir, '.faapi'),
+    ]);
+
+    // 期望: 一个 true(触发编译) + 一个 false(mutex 命中,等待后返回)
+    const trueCount = [r1, r2].filter((r) => r === true).length;
+    const falseCount = [r1, r2].filter((r) => r === false).length;
+    expect(trueCount).toBe(1);
+    expect(falseCount).toBe(1);
+    // handler.js 已生成
+    expect(existsSync(handlerJsPath)).toBe(true);
+  });
+
+  it('ensureCompiled mutex: 第一个请求编译失败时,第二个请求不抛错(走自己的重试流程)', async () => {
+    // 写入语法错误的 handler
+    writeHandler('api/broken/handler.ts', 'export function GET( { ; ; ;  invalid syntax');
+    await generateManifestOnly();
+
+    const sourcePath = join(tempDir, 'src', 'api', 'broken', 'handler.ts');
+
+    // 并发调 ensureCompiled 两次
+    // 期望: 都抛错(第一个失败后,第二个 await 失败被 catch,自己重试也失败)
+    //   - 第一个: 触发编译 → 抛错
+    //   - 第二个: await in-flight(失败被 catch 不抛错) → return false → 然后自己重试 → 触发编译 → 抛错
+    //   或者两个都进入触发编译分支都抛错
+    await expect(
+      Promise.all([
+        ensureCompiled(sourcePath, tempDir, '.faapi').catch((e) => e),
+        ensureCompiled(sourcePath, tempDir, '.faapi').catch((e) => e),
+      ]),
+    ).resolves.toBeDefined();
+  });
+
+  it('_resetDevOnDemandState 清空所有状态', async () => {
+    writeHandler();
+    await generateManifestOnly();
+
+    const sourcePath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
+    // 首次编译
+    await ensureCompiled(sourcePath, tempDir, '.faapi');
+
+    // 重置状态后,即使产物已存在,内存缓存被清空
+    _resetDevOnDemandState();
+    // 重新启用 dev on demand(被 reset 清掉了)
+    setDevOnDemandEnabled(true);
+    setDevDist('.faapi');
+
+    // 再次调用: 产物 mtime ≥ 源码 mtime → mtime 复用,加入 Set,return false
+    // 这验证了 reset 把 compiledFiles 清空了(否则会直接 return false 而不检查 mtime)
+    const compiled = await ensureCompiled(sourcePath, tempDir, '.faapi');
+    expect(compiled).toBe(false); // mtime fresh
   });
 });

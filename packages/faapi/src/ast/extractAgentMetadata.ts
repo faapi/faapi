@@ -1,48 +1,67 @@
 import ts from 'typescript';
 
 /**
- * Agent 完整元数据
+ * Agent 的 LLM 可见核心字段
  *
- * 由 [extractAgentMetadata](./extractAgentMetadata.md) 产出，合并路径推导字段
+ * 描述"agent 是什么"——LLM 真正需要消费的字段,**不含**代码本体加载细节
+ * (filePath / hasRun)。文件型 agent 与 DB-driven skill 都实现此接口。
+ *
+ * - 文件型 agent:由 [AgentMetadata](./extractAgentMetadata.md) 继承扩展,
+ *   额外含 `filePath` / `hasRun`(代码本体加载用)
+ * - DB-driven skill:业务方 plugin 从 DB 字段映射到本接口即可,无需填占位值
+ *   (skill 无源文件,不走 `loadAgentModule`,自然不读 filePath / hasRun)
+ *
+ * `@faapi/agent` 子包的 `Agent` 类、`agentRegistry` 查询入口、`asTool` 包装
+ * 都消费 `AgentCore`,实现"agent 与 skill 走同一运行时链路"。
+ */
+export interface AgentCore {
+  /** agent 名(`@agent` JSDoc 覆盖值 或 目录推导值) */
+  name: string;
+  /** JSDoc 描述(agent 描述,对 LLM 可见),无 JSDoc 或 JSDoc 无自由文本时为 `undefined` */
+  description?: string;
+  /** 系统提示词(config 块字面量提取),无/非字面量时为 `undefined` */
+  systemPrompt?: string;
+  /** agent 显式声明可用的 tool 引用列表(config 块字面量提取),无/含非字面量元素时为 `undefined` */
+  tools?: string[];
+  /** 可调用的其他 agent 名列表(config 块字面量提取),无/含非字面量元素时为 `undefined` */
+  agents?: string[];
+  /** LLM 模型名(config 块字面量提取),无/非字面量时为 `undefined` */
+  model?: string;
+  /** 最大对话轮数(config 块字面量提取),无/非字面量时为 `undefined` */
+  maxTurns?: number;
+}
+
+/**
+ * Agent 完整元数据(文件型 agent)
+ *
+ * 继承 [AgentCore](./extractAgentMetadata.md) 的 LLM 字段,额外扩展**代码本体加载细节**:
+ * - `filePath` — `loadAgentModule` 加载 `handler.js` 产物提取 `run` 函数用
+ * - `hasRun` — 是否导出 `run` 函数(`Agent.executeSubAgent` 据此决定走自定义 run
+ *   还是默认 reactLoop)
+ *
+ * DB-driven skill 不实现此接口(无源文件,无需加载),只实现 `AgentCore`。
+ *
+ * 由 [extractAgentMetadata](./extractAgentMetadata.md) 产出,合并路径推导字段
  * (来自 [scanAgents](../agents/scanAgents.md) 的 `AgentManifest`)与 AST 提取字段
  * (JSDoc 描述、`@agent` 覆盖名、config 块字段)。
  *
- * 与 [ToolMetadata](./extractToolMetadata.md) 对称——一个从函数导出提取 JSDoc + 参数类型，
- * 一个从 config 导出提取 JSDoc + 配置块。
- *
  * 字段来源：
- * - `name` — `@agent` JSDoc 覆盖值，或 `pathMeta.name`(目录推导)
- * - `filePath` / `hasConfig` / `hasRun` — 由 `pathMeta` 透传
+ * - `name` — `@agent` JSDoc 覆盖值,或 `pathMeta.name`(目录推导)
+ * - `filePath` / `hasRun` — 由 `pathMeta` 透传
  * - `description` — JSDoc 注释块自由文本(对 LLM 可见)
  * - `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` — config 块字面量提取
  */
-export interface AgentMetadata {
-  /** agent 名(`@agent` JSDoc 覆盖值 或 目录推导值) */
-  name: string;
-  /** JSDoc 描述(agent 描述，对 LLM 可见)，无 JSDoc 或 JSDoc 无自由文本时为 `undefined` */
-  description?: string;
-  /** 源码相对路径(从 `pathMeta` 透传) */
+export interface AgentMetadata extends AgentCore {
+  /** 源码相对路径(从 `pathMeta` 透传),`loadAgentModule` 据此加载 `handler.js` 提取 `run` */
   filePath: string;
-  /** 是否导出 config 块(从 `pathMeta` 透传) */
-  hasConfig: boolean;
-  /** 是否导出 run 函数(从 `pathMeta` 透传) */
+  /** 是否导出 `run` 函数(从 `pathMeta` 透传),`Agent.executeSubAgent` 据此选择自定义 run / 默认 reactLoop */
   hasRun: boolean;
-  /** 系统提示词(config 块字面量提取)，无/非字面量时为 `undefined` */
-  systemPrompt?: string;
-  /** agent 显式声明可用的 tool 引用列表(config 块字面量提取)，无/含非字面量元素时为 `undefined` */
-  tools?: string[];
-  /** 可调用的其他 agent 名列表(config 块字面量提取)，无/含非字面量元素时为 `undefined` */
-  agents?: string[];
-  /** LLM 模型名(config 块字面量提取)，无/非字面量时为 `undefined` */
-  model?: string;
-  /** 最大对话轮数(config 块字面量提取)，无/非字面量时为 `undefined` */
-  maxTurns?: number;
 }
 
 /**
  * 路径推导的 agent 元数据(由 [scanAgents](../agents/scanAgents.ts) 计算)
  *
- * 透传到 [AgentMetadata](./extractAgentMetadata.ts) 输出，与 AST 提取字段合并。
+ * 透传到 [AgentMetadata](./extractAgentMetadata.ts) 输出,与 AST 提取字段合并。
  * 与 [ToolPathMeta](./extractToolMetadata.md) 对称。
  */
 export interface AgentPathMeta {
@@ -50,9 +69,7 @@ export interface AgentPathMeta {
   name: string;
   /** 源码相对路径(如 `src/agents/researcher/handler.ts`) */
   filePath: string;
-  /** 是否导出 config 块(scanAgents 正则检测) */
-  hasConfig: boolean;
-  /** 是否导出 run 函数(scanAgents 正则检测) */
+  /** 是否导出 `run` 函数(scanAgents 正则检测) */
   hasRun: boolean;
 }
 
@@ -72,7 +89,7 @@ interface FoundConfig {
  * 2. **`@agent` 覆盖名** — JSDoc 中 `@agent` 标签后的文本，覆盖目录推导的 `name`
  * 3. **config 块字段** — systemPrompt / tools / agents / model / maxTurns
  *
- * 不提取(由 `pathMeta` 透传)：`filePath` / `hasConfig` / `hasRun`
+ * 不提取(由 `pathMeta` 透传)：`filePath` / `hasRun`
  *
  * config 查找支持两种导出形式，与 [scanAgents](../agents/scanAgents.md) 的 `CONFIG_EXPORT_RE` 正则同构：
  * - `export const config = { ... }` — 对象字面量(最常见)
@@ -137,7 +154,6 @@ export function extractAgentMetadata(
     name: agentNameOverride ?? pathMeta.name,
     description,
     filePath: pathMeta.filePath,
-    hasConfig: pathMeta.hasConfig,
     hasRun: pathMeta.hasRun,
     systemPrompt,
     tools,

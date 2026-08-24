@@ -25,6 +25,7 @@ import {
   registerAgentHandleFactory,
   clearAgentHandleFactory,
   getAgent,
+  getAgentEntry,
   getTool,
   resolveAgentTools,
   resolveSubAgents,
@@ -52,6 +53,7 @@ import { invalidateSchemaCache } from '@faapi/faapi/src/validator/validateInput'
 import { Agent } from './agent';
 import type { AgentDeps, ToolSchemaResolution } from './agent';
 import type { LLMProvider, LLMResponse, LLMMessage, LLMStopReason } from './provider';
+import type { LlmConfig } from '@faapi/faapi';
 import { z } from 'zod';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -169,27 +171,35 @@ describe('multi-agent demo e2e', () => {
    * loadToolModule / loadAgentModule 的 filePath 转为绝对路径——
    * toolRegistry / agentRegistry 中的 filePath 是产物形式相对路径（如 `dist/tools/weather/handler.js`），
    * vitest 环境下 `importActual` 不解析 bare specifier，需拼接 rootDir 转绝对路径。
+   *
+   * providers Map + llms 配置与 fixture 的 faapi.config.ts 对称（openai 单 provider + 'gpt-4o' model）。
    */
   function makeAgentDeps(provider: LLMProvider): AgentDeps {
     const toAbs = (filePath: string): string =>
       path.isAbsolute(filePath) ? filePath : path.resolve(tempDir, filePath);
+    const llms: Record<string, LlmConfig> = {
+      openai: { provider: 'openai', apiKey: 'mock-key', models: { 'gpt-4o': {} } },
+    };
+    const providers = new Map<string, LLMProvider>([['openai', provider]]);
     return {
-      provider,
+      providers,
+      defaultProvider: provider,
+      llms,
+      defaultLlm: 'openai',
       agentName: 'researcher',
       rootDir: tempDir,
       config: {
         maxTurns: 10,
         maxAgentDepth: 3,
-        defaultTools: ['weather.getWeather'],
       },
       getAgent,
+      getAgentEntry,
       getTool,
       resolveAgentTools,
       resolveSubAgents,
       loadToolModule: (filePath, functionName) =>
         loadToolModule(toAbs(filePath), functionName, tempDir),
-      loadAgentModule: (filePath, hasConfig, hasRun) =>
-        loadAgentModule(toAbs(filePath), hasConfig, hasRun, tempDir),
+      loadAgentModule: (filePath, hasRun) => loadAgentModule(toAbs(filePath), hasRun, tempDir),
       // resolveToolSchema：加载 tool 的 zod.js → z.toJSONSchema + safeParse
       resolveToolSchema: async (tool) => {
         const schemaMod = await loadToolSchema(tool, tempDir);
@@ -228,6 +238,7 @@ describe('multi-agent demo e2e', () => {
       const app = await createProdApp({ rootDir: tempDir });
 
       // 验证 agentRegistry 水合（researcher + writer）
+      // getAgent 返回 AgentCore（LLM-facing 字段,不含 filePath/hasRun）
       const researcher = getAgent('researcher');
       expect(researcher).toBeDefined();
       expect(researcher!.name).toBe('researcher');
@@ -235,10 +246,14 @@ describe('multi-agent demo e2e', () => {
       expect(researcher!.agents).toEqual(['writer']);
       expect(researcher!.tools).toEqual(['weather.getWeather', 'calculator.calc']);
 
+      // getAgent 返回 AgentCore;hasRun 在 AgentMetadata 上,用 getAgentEntry 查询
       const writer = getAgent('writer');
       expect(writer).toBeDefined();
       expect(writer!.name).toBe('writer');
-      expect(writer!.hasRun).toBe(true);
+
+      const writerEntry = getAgentEntry('writer');
+      expect(writerEntry).toBeDefined();
+      expect(writerEntry!.hasRun).toBe(true);
 
       // 验证 toolRegistry 水合（weather + calculator）
       const weather = getTool('weather.getWeather');

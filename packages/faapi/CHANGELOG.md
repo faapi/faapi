@@ -1,5 +1,206 @@
 # @faapi/faapi
 
+## 3.1.0
+
+### Minor Changes
+
+- 重构 LLM 配置为嵌套级联结构（provider 在外层，model 在 `models` 下挂多个），并把 `AgentHandle.run` / `stream` 的 `options.model` 改为字符串 key 解析。
+
+  ## 破坏性变更
+
+  ### `@faapi/faapi` — `LlmConfig` / `AgentConfig` 类型
+  - `AgentConfig.llm: LlmConfig` → `AgentConfig.llms: Record<string, LlmConfig>` + `AgentConfig.defaultLlm?: string`
+  - `LlmConfig.model` 移除 → 新增必填 `LlmConfig.models: Record<string, LlmModelConfig>`
+  - 新增 `LlmModelConfig` 类型（model 级透传字段，覆盖 provider 级同名字段）
+  - **移除 `AgentConfig.defaultTools`** —— tool 引用列表只在每个 agent 自身的 `config.tools` 里显式声明（显式优于隐式，不再有全局共享 tool）
+
+  旧：
+
+  ```ts
+  agent: { llm: { provider: 'openai', apiKey: '...', model: 'gpt-4o' }, defaultTools: ['weather.getWeather'] }
+  ```
+
+  新：
+
+  ```ts
+  agent: {
+    llms: {
+      openai: { provider: 'openai', apiKey: '...', models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } } },
+    },
+    defaultLlm: 'openai',
+  }
+  ```
+
+  ### `@faapi/agent` — `AgentRunOptions` 与 key 解析
+  - `AgentRunOptions.provider: LLMProvider` 移除
+  - `AgentRunOptions.model` 改为字符串 key，支持三种形式：
+    1. llms 的 key 精确匹配（如 `'openai'`）—— 切到该 provider + 其 `models` 第一个 key
+    2. `provider/model` 一体化（如 `'openai/gpt-4o'`）—— 精确切换 provider + model
+    3. 纯 model 名（如 `'gpt-4o'`）—— 在所有 provider 的 `models` 里查找，唯一时切到对应 provider；歧义时抛 `AgentError`
+  - `AgentDeps` 改为 `providers: Map<string, LLMProvider>` + `defaultProvider` + `llms` + `defaultLlm`
+  - `AgentRuntimeConfig.defaultTools` 移除，`buildToolDefinitions` 只合并 `resolveAgentTools` + sub-agent（不再读全局 defaultTools）
+  - `plugin.ts` setup 时遍历 `config.agent.llms` 每项调 `createProvider` 存 Map
+  - `openai.ts` 实现 provider 级 + model 级字段合并（model 级覆盖 provider 级同名）
+
+- 把 `AgentMetadata` / `ToolMetadata` 拆分为 LLM 可见核心层与代码加载详情层，并清理 `hasConfig` 死链路。DB-driven skill 接入进一步简化，不再需要占位字段。
+
+  ## 破坏性变更（类型收窄，提供替代 API）
+
+  ### `@faapi/faapi`
+  - `agentRegistry.getAgent(name)` 返回类型从 `AgentMetadata | undefined` 收窄为 `AgentCore | undefined`（不含 `filePath` / `hasRun`），新增 `agentRegistry.getAgentEntry(name)` 返回 `AgentMetadata | undefined`（含代码加载细节，仅查文件 registry，**不 fallback** skillRegistry）
+  - `loadAgentModule` 签名从 `(filePath, hasConfig, hasRun)` 简化为 `(filePath, hasRun)`——`hasConfig` 字段已移除（`AgentModule.config` 是死链路，`executeSubAgent` 拿到 `mod.config` 后从不读取）
+  - `AgentModule` 接口移除 `config` 字段，仅保留 `{ run }`
+  - `scanAgents` 不再检测 `config` 导出（删 `CONFIG_EXPORT_RE` + `hasConfig`），但 `extractAgentMetadata` 在 AST 阶段仍会查找 config 导出（提取 JSDoc 描述 + config 块字面量字段）
+  - `faapi-agents.js` 产物（`SerializedAgentRecord`）移除 `hasConfig` 字段
+  - `skillRegistry` 改存 `AgentCore` 而非 `AgentMetadata`——业务方 DB 记录只需映射 LLM 可见字段，无需 `filePath: ''` / `hasConfig: false` / `hasRun: false` 占位
+
+  ### `@faapi/agent`
+  - `AgentDeps` 新增 `getAgentEntry: (name: string) => AgentMetadata | undefined` 访问器
+  - `Agent.executeSubAgent` 改用 `getAgentEntry`（而非 `getAgent`）拿 `AgentMetadata` 后调 `loadAgentModule`——因为 `getAgent` 现在返回 `AgentCore`（无 `filePath` / `hasRun`），且会 fallback 到 skillRegistry（DB skill 无文件可加载）
+  - `plugin.ts` setup 时注入 `getAgentEntry` 访问器
+
+  ## 新增类型导出
+  - `AgentCore` —— LLM 可见字段层（`name` / `description` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns`），文件型 agent 与 DB-driven skill 都实现此接口
+  - `AgentMetadata extends AgentCore` —— 额外含 `filePath` / `hasRun`，仅文件型 agent 实现
+  - `ToolCore` —— LLM 可见字段层（`name` / `description`）
+  - `ToolMetadata extends ToolCore` —— 额外含 `filePath` / `functionName` / `inputTypeName`
+
+  ## 设计动机
+
+  之前 `AgentMetadata` 把 LLM 可见字段（`systemPrompt` / `tools` / `model` 等）和代码加载细节（`filePath` / `hasRun` / `hasConfig`）混在一个接口里。DB-driven skill 无源文件，只能填 `filePath: ''` / `hasConfig: false` / `hasRun: false` 占位——字段污染、语义模糊。
+
+  拆分后：
+
+  - **`AgentCore`** 描述「agent 是什么」（LLM 看到的部分），文件型 agent 与 DB skill 都实现，`getAgent` 返回此类型
+  - **`AgentMetadata`** 描述「agent 怎么加载」（`filePath` / `hasRun`），仅文件型 agent 实现，`getAgentEntry` 返回此类型
+
+  `ToolCore` / `ToolMetadata` 同构拆分，为未来 DB-driven tool 预留对称扩展点。
+
+  `hasConfig` 是死链路：`scanAgents` 检测后存入 `AgentManifest.hasConfig` → `extractAgentMetadata` 透传到 `AgentMetadata.hasConfig` → `loadAgentModule` 用它决定是否提取 `mod.config` → `executeSubAgent` 拿到 `mod.config` 后从不读取。整条链路终点无人消费，故移除。
+
+  ## 迁移指南
+  - 业务方 handler 直接 `import type { AgentMetadata }` 改为 `import type { AgentCore }`（如只读 LLM 可见字段）
+  - DB skill 接入代码删除 `filePath` / `hasConfig` / `hasRun` 占位字段
+  - 直接调 `loadAgentModule` 的代码去掉 `hasConfig` 参数（业务方一般不直接调）
+  - 消费 `agentRegistry.getAgent` 返回值的 `filePath` / `hasRun` 字段的代码改用 `getAgentEntry`
+
+- 新增 `skillRegistry`,支持业务方在 plugin 里把数据库 / 外部源加载的 skill 动态注册,运行时与文件型 agent 共享同一调用链路。
+
+  ## 新增能力
+
+  ### `@faapi/faapi` — `skillRegistry` + agentRegistry fallback
+  - 新增 [skillRegistry](https://github.com/faapi/faapi/blob/main/packages/faapi/src/injection/skillRegistry.ts) 模块,与 `agentRegistry` 物理隔离,承载 DB-driven skills(业务方在 plugin 里从数据库 / 外部源加载的 skill 元数据)
+  - 新增导出:`hydrateSkillRegistry` / `upsertSkill` / `removeSkill` / `getSkill` / `listSkills`(从 `@faapi/faapi` 顶层导出,业务方 plugin 直接 import)
+  - `agentRegistry` 查询函数(`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool`)在文件 registry 未命中(或被覆盖)时 fallback 到 `skillRegistry`,**优先级:skill 优先 → 文件型回退**
+  - `createAppBase` close 流程新增 `clearSkillRegistry` 清理,与 `clearAgentRegistry` 对称
+
+  ### 设计决策:为什么双 registry 而非同表合并
+  - `agentRegistry.hydrateAgentRegistry` 是**整体替换**语义——agent 清单来自编译期产物 `faapi-agents.js`,dev 模式 watcher 每次改文件都触发整体重新水合。若 DB skill 混在同一 registry 会被清空,业务方需要手动重塞,不可接受
+  - DB skill 是**运行时增量**——业务方监听 DB change stream 单条增删改,与"整体替换"语义天然冲突
+  - **同名 override**——业务方可在 DB 里覆盖文件型 agent 的 `systemPrompt` / `tools`,物理隔离比同表 name 冲突规则更清晰
+
+  ### DB skill 字段约定
+
+  DB 记录转 `AgentCore` 时:
+
+  - `name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?` 由 DB 字段直接映射（仅 LLM 可见字段）
+  - 无需 `filePath` / `hasRun` 等代码加载占位——这些属于 `AgentMetadata`，仅文件型 agent 实现，DB skill 不实现该接口
+
+  ### 接入示例
+
+  业务方写一个本地 plugin 桥接 DB → skillRegistry:
+
+  ```ts
+  // plugins/db-skills.ts
+  import { hydrateSkillRegistry, upsertSkill, removeSkill, type AgentCore } from '@faapi/faapi';
+  import type { FaapiPlugin } from '@faapi/faapi';
+
+  export default {
+    setup({ config }) {
+      config.lifecycle = config.lifecycle ?? {};
+      config.lifecycle.onReady = async () => {
+        // 启动期全量灌入
+        const skills = await loadAllSkillsFromDb();
+        hydrateSkillRegistry(skills.map(toCore));
+
+        // 运行时增量更新(监听 change stream)
+        watchSkillChanges({
+          onUpsert: (s) => upsertSkill(toCore(s)),
+          onRemove: (name) => removeSkill(name),
+        });
+      };
+    },
+  } satisfies FaapiPlugin;
+  ```
+
+  ## 兼容性
+  - 纯新增,无破坏性变更
+  - 未使用 DB skill 的项目无感知:skillRegistry 默认空,`getAgent` fallback 不命中,行为与改动前一致
+  - `@faapi/agent` 子包的 `Agent` 类、`AgentHandleFactory`、`injectParams` 都通过 `agentRegistry` 查询函数自动消费 fallback 结果,无需改造
+
+  详见 [AGENTS.md §5.6.3 双 registry 设计](https://github.com/faapi/faapi/blob/main/AGENTS.md) 与 [src/injection/skillRegistry.md](https://github.com/faapi/faapi/blob/main/packages/faapi/src/injection/skillRegistry.md)。
+
+- 修复错误处理语义 + 中间件加载可见性 + 响应格式集中化 + dev on demand 状态封装
+
+  ## 新增
+  - 新增 `PayloadTooLargeError`（413），由 `createServer` 的 `limitStreamSize` 在请求体超限时抛出。原先静默兜底为 500 `INTERNAL_ERROR`，语义错误——现经由 `formatErrorResponse` 命中 `PayloadTooLargeError` 分支，返回 413 + `PAYLOAD_TOO_LARGE` 业务码。
+  - 新增 `errorCodes.PAYLOAD_TOO_LARGE` 错误码常量。
+  - 新增 `response/responseFormatter.ts`：集中所有响应格式逻辑（`defaultOk` / `defaultFail` / `resolveOkFn` / `resolveFailFn` / `jsonOk` / `wrapOkResult` / `formatFailResponse` / `formatErrorResponse`），让 handler return 自动包裹、ctx.fail() 主动错误响应、formatErrorResponse 抛错兜底 三条路径共享同一套 ok/fail 函数。
+  - `compileOnDemand` 新增 `_resetDevOnDemandState()`（仅测试用），便于测试隔离。
+
+  ## 修复
+
+  ### `limitStreamSize` 健壮性
+  - `reader.read()` 抛错（客户端断开、底层流异常）现通过 `failStream` 兜底 `controller.error` + 释放 reader lock，避免悬挂引用
+  - 触发超限后通过统一的 `failStream` 路径处理，状态机一致
+  - 错误消息改为英文 + 字节数（之前是硬编码中文），便于 i18n
+  - `cancel` 回调释放上游 reader lock
+
+  ### 中间件加载失败可见性
+
+  `loadMiddlewaresFile` 在文件 import 抛错时（语法错误 / 路径不存在 / 运行时抛错）改为 `console.error` 输出原始错误堆栈，不再静默吞没——鉴权等关键中间件失效若完全无感知，等同于服务裸奔。仍返回空 bundle 保证服务可启动，业务方可由 `onError` 钩子感知，dev 期 watcher 自愈。
+
+  ### `formatErrorResponse` 现读取 `config.response.fail`
+
+  原先 `formatErrorResponse` 不读业务方自定义 fail 函数——`ctx.fail()` 主动错误响应用业务方 fail 函数,但 handler 抛错兜底走框架默认 fail,两条错误路径的响应格式可能漂移。现在 `formatErrorResponse(err, config?)` 接受可选 config 参数,与 `formatFailResponse` 共享同一套 fail 函数,业务方自定义 fail 函数自动应用到所有错误响应,无需在两处分别定义格式。`serverUtils.buildErrorResponse(err, config)` 跟着改签名,`createServer.sendErrorResponse` 传 `ctx.config`。
+
+  ## 重构
+
+  ### `formatErrorResponse` 统一用 `jsonOk` 构造响应
+
+  原先 4 个分支重复 `new Response(JSON.stringify(body), { status, headers: {...} })`，现统一改用 `responseFormatter.jsonOk(body, status, extraHeaders?)` 构造，新增 `PayloadTooLargeError` 分支共享同一构造路径。集中化后所有响应构造通过 `jsonOk` 完成，无重复内联代码。
+
+  ### `createServer.handleRequest` 拆分
+
+  原先 `handleRequest` 约 130 行承担请求转换 / 路由匹配 / 404-405 / 中间件加载 / 注入器合并 / handler 调用 / 错误兜底多职责。现拆分为 4 个职责单一的函数：
+
+  - `prepareRequest(req, config, bodyLimit)` —— Node IncomingMessage → Web Request + FaapiContext
+  - `resolveRouteOrThrow(routes, method, urlPath)` —— 路由匹配，未命中抛 `RouteNotFoundError` / `MethodNotAllowedError`
+  - `createRoutePipeline(...)` —— 路由执行管线（作为外层中间件链的 finalHandler）
+  - `sendSuccessResponse` / `sendErrorResponse` —— 响应发送 + `onError` 副作用触发
+
+  主流程 `handleRequest` 现仅 40 行，每个步骤带数字注释，可读性显著提升。
+
+  ### `createContext` / `invokeHandler` 共享 `responseFormatter`
+
+  原先 `invokeHandler.wrapResult` 和 `createContext.ok` / `ctx.fail` 各自实现默认 ok/fail 函数(`((d) => ({ data }))` 等),存在重复定义。现全部委托给 `responseFormatter.wrapOkResult` / `formatFailResponse`,确保响应格式在所有路径一致。
+
+  ### `compileOnDemand` 状态封装 + 并发去重（mutex）
+
+  原本散落的 4 个模块级可变状态(`devOnDemandEnabled` / `devDistDir` / `compiledFiles` / `generatedSchemas`)封装到 `DevOnDemandState` 单例对象,避免全局污染 + 便于测试隔离。同时新增 in-flight Promise Map 做 mutex:
+
+  - `ensureCompiled`: 同一 sourceAbsPath 的并发请求共享同一 in-flight Promise,避免重复触发 esbuild
+  - `ensureSchemaGenerated`: 同一 schemaPath 的并发请求同理
+  - watcher 触发 `clearCompiledFiles` / `clearGeneratedSchemas` 时同步清空 in-flight Map,避免旧 Promise 永久阻塞
+  - 失败语义: 第一个请求编译失败时,第二个请求 `await` 会捕获但不抛错,让自己按正常流程重试
+
+  ## 文档
+  - 新增 `src/response/responseFormatter.md` DDD 文档
+  - 更新 `src/errors/formatErrorResponse.md` 为 re-export 入口说明
+  - 更新 `src/response/README.md` 加入 responseFormatter 模块条目
+  - 更新 `src/cli/compileOnDemand.md` 补 DevOnDemandState 封装 + mutex 章节
+  - 更新 `AGENTS.md` 5.5 节加错误响应三路径流程图 + 自定义 Error 注意事项;6.2 节加 413 状态码 + 中间件加载失败语义
+
 ## 3.0.0
 
 ### Minor Changes

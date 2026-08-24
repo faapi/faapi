@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { loadMiddlewaresFile } from './loadMiddlewares';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,6 +20,34 @@ describe('loadMiddlewaresFile', () => {
     const bundle = await loadMiddlewaresFile(join(tempDir, 'middlewares.ts'));
     expect(bundle.middlewares).toEqual([]);
     expect(bundle.injectors).toEqual({});
+  });
+
+  it('加载失败时调用 console.error 输出原始错误（不再静默吞没）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const bundle = await loadMiddlewaresFile(join(tempDir, 'does-not-exist.ts'));
+      // 仍返回空 bundle，确保服务不崩溃
+      expect(bundle.middlewares).toEqual([]);
+      expect(bundle.injectors).toEqual({});
+      // 关键可见性：必须打印错误，否则鉴权中间件失效等同于裸奔
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const firstArg = errorSpy.mock.calls[0]?.[0];
+      expect(String(firstArg)).toContain('Failed to load middlewares');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('运行时抛错的中间件模块也走 console.error 兜底', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      writeFileSync(join(tempDir, 'middlewares.ts'), `throw new Error('middleware init boom');`);
+      const bundle = await loadMiddlewaresFile(join(tempDir, 'middlewares.ts'));
+      expect(bundle.middlewares).toEqual([]);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('加载有效的中间件数组（洋葱模型）', async () => {

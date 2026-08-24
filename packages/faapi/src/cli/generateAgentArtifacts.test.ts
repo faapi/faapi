@@ -49,7 +49,6 @@ describe('generateAgentArtifacts', () => {
         name: 'researcher',
         description: '研究助手',
         filePath: 'src/agents/researcher/handler.ts',
-        hasConfig: true,
         hasRun: false,
         systemPrompt: 'You are a researcher',
         tools: ['web-search.search'],
@@ -62,7 +61,6 @@ describe('generateAgentArtifacts', () => {
       expect(result[0]).toEqual({
         name: 'researcher',
         description: '研究助手',
-        hasConfig: true,
         hasRun: false,
         systemPrompt: 'You are a researcher',
         tools: ['web-search.search'],
@@ -77,13 +75,11 @@ describe('generateAgentArtifacts', () => {
       const meta: AgentMetadata = {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasConfig: false,
         hasRun: true,
         // description / systemPrompt / tools / agents / model / maxTurns 均为 undefined
       };
       const result = serializeAgents([meta], 'dist');
       expect(result[0].name).toBe('researcher');
-      expect(result[0].hasConfig).toBe(false);
       expect(result[0].hasRun).toBe(true);
       expect(result[0].filePath).toBe('dist/agents/researcher/handler.js');
       expect(result[0].description).toBeUndefined();
@@ -98,7 +94,6 @@ describe('generateAgentArtifacts', () => {
       const meta: AgentMetadata = {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasConfig: true,
         hasRun: false,
       };
       const result = serializeAgents([meta], '.faapi');
@@ -109,7 +104,6 @@ describe('generateAgentArtifacts', () => {
       const meta: AgentMetadata = {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasConfig: true,
         hasRun: false,
       };
       const result = serializeAgents([meta]);
@@ -122,7 +116,6 @@ describe('generateAgentArtifacts', () => {
           name: 'researcher',
           description: '研究助手',
           filePath: 'src/agents/researcher/handler.ts',
-          hasConfig: true,
           hasRun: false,
           model: 'gpt-4',
         },
@@ -130,7 +123,6 @@ describe('generateAgentArtifacts', () => {
           name: 'writer',
           description: '写作助手',
           filePath: 'src/agents/writer/handler.ts',
-          hasConfig: true,
           hasRun: true,
           maxTurns: 5,
         },
@@ -151,7 +143,6 @@ describe('generateAgentArtifacts', () => {
         {
           name: 'researcher',
           description: '研究助手',
-          hasConfig: true,
           hasRun: false,
           systemPrompt: 'You are a researcher',
           tools: ['web-search.search'],
@@ -167,7 +158,6 @@ describe('generateAgentArtifacts', () => {
         name: 'researcher',
         description: '研究助手',
         filePath: 'dist/agents/researcher/handler.js',
-        hasConfig: true,
         hasRun: false,
         systemPrompt: 'You are a researcher',
         tools: ['web-search.search'],
@@ -182,7 +172,6 @@ describe('generateAgentArtifacts', () => {
       const serialized = [
         {
           name: 'researcher',
-          hasConfig: false,
           hasRun: true,
           filePath: 'dist/agents/researcher/handler.js',
           // description / systemPrompt / tools / agents / model / maxTurns 缺失
@@ -190,7 +179,6 @@ describe('generateAgentArtifacts', () => {
       ] as unknown as SerializedAgentRecord[];
       const hydrated = hydrateAgents(serialized);
       expect(hydrated[0].name).toBe('researcher');
-      expect(hydrated[0].hasConfig).toBe(false);
       expect(hydrated[0].hasRun).toBe(true);
       expect(hydrated[0].description).toBeUndefined();
       expect(hydrated[0].systemPrompt).toBeUndefined();
@@ -206,7 +194,6 @@ describe('generateAgentArtifacts', () => {
           name: 'researcher',
           description: '研究助手',
           filePath: 'src/agents/researcher/handler.ts',
-          hasConfig: true,
           hasRun: false,
           systemPrompt: 'prompt',
           model: 'gpt-4',
@@ -214,7 +201,6 @@ describe('generateAgentArtifacts', () => {
         {
           name: 'writer',
           filePath: 'src/agents/writer/handler.ts',
-          hasConfig: false,
           hasRun: true,
         },
       ];
@@ -240,7 +226,6 @@ describe('generateAgentArtifacts', () => {
         {
           name: 'researcher',
           description: '研究助手',
-          hasConfig: true,
           hasRun: false,
           systemPrompt: 'You are a researcher',
           model: 'gpt-4',
@@ -307,7 +292,6 @@ export const config = {
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasConfig: true,
           hasRun: false,
         },
       ];
@@ -318,7 +302,6 @@ export const config = {
       expect(metadata).toHaveLength(1);
       expect(metadata[0].name).toBe('researcher');
       expect(metadata[0].description).toBe('研究助手');
-      expect(metadata[0].hasConfig).toBe(true);
       expect(metadata[0].hasRun).toBe(false);
       expect(metadata[0].systemPrompt).toBe('You are a researcher');
       expect(metadata[0].tools).toEqual(['web-search.search']);
@@ -353,7 +336,6 @@ export async function run(ctx) { return 'done'; }
         {
           name: 'writer',
           filePath: 'src/agents/writer/handler.ts',
-          hasConfig: false,
           hasRun: true,
         },
       ];
@@ -362,7 +344,6 @@ export async function run(ctx) { return 'done'; }
 
       expect(metadata[0].name).toBe('writer');
       expect(metadata[0].description).toBe('写作助手');
-      expect(metadata[0].hasConfig).toBe(false);
       expect(metadata[0].hasRun).toBe(true);
       // 无 config 块,systemPrompt 等字段为 undefined
       expect(metadata[0].systemPrompt).toBeUndefined();
@@ -380,7 +361,6 @@ export async function run(ctx) { return 'done'; }
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasConfig: true,
           hasRun: false,
         },
       ];
@@ -414,7 +394,6 @@ export const config = { systemPrompt: 'prompt', model: 'gpt-4' };
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasConfig: true,
           hasRun: false,
         },
       ];
@@ -460,13 +439,11 @@ export async function run(ctx) { return 'done'; }
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasConfig: true,
           hasRun: false,
         },
         {
           name: 'writer',
           filePath: 'src/agents/writer/handler.ts',
-          hasConfig: false,
           hasRun: true,
         },
       ];
@@ -483,7 +460,6 @@ export async function run(ctx) { return 'done'; }
       // metadata 各自字段正确
       expect(metadata).toHaveLength(2);
       expect(metadata[0].name).toBe('researcher');
-      expect(metadata[0].hasConfig).toBe(true);
       expect(metadata[0].model).toBe('gpt-4');
       expect(metadata[1].name).toBe('writer');
       expect(metadata[1].hasRun).toBe(true);
@@ -501,7 +477,6 @@ export async function run(ctx) { return 'done'; }
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasConfig: true,
           hasRun: false,
         },
       ];
@@ -528,7 +503,6 @@ export const config = { systemPrompt: 'x' };
         {
           name: 'researcher', // 目录推导名
           filePath: 'src/agents/researcher/handler.ts',
-          hasConfig: true,
           hasRun: false,
         },
       ];

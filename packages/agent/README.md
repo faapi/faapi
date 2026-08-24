@@ -6,7 +6,7 @@
 
 - **LLM Provider 抽象**（Phase 3.2）—— 统一接口对接 OpenAI / Anthropic 等 provider
 - **ReAct 循环引擎**（Phase 3.3）—— LLM 输出 → 调用 tool / 递归 sub-agent → 把结果回灌给 LLM，循环直到最终回答
-- **Agent 类**（Phase 3.4）—— 按 `agent.name` 查找元数据、加载 handler、组装 agent.tools + defaultTools + sub-agent，提供 `run` / `stream` / `asTool`
+- **Agent 类**（Phase 3.4）—— 按 `agent.name` 查找元数据、加载 handler、组装 agent.tools + sub-agent，提供 `run` / `stream` / `asTool`
 - **递归防护** —— `maxTurns` + `maxAgentDepth`（来自 `config.agent` 或 agent 自身 `config` 块）
 
 ## 与 faapi 核心的关系

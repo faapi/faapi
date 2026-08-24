@@ -27,34 +27,76 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  * 详见 [agentHandle.md](./agentHandle.md)。
  */
 
+/**
+ * `agent.run` / `agent.stream` 的 options 参数——临时覆盖本次调用的 LLM 配置
+ *
+ * 所有字段可选,不传或 `undefined` 时回落到下一优先级（agent 元数据 → 全局配置）。
+ * **不修改 agent 自身状态**——下一次调用仍用默认配置。
+ *
+ * `model` 是字符串 key,支持三种形式（解析规则见 [agentHandle.md](./agentHandle.md) 的
+ * 「`options.model` 字符串 key 解析规则」）：
+ * - llms 的 key 精确匹配（如 `'openai'`）
+ * - `provider/model` 一体化（如 `'openai/gpt-4o'`）
+ * - 纯 model 名（如 `'gpt-4o'`）—— 在所有 provider 的 `models` 里查找,唯一时切到对应 provider
+ *
+ * 优先级（高 → 低）：`options` > agent 元数据（`config.model` / `config.maxTurns`）> 全局
+ * `AgentRuntimeConfig` / `defaultLlm` provider。详见 [agentHandle.md](./agentHandle.md) 的
+ * Run-level 覆盖优先级表。
+ *
+ * @example
+ * ```ts
+ * // 按请求切模型（纯 model 名,在 llms 里唯一时切到对应 provider）
+ * await agent.run(input, { model: 'gpt-4o-mini' });
+ *
+ * // provider/model 一体化形式（精确切换）
+ * await agent.run(input, { model: 'anthropic/claude-3-5-sonnet' });
+ * ```
+ */
+export interface AgentRunOptions {
+  /**
+   * 切换 provider + model 的字符串 key（支持 llms key / `provider/model` / 纯 model 名）
+   *
+   * 不传时用 `defaultLlm` provider + agent 元数据 `config.model`。
+   */
+  model?: string;
+  /** 采样温度（透传给 LLM API,覆盖 provider/model 级 temperature） */
+  temperature?: number;
+  /** 最大生成 token 数（透传给 LLM API） */
+  maxTokens?: number;
+}
+
 export interface AgentHandle {
   /**
    * 非流式执行 agent
    *
-   * 组装 ReAct 循环 config（systemPrompt + tools + maxTurns）→ 调
+   * 组装 ReAct 循环 config（systemPrompt + tools + maxTurns + 应用 `options` 覆盖）→ 调
    * [reactLoop](./reactLoop.md) → 返回最终结果。
    *
    * @param input 用户输入文本
+   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens
+   *                （不修改 agent 自身状态,详见 {@link AgentRunOptions}）
    * @returns 循环结果（content + messages + turns + stopReason + usage）
    * @throws {AgentError} agent 未注册
    * @throws {ReactLoopError} 超出 maxTurns
    * @throws {Error} LLM provider 抛错时立即传播
    */
-  run(input: string): Promise<ReactLoopResult>;
+  run(input: string, options?: AgentRunOptions): Promise<ReactLoopResult>;
 
   /**
    * 流式执行 agent
    *
-   * 组装 config → 调 [reactLoopStream](./reactLoop.md) → yield 流式 chunk。
+   * 组装 config（应用 `options` 覆盖）→ 调 [reactLoopStream](./reactLoop.md) → yield 流式 chunk。
    * 适用于 LLM token 流式输出、tool 调用过程展示等场景。
    *
    * @param input 用户输入文本
+   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens
+   *                （不修改 agent 自身状态,详见 {@link AgentRunOptions}）
    * @yields 流式 chunk（deltaContent / toolCall / toolResult / done）
    * @throws {AgentError} agent 未注册
    * @throws {ReactLoopError} 超出 maxTurns
    * @throws {Error} LLM provider 抛错时立即传播
    */
-  stream(input: string): AsyncIterable<ReactLoopStreamChunk>;
+  stream(input: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
 
   /**
    * 把自身包装为 `AgentToolDescriptor` 供 LLM 当 tool 调用

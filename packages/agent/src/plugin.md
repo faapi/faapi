@@ -21,9 +21,21 @@ import type { FaapiConfig } from '@faapi/faapi';
 
 export default {
   agent: {
-    llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+    llms: {
+      openai: {
+        provider: 'openai',
+        apiKey: process.env.OPENAI_API_KEY,
+        baseURL: 'https://api.openai.com/v1', // 可选,默认 OpenAI 官方
+        models: {
+          'gpt-4o': {},
+          'gpt-4o-mini': { temperature: 0.5 },
+        },
+      },
+    },
+    defaultLlm: 'openai', // 可选,未设置时用 llms 第一个 key
     defaultAgent: 'researcher',
     maxTurns: 10,
+    maxAgentDepth: 3,
   },
   plugins: ['@faapi/agent'],
 } satisfies FaapiConfig;
@@ -47,10 +59,11 @@ export function POST(agent: AgentHandle, body: { input: string }) {
 PluginContext { config.agent, rootDir }
          ↓
 1. readAgentConfig(ctx) → AgentConfig | undefined
-2. 检查 agentConfig.llm / agentConfig.defaultAgent → 缺失时 warn + return
-3. createProvider(agentConfig.llm) → LLMProvider 实例（单例）
-4. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth / defaultTools）
-5. registerAgentHandleFactory(() => new Agent({ provider, agentName, rootDir, config, ...accessors }))
+2. 检查 agentConfig.llms / agentConfig.defaultAgent → 缺失时 warn + return
+3. 遍历 agentConfig.llms → 每项调 createProvider → Map<providerKey, LLMProvider>
+4. 读 agentConfig.defaultLlm → defaultProvider（未设时用 llms 第一个 key）
+5. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
+6. registerAgentHandleFactory(() => new Agent({ providers, defaultProvider, llms, defaultLlm, agentName, rootDir, config, ...accessors }))
 ```
 
 ### 工厂函数
@@ -65,18 +78,22 @@ const resolveToolSchema = (tool) => resolveToolSchemaImpl(tool, rootDir);
 
 registerAgentHandleFactory(() => {
   return new Agent({
-    provider,                    // 闭包捕获（setup 时创建,单例）
+    providers,                   // 闭包捕获（setup 时创建,Map<providerKey, LLMProvider>）
+    defaultProvider,             // 闭包捕获（默认 provider 实例）
+    llms,                        // 闭包捕获（agentConfig.llms,供 Agent 按名查找 LlmConfig）
+    defaultLlm,                  // 闭包捕获（默认 provider key）
     agentName: defaultAgent,     // 闭包捕获（config.agent.defaultAgent）
     rootDir,                     // 闭包捕获（ctx.rootDir）
-    config: runtimeConfig,      // 闭包捕获（maxTurns / maxAgentDepth / defaultTools）
+    config: runtimeConfig,      // 闭包捕获（maxTurns / maxAgentDepth）
     getAgent,                    // 从 @faapi/faapi import（单例模块）
+    getAgentEntry,               // 从 @faapi/faapi import（用于加载 handler.js 执行 run 函数）
     getTool,
     resolveAgentTools,
     resolveSubAgents,
     loadToolModule: (filePath, functionName) =>
       loadToolModule(filePath, functionName, rootDir),  // 包装注入 rootDir
-    loadAgentModule: (filePath, hasConfig, hasRun) =>
-      loadAgentModule(filePath, hasConfig, hasRun, rootDir),  // 包装注入 rootDir
+    loadAgentModule: (filePath, hasRun) =>
+      loadAgentModule(filePath, hasRun, rootDir),  // 包装注入 rootDir
     resolveToolSchema,           // setup 内创建的偏函数（工厂内复用）
   });
 });
@@ -84,7 +101,7 @@ registerAgentHandleFactory(() => {
 
 **为什么 Agent 每次请求新建**：Agent 构造轻量（仅存 deps）,实际 LLM 调用在 `run` / `stream` 时才发生。每次请求新建避免跨请求状态泄漏（如 conversation history）。
 
-**为什么 provider 是单例**：provider 持有 HTTP 连接池 / API key,创建成本高,所有请求共享。工厂闭包捕获 setup 时创建的 provider 实例。
+**为什么 provider 是单例**：provider 持有 HTTP 连接池 / API key,创建成本高,所有请求共享。工厂闭包捕获 setup 时创建的 provider Map。
 
 ### 加载器 rootDir 包装
 
@@ -101,8 +118,10 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 | 缺失项 | 行为 |
 | --- | --- |
 | `config.agent` 整块未设置 | warn + return,不注册工厂 |
-| `config.agent.llm` 未设置 | warn + return,不注册工厂 |
+| `config.agent.llms` 未设置 | warn + return,不注册工厂 |
 | `config.agent.defaultAgent` 未设置 | warn + return,不注册工厂 |
+| `config.agent.defaultLlm` 未设置 | 正常注册,用 `llms` 第一个 key 作默认 |
+| `config.agent.defaultLlm` 指向不存在的 key | warn + return,不注册工厂 |
 | `config.agent.maxTurns` 未设置 | 正常注册,Agent 用 agent 自身 maxTurns |
 | `config.agent.maxAgentDepth` 未设置 | 正常注册,Agent 用默认值 3 |
 

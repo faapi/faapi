@@ -11,9 +11,9 @@
 - 路由 handler 调用前分析参数
 - 决定需要准备哪些注入值
 - 提取类型信息用于校验
-- 识别 `agent` / `agents` 参数名，交由 [injectParams](./injectParams.md) 注入 agent 元数据
+- 识别 `agent` / `agents` 参数名，交由 [injectParams](./injectParams.md) 注入 agent handle / 元数据列表
 
-## 注入类型映射（Phase 2.3 扩展）
+## 注入类型映射
 
 | 参数名 | 注入类型 | 说明 |
 | --- | --- | --- |
@@ -28,15 +28,15 @@
 | `ua` | ua | User-Agent |
 | `files` | files | multipart 文件列表 |
 | `fields` | fields | multipart 表单字段 |
-| `agent` | agent | 默认 agent（Phase 2.4 实现注入值） |
-| `agents` | agents | 所有已注册 agent 的元数据列表（Phase 2.3） |
+| `agent` | agent | 默认 agent 的 `AgentHandle`（由 [agentHandle](./agentHandle.md) 工厂注入） |
+| `agents` | agents | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`） |
 | 其他 | unknown | 不注入（由注入器提供） |
 
-`agent` / `agents` 注入类型在 Phase 2.3 添加到 `PARAM_TYPE_MAP`，识别参数名后由 [injectParams](./injectParams.md) 的内置注入处理：
-- `agents` → 返回 `listAgents()`（[agentRegistry](./agentRegistry.md) 中所有 agent 元数据）
-- `agent` → 返回 `undefined`（Phase 2.4 实现 `config.defaultAgent` 后增强，注入默认 agent 元数据）
+`agent` / `agents` 注入类型在 `PARAM_TYPE_MAP` 中映射，识别参数名后由 [injectParams](./injectParams.md) 的内置注入处理：
+- `agents` → 返回 `listAgents()`（[agentRegistry](./agentRegistry.md) 中所有 agent 的 `AgentCore[]`，合并文件型 + DB skill）
+- `agent` → 返回 `getAgentHandle(ctx)`（通过 [agentHandle](./agentHandle.md) 工厂机制注入 `AgentHandle`，含可调用 `run`/`stream`/`asTool`）
 
-Phase 3.x 的 `@faapi/agent` 插件通过注入器机制增强为 `AgentHandle`（含 `metadata` + 可调用 `run`），覆盖内置的元数据注入。
+`@faapi/agent` 插件在 setup 时调 `registerAgentHandleFactory` 注册工厂,工厂在每次请求时构造 [Agent](../../agent/src/agent.md) 实例作为 `AgentHandle` 返回。核心提供注册点,插件提供工厂,不通过注入器机制。
 
 ## 相关模块
 

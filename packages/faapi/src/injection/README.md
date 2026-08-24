@@ -17,8 +17,8 @@ faapi 的核心设计是"函数即接口"。框架根据 handler 参数名自动
 | `ua` | ua | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） |
 | `files` | files | multipart 上传文件列表（UploadedFile[]） |
 | `fields` | fields | multipart 表单字段（Record<string, string>） |
-| `agent` | agent | 默认 agent 元数据（Phase 2.4 实现 `config.defaultAgent`，暂返回 `undefined`） |
-| `agents` | agents | 所有已注册 agent 的元数据列表（`agentRegistry.listAgents()`，Phase 2.3） |
+| `agent` | agent | 默认 agent 元数据（`config.defaultAgent` 对应的 `AgentCore`，由 `@faapi/agent` 插件工厂注入；未启用插件或未配置时为 `undefined`） |
+| `agents` | agents | 所有已注册 agent 的 `AgentCore` 列表（`agentRegistry.listAgents()`，合并文件型 + DB-driven skill，按 `name` 去重） |
 | 其他 | unknown | 不注入（由中间件 resolve 提供） |
 
 ## 模块
@@ -29,7 +29,8 @@ faapi 的核心设计是"函数即接口"。框架根据 handler 参数名自动
 | [analyzeInjection.ts](./analyzeInjection.md) | AST 参数注入分析 |
 | [injectParams.ts](./injectParams.md) | 参数注入执行（含 `agents` 元数据注入，Phase 2.3） |
 | [toolRegistry.ts](./toolRegistry.md) | tool 注册表单例（`faapi-tools.js` 水合 + 按名查询） |
-| [agentRegistry.ts](./agentRegistry.md) | agent 注册表单例（`faapi-agents.js` 水合 + `asTool` / `resolveAgentTools` / `resolveSubAgents`） |
+| [agentRegistry.ts](./agentRegistry.md) | agent 注册表单例（`faapi-agents.js` 水合 + `asTool` / `resolveAgentTools` / `resolveSubAgents` + skill fallback） |
+| [skillRegistry.ts](./skillRegistry.md) | 运行时动态 skill 注册表（业务方 plugin 接入 DB-driven skills；agentRegistry 查询时 fallback 发现） |
 
 ## 边界
 

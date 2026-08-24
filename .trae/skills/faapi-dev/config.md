@@ -40,11 +40,17 @@ export default {
   http2: { key: '/path/to/key.pem', cert: '/path/to/cert.pem' },
   // agent 子系统配置 → [agent.md](./agent.md)
   agent: {
-    llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+    llms: {
+      openai: {
+        provider: 'openai',
+        apiKey: process.env.OPENAI_API_KEY,
+        models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
+      },
+    },
+    defaultLlm: 'openai',
     defaultAgent: 'researcher',
     maxTurns: 10,
     maxAgentDepth: 3,
-    defaultTools: ['weather.getWeather'],
   },
 
   // 自定义业务配置(任意 key)
@@ -114,17 +120,24 @@ agent 子系统需配合 `@faapi/agent` 插件使用（详见 [agent.md](./agent
 ```ts
 export default {
   agent: {
-    llm: {                                    // LLM 提供方配置
-      provider: 'openai',                     // 目前支持 'openai'（OpenAI 兼容 API）
-      apiKey: process.env.OPENAI_API_KEY,     // 从 .env 读取
-      model: 'gpt-4o',                        // 默认模型
-      // baseURL: 'https://api.openai.com/v1', // 可选，OpenAI 兼容 API（Azure / 中转服务）
-      // temperature: 0.7,                     // 透传给 LLM API
+    // llms 是嵌套级联结构：provider 在外层,model 挂在 models 下
+    llms: {
+      openai: {
+        provider: 'openai',                   // 目前支持 'openai'（OpenAI 兼容 API）
+        apiKey: process.env.OPENAI_API_KEY,    // 从 .env 读取
+        baseURL: 'https://api.openai.com/v1', // 可选，OpenAI 兼容 API（Azure / 中转服务）
+        // provider 级透传字段（如 temperature）,所有 model 共享
+        temperature: 0.7,
+        models: {
+          'gpt-4o': {},                       // 用 provider 级默认
+          'gpt-4o-mini': { temperature: 0.5 }, // model 级覆盖同名字段
+        },
+      },
     },
+    defaultLlm: 'openai',                     // 默认 provider key（未设时用 llms 第一个 key）
     defaultAgent: 'researcher',               // handler 的 `agent` 参数注入读取此值
     maxTurns: 10,                             // 默认最大对话轮数（agent 自身 config.maxTurns 优先）
     maxAgentDepth: 3,                         // agent 调用 agent 的最大递归深度（默认 3）
-    defaultTools: ['weather.getWeather'], // 所有 agent 共享的 tool（与 agent 自身 tools 合并）
   },
   plugins: ['@faapi/agent'],                  // 必须显式声明插件
 } satisfies FaapiConfig;
@@ -133,13 +146,15 @@ export default {
 | 字段 | 缺失行为 |
 |------|---------|
 | `agent` 整块 | 不注册 agent handle 工厂，`agent` 参数注入 `undefined` |
-| `agent.llm` | 不注册工厂，打印警告 |
+| `agent.llms` | 不注册工厂，打印警告 |
+| `agent.defaultLlm` | 用 `Object.keys(llms)[0]` |
 | `agent.defaultAgent` | 不注册工厂，打印警告 |
 | `agent.maxTurns` | 用 agent 自身 `config.maxTurns`，都无时用框架默认 |
 | `agent.maxAgentDepth` | 用默认值 3 |
-| `agent.defaultTools` | 不追加共享 tool |
 
-agent 自身的 `config` 块字段（`systemPrompt` / `tools` / `agents` / `model` / `maxTurns`）优先于全局配置，详见 [agent.md](./agent.md)。
+**嵌套级联**：provider 级字段（`apiKey` / `baseURL` / `temperature` 等）共享给所有 model；model 级字段在 `models[modelName]` 里覆盖 provider 级同名字段。空对象 `{}` 表示用 provider 级默认。
+
+agent 自身的 `config` 块字段（`systemPrompt` / `tools` / `agents` / `model` / `maxTurns`）优先于全局配置，详见 [agent.md](./agent.md)。运行时切换 provider/model 用 `agent.run(input, { model: 'anthropic/claude-3-5-sonnet' })` 字符串 key（支持三种形式）。
 
 ## 自定义业务配置 (ctx.config)
 

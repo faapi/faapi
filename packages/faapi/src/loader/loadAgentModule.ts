@@ -11,27 +11,19 @@ import {
 /**
  * 加载后的 agent 模块
  *
- * 与 [ToolModule](./loadToolModule.md) 对称——agent 不像 tool 只有一个 handler 函数,
- * 它导出 `config` 块（对象，含运行时可能动态求值的字段）和可选的 `run` 函数。
+ * 与 [ToolModule](./loadToolModule.md) 对称——agent 的代码本体只有可选的 `run` 函数
+ * (自定义 agent 运行逻辑,替代默认 reactLoop)。
  *
- * - `config`：agent 配置对象（含 systemPrompt / tools / agents / model / maxTurns 等，
- *   以及任何非字面量字段——AST 阶段仅提取字面量，动态值需运行时加载）
- * - `run`：自定义 agent 运行逻辑（可选，替代默认 reactLoop）
+ * > `config` 字段已移除——`AgentMetadata` 已含 AST 提取的字面量字段
+ * > (systemPrompt / tools / agents / model / maxTurns),`AgentModule.config`
+ * > 原本用于运行时拿到完整 config 对象(含动态字段),但 `executeSubAgent`
+ * > 拿到 `mod.config` 后从不读取(run 函数在自己模块内直接引用 config 变量),
+ * > 属于死链路,故移除。
  *
- * `AgentMetadata`（从 `faapi-agents.js` 水合）已含字面量字段，`loadAgentModule`
- * 用于在运行时拿到完整 config 对象（含动态字段）和 run 函数引用。
+ * `AgentMetadata`（从 `faapi-agents.js` 水合）已含字面量字段,本模块仅用于
+ * 在运行时拿到 `run` 函数引用。
  */
 export interface AgentModule {
-  /**
-   * agent 配置对象（含运行时字段）
-   *
-   * `hasConfig` 为 true 时一定存在；为 false 时为 `undefined`。
-   * 可能是对象字面量（`export const config = {...}`）或函数返回值（`export function config() { return {...} }`）。
-   *
-   * 函数形式：本模块调用 `config()` 拿到返回值（无参调用，与 AST 阶段的字面量提取不同——
-   * 运行时可拿到动态求值结果）。
-   */
-  config: Record<string, unknown> | undefined;
   /**
    * 自定义 agent 运行函数（可选）
    *
@@ -42,7 +34,7 @@ export interface AgentModule {
 }
 
 /**
- * 动态 import agent handler 文件并提取 `config` 和 `run` 导出
+ * 动态 import agent handler 文件并提取 `run` 导出
  *
  * Dev 按需编译模式（Vite 风格）：先 `ensureCompiled` 确保产物存在再 import,
  * 避免 import 不存在的文件污染 Vite SSR 内部状态（详见 [loadRouteModule](./loadRouteModule.md)）。
@@ -50,22 +42,19 @@ export interface AgentModule {
  *
  * 与 [loadToolModule](./loadToolModule.md) 的差异：
  * - tool 按 `functionName` 提取单个函数（校验为 function）
- * - agent 提取 `config`（对象或函数返回对象）和 `run`（函数，可选）
- * - agent 的 config 可能为函数形式（`export function config() { return {...} }`），
- *   本模块自动调用拿到返回值（与 AST 阶段仅提字面量不同——运行时拿动态值）
+ * - agent 只提取 `run`（函数，可选）——config 块字段已在 AST 阶段提取为字面量,
+ *   运行时无需再加载 config 对象
  *
  * 错误传递：
  * - 编译失败 → 抛 "Failed to compile agent module"
  * - import 失败 → 抛 "Failed to load agent module"
  *
  * @param filePath agent handler 文件的绝对路径（产物形式，如 `dist/agents/researcher/handler.js`）
- * @param hasConfig 是否应提取 config 导出（来自 `AgentMetadata.hasConfig`）
  * @param hasRun 是否应提取 run 导出（来自 `AgentMetadata.hasRun`）
  * @param rootDir 项目根目录（按需编译模式用，可选）
  */
 export async function loadAgentModule(
   filePath: string,
-  hasConfig: boolean,
   hasRun: boolean,
   rootDir?: string,
 ): Promise<AgentModule> {
@@ -96,34 +85,6 @@ export async function loadAgentModule(
     throw new Error(`Failed to load agent module "${filePath}": ${reason}`, { cause: err });
   }
 
-  // 提取 config：hasConfig 为 true 时解析,失败抛错
-  let config: Record<string, unknown> | undefined;
-  if (hasConfig) {
-    const configExport = resolveExport(module, 'config');
-    if (configExport === undefined) {
-      throw new Error(
-        `Agent module "${filePath}" does not export "config" (hasConfig=true but export missing).`,
-      );
-    }
-    if (typeof configExport === 'function') {
-      // 函数形式：export function config() { return {...} } / export const config = () => ({...})
-      const returned = (configExport as (...args: unknown[]) => unknown)();
-      if (returned === null || typeof returned !== 'object') {
-        throw new Error(
-          `Agent module "${filePath}" config() did not return an object (got ${returned === null ? 'null' : typeof returned}).`,
-        );
-      }
-      config = returned as Record<string, unknown>;
-    } else if (typeof configExport === 'object' && configExport !== null) {
-      // 对象字面量：export const config = {...}
-      config = configExport as Record<string, unknown>;
-    } else {
-      throw new Error(
-        `Agent module "${filePath}" config export must be an object or function, got ${typeof configExport}.`,
-      );
-    }
-  }
-
   // 提取 run：hasRun 为 true 时解析并校验为 function,失败抛错
   let run: ((...args: unknown[]) => unknown) | undefined;
   if (hasRun) {
@@ -137,5 +98,5 @@ export async function loadAgentModule(
     run = runExport as (...args: unknown[]) => unknown;
   }
 
-  return { config, run };
+  return { run };
 }

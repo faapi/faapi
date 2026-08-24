@@ -378,14 +378,25 @@ export default {
   // agent 子系统全局配置（Phase 2.4，所有字段均可选）
   // agent 自身 config.maxTurns / config.model 优先于全局配置
   agent: {
-    llm: {                                       // LLM 提供方（Phase 3.2 由 @faapi/agent 插件读取）
-      provider: 'openai',
-      apiKey: process.env.OPENAI_API_KEY,
-      model: 'gpt-4o',
-      baseURL: 'https://api.openai.com/v1',     // 可选，默认 OpenAI 官方
+    // LLM provider 配置（嵌套级联：key 是 provider 名，models 挂在该 provider 下）
+    llms: {
+      openai: {
+        provider: 'openai',
+        apiKey: process.env.OPENAI_API_KEY,
+        baseURL: 'https://api.openai.com/v1',   // 可选，默认 OpenAI 官方
+        models: {
+          'gpt-4o': {},                          // 用 provider 级默认
+          'gpt-4o-mini': { temperature: 0.5 },   // 覆盖 temperature
+        },
+      },
+      anthropic: {
+        provider: 'anthropic',
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        models: { 'claude-3-5-sonnet': {} },
+      },
     },
+    defaultLlm: 'openai',                        // 默认 provider key（不传用 llms 第一个）
     defaultAgent: 'researcher',                  // 默认 agent 名（agent 参数注入读取此值）
-    defaultTools: ['weather.getWeather'], // 默认 tool（与 agent 显式声明的 tools 合并）
     maxTurns: 10,                                // 默认最大对话轮数
     maxAgentDepth: 3,                            // agent 调用 agent 的最大递归深度
   },
@@ -466,7 +477,21 @@ export function GET(ctx) {
 
 `ctx.sse()` 返回 `SseWriter`，handler 通过 `sse.send({ data, event?, id?, retry? })` 推送事件，`sse.close()` 关闭流。框架自动构造 `text/event-stream` Response，与 `ctx.json`/`ctx.html` 互斥。`SseWriter` 提供 `aborted` 属性检测客户端断开；handler 返回或抛错时框架自动 close 兜底，避免连接泄漏。详见 `src/runtime/sse.md`。
 
-handler 抛错时由内置 `formatErrorResponse` 兜底（参考 `src/errors/formatErrorResponse.ts`）；建议业务方在全局中间件中用 `try/catch` 捕获并通过 `ctx.fail()` 返回业务化错误响应。
+handler 抛错时由内置 `formatErrorResponse` 兜底（参考 `src/response/responseFormatter.ts`）；建议业务方在全局中间件中用 `try/catch` 捕获并通过 `ctx.fail()` 返回业务化错误响应。
+
+**错误响应的三条路径**（共享 `config.response.fail` 同一包装函数，格式一致）：
+
+```
+handler `return ctx.fail({...})`         → formatFailResponse        → Response（主动错误，原样透传不包裹）
+handler `return data` 或非 Response 值    → wrapOkResult + toResponse → 自动 `{ data }` 包装（成功路径）
+handler `throw err`                       → formatErrorResponse      → 走 fail 函数包装为 `{ error: {...} }`
+                                            ↑
+                                            └─ 业务方自定义 Error 子类（非 FaapiError）会被归到 500 INTERNAL_ERROR，
+                                               丢失业务错误码——若需保留业务码，应继承 FaapiError 或在全局中间件
+                                               try/catch next() 后用 ctx.fail() 显式返回。
+```
+
+> `formatErrorResponse` 现在读取 `ctx.config.response.fail` 自定义包装函数，确保抛错兜底与 `ctx.fail()` 主动错误响应的格式完全一致。业务方无需在两处分别定义格式。
 
 ### 5.6 设计决策
 
@@ -504,6 +529,31 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 
 `loadMergedMiddlewares` 单文件加载带缓存（`getCachedMiddlewares` / `setCachedMiddlewares`），多文件合并语义：子级中间件追加在父级之后（洋葱模型内层），子级注入器覆盖父级同名注入器。
 
+#### 5.6.3 双 registry 设计（agentRegistry + skillRegistry）
+
+agent 元数据有两个来源、两种生命周期：
+
+| 来源 | registry | 注入时机 | API |
+|------|-----------|----------|-----|
+| 文件型 agent（`src/agents/<name>/handler.ts`） | `agentRegistry` | `createAppBase` 启动期 / `reloadAgents` dev 热替换 | `hydrateAgentRegistry` 整体替换 |
+| DB-driven skill（业务方 plugin 从 DB / 外部源加载） | `skillRegistry` | 业务方 `lifecycle.onReady` + 运行时增量 | `hydrateSkillRegistry` / `upsertSkill` / `removeSkill` |
+
+物理隔离的必要性：
+
+- **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 清单来自编译期产物，reload 时整体重新生成，**dev 模式 watcher 每次改文件都触发 reload**，业务方 DB skill 若混在同一 registry 会被清空，需要业务方手动重新塞，不可接受
+- **DB skill 是运行时增量**——业务方监听 DB change stream 单条增删改，与"整体替换"语义天然冲突
+- **同名 override 能力**——业务方可在 DB 里覆盖文件型 agent 的 `systemPrompt` / `tools`，物理隔离比同表 name 冲突规则更清晰
+
+`agentRegistry.getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 在文件 registry 未命中（或被覆盖）时 fallback 到 `skillRegistry`，**优先级：skill 优先 → 文件型回退**。`@faapi/agent` 子包的 `Agent` 类、`AgentHandleFactory`、`injectParams` 都自动消费 fallback 结果，无需改造。
+
+DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetadata` 接口）：
+- 只填 LLM 可见字段：`name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?`
+- 无需 `filePath` / `hasRun` / `hasConfig` 占位——这些字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）
+- `agentRegistry.getAgent` fallback 到 skillRegistry 时返回 `AgentCore`，与文件型 agent 同构合并
+- DB skill 不支持自定义 `run` 函数（多步 prompt 串联）——覆盖 80% 的"配置 + tool 组合"场景,需要 `run` 的仍走文件型 agent
+
+详见 `src/injection/skillRegistry.md`。
+
 ### 5.7 内置注入类型
 
 | 参数名 | 注入内容 | 示例 |
@@ -519,8 +569,8 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 | `ua` | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
-| `agent` | 默认 agent 元数据（Phase 2.4 实现 `config.defaultAgent` 后注入值，暂返回 `undefined`） | `GET(agent)` |
-| `agents` | 所有已注册 agent 的元数据列表（`AgentMetadata[]`，来自 `agentRegistry.listAgents()`） | `GET(agents)` |
+| `agent` | 默认 agent 的 `AgentHandle`（由 `@faapi/agent` 插件注册的工厂 `getAgentHandle(ctx)` 注入，含可调用 `run`/`stream`/`asTool`）；插件未注册时返回 `undefined` | `GET(agent)` |
+| `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
 
 `form` 与 `body` 互斥：handler 声明其一即可。`form` 共享 `body` 的解析结果（`resolveInput` 已按 Content-Type 解析 form-urlencoded 为 `Record<string, string>`），差异仅在 schema 校验——`form` 的 schema coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串），`body` 的 schema coerce=false。schema 名仍为 `POSTBody`（form 共享 body 的 schema key），通过 `RouteSchemaSource.coerce=true` 显式覆盖。
 
@@ -668,11 +718,14 @@ async function Page() {
 400 -> 请求语法错误：JSON 解析失败、必填字段缺失（INVALID_FORMAT / MISSING_FIELD）
 404 -> 路由不存在
 405 -> 方法不允许
+413 -> 请求体超过大小限制（PAYLOAD_TOO_LARGE,由 createServer 的 limitStreamSize 抛出）
 422 -> 语义错误：类型不匹配、值不在允许范围、query 字符串转换失败（TYPE_MISMATCH / INVALID_VALUE / COERCE_FAILED）
 500 -> 模块加载失败 / handler 未捕获异常
 ```
 
 ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重度，400 优先）。
+
+中间件模块加载失败时（语法错误 / 路径不存在 / 运行时抛错），`loadMiddlewaresFile` 调 `console.error` 输出原始错误后返回空 bundle——服务不崩溃，但鉴权等关键中间件失效会被业务方 `onError` 钩子感知。开发期 watcher 会因 `reloadRoutes` 触发重新加载，实现自愈。
 
 ### 6.3 类型校验策略
 

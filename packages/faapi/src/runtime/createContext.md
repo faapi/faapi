@@ -39,8 +39,8 @@ const ctx = createTestContext({
 
 createContext 在创建 ctx 时挂载 `ok` 和 `fail` 两个响应方法（与 `json`/`html`/`redirect` 同级），均返回 Response 对象，`invokeHandler` 的 `wrapResult` 不会再次包裹：
 
-- `ctx.ok(data)`：从 `config.response.ok` 读取包装函数（默认 `(data) => ({ data })`），包裹 data 后调 `ctx.json(body)` 返回 JSON Response（status 200）。
-- `ctx.fail(options)`：从 `config.response.fail` 读取包装函数（默认只把非 undefined 的字段放入 error 对象，即 `{ error: { message, ...code? } }`）；`options.status` 省略时 HTTP 状态码默认 500；`options.code` 省略时不传入 fail 函数（默认实现则不放入 error 对象）；最终调 `ctx.json(body, options.status ?? 500)` 返回错误 Response。status 和 code 是两个独立维度，无推导关系。
+- `ctx.ok(data)`：实现委托给 [responseFormatter.wrapOkResult](../response/responseFormatter.md) + `jsonOk`，与 handler `return data` 走的自动包裹路径共享同一套 ok 函数。从 `config.response.ok` 读取包装函数（默认 `(data) => ({ data })`），包裹 data 后构造 JSON Response（status 200）。
+- `ctx.fail(options)`：实现委托给 [responseFormatter.formatFailResponse](../response/responseFormatter.md)，与 `formatErrorResponse`（handler 抛错兜底）共享同一套 fail 函数，确保错误格式一致。从 `config.response.fail` 读取包装函数（默认只把非 undefined 的字段放入 error 对象，即 `{ error: { message, ...code? } }`）；`options.status` 省略时 HTTP 状态码默认 500；`options.code` 省略时不传入 fail 函数（默认实现则不放入 error 对象）；最终构造错误 Response。status 和 code 是两个独立维度，无推导关系。
 
 ```ts
 // 默认配置下的行为：

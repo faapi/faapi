@@ -26,7 +26,6 @@ describe('extractAgentMetadata', () => {
   const meta: AgentPathMeta = {
     name: 'researcher',
     filePath: 'src/agents/researcher/handler.ts',
-    hasConfig: true,
     hasRun: false,
   };
 
@@ -75,7 +74,6 @@ describe('extractAgentMetadata', () => {
     it('无 config 时从 run 提取 JSDoc', () => {
       const result = extract(`/** 自定义 agent */\nexport function run(input) { return 'ok'; }\n`, {
         ...meta,
-        hasConfig: false,
         hasRun: true,
       });
       expect(result).not.toBeNull();
@@ -251,15 +249,13 @@ describe('extractAgentMetadata', () => {
   });
 
   describe('透传字段', () => {
-    it('filePath / hasConfig / hasRun 从 pathMeta 透传', () => {
+    it('filePath / hasRun 从 pathMeta 透传', () => {
       const result = extract(`export const config = {};\n`, {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasConfig: true,
         hasRun: false,
       });
       expect(result!.filePath).toBe('src/agents/researcher/handler.ts');
-      expect(result!.hasConfig).toBe(true);
       expect(result!.hasRun).toBe(false);
     });
   });
@@ -272,14 +268,12 @@ describe('extractAgentMetadata', () => {
       expect(result).toBeNull();
     });
 
-    it('hasConfig=false 且无 config 导出 → 仅返回 pathMeta + JSDoc', () => {
+    it('无 config 导出 → 仅返回 pathMeta + JSDoc', () => {
       const result = extract(`/** 自定义 */\nexport function run(input) { return 'ok'; }\n`, {
         ...meta,
-        hasConfig: false,
         hasRun: true,
       });
       expect(result).not.toBeNull();
-      expect(result!.hasConfig).toBe(false);
       expect(result!.hasRun).toBe(true);
       expect(result!.description).toBe('自定义');
       expect(result!.systemPrompt).toBeUndefined();

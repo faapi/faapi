@@ -1,63 +1,11 @@
-import { FaapiError } from './FaapiError';
-import { ValidationError, MethodNotAllowedError } from './httpErrors';
-
 /**
- * 将错误转换为统一的 JSON 响应结构
+ * formatErrorResponse 的 re-export
  *
- * 格式：
- * {
- *   "error": {
- *     "code": "VALIDATION_ERROR",
- *     "message": "Invalid query parameters",
- *     "issues": [...] // 仅 ValidationError 包含
- *   }
- * }
+ * 实现已移至 [response/responseFormatter.ts](../response/responseFormatter.ts),
+ * 与 wrapOkResult / formatFailResponse 共享同一套 ok/fail 函数,确保错误响应格式
+ * 在「handler 抛错兜底」和「handler return ctx.fail()」两条路径一致。
+ *
+ * 保留此文件作为 errors/ 模块的入口,便于 errors 模块内部互引 +
+ * 不破坏现有 import 路径(formatErrorResponse.test.ts / serverUtils.ts 等)。
  */
-export function formatErrorResponse(error: unknown): Response {
-  if (error instanceof ValidationError) {
-    const body: Record<string, unknown> = {
-      code: error.code,
-      message: error.message,
-      issues: error.issues,
-    };
-    return new Response(JSON.stringify({ error: body }), {
-      status: error.statusCode,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  if (error instanceof MethodNotAllowedError) {
-    const body = {
-      code: error.code,
-      message: error.message,
-    };
-    return new Response(JSON.stringify({ error: body }), {
-      status: error.statusCode,
-      headers: {
-        'Content-Type': 'application/json',
-        Allow: error.allowedMethods.join(', '),
-      },
-    });
-  }
-
-  if (error instanceof FaapiError) {
-    const body = {
-      code: error.code,
-      message: error.message,
-    };
-    return new Response(JSON.stringify({ error: body }), {
-      status: error.statusCode,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  // 未知错误：500 INTERNAL_ERROR
-  const body = {
-    code: 'INTERNAL_ERROR',
-    message: error instanceof Error ? error.message : 'An unknown error occurred',
-  };
-  return new Response(JSON.stringify({ error: body }), {
-    status: 500,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
+export { formatErrorResponse } from '../response/responseFormatter';

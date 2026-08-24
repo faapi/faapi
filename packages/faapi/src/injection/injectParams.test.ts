@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { injectParamsAsync } from './injectParams';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { MultipartResult } from '../utils/parseMultipart';
-import type { AgentMetadata } from '../ast/extractAgentMetadata';
+import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
 import { hydrateAgentRegistry, clearAgentRegistry } from './agentRegistry';
 
 describe('injectParams', () => {
@@ -292,7 +292,6 @@ describe('injectParams', () => {
       name: 'researcher',
       description: '研究助手',
       filePath: 'dist/agents/researcher/handler.js',
-      hasConfig: true,
       hasRun: false,
       systemPrompt: 'You are a researcher',
     };
@@ -300,7 +299,6 @@ describe('injectParams', () => {
       name: 'writer',
       description: '写作助手',
       filePath: 'dist/agents/writer/handler.js',
-      hasConfig: false,
       hasRun: true,
     };
 
@@ -308,7 +306,7 @@ describe('injectParams', () => {
       hydrateAgentRegistry([researcher, writer]);
       const ctx = createMockContext();
       const fn = eval('(agents) => agents');
-      const result = (await injectParamsAsync(fn, ctx)) as AgentMetadata[];
+      const result = (await injectParamsAsync(fn, ctx)) as AgentCore[];
       expect(result).toHaveLength(2);
       const names = result.map((a) => a.name);
       expect(names).toContain('researcher');
@@ -319,19 +317,16 @@ describe('injectParams', () => {
       hydrateAgentRegistry([researcher]);
       const ctx = createMockContext();
       const fn = eval('(agents) => agents');
-      const [agent] = (await injectParamsAsync(fn, ctx)) as AgentMetadata[];
+      const [agent] = (await injectParamsAsync(fn, ctx)) as AgentCore[];
       expect(agent.name).toBe('researcher');
       expect(agent.description).toBe('研究助手');
-      expect(agent.filePath).toBe('dist/agents/researcher/handler.js');
-      expect(agent.hasConfig).toBe(true);
-      expect(agent.hasRun).toBe(false);
       expect(agent.systemPrompt).toBe('You are a researcher');
     });
 
     it('空注册表时 agents 注入空数组', async () => {
       const ctx = createMockContext();
       const fn = eval('(agents) => agents');
-      const result = (await injectParamsAsync(fn, ctx)) as AgentMetadata[];
+      const result = (await injectParamsAsync(fn, ctx)) as AgentCore[];
       expect(result).toEqual([]);
     });
 
@@ -356,7 +351,7 @@ describe('injectParams', () => {
       const fn = eval('(query, agents) => ({ query, agents })');
       const result = (await injectParamsAsync(fn, ctx)) as {
         query: unknown;
-        agents: AgentMetadata[];
+        agents: AgentCore[];
       };
       expect(result.query).toEqual({ page: '1', pageSize: '10' });
       expect(result.agents).toHaveLength(2);
@@ -368,7 +363,7 @@ describe('injectParams', () => {
       const fn = eval('(ctx, agents) => ({ ctx, agents })');
       const result = (await injectParamsAsync(fn, ctx)) as {
         ctx: unknown;
-        agents: AgentMetadata[];
+        agents: AgentCore[];
       };
       expect(result.ctx).toBe(ctx);
       expect(result.agents).toHaveLength(1);

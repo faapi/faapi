@@ -3,12 +3,16 @@ import type { ResponseMeta } from './contextTypes';
 import type { SseWriter } from './sse';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
-import type { ResponseConfig } from '../config/configTypes';
 import { toResponse } from '../response/toResponse';
+import { wrapOkResult } from '../response/responseFormatter';
 import { injectParamsAsync } from '../injection/injectParams';
 
 /**
  * 自动包裹 handler 返回值(统一响应包装)
+ *
+ * 实现已移至 [response/responseFormatter.ts](../response/responseFormatter.ts) 的
+ * wrapOkResult,与 ctx.ok() / formatFailResponse / formatErrorResponse 共享同一套
+ * ok/fail 函数,确保响应格式在所有路径一致。
  *
  * 规则:
  * - Response 对象:不包裹(ctx.ok/ctx.fail/ctx.json 等返回的 Response 原样透传)
@@ -21,10 +25,7 @@ import { injectParamsAsync } from '../injection/injectParams';
  * 后者得到 "{}"),不再返回 204 No Content。如需 204,显式返回 Response 对象。
  */
 function wrapResult(result: unknown, ctx: FaapiContext): unknown {
-  if (result instanceof Response) return result;
-  const responseConfig = (ctx.config as { response?: ResponseConfig }).response;
-  const okFn = responseConfig?.ok ?? ((d: unknown) => ({ data: d }));
-  return okFn(result);
+  return wrapOkResult(result, ctx.config);
 }
 
 /**

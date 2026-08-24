@@ -85,13 +85,49 @@ export interface ResponseConfig {
 }
 
 /**
- * LLM 提供方配置（Phase 2.4）
+ * model 级配置（Phase 3.5）
  *
- * 定义如何连接 LLM 服务（OpenAI 兼容 API），由 Phase 3.2 的 `@faapi/agent` 插件读取。
- * 支持 `provider` 标识 + OpenAI 兼容字段（apiKey / model / baseURL），
- * 额外字段透传给 LLM API（如 temperature / max_tokens）。
+ * 挂在 provider 下的单个 model 配置，model 特定字段透传给 LLM API
+ * （覆盖 provider 级同名字段）。空对象 `{}` 表示用 provider 级默认。
  *
- * `model` 是默认模型，agent 自身 `config.model` 可覆盖。
+ * ```ts
+ * models: {
+ *   'gpt-4o': {},                            // 用 provider 级默认
+ *   'gpt-4o-mini': { temperature: 0.5 },     // 覆盖 temperature
+ * }
+ * ```
+ */
+export interface LlmModelConfig {
+  [key: string]: unknown;
+}
+
+/**
+ * LLM provider 配置（Phase 2.4，Phase 3.5 改为嵌套级联结构）
+ *
+ * 嵌套级联：provider 在外层，model 在 `models` 下挂多个。
+ * provider 级字段（`apiKey` / `baseURL`）共享给所有 model；
+ * model 级字段在 `models[modelName]` 里覆盖 provider 级同名字段。
+ *
+ * `config.agent.llms` 的 key 是 provider 名（如 `'openai'` / `'anthropic'`），
+ * `config.agent.defaultLlm` 指定默认 provider key（不传时用 `llms` 第一个 key）。
+ *
+ * 由 Phase 3.2 的 `@faapi/agent` 插件读取，调 `createProvider` 创建实例存 Map。
+ *
+ * ```ts
+ * llms: {
+ *   openai: {
+ *     provider: 'openai',
+ *     apiKey: process.env.OPENAI_API_KEY,
+ *     baseURL: 'https://api.openai.com/v1',
+ *     models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
+ *   },
+ *   anthropic: {
+ *     provider: 'anthropic',
+ *     apiKey: process.env.ANTHROPIC_API_KEY,
+ *     models: { 'claude-3-5-sonnet': {} },
+ *   },
+ * }
+ * ```
  */
 export interface LlmConfig {
   /**
@@ -107,25 +143,31 @@ export interface LlmConfig {
    */
   apiKey?: string;
   /**
-   * 默认模型（如 'gpt-4o'），agent 自身 `config.model` 优先
-   */
-  model?: string;
-  /**
    * API 基础 URL（可选，用于 OpenAI 兼容 API 如 Azure OpenAI / 中转服务）
    *
    * 未设置时用 provider 对应的官方默认值（如 'https://api.openai.com/v1'）。
    */
   baseURL?: string;
   /**
-   * 其他透传参数（如 temperature / max_tokens / top_p）
+   * 该 provider 下挂的 model 列表（key 是 model 名）
+   *
+   * handler 通过 `agent.run(input, { model: 'gpt-4o' })` 切换 model,
+   * 框架按 model 名在所有 provider 的 `models` 里查找定位 provider（详见
+   * [agentHandle](../../agent/src/agentHandle.md) 的 Run-level 覆盖优先级表）。
+   * model 级字段（如 `temperature`）覆盖 provider 级同名字段。
+   */
+  models: Record<string, LlmModelConfig>;
+  /**
+   * 其他透传参数（provider 级，如 temperature / top_p / max_tokens）
    *
    * 这些字段原样传给 LLM API，由 provider 适配器处理。
+   * model 级 `models[modelName]` 的同名字段优先。
    */
   [key: string]: unknown;
 }
 
 /**
- * agent 子系统全局配置（Phase 2.4）
+ * agent 子系统全局配置（Phase 2.4，Phase 3.5 LLM 配置改为嵌套级联）
  *
  * 提供 agent 子系统的全局默认值，所有字段均可选，未设置时用框架默认值。
  * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置。
@@ -134,11 +176,17 @@ export interface LlmConfig {
  * import type { FaapiConfig } from '@faapi/faapi';
  * export default {
  *   agent: {
- *     llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+ *     llms: {
+ *       openai: {
+ *         provider: 'openai',
+ *         apiKey: process.env.OPENAI_API_KEY,
+ *         models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
+ *       },
+ *     },
+ *     defaultLlm: 'openai',
  *     defaultAgent: 'researcher',
  *     maxTurns: 10,
  *     maxAgentDepth: 3,
- *     defaultTools: ['weather.getWeather'],
  *   },
  * } satisfies FaapiConfig;
  * ```
@@ -147,11 +195,22 @@ export interface LlmConfig {
  */
 export interface AgentConfig {
   /**
-   * LLM 提供方配置（Phase 3.2 由 @faapi/agent 插件使用）
+   * LLM provider 配置映射（Phase 3.5 改为嵌套级联结构，key 是 provider 名）
+   *
+   * 值是 [LlmConfig]（含 `models`）。plugin setup 时遍历每个 LlmConfig 调
+   * `createProvider` 创建实例存 Map，handler 通过 `agent.run(input, { model })`
+   * 切换 provider + model（详见 [agentHandle](../../agent/src/agentHandle.md)）。
    *
    * 未设置时 Phase 3.x 插件无法调用 LLM，agent 的 `run` 函数仍可手动实现。
    */
-  llm?: LlmConfig;
+  llms?: Record<string, LlmConfig>;
+  /**
+   * 默认 provider key（Phase 3.5）
+   *
+   * `agent.run` 不传 `options.model` 时用此 key 对应的 provider 实例。
+   * 未设置时用 `llms` 的第一个 key（`Object.keys(llms)[0]`）。
+   */
+  defaultLlm?: string;
   /**
    * 默认 agent 名，用于 `agent` 参数注入（[injectParams](../injection/injectParams.md) Phase 2.3）
    *
@@ -160,13 +219,6 @@ export interface AgentConfig {
    * 注入 `AgentHandle`（含可调用 `run`）。
    */
   defaultAgent?: string;
-  /**
-   * 默认 tool 列表，所有 agent 都可用（无需在每个 agent 的 `tools` 重复声明）
-   *
-   * 与 agent 自身 `tools` 合并（都加入可用 tool 集合，去重）。
-   * 由 `@faapi/agent` 插件在 setup 时合并到 agent 的 tool 引用列表。
-   */
-  defaultTools?: string[];
   /**
    * 默认最大对话轮数（覆盖 agent 自身 `config.maxTurns`，agent 自身配置优先）
    *
@@ -318,19 +370,25 @@ export interface FaapiConfig {
   /**
    * agent 子系统全局配置（Phase 2.4）
    *
-   * 提供 agent 子系统的全局默认值：LLM 提供方、默认 agent、默认共享 tool、
+   * 提供 agent 子系统的全局默认值：LLM 提供方、默认 agent、
    * 最大对话轮数、agent 调用 agent 的最大递归深度。
    *
    * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置。
-   * `defaultTools` 与 agent 自身 `tools` 合并（去重）。
+   * tool 引用列表只在每个 agent 自身的 `config.tools` 里声明（无全局共享 defaultTools）。
    *
    * ```ts
    * import type { FaapiConfig } from '@faapi/faapi';
    * export default {
    *   agent: {
-   *     llm: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' },
+   *     llms: {
+   *       openai: {
+   *         provider: 'openai',
+   *         apiKey: process.env.OPENAI_API_KEY,
+   *         models: { 'gpt-4o': {} },
+   *       },
+   *     },
+   *     defaultLlm: 'openai',
    *     defaultAgent: 'researcher',
-   *     defaultTools: ['weather.getWeather'],
    *     maxTurns: 10,
    *     maxAgentDepth: 3,
    *   },

@@ -15,6 +15,7 @@ import { loadPlugins } from './loadPlugins';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { hydrateToolRegistry, clearToolRegistry } from '../injection/toolRegistry';
 import { hydrateAgentRegistry, clearAgentRegistry } from '../injection/agentRegistry';
+import { clearSkillRegistry } from '../injection/skillRegistry';
 import { clearAgentHandleFactory } from '../injection/agentHandle';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
@@ -372,10 +373,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           if (agents.length > 0) {
             console.log(`- Loaded ${agents.length} agent(s):`);
             for (const agent of agents) {
-              const exports: string[] = [];
-              if (agent.hasConfig) exports.push('config');
-              if (agent.hasRun) exports.push('run');
-              console.log(`  ${agent.name} [${exports.join('+')}]  ${agent.filePath}`);
+              const exports = agent.hasRun ? 'run' : '-';
+              console.log(`  ${agent.name} [${exports}]  ${agent.filePath}`);
             }
           }
 
@@ -507,9 +506,10 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
         await config.lifecycle.onClose({ rootDir, routes: sorted, server });
       }
 
-      // 清理 tool / agent 注册表 + agent handle 工厂（与 app 单例清理对称）
+      // 清理 tool / agent / skill 注册表 + agent handle 工厂（与 app 单例清理对称）
       clearToolRegistry();
       clearAgentRegistry();
+      clearSkillRegistry();
       clearAgentHandleFactory();
 
       // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）

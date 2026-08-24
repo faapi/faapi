@@ -10,6 +10,7 @@ vi.mock('@faapi/faapi', async (importOriginal) => {
     ...actual,
     registerAgentHandleFactory: vi.fn(),
     getAgent: vi.fn(),
+    getAgentEntry: vi.fn(),
     getTool: vi.fn(),
     resolveAgentTools: vi.fn(() => []),
     resolveSubAgents: vi.fn(() => []),
@@ -50,31 +51,39 @@ import { z } from 'zod';
 import {
   registerAgentHandleFactory,
   getAgent,
+  getAgentEntry,
   resolveAgentTools,
   loadToolSchema,
   type AgentConfig,
   type PluginContext,
+  type AgentCore,
   type AgentMetadata,
   type ToolMetadata,
 } from '@faapi/faapi';
 
 // ─── 测试数据 ───────────────────────────────────────
 
-const testAgentMeta: AgentMetadata = {
+// getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath/hasRun）
+const testAgentCore: AgentCore = {
   name: 'researcher',
-  filePath: 'dist/agents/researcher/handler.js',
-  hasConfig: true,
-  hasRun: false,
   description: '研究 agent',
   systemPrompt: 'you are a researcher',
 };
 
+const testAgentEntry: AgentMetadata = {
+  ...testAgentCore,
+  filePath: 'dist/agents/researcher/handler.js',
+  hasRun: false,
+};
+
 const fullAgentConfig: AgentConfig = {
-  llm: { provider: 'openai', apiKey: 'test-key', model: 'gpt-4o' },
+  llms: {
+    openai: { provider: 'openai', apiKey: 'test-key', models: { 'gpt-4o': {} } },
+  },
+  defaultLlm: 'openai',
   defaultAgent: 'researcher',
   maxTurns: 10,
   maxAgentDepth: 3,
-  defaultTools: [],
 };
 
 /** 构造 mock PluginContext */
@@ -97,8 +106,10 @@ function makeReqCtx() {
 describe('@faapi/agent plugin', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // 默认 getAgent 返回测试 agent 元数据
-    vi.mocked(getAgent).mockReturnValue(testAgentMeta);
+    // 默认 getAgent 返回测试 agent 的 AgentCore（LLM-facing 字段）
+    vi.mocked(getAgent).mockReturnValue(testAgentCore);
+    // getAgentEntry 返回 AgentMetadata（含 filePath/hasRun,供加载 handler.js）
+    vi.mocked(getAgentEntry).mockReturnValue(testAgentEntry);
   });
 
   describe('setup() — 完整配置', () => {
@@ -108,10 +119,10 @@ describe('@faapi/agent plugin', () => {
       expect(typeof registerAgentHandleFactory).toBe('function');
     });
 
-    it('调 createProvider 传入 agent.llm 配置', () => {
+    it('调 createProvider 传入 agent.llms 每项配置', () => {
       plugin.setup(makeCtx(fullAgentConfig));
       expect(createProvider).toHaveBeenCalledTimes(1);
-      expect(createProvider).toHaveBeenCalledWith(fullAgentConfig.llm);
+      expect(createProvider).toHaveBeenCalledWith(fullAgentConfig.llms!.openai);
     });
 
     it('工厂返回 Agent 实例（满足 AgentHandle）', () => {
@@ -165,20 +176,24 @@ describe('@faapi/agent plugin', () => {
       warnSpy.mockRestore();
     });
 
-    it('config.agent.llm 未设置时不注册工厂', () => {
+    it('config.agent.llms 未设置时不注册工厂', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       plugin.setup(makeCtx({ defaultAgent: 'researcher' }));
 
       expect(registerAgentHandleFactory).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('config.agent.llm not configured'),
+        expect.stringContaining('config.agent.llms not configured'),
       );
       warnSpy.mockRestore();
     });
 
     it('config.agent.defaultAgent 未设置时不注册工厂', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      plugin.setup(makeCtx({ llm: { provider: 'openai', apiKey: 'k', model: 'gpt-4o' } }));
+      plugin.setup(
+        makeCtx({
+          llms: { openai: { provider: 'openai', apiKey: 'k', models: { 'gpt-4o': {} } } },
+        }),
+      );
 
       expect(registerAgentHandleFactory).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalledWith(

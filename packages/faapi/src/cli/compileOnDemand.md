@@ -22,19 +22,41 @@ prod 模式（`node dist/main`）不启用按需编译——build 阶段已固�
 - 请求到达 `createServer.handleRequest`：zod.js 不存在或 stale → `ensureSchemaGenerated` 生成 → 继续 `validateInput`
 - watcher 文件变化 → `reloadRoutes` 调 `deleteSchemaFiles` + `clearCompiledFiles` + `clearGeneratedSchemas` 失效缓存
 
-## 模块标记
+## 模块标记 + DevOnDemandState 封装
+
+原本散落的 4 个模块级可变状态（`devOnDemandEnabled` / `devDistDir` / `compiledFiles` / `generatedSchemas`）+ 2 个 mutex Map 封装到 `DevOnDemandState` 单例对象，避免全局污染 + 便于测试隔离。
 
 ```ts
-let devOnDemandEnabled = false;
-let devDistDir: string | undefined;
+interface DevOnDemandState {
+  enabled: boolean;
+  distDir: string | undefined;
+  compiledFiles: Set<string>;
+  generatedSchemas: Set<string>;
+  inFlightCompilations: Map<string, Promise<void>>;      // handler.js 编译 mutex
+  inFlightSchemaGenerations: Map<string, Promise<void>>; // zod.js 生成 mutex
+}
 
-setDevOnDemandEnabled(true);   // devCommand 启动时调用
-setDevDist('.faapi');          // devCommand 启动时调用
-isDevOnDemandEnabled();        // loadRouteModule / createServer 读取
-getDevDist();                  // loadRouteModule / createServer 读取
+const state: DevOnDemandState = createDevOnDemandState();
 ```
 
+- `setDevOnDemandEnabled(true)` / `setDevDist('.faapi')` —— devCommand 启动时调用
+- `isDevOnDemandEnabled()` / `getDevDist()` —— loadRouteModule / createServer 读取
+- `_resetDevOnDemandState()` —— **仅测试用**，清空所有缓存 + mutex + 标记位，便于测试隔离
+
 `isDevOnDemandEnabled()` 是全局开关——`loadRouteModule` / `createServer` 据此判断是否启用按需编译回退。prod 模式始终为 `false`。
+
+## 并发去重（mutex）
+
+dev 模式下，watcher 触发 reload + 并发请求同时进来时，可能两个请求同时发现产物 stale 都触发编译——esbuild 自身有并发保护，但重复调用浪费资源且可能写入冲突。
+
+`ensureCompiled` / `ensureSchemaGenerated` 用 in-flight Promise Map 做并发去重：
+
+- 同一 sourceAbsPath / schemaPath 的并发请求共享同一 in-flight Promise
+- 第一个请求触发编译/生成，注册 Promise 到 Map
+- 第二个请求 `await` 已注册的 Promise，返回 `false`（表示「别的请求已触发，本次不重复触发」）
+- watcher 触发 clear 时同步清空 in-flight Map，避免旧 Promise 永久阻塞
+
+失败语义：第一个请求编译失败时，第二个请求 `await` 会捕获但**不抛错**，让自己按正常流程重试（避免连锁失败）。
 
 ## handler.js 按需编译
 
@@ -50,13 +72,14 @@ async function ensureCompiled(
 
 调用方：`loadRouteModule`（import 失败时）+ `loadWsHandler`（WS 升级时）。
 
-三层缓存策略（命中即跳过）：
+四层处理（命中即跳过）：
 
-1. **内存 Set 命中**：`compiledFiles.has(sourceAbsPath)` → 跳过（最快路径）
-2. **mtime 复用**：产物存在且 `mtimeMs ≥ 源码 mtimeMs` → 加入 Set 跳过（复用 watcher 已编译的产物）
-3. **产物不存在或 stale**：调 `compileDevRoutes({ files: [sourceAbsPath] })` 单文件编译 → 加入 Set
+1. **mutex 命中**：`inFlightCompilations.has(sourceAbsPath)` → await 后返回 `false`（别的请求正在编译）
+2. **内存 Set 命中**：`compiledFiles.has(sourceAbsPath)` → 跳过（最快路径）
+3. **mtime 复用**：产物存在且 `mtimeMs ≥ 源码 mtimeMs` → 加入 Set 跳过（复用 watcher 已编译的产物）
+4. **产物不存在或 stale**：调 `compileDevRoutes({ files: [sourceAbsPath] })` 单文件编译 → 加入 Set
 
-返回 `true` 表示实际触发了编译（调用方据此决定是否重试 import），`false` 表示跳过（已编译过 / 产物已最新 / 源文件不存在）。**编译失败时抛错**（带原始 cause），由调用方错误处理链接管，不静默吞错。
+返回 `true` 表示实际触发了编译（调用方据此决定是否重试 import），`false` 表示跳过（已编译过 / 产物已最新 / 源文件不存在 / 别的请求正在编译）。**编译失败时抛错**（带原始 cause），由调用方错误处理链接管，不静默吞错。
 
 ### 路径反推
 
@@ -69,9 +92,9 @@ async function ensureCompiled(
 
 | API | 时机 | 行为 |
 | --- | --- | --- |
-| `clearCompiledFiles()` | `reloadRoutes` 调用 | 清空所有「已编译」标记 |
+| `clearCompiledFiles()` | `reloadRoutes` 调用 | 清空「已编译」标记 + in-flight mutex Map |
 
-`reloadRoutes` 统一调 `clearCompiledFiles()`，全量清空缓存（watcher 文件变化后所有路由都可能受影响，单文件失效意义不大）。
+`reloadRoutes` 统一调 `clearCompiledFiles()`，全量清空缓存（watcher 文件变化后所有路由都可能受影响，单文件失效意义不大）+ 同步清 mutex 避免旧 Promise 永久阻塞。
 
 ## zod.js 按需生成
 
@@ -95,16 +118,17 @@ async function ensureSchemaGenerated(
 - `routeFilePath`：`route.filePath`（dev/prod 模式下均为产物路径，如 `.faapi/api/hello/handler.js`）
 - `routes`：完整路由清单（用于过滤同文件的所有方法——一个 handler.ts 可能导出 GET/POST/WS 多个方法）
 
-三层缓存策略（与 `ensureCompiled` 一致）：
+四层处理（与 `ensureCompiled` 一致）：
 
-1. **内存 Set 命中**：`generatedSchemas.has(schemaPath)` → 跳过
-2. **mtime 复用**：zod.js 存在且 `mtimeMs ≥ 源码 mtimeMs` → 加入 Set 跳过
-3. **zod.js 不存在或 stale**：
+1. **mutex 命中**：`inFlightSchemaGenerations.has(schemaPath)` → await 后返回 `false`
+2. **内存 Set 命中**：`generatedSchemas.has(schemaPath)` → 跳过
+3. **mtime 复用**：zod.js 存在且 `mtimeMs ≥ 源码 mtimeMs` → 加入 Set 跳过
+4. **zod.js 不存在或 stale**：
    - 用 `prodPathToSourcePath` 把产物 route.filePath 反推源码 .ts 路径
    - 过滤同文件所有路由，把产物 filePath 改回源码 filePath（`generateSchemaFiles` 内部 AST 分析需要源码 .ts 路径）
    - 调 `generateSchemaFiles(sourceRoutes, rootDir, dist)` 生成 → 加入 Set
 
-返回 `true` 表示实际触发了生成，`false` 表示跳过（已生成过 / 产物已最新 / 源文件不存在）。**生成失败时抛错**（带原始 cause），由 `createServer` 错误处理链接管，不静默吞错。
+返回 `true` 表示实际触发了生成，`false` 表示跳过（已生成过 / 产物已最新 / 源文件不存在 / 别的请求正在生成）。**生成失败时抛错**（带原始 cause），由 `createServer` 错误处理链接管，不静默吞错。
 
 ### deleteSchemaFiles
 
@@ -143,7 +167,7 @@ function prodPathToSourcePath(
 
 | API | 时机 | 行为 |
 | --- | --- | --- |
-| `clearGeneratedSchemas()` | `reloadRoutes` 调用 | 清空所有「已生成」标记 |
+| `clearGeneratedSchemas()` | `reloadRoutes` 调用 | 清空「已生成」标记 + in-flight mutex Map |
 
 `reloadRoutes` 在按需模式下顺序：`deleteSchemaFiles` → `clearGeneratedSchemas`（先删文件再清缓存，下次请求触发重新生成）。
 

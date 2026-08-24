@@ -68,7 +68,7 @@ const SSE_DONE = 'data: [DONE]\n\n';
 const baseConfig: LlmConfig = {
   provider: 'openai',
   apiKey: 'sk-test-key',
-  model: 'gpt-4o',
+  models: { 'gpt-4o': {} },
 };
 
 describe('createOpenAIProvider', () => {
@@ -194,20 +194,23 @@ describe('createOpenAIProvider', () => {
       expect(init.headers['Content-Type']).toBe('application/json');
     });
 
-    it('使用 config.model 当 request.model 未提供', async () => {
+    it('未提供 request.model 时用 config.models 第一个 key', async () => {
       fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'ok' })));
 
-      const provider = createOpenAIProvider({ ...baseConfig, model: 'gpt-4o-mini' });
+      const provider = createOpenAIProvider({
+        ...baseConfig,
+        models: { 'gpt-4o-mini': {} },
+      });
       await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.model).toBe('gpt-4o-mini');
     });
 
-    it('request.model 覆盖 config.model(agent 自身 config 优先)', async () => {
+    it('request.model 覆盖 config.models 第一个 key', async () => {
       fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'ok' })));
 
-      const provider = createOpenAIProvider({ ...baseConfig, model: 'gpt-4o' });
+      const provider = createOpenAIProvider({ ...baseConfig, models: { 'gpt-4o': {} } });
       await provider.complete({
         messages: [{ role: 'user', content: 'hi' }],
         model: 'gpt-4-turbo',
@@ -215,6 +218,43 @@ describe('createOpenAIProvider', () => {
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(body.model).toBe('gpt-4-turbo');
+    });
+
+    it('model 级字段覆盖 provider 级同名字段（temperature）', async () => {
+      fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'ok' })));
+
+      // provider 级 temperature=0.3,model 'gpt-4o-mini' 覆盖为 0.5
+      const provider = createOpenAIProvider({
+        ...baseConfig,
+        temperature: 0.3,
+        models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
+      });
+      await provider.complete({
+        messages: [{ role: 'user', content: 'hi' }],
+        model: 'gpt-4o-mini',
+      });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.model).toBe('gpt-4o-mini');
+      expect(body.temperature).toBe(0.5); // model 级覆盖 provider 级
+    });
+
+    it('request.temperature 覆盖 model 级与 provider 级 temperature', async () => {
+      fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'ok' })));
+
+      const provider = createOpenAIProvider({
+        ...baseConfig,
+        temperature: 0.3,
+        models: { 'gpt-4o-mini': { temperature: 0.5 } },
+      });
+      await provider.complete({
+        messages: [{ role: 'user', content: 'hi' }],
+        model: 'gpt-4o-mini',
+        temperature: 0.9,
+      });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.temperature).toBe(0.9); // request 级最高优先
     });
 
     it('config.baseURL 指向中转服务(覆盖默认 OpenAI 端点)', async () => {

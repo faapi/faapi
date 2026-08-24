@@ -8,14 +8,16 @@ import type { FaapiConfig } from '@faapi/faapi';
  */
 export default {
   agent: {
-    llm: {
-      provider: 'openai',
-      apiKey: 'mock-key',
-      model: 'gpt-4o',
+    llms: {
+      openai: {
+        provider: 'openai',
+        apiKey: 'mock-key',
+        models: { 'gpt-4o': {} },
+      },
     },
+    defaultLlm: 'openai',
     defaultAgent: 'researcher',
     maxTurns: 10,
     maxAgentDepth: 3,
-    defaultTools: ['weather.getWeather'],
   },
 } satisfies FaapiConfig;

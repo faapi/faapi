@@ -13,14 +13,15 @@ import { createProgram } from '../ast/createProgram';
  *
  * `undefined` 字段（description / systemPrompt / tools / agents / model / maxTurns）
  * 在 JSON.stringify 时自动省略，水合时通过 `??` 兜底为 undefined。
+ *
+ * > `hasConfig` 字段已移除——它原本用于控制 `loadAgentModule` 是否提取 `config` 对象,
+ * > 但 `AgentModule.config` 已废弃(`executeSubAgent` 拿到后从不读取),属于死链路。
  */
 export interface SerializedAgentRecord {
   /** agent 名（`@agent` 覆盖值 或 目录推导值） */
   name: string;
   /** JSDoc 描述（对 LLM 可见），无则省略 */
   description?: string;
-  /** 是否导出 config 块（从 manifest 透传） */
-  hasConfig: boolean;
   /** 是否导出 run 函数（从 manifest 透传） */
   hasRun: boolean;
   /** 系统提示词（config 块字面量提取），无/非字面量时省略 */
@@ -63,7 +64,7 @@ function toProdFilePath(filePath: string, dist: string): string {
  * 序列化 agent 清单为可写入 JS 模块的结构
  *
  * - `filePath` 转为产物形式（打平 `src/` 前缀 + dist 前缀 + `.js`）
- * - 其他字段（name/description/hasConfig/hasRun/systemPrompt/tools/agents/model/maxTurns）直接透传
+ * - 其他字段（name/description/hasRun/systemPrompt/tools/agents/model/maxTurns）直接透传
  * - `undefined` 字段在 JSON.stringify 时自动省略
  *
  * @param agents AST 增强后的 AgentMetadata[]（由 generateAgentArtifacts 内部从 AgentManifest 增强）
@@ -76,7 +77,6 @@ export function serializeAgents(
   return agents.map((a) => ({
     name: a.name,
     description: a.description,
-    hasConfig: a.hasConfig,
     hasRun: a.hasRun,
     systemPrompt: a.systemPrompt,
     tools: a.tools,
@@ -117,7 +117,6 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
     name: a.name,
     description: a.description ?? undefined,
     filePath: a.filePath,
-    hasConfig: a.hasConfig,
     hasRun: a.hasRun,
     systemPrompt: a.systemPrompt ?? undefined,
     tools: a.tools ?? undefined,
@@ -164,7 +163,6 @@ export async function generateAgentArtifacts(
     const result = extractAgentMetadata(program, absPath, {
       name: manifest.name,
       filePath: manifest.filePath,
-      hasConfig: manifest.hasConfig,
       hasRun: manifest.hasRun,
     });
     if (result) {

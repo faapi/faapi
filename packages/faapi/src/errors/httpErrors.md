@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-为常见 HTTP 错误（400/404/405/422/500）提供具体错误类，包含详细信息。
+为常见 HTTP 错误（400/404/405/413/422/500）提供具体错误类，包含详细信息。
 `ValidationIssue` 提供结构化错误信息，便于上层（全局错误中间件 / 前端）按 code 做不同处理。
 状态码按错误语义细分（参考 RFC 7807 / Rails / Laravel / Spring），让前端可基于状态码区分错误类型。
 
@@ -14,7 +14,19 @@
 - 抛出 422 语义错误（含 `ValidationIssue[]`，code 为 `TYPE_MISMATCH`/`INVALID_VALUE`/`COERCE_FAILED`）
 - 抛出 404 路由不存在
 - 抛出 405 方法不允许
-- 抛出 500 内部错误
+- 抛出 413 请求体超过大小限制（`PayloadTooLargeError`，由 `createServer` 的 `limitStreamSize` 抛出）
+- 抛出 500 内部错误（`InternalError`）/ 模块加载失败（`ModuleLoadError`）
+
+## 错误类清单
+
+| 错误类 | 状态码 | code | 触发场景 |
+| --- | --- | --- | --- |
+| `ValidationError` | 400/422（按 issue.code 推导） | `VALIDATION_ERROR` | 类型校验失败（含 `ValidationIssue[]`） |
+| `RouteNotFoundError` | 404 | `ROUTE_NOT_FOUND` | 路由不存在 |
+| `MethodNotAllowedError` | 405 | `METHOD_NOT_ALLOWED` | 方法不允许（附加 `Allow` header） |
+| `PayloadTooLargeError` | 413 | `PAYLOAD_TOO_LARGE` | 请求体超过大小限制（`limitStreamSize` 抛出） |
+| `InternalError` | 500 | `INTERNAL_ERROR` | 内部错误 |
+| `ModuleLoadError` | 500 | `MODULE_LOAD_ERROR` | 模块加载失败 |
 
 ## 状态码映射
 

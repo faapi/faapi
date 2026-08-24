@@ -65,9 +65,11 @@ function createProvider(config: LlmConfig): LLMProvider;
 
 ## 透传字段
 
-`LlmConfig` 的 `[key: string]: unknown` 索引签名允许任意额外字段（如 `temperature` / `top_p` / `max_tokens`）。Provider 适配器把已知字段（apiKey / model / baseURL）作为连接配置，其余字段原样透传给 LLM API。
+`LlmConfig` 是嵌套级联结构（Phase 3.5）：provider 级字段（`apiKey` / `baseURL` + 索引签名字段如 `temperature`）共享给所有 model；model 级字段在 `models[modelName]` 里覆盖 provider 级同名字段。Provider 适配器把已知字段（`apiKey` / `baseURL` / `models`）作为连接配置,其余字段原样透传给 LLM API。
 
-`LLMCompleteRequest` 的 `model` / `temperature` / `maxTokens` 优先级高于 `LlmConfig`（agent 自身 `config.model` 覆盖全局）。
+`LLMCompleteRequest` 的 `model` / `temperature` / `maxTokens` 优先级高于 `LlmConfig`（agent 自身 `config.model` 覆盖 `defaultLlm` provider 的默认 model）。
+
+完整优先级（高 → 低）：[Agent.run](./agent.md) 的 `options.model`（字符串 key,按解析规则定位 provider + model）/ `options.temperature` / `options.maxTokens` > agent 元数据 `config.model` > `LlmConfig`（`defaultLlm` provider 级 + model 级字段）。`options` 由 [Agent](./agent.md) 在 `buildLoopConfig` 阶段应用,Provider 适配器收到的 `LLMCompleteRequest` 已是最终值——Provider 无需感知 options 层或 key 解析。详见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
 
 ## 相关模块
 

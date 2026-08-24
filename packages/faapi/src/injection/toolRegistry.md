@@ -31,7 +31,7 @@ agent 调用 tool 时需要按名查找 tool 元数据（`filePath` / `functionN
 | `getTool(name)` | 按全名查找单个 tool（如 `weather.getWeather`），未找到返回 `undefined` |
 | `listTools()` | 返回所有已注册 tool |
 
-> agent 可用 tool 集合由 [agentRegistry](./agentRegistry.md) 的 `resolveAgentTools` 解析（agent 显式声明的 `tools` + 全局 `defaultTools`），不在本模块。
+> agent 可用 tool 集合由 [agentRegistry](./agentRegistry.md) 的 `resolveAgentTools` 解析（agent 显式声明的 `tools`），不在本模块。
 
 ### faapi-tools.js 缺失处理
 

@@ -19,7 +19,7 @@ wrapResult 在 toResponse 前自动包裹 handler 返回值，实现统一响应
 
 ## wrapResult 自动包裹
 
-invokeHandler 在调用 `toResponse` 之前调用 `wrapResult` 自动包裹 handler 返回值（无中间件和有中间件两条路径都会调用）。
+invokeHandler 在调用 `toResponse` 之前调用 `wrapResult` 自动包裹 handler 返回值（无中间件和有中间件两条路径都会调用）。实现委托给 [responseFormatter.wrapOkResult](../response/responseFormatter.md)，与 `ctx.ok()` / `ctx.fail()` / `formatErrorResponse` 共享同一套 ok/fail 函数，确保响应格式在所有路径一致。
 
 包裹规则：
 
@@ -50,5 +50,6 @@ export function GET3(ctx) {
 ## 相关模块
 
 - `toResponse.ts` - 转换响应
+- [responseFormatter](../response/responseFormatter.md) - wrapResult 委托的响应格式中心（ok/fail 函数）
 - `contextTypes.ts` - 上下文类型、ResponseMeta
 - `createServer.ts` - 使用 compose 包裹全局中间件（CORS）与路由处理管线

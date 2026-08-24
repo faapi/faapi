@@ -23,8 +23,14 @@ import type {
 /** OpenAI 默认 API 端点（未设 baseURL 时使用） */
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 
-/** OpenAI 已知透传字段集合（这些字段在 LlmConfig 中有专门处理,不算"额外透传"） */
-const RESERVED_CONFIG_KEYS = new Set(['provider', 'apiKey', 'model', 'baseURL']);
+/**
+ * OpenAI 已知保留字段集合（这些字段在 LlmConfig 中有专门处理,不算"额外透传"）
+ *
+ * - `provider` / `apiKey` / `baseURL` —— LlmConfig 结构字段
+ * - `model` —— 由 `request.model` 或 `config.models` 第一个 key 决定,不由 config 透传
+ * - `models` —— 嵌套级联的 model 配置映射,非 OpenAI API 字段
+ */
+const RESERVED_CONFIG_KEYS = new Set(['provider', 'apiKey', 'model', 'baseURL', 'models']);
 
 /**
  * LLM Provider 错误
@@ -108,17 +114,32 @@ interface ToolCallAccumulator {
 /**
  * 创建 OpenAI 兼容 LLMProvider
  *
- * @param config LLM 提供方配置（apiKey / model / baseURL / 透传字段）
+ * @param config LLM 提供方配置（apiKey / baseURL / models + provider 级透传字段,
+ *                model 级字段在 `models[modelName]` 下覆盖 provider 级同名字段）
  * @returns LLMProvider 实例（含 complete + stream 方法）
  */
 export function createOpenAIProvider(config: LlmConfig): LLMProvider {
   const baseURL = (config.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '');
   const apiKey = config.apiKey;
 
-  /** 构造 OpenAI chat completions 请求体 */
+  /**
+   * 构造 OpenAI chat completions 请求体
+   *
+   * 字段优先级（高 → 低）：
+   * 1. `request.temperature` / `request.maxTokens` —— request 级覆盖
+   * 2. `config.models[modelName][key]` —— model 级覆盖（如 model 级 temperature）
+   * 3. `config[key]` —— provider 级透传（如 provider 级 temperature）
+   *
+   * `model` 由 `request.model` 或 `config.models` 第一个 key 决定,
+   * 不从 config 透传（避免 config 级 `model` 字段覆盖已解析的 model 名）。
+   */
   function buildRequestBody(request: LLMCompleteRequest): OpenAIRequestBody {
+    // 确定 model 名：request 优先,否则取 config.models 第一个 key
+    const modelName = request.model ?? Object.keys(config.models)[0];
+    const modelConfig = modelName ? config.models[modelName] : undefined;
+
     const body: OpenAIRequestBody = {
-      model: request.model ?? config.model,
+      model: modelName,
       messages: request.messages.map(toOpenAIMessage),
     };
 
@@ -126,17 +147,37 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
       body.tools = request.tools.map(toOpenAITool);
     }
 
-    if (request.temperature !== undefined) body.temperature = request.temperature;
-    if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
-
-    // 透传 config 额外字段（temperature / top_p / max_tokens 等,业务方在 LlmConfig 设）
+    // 合并 config 透传字段：provider 级 + model 级覆盖（model 级优先）
+    // 跳过 RESERVED_CONFIG_KEYS（结构字段 + model 名 + models 嵌套配置）
+    const mergedConfig: Record<string, unknown> = {};
     for (const key of Object.keys(config)) {
       if (RESERVED_CONFIG_KEYS.has(key)) continue;
       const value = (config as Record<string, unknown>)[key];
+      if (value !== undefined) {
+        mergedConfig[key] = value;
+      }
+    }
+    if (modelConfig) {
+      for (const key of Object.keys(modelConfig)) {
+        if (RESERVED_CONFIG_KEYS.has(key)) continue;
+        const value = (modelConfig as Record<string, unknown>)[key];
+        if (value !== undefined) {
+          mergedConfig[key] = value; // 覆盖 provider 级同名字段
+        }
+      }
+    }
+
+    // 应用透传字段到 body（跳过已设置的结构字段 model/messages/tools）
+    for (const key of Object.keys(mergedConfig)) {
+      const value = mergedConfig[key];
       if (value !== undefined && !(key in body)) {
         body[key] = value;
       }
     }
+
+    // request 级覆盖（最高优先级）
+    if (request.temperature !== undefined) body.temperature = request.temperature;
+    if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
 
     return body;
   }

@@ -63,6 +63,19 @@ export class ModuleLoadError extends FaapiError {
 }
 
 /**
+ * 请求体超过大小限制（413 Payload Too Large）
+ *
+ * 由 createServer 的 limitStreamSize 在流式读取阶段抛出,
+ * 经 formatErrorResponse 转换为 413 响应,而非兜底 500。
+ */
+export class PayloadTooLargeError extends FaapiError {
+  constructor(maxSize: number) {
+    super('PAYLOAD_TOO_LARGE', `Request body exceeds size limit of ${maxSize} bytes`, 413);
+    this.name = 'PayloadTooLargeError';
+  }
+}
+
+/**
  * 校验问题类型
  *
  * 结构化错误信息,便于上层(全局错误中间件/前端)按 code 做不同处理,

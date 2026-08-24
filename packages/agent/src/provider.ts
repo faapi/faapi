@@ -165,7 +165,7 @@ export { LLMProviderError } from './providers/openai';
  *
  * Phase 3.2 仅支持 `'openai'`,其他值抛错不静默降级（参考 AGENTS.md §6.3）。
  *
- * @param config LLM 提供方配置（来自 faapi.config.ts 的 `agent.llm`）
+ * @param config LLM 提供方配置（来自 faapi.config.ts 的 `agent.llms[key]`）
  * @returns LLMProvider 实例
  * @throws {Error} 当 `config.provider` 不是已支持的值
  */

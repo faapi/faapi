@@ -34,38 +34,8 @@ describe('scanAgents', () => {
       expect(agents[0]).toMatchObject({
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasConfig: true,
         hasRun: false,
       });
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('检测 config 导出（export const config）', async () => {
-    const { dir, write, cleanup } = setupTmp();
-    write(
-      'src/agents/researcher/handler.ts',
-      'export const config = { systemPrompt: "x", model: "gpt-4" };\n',
-    );
-    try {
-      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasConfig).toBe(true);
-      expect(agents[0]!.hasRun).toBe(false);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('检测 config 导出（export function config）', async () => {
-    const { dir, write, cleanup } = setupTmp();
-    write(
-      'src/agents/researcher/handler.ts',
-      'export function config() { return { systemPrompt: "x" }; }\n',
-    );
-    try {
-      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasConfig).toBe(true);
     } finally {
       cleanup();
     }
@@ -76,7 +46,6 @@ describe('scanAgents', () => {
     write('src/agents/researcher/handler.ts', 'export function run(input) { return "result"; }\n');
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasConfig).toBe(false);
       expect(agents[0]!.hasRun).toBe(true);
     } finally {
       cleanup();
@@ -129,7 +98,6 @@ describe('scanAgents', () => {
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
       expect(agents).toHaveLength(1);
-      expect(agents[0]!.hasConfig).toBe(true);
       expect(agents[0]!.hasRun).toBe(true);
     } finally {
       cleanup();
@@ -142,7 +110,6 @@ describe('scanAgents', () => {
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
       expect(agents).toHaveLength(1);
-      expect(agents[0]!.hasConfig).toBe(false);
       expect(agents[0]!.hasRun).toBe(false);
     } finally {
       cleanup();
@@ -159,7 +126,6 @@ describe('scanAgents', () => {
     );
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasConfig).toBe(false);
       expect(agents[0]!.hasRun).toBe(false);
     } finally {
       cleanup();
@@ -178,11 +144,8 @@ describe('scanAgents', () => {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
       expect(agents).toHaveLength(3);
       const byName = new Map(agents.map((a) => [a.name, a]));
-      expect(byName.get('researcher')?.hasConfig).toBe(true);
       expect(byName.get('researcher')?.hasRun).toBe(false);
-      expect(byName.get('coder')?.hasConfig).toBe(false);
       expect(byName.get('coder')?.hasRun).toBe(true);
-      expect(byName.get('writer')?.hasConfig).toBe(true);
       expect(byName.get('writer')?.hasRun).toBe(true);
     } finally {
       cleanup();
@@ -251,7 +214,6 @@ describe('scanAgents', () => {
       const agent: AgentManifest = agents[0]!;
       expect(agent).toHaveProperty('name');
       expect(agent).toHaveProperty('filePath');
-      expect(agent).toHaveProperty('hasConfig');
       expect(agent).toHaveProperty('hasRun');
     } finally {
       cleanup();

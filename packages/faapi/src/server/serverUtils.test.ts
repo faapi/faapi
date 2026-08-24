@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { IncomingMessage } from 'node:http';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
-import { ValidationError } from '../errors/httpErrors';
+import { ValidationError, PayloadTooLargeError } from '../errors/httpErrors';
 
 describe('nodeHttpToWebHeaders', () => {
   it('标量 header 被设置', () => {
@@ -54,5 +54,11 @@ describe('buildErrorResponse', () => {
     const result = buildErrorResponse(err);
     expect(result.status).toBeGreaterThanOrEqual(400);
     expect(result.status).toBeLessThanOrEqual(422);
+  });
+
+  it('PayloadTooLargeError 返回 413', () => {
+    const err = new PayloadTooLargeError(2048);
+    const result = buildErrorResponse(err);
+    expect(result.status).toBe(413);
   });
 });

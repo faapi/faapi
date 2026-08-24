@@ -1,17 +1,26 @@
 # extractAgentMetadata
 
-一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、`@agent` 覆盖名、config 块字段(systemPrompt / tools / agents / model / maxTurns)，产出完整的 `AgentMetadata` 结构供产物生成阶段消费。
+一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、`@agent` 覆盖名、config 块字段(systemPrompt / tools / agents / model / maxTurns)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
 
 ## 为什么需要
 
-`scanAgents` 只通过正则检测了 `config`/`run` 导出是否存在(Vite 风格零 import)，但生成 `faapi-agents.js` 清单还需要两类信息：
+`scanAgents` 只通过正则检测了 `run` 导出是否存在(Vite 风格零 import)，但生成 `faapi-agents.js` 清单还需要两类信息：
 
 1. **JSDoc 描述 + `@agent` 覆盖名**——agent 名对 LLM 可见，描述让 LLM 理解 agent 用途。`@agent` 标签允许覆盖目录推导的默认名。
 2. **config 块字段**——`systemPrompt`(系统提示词)、`tools`(agent 显式声明可用 tool 引用列表)、`agents`(可调用的其他 agent 列表)、`model`(LLM 模型)、`maxTurns`(最大对话轮数)。这些字段在运行时由 Agent 类/reactLoop 消费。
 
-这些信息必须用 TypeScript AST 提取(JSDoc 和对象字面量在运行时被擦除)。本模块在 dev/build 启动时对每个 `AgentManifest` 调用一次，把路径推导字段(name/filePath/hasConfig/hasRun)与 AST 提取字段(description/config 块字段)合并为完整的 `AgentMetadata`，供 [generateAgentArtifacts](../cli/generateAgentArtifacts.md) 直接序列化。
+这些信息必须用 TypeScript AST 提取(JSDoc 和对象字面量在运行时被擦除)。本模块在 dev/build 启动时对每个 `AgentManifest` 调用一次，把路径推导字段(name/filePath/hasRun)与 AST 提取字段(description/config 块字段)合并为完整的 `AgentMetadata`，供 [generateAgentArtifacts](../cli/generateAgentArtifacts.md) 直接序列化。
 
-与 [extractToolMetadata](./extractToolMetadata.md) 同构——一个从函数导出提取 JSDoc + 参数类型，一个从 config 导出提取 JSDoc + 配置块。
+## Core / Metadata 分层
+
+`AgentCore` 描述 LLM 可见字段(不含代码加载细节)，`AgentMetadata` 继承 `AgentCore` 额外含 `filePath` / `hasRun`：
+
+- **`AgentCore`** —— `name` / `description` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns`。文件型 agent 与 DB-driven skill 都实现此接口。`agentRegistry.getAgent` 返回此类型。
+- **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`(加载 handler.js 用) / `hasRun`(是否导出 `run` 函数)。仅文件型 agent 实现。`agentRegistry.getAgentEntry` 返回此类型。
+
+DB-driven skill 不实现 `AgentMetadata`(无源文件，无需 `loadAgentModule`)，只实现 `AgentCore` 存入 `skillRegistry`。
+
+与 [extractToolMetadata](./extractToolMetadata.md) 的 `ToolCore` / `ToolMetadata` 分层同构。
 
 ## 使用场景
 
@@ -31,6 +40,8 @@ JSDoc 从哪个导出提取取决于 agent 的定义形式：
 | 都没有 | `undefined` |
 
 > `config` 优先——它是 agent 的主定义块，`run` 是可选的实现函数。
+>
+> 注:`scanAgents` 不再检测 `config` 导出(只检测 `run`),但 `extractAgentMetadata` 在 AST 阶段仍会查找 config 导出(用于提取 JSDoc 描述 + config 块字段)。
 
 ### JSDoc 描述
 
@@ -58,7 +69,7 @@ JSDoc 中 `@agent <name>` 标签的值，覆盖目录推导的 `name`：
 
 ### config 块字段
 
-仅当 `hasConfig=true` 时提取。config 块有两种导出形式：
+从 config 导出的对象字面量提取(无论 `scanAgents` 是否检测到 config 导出,AST 阶段都会查找)。config 块有两种导出形式：
 
 **1. 对象字面量(最常见)**：
 ```ts
@@ -95,25 +106,28 @@ export function config() {
 ## API
 
 ```ts
-interface AgentMetadata {
+// LLM 可见核心字段(文件型 agent 与 DB-driven skill 都实现)
+interface AgentCore {
   name: string;              // @agent 覆盖值 或 pathMeta.name
   description?: string;      // JSDoc 描述
-  filePath: string;          // 从 pathMeta 透传
-  hasConfig: boolean;        // 从 pathMeta 透传
-  hasRun: boolean;           // 从 pathMeta 透传
-  // config 块字段(仅 hasConfig=true 时有意义)
-  systemPrompt?: string;
-  tools?: string[];
+  systemPrompt?: string;     // config 块字面量提取
+  tools?: string[];          // agent 显式声明可用 tool 引用列表
   agents?: string[];         // 可调用的其他 agent 名
-  model?: string;
-  maxTurns?: number;
+  model?: string;            // LLM 模型名
+  maxTurns?: number;         // 最大对话轮数
 }
 
+// 文件型 agent 完整元数据(继承 AgentCore + 代码加载细节)
+interface AgentMetadata extends AgentCore {
+  filePath: string;          // 从 pathMeta 透传,loadAgentModule 加载 handler.js 用
+  hasRun: boolean;           // 从 pathMeta 透传,是否导出 run 函数
+}
+
+// 路径推导的元数据(scanAgents 产出)
 interface AgentPathMeta {
   name: string;              // 目录推导的 agent 名(如 "researcher")
   filePath: string;          // 源码相对路径(如 "src/agents/researcher/handler.ts")
-  hasConfig: boolean;        // 是否导出 config 块
-  hasRun: boolean;           // 是否导出 run 函数
+  hasRun: boolean;            // 是否导出 run 函数
 }
 
 function extractAgentMetadata(
@@ -133,8 +147,9 @@ function extractAgentMetadata(
 
 ## 相关模块
 
-- [scanAgents](../agents/scanAgents.md) - 产出 `AgentManifest`(含 hasConfig/hasRun)，供本模块的 `pathMeta` 来源
+- [scanAgents](../agents/scanAgents.md) - 产出 `AgentManifest`(含 hasRun)，供本模块的 `pathMeta` 来源
 - [agentTypes](../agents/agentTypes.md) - `AgentManifest` 类型定义
 - [createProgram](./createProgram.md) - 创建 TypeScript Program
-- [extractToolMetadata](./extractToolMetadata.md) - tool 元数据提取(对称设计参考)
+- [extractToolMetadata](./extractToolMetadata.md) - tool 元数据提取(对称设计参考,同样有 ToolCore/ToolMetadata 分层)
+- [agentRegistry](../injection/agentRegistry.md) - `getAgent` 返回 `AgentCore`,`getAgentEntry` 返回 `AgentMetadata`
 - [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 下游消费 `AgentMetadata[]` 生成 `faapi-agents.js`(Phase 1.9)

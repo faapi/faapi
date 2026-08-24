@@ -1,6 +1,6 @@
 import type { FaapiContext, ResponseMeta, CookieOptions, FailOptions } from './contextTypes';
 import { createSseWriter, type SseWriter } from './sse';
-import type { ResponseConfig } from '../config/configTypes';
+import { wrapOkResult, formatFailResponse, jsonOk } from '../response/responseFormatter';
 
 /**
  * 解析 Cookie 请求头为 Map
@@ -90,11 +90,7 @@ export function createContext(
     },
 
     json(data: unknown, status?: number): Response {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      return new Response(JSON.stringify(data), {
-        status: status ?? 200,
-        headers,
-      });
+      return jsonOk(data, status ?? 200);
     },
 
     html(html: string, status?: number): Response {
@@ -139,18 +135,24 @@ export function createContext(
     /**
      * 显式包装成功响应(返回 Response,不会被自动包裹再次包装)
      *
+     * 实现委托给 [responseFormatter.wrapOkResult](../response/responseFormatter.ts),
+     * 与 handler `return data` 走的自动包裹路径共享同一套 ok 函数。
+     *
      * 用 config.response.ok(或默认 (data) => ({ data })) 包裹 data 并返回 JSON Response。
      * handler 也可直接 return data,框架会自动用 ok 包裹,两者等价。
      */
     ok(data: unknown): Response {
-      const responseConfig = (config as { response?: ResponseConfig }).response;
-      const okFn = responseConfig?.ok ?? ((d: unknown) => ({ data: d }));
-      const body = okFn(data);
-      return ctx.json(body);
+      const body = wrapOkResult(data, config);
+      // wrapOkResult 对 Response 对象直接透传(不会包裹),ctx.ok 接收到的是 okFn(data) 的对象
+      // 业务方不应在 ctx.ok 里传 Response,这里 fallback 调 jsonOk 序列化
+      return jsonOk(body, 200);
     },
 
     /**
      * 返回错误响应(对象形式参数,status 和 code 均可省略)
+     *
+     * 实现委托给 [responseFormatter.formatFailResponse](../response/responseFormatter.ts),
+     * 与 formatErrorResponse(handler 抛错兜底)共享同一套 fail 函数,确保错误格式一致。
      *
      * - status 省略时 HTTP 状态码默认 500
      * - code 省略时响应 body 里不含 code 字段(默认 fail 函数只放非 undefined 的字段)
@@ -159,20 +161,7 @@ export function createContext(
      * body 用 config.response.fail(或默认实现)包装。
      */
     fail(options: FailOptions): Response {
-      const responseConfig = (config as { response?: ResponseConfig }).response;
-      const failFn =
-        responseConfig?.fail ??
-        ((e: { status?: number; code?: string; message: string }) => {
-          const error: Record<string, unknown> = { message: e.message };
-          if (e.code !== undefined) error.code = e.code;
-          return { error };
-        });
-      const body = failFn({
-        status: options.status,
-        code: options.code,
-        message: options.message,
-      });
-      return ctx.json(body, options.status ?? 500);
+      return formatFailResponse(options, config);
     },
   } as FaapiContext & { meta: ResponseMeta; __sseResponse?: Response; __sseWriter?: SseWriter };
 

@@ -3,10 +3,12 @@ export const ROUTE_NOT_FOUND = 'ROUTE_NOT_FOUND';
 export const METHOD_NOT_ALLOWED = 'METHOD_NOT_ALLOWED';
 export const INTERNAL_ERROR = 'INTERNAL_ERROR';
 export const MODULE_LOAD_ERROR = 'MODULE_LOAD_ERROR';
+export const PAYLOAD_TOO_LARGE = 'PAYLOAD_TOO_LARGE';
 
 export type ErrorCode =
   | typeof VALIDATION_ERROR
   | typeof ROUTE_NOT_FOUND
   | typeof METHOD_NOT_ALLOWED
   | typeof INTERNAL_ERROR
-  | typeof MODULE_LOAD_ERROR;
+  | typeof MODULE_LOAD_ERROR
+  | typeof PAYLOAD_TOO_LARGE;

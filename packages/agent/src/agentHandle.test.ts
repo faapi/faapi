@@ -1,9 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { Agent } from './agent';
-import type { AgentHandle } from './agentHandle';
+import type { AgentHandle, AgentRunOptions } from './agentHandle';
 import type { AgentDeps } from './agent';
-import type { AgentMetadata, ToolMetadata } from '@faapi/faapi';
-import type { LLMProvider, LLMResponse, LLMStreamChunk } from './provider';
+import type { AgentCore, AgentMetadata, LlmConfig, ToolMetadata } from '@faapi/faapi';
+import type {
+  LLMCompleteRequest,
+  LLMProvider,
+  LLMResponse,
+  LLMStreamChunk,
+  LLMStopReason,
+} from './provider';
 
 // ─── 类型级测试：Agent 满足 AgentHandle ────────────────
 
@@ -12,10 +18,10 @@ function _assertAgentIsAgentHandle(agent: Agent): AgentHandle {
   return agent;
 }
 
-/** 编译期断言：AgentHandle 的方法签名与 Agent 一致 */
+/** 编译期断言：AgentHandle 的方法签名含 options 参数 */
 function _assertMethodSignatures(handle: AgentHandle): {
-  run: (input: string) => Promise<unknown>;
-  stream: (input: string) => AsyncIterable<unknown>;
+  run: (input: string, options?: AgentRunOptions) => Promise<unknown>;
+  stream: (input: string, options?: AgentRunOptions) => AsyncIterable<unknown>;
   asTool: () => unknown;
 } {
   return {
@@ -44,26 +50,57 @@ function mockProvider(): LLMProvider {
   };
 }
 
-/** 构造完整 AgentDeps（mock 版） */
-function mockDeps(): AgentDeps {
-  const agentMeta: AgentMetadata = {
+/** 默认测试用 llms 配置（含 'gpt-4o' / 'gpt-4o-mini' 两个 model） */
+function defaultLlms(): Record<string, LlmConfig> {
+  return {
+    openai: {
+      provider: 'openai',
+      apiKey: 'test-key',
+      models: { 'gpt-4o': {}, 'gpt-4o-mini': {} },
+    },
+  };
+}
+
+/** 构造完整 AgentDeps（mock 版）
+ *
+ * @param overrideProvider 可选,覆盖默认 provider 实例（用于多 provider 测试）
+ * @param overrideLlms 可选,覆盖默认 llms 配置
+ * @param overrideDefaultLlm 可选,覆盖默认 defaultLlm key
+ */
+function mockDeps(opts?: {
+  provider?: LLMProvider;
+  llms?: Record<string, LlmConfig>;
+  defaultLlm?: string;
+}): AgentDeps {
+  // getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath/hasRun）
+  const agentCore: AgentCore = {
     name: 'researcher',
-    filePath: 'dist/agents/researcher/handler.js',
-    hasConfig: true,
-    hasRun: false,
     description: '研究 agent',
     systemPrompt: 'you are a researcher',
   };
+  const agentEntryMeta: AgentMetadata = {
+    ...agentCore,
+    filePath: 'dist/agents/researcher/handler.js',
+    hasRun: false,
+  };
+  const provider = opts?.provider ?? mockProvider();
+  const llms = opts?.llms ?? defaultLlms();
+  const defaultLlm = opts?.defaultLlm ?? 'openai';
+  const providers = new Map<string, LLMProvider>([[defaultLlm, provider]]);
   return {
-    provider: mockProvider(),
+    providers,
+    defaultProvider: provider,
+    llms,
+    defaultLlm,
     agentName: 'researcher',
     rootDir: '/project',
-    getAgent: (name) => (name === 'researcher' ? agentMeta : undefined),
+    getAgent: (name) => (name === 'researcher' ? agentCore : undefined),
+    getAgentEntry: (name) => (name === 'researcher' ? agentEntryMeta : undefined),
     getTool: () => undefined,
     resolveAgentTools: () => [] as ToolMetadata[],
-    resolveSubAgents: () => [] as AgentMetadata[],
+    resolveSubAgents: () => [] as AgentCore[],
     loadToolModule: async () => ({ handler: async () => 'ok', functionName: 'fn' }),
-    loadAgentModule: async () => ({ config: {}, run: undefined }),
+    loadAgentModule: async () => ({ run: undefined }),
   };
 }
 
@@ -97,6 +134,87 @@ describe('AgentHandle', () => {
       deps.getAgent = () => undefined;
       const handle: AgentHandle = new Agent(deps);
       await expect(handle.run('hello')).rejects.toThrow('Agent "researcher" is not registered');
+    });
+
+    it('options.model / temperature / maxTokens 透传给 provider', async () => {
+      const recorded: LLMCompleteRequest[] = [];
+      const recordingProvider: LLMProvider = {
+        complete: async (req: LLMCompleteRequest) => {
+          recorded.push(req);
+          return {
+            message: { role: 'assistant', content: 'ok' },
+            stopReason: 'stop' as LLMStopReason,
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const deps = mockDeps({ provider: recordingProvider });
+      const handle: AgentHandle = new Agent(deps);
+
+      await handle.run('hello', { model: 'gpt-4o-mini', temperature: 0.2, maxTokens: 100 });
+
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0].model).toBe('gpt-4o-mini');
+      expect(recorded[0].temperature).toBe(0.2);
+      expect(recorded[0].maxTokens).toBe(100);
+    });
+
+    it('options.model 用 llms key 切换 provider（不调默认 provider）', async () => {
+      let overrideCalled = 0;
+      let defaultCalled = 0;
+      const overrideProvider: LLMProvider = {
+        complete: async () => {
+          overrideCalled++;
+          return {
+            message: { role: 'assistant', content: 'override' },
+            stopReason: 'stop' as LLMStopReason,
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const defaultProvider: LLMProvider = {
+        complete: async () => {
+          defaultCalled++;
+          return {
+            message: { role: 'assistant', content: 'default' },
+            stopReason: 'stop' as LLMStopReason,
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      // 双 provider llms 配置:openai(默认) + anthropic(覆盖)
+      const llms: Record<string, LlmConfig> = {
+        openai: { provider: 'openai', apiKey: 'k1', models: { 'gpt-4o': {} } },
+        anthropic: { provider: 'anthropic', apiKey: 'k2', models: { 'claude-3': {} } },
+      };
+      const providers = new Map<string, LLMProvider>([
+        ['openai', defaultProvider],
+        ['anthropic', overrideProvider],
+      ]);
+      const deps = mockDeps({
+        provider: defaultProvider,
+        llms,
+        defaultLlm: 'openai',
+      });
+      // 手动覆盖 providers Map（mockDeps 只放 defaultLlm 一个,这里需要两个）
+      deps.providers = providers;
+      const handle: AgentHandle = new Agent(deps);
+
+      // model='anthropic' 精确匹配 llms key → 切到 anthropic provider
+      const result = await handle.run('hello', { model: 'anthropic' });
+
+      expect(result.content).toBe('override');
+      expect(overrideCalled).toBe(1);
+      expect(defaultCalled).toBe(0);
     });
   });
 
