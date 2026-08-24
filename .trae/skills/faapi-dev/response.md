@@ -202,6 +202,60 @@ export default {
 - 默认 `fail` 实现只把非 undefined 的字段放入 error 对象:`{ error: { message, ...code? } }`
 - 自定义 `fail` 时注意处理 `code` 为 undefined 的情况(如上例始终放 code,则 `ctx.fail({ message })` 响应里 code 为 undefined)
 
+## ctx.json — 绕过 ok 封装
+
+`return data` / `ctx.ok(data)` 会用 `config.response.ok` 自动包裹响应(默认 `{ data: T }`,自定义后可能是 `{ code:0, data:{...} }` 等)。但有些场景需要返回**不被包裹的原始 JSON**,直接用 `ctx.json(data, status?)`:
+
+| 返回方式 | 是否经过 ok 封装 | 典型场景 |
+| --- | --- | --- |
+| `return data` | 是(`config.response.ok(data)`) | 业务 API,默认统一响应格式 |
+| `return ctx.ok(data)` | 是(同上,显式包裹) | 业务 API,显式包裹 |
+| **`return ctx.json(data)`** | **否,原样序列化** | 透传第三方协议响应,不能被业务层包装 |
+
+`ctx.json` 返回 `Response` 对象,`wrapResult` 原样透传(见[自动包裹机制](#自动包裹机制)表),不会被 `config.response.ok` 二次包装。
+
+### 典型场景:LLM 中转网关
+
+LLM 中转 handler 需要直接透传上游 LLM 厂商的 **OpenAI 兼容响应**(`{choices:[...], usage:{...}}`),不能被 `ok()` 包一层 `{code:0, data:{...}}`——否则下游 OpenAI 兼容客户端解析 `json.choices` 会拿到 `undefined`:
+
+```ts
+// src/api/chat/completions/handler.ts(LLM 网关项目)
+export async function POST(ctx, body) {
+  const upstream = await fetch('https://api.openai.com/v1/chat/completions', { ... });
+  const openaiResp = await upstream.json();  // { choices:[...], usage:{...} }
+
+  // ❌ return openaiResp → 被 config.response.ok 包装为 { code:0, data:{choices:[...]} }
+  //    下游 OpenAI 客户端读 json.choices 拿不到,抛 "Empty choices in response"
+
+  // ✅ ctx.json 原样序列化,返回标准 OpenAI 响应
+  return ctx.json(openaiResp);
+}
+```
+
+流式 LLM 转发用 `ctx.sse()` 直接透传上游 SSE chunk,同样不经 ok 封装:
+
+```ts
+export async function POST(ctx, body) {
+  const upstream = await fetchUpstreamStream(body);
+  const sse = ctx.sse();
+  for await (const chunk of upstream) {
+    sse.send({ data: chunk });  // 透传上游 SSE data,原样不包装
+  }
+  sse.close();
+}
+```
+
+### 其他场景
+
+- **Webhook 回调**:第三方要求严格格式(如企微回调要 `{ errcode:0, errmsg:'ok' }`,不能多包一层 `data`)
+- **JSON-RPC / gRPC-Web 等非 REST 协议**:响应结构由协议规定,不能套业务 envelope
+- **代理透传**:把上游响应原样回传(如反向代理某 OpenAPI)
+- **自定义 issues 字段的错误响应**:标准 `ctx.fail` 不支持 `issues`,需 `ctx.json` 自行构造(见下方[全局错误中间件](#全局错误中间件--自定义错误响应)示例)
+
+### 不要滥用
+
+业务 API 应坚持 `return data` / `ctx.ok(data)` 走统一包装,保证前端一套解析逻辑。只在「响应结构由第三方协议规定,不能被业务 envelope 包装」时才用 `ctx.json`。
+
 ## 全局错误中间件 — 自定义错误响应
 
 handler 抛出的错误(非 `ctx.fail` 返回)由全局中间件 `try/catch next()` 捕获,转成错误 Response:

@@ -21,7 +21,7 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 | 写注入器 / 自定义依赖 | [injection.md](./injection.md) | `export const injectors` |
 | 写配置文件 / 了解所有配置字段 | [config.md](./config.md) | `faapi.config.ts` |
 | 配置 CORS | [cors.md](./cors.md) | `cors: { origin: '*' }` |
-| 统一响应格式 / 自定义错误响应 | [response.md](./response.md) | `ok()` 辅助函数、全局错误中间件 |
+| 统一响应格式 / 自定义错误响应 / 绕过 ok 封装 | [response.md](./response.md) | `ok()` 辅助函数、全局错误中间件、`ctx.json` 透传第三方协议响应 |
 | 配置生命周期钩子 | [lifecycle.md](./lifecycle.md) | `lifecycle: { onReady, onClose, onError }` |
 | 扩展 ctx | [extend-context.md](./extend-context.md) | `extendContext(ctx) { ... }` |
 | 写插件 / 集成 Next.js / 启用 @faapi/agent | [plugins.md](./plugins.md) | `@faapi/next` / `@faapi/agent` 集成 |
