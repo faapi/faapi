@@ -34,7 +34,7 @@ GET(query: Query, db: Db)
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 | `agent` | 默认 agent 的 [AgentHandle](https://github.com/faapi/faapi/blob/main/packages/agent/src/agentHandle.ts) 实例（含 `run`/`stream`/`asTool`）；`@faapi/agent` 插件未加载或 `config.agent.llms`/`defaultAgent` 未配置时注入 `undefined` | `POST(agent: AgentHandle \| undefined, body)` |
-| `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
+| `agents` | 所有已注册**文件型 agent** 的 LLM 可见元数据列表（`AgentCore[]`；不合并 skillRegistry——skill 与 agent 物理隔离，详见 [agent.md](./agent.md#db-driven-skills)） | `GET(agents)` |
 
 **`form` 与 `body` 互斥**：handler 声明其一即可。`form` 适用于 `Content-Type: application/x-www-form-urlencoded` 的请求体，框架按 URL 表单解析为 `Record<string, string>`，schema 校验时 coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串）。`body` 适用于 JSON 请求体，coerce=false。
 

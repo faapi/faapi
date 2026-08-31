@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
+import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import {
   hydrateAgentRegistry,
@@ -13,7 +13,6 @@ import {
   type AgentToolDescriptor,
 } from './agentRegistry';
 import { hydrateToolRegistry, clearToolRegistry } from './toolRegistry';
-import { clearSkillRegistry, upsertSkill, removeSkill } from './skillRegistry';
 
 /**
  * agentRegistry 测试：单例注册表的查询 API
@@ -23,18 +22,19 @@ import { clearSkillRegistry, upsertSkill, removeSkill } from './skillRegistry';
  * - Phase 2.2 扩展：asTool / resolveAgentTools / resolveSubAgents
  *
  * resolveAgentTools 跨注册表依赖 toolRegistry，测试中同步水合两个注册表。
+ *
+ * skill 与 agent 完全独立（方案 A）：agentRegistry 不 fallback 到 skillRegistry,
+ * skillRegistry 自身的存储语义在 skillRegistry.test.ts 单独测。
  */
 describe('agentRegistry', () => {
   beforeEach(() => {
     clearAgentRegistry();
     clearToolRegistry();
-    clearSkillRegistry();
   });
 
   afterEach(() => {
     clearAgentRegistry();
     clearToolRegistry();
-    clearSkillRegistry();
   });
 
   const researcher: AgentMetadata = {
@@ -389,119 +389,44 @@ describe('agentRegistry', () => {
     });
   });
 
-  describe('skill fallback — DB-driven skill 自动发现', () => {
+  describe('与 skillRegistry 物理隔离（方案 A）', () => {
     /**
-     * skillRegistry 是业务方运行时动态注册的 DB-driven skill 来源,
-     * agentRegistry 的查询函数在文件 registry 未命中时 fallback 到 skillRegistry。
-     * 优先级:skill 优先,文件型回退(同名时 skill 覆盖文件型 agent)。
+     * skill 与 agent 完全独立：agentRegistry 的查询函数不 fallback 到 skillRegistry,
+     * skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归。
+     *
+     * skillRegistry 由业务方 plugin 内部使用,其存储语义在 skillRegistry.test.ts 单独测。
      */
-    const translator: AgentCore = {
-      name: 'translator',
-      description: '翻译助手',
-      systemPrompt: '你是一个翻译助手',
-      tools: ['translate.detect', 'translate.convert'],
-      agents: [],
-      model: 'gpt-4o',
-      maxTurns: 5,
-    };
-
-    it('getAgent fallback 命中 skill', () => {
-      upsertSkill(translator);
-      // 文件 registry 没注册 translator,fallback 命中 skill
-      expect(getAgent('translator')).toEqual(translator);
-    });
-
-    it('getAgent 文件 registry 命中时不查 skill', () => {
+    it('getAgent 不 fallback 到 skillRegistry', () => {
       hydrateAgentRegistry([researcher]);
-      // 文件 registry 已有 researcher,即使 skill 也有同名,优先返回 skill
-      // (skill 优先级更高,override 语义)
-      upsertSkill({ ...researcher, systemPrompt: 'skill-override' });
-      const result = getAgent('researcher')!;
-      expect(result.systemPrompt).toBe('skill-override');
-    });
-
-    it('getAgent 两个 registry 都未命中返回 undefined', () => {
-      expect(getAgent('nonexistent')).toBeUndefined();
-    });
-
-    it('listAgents 合并文件型 + skill,同名时 skill 覆盖', () => {
-      hydrateAgentRegistry([researcher, writer]);
-      upsertSkill(translator);
-      // 同名时 skill 覆盖文件型
-      upsertSkill({ ...researcher, systemPrompt: 'skill-override' });
-
-      const list = listAgents();
-      // researcher(被覆盖) + writer + translator = 3
-      expect(list).toHaveLength(3);
-      const names = list.map((a) => a.name).sort();
-      expect(names).toEqual(['researcher', 'translator', 'writer']);
-
-      // researcher 是 skill 版本(systemPrompt 被覆盖)
-      const r = list.find((a) => a.name === 'researcher')!;
-      expect(r.systemPrompt).toBe('skill-override');
-    });
-
-    it('listAgents 两个 registry 都空返回空数组', () => {
-      expect(listAgents()).toEqual([]);
-    });
-
-    it('resolveAgentTools fallback 命中 skill 的 tools 引用', () => {
-      hydrateToolRegistry([
-        {
-          name: 'translate.detect',
-          functionName: 'detect',
-          description: '检测语言',
-          filePath: 'dist/tools/translate/handler.js',
-        },
-        {
-          name: 'translate.convert',
-          functionName: 'convert',
-          description: '翻译',
-          filePath: 'dist/tools/translate/handler.js',
-        },
-      ]);
-      upsertSkill(translator);
-
-      const tools = resolveAgentTools('translator');
-      expect(tools).toHaveLength(2);
-      expect(tools.map((t) => t.name).sort()).toEqual(['translate.convert', 'translate.detect']);
-    });
-
-    it('resolveAgentTools skill 未注册返回空数组', () => {
-      expect(resolveAgentTools('nonexistent')).toEqual([]);
-    });
-
-    it('asTool fallback 命中 skill', () => {
-      upsertSkill(translator);
-      const tool = asTool('translator');
-      expect(tool).toBeDefined();
-      expect(tool!.kind).toBe('agent');
-      expect(tool!.name).toBe('agent.translator');
-      expect(tool!.agentName).toBe('translator');
-      expect(tool!.description).toBe('翻译助手');
-      expect(tool!.metadata).toEqual(translator);
-    });
-
-    it('asTool skill 未注册返回 undefined', () => {
-      expect(asTool('nonexistent')).toBeUndefined();
-    });
-
-    it('removeSkill 后 agentRegistry 不再 fallback 命中', () => {
-      upsertSkill(translator);
-      expect(getAgent('translator')).toBeDefined();
-
-      removeSkill('translator');
+      // 即便 skillRegistry 通过 upsertSkill 塞了同名 translator,getAgent 也找不到
+      // (skillRegistry 的写入由 skillRegistry.test.ts 自测,这里只验证 fallback 不发生)
       expect(getAgent('translator')).toBeUndefined();
+      // researcher 仍走文件 registry
+      expect(getAgent('researcher')).toEqual(researcher);
     });
 
-    it('reloadAgents 不影响 skillRegistry(dev 模式安全)', () => {
-      // 模拟 dev watcher 触发 reloadAgents:重新 hydrate 文件 registry
-      upsertSkill(translator);
-      hydrateAgentRegistry([researcher]); // 重新整体替换文件 registry
+    it('listAgents 不合并 skillRegistry', () => {
+      hydrateAgentRegistry([researcher, writer]);
+      const list = listAgents();
+      // 只返回文件型 agent,不包含任何 skill
+      expect(list).toHaveLength(2);
+      const names = list.map((a) => a.name).sort();
+      expect(names).toEqual(['researcher', 'writer']);
+    });
 
-      // skillRegistry 不受影响,translator 仍可被发现
-      expect(getAgent('translator')).toEqual(translator);
-      expect(getAgent('researcher')).toEqual(researcher);
+    it('resolveSubAgents 不 fallback 到 skillRegistry', () => {
+      // orchestrator 引用 skill 名 'translator',resolveSubAgents 应跳过
+      const orchestrator: AgentMetadata = {
+        name: 'orchestrator',
+        filePath: 'dist/agents/orchestrator/handler.js',
+        hasRun: false,
+        agents: ['writer', 'translator'],
+      };
+      hydrateAgentRegistry([orchestrator, writer]);
+      const subs = resolveSubAgents('orchestrator');
+      // 只解析出文件型 writer,skill 'translator' 不参与
+      expect(subs).toHaveLength(1);
+      expect(subs[0]!.name).toBe('writer');
     });
   });
 });

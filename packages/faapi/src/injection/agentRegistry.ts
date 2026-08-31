@@ -1,7 +1,6 @@
 import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import { getTool } from './toolRegistry';
-import { getSkill, listSkills } from './skillRegistry';
 
 /**
  * agent 注册表（单例）
@@ -22,17 +21,18 @@ import { getSkill, listSkills } from './skillRegistry';
  *   (继承 AgentCore + `filePath` / `hasRun`)。用于 `@faapi/agent` 子包加载 handler.js
  *   执行自定义 `run` 函数。
  *
- * ## skill fallback
+ * ## 与 skillRegistry 物理隔离
  *
- * `getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool`
- * 在文件 registry 未命中时 fallback 到 [skillRegistry](./skillRegistry.md)，
- * 自动发现业务方运行时动态注册的 DB-driven skill。fallback 优先级：
- * **skill 优先,文件型回退**（同名时 skill 覆盖文件型 agent）。
+ * 本注册表只承载文件型 agent（编译期 `faapi-agents.js` 产物来源）。
+ * [skillRegistry](./skillRegistry.md) 是独立的运行时动态 skill 注册表，
+ * 供业务方 plugin 内部使用（DB-driven skill 的 hydrate / upsert / remove）。
  *
- * `getAgentEntry` **不 fallback**——DB skill 无源文件,不走 `loadAgentModule`,
- * 调用方应改用 `getAgent` 拿 AgentCore 字段。
+ * 两者各管各的,本模块的查询函数（getAgent / listAgents / asTool /
+ * resolveAgentTools / resolveSubAgents）**不 fallback 到 skillRegistry**——
+ * agent 负责核心流程（含 `run` 函数的多步串联、文件型入口）,
+ * skill 用于拓展（运行时动态补充）,职责正交不耦合。
  *
- * 详见 [agentRegistry.md](./agentRegistry.md) 的「skill fallback」章节。
+ * 详见 [agentRegistry.md](./agentRegistry.md) 的「与 skillRegistry 的关系」章节。
  */
 
 /** 内部存储：agent 名 → AgentMetadata */
@@ -72,9 +72,9 @@ export function clearAgentRegistry(): void {
  * 返回 [AgentCore](../ast/extractAgentMetadata.md) 字段(name / description /
  * systemPrompt / tools / agents / model / maxTurns),**不含** `filePath` / `hasRun`。
  *
- * skill fallback:先查 [skillRegistry](./skillRegistry.ts) 的 `getSkill`,
- * 命中返回 skill 元数据(运行时业务方动态注册的 DB-driven skill);
- * 未命中查文件 registry。
+ * 仅查文件 registry（编译期 `faapi-agents.js` 产物来源）。**不 fallback 到
+ * [skillRegistry](./skillRegistry.ts)**——skill 与 agent 职责正交不耦合,
+ * skill 由业务方 plugin 内部使用,不参与 agent 查询链路。
  *
  * 用于 LLM-facing 场景(`agents` 参数注入、`asTool` 描述、
  * `resolveAgentTools` / `resolveSubAgents` 解析)。
@@ -84,7 +84,7 @@ export function clearAgentRegistry(): void {
  * @returns `AgentCore` 或 `undefined`（未注册）
  */
 export function getAgent(name: string): AgentCore | undefined {
-  return getSkill(name) ?? registry.get(name);
+  return registry.get(name);
 }
 
 /**
@@ -94,30 +94,28 @@ export function getAgent(name: string): AgentCore | undefined {
  * 额外含 `filePath` / `hasRun`,供 `@faapi/agent` 子包 `loadAgentModule`
  * 加载 handler.js 执行自定义 `run` 函数。
  *
- * **不 fallback 到 skillRegistry**——DB skill 无源文件,不走 `loadAgentModule`。
  * 调用方需先判断 `entry?.hasRun` 再决定是否加载 handler.js。
  *
  * @param name agent 名
- * @returns `AgentMetadata` 或 `undefined`（未注册 / DB skill 无文件）
+ * @returns `AgentMetadata` 或 `undefined`（未注册）
  */
 export function getAgentEntry(name: string): AgentMetadata | undefined {
   return registry.get(name);
 }
 
 /**
- * 返回所有已注册 agent 的 LLM 可见元数据（文件型 + DB skill,同名去重）
+ * 返回所有已注册 agent 的 LLM 可见元数据（仅文件型 agent）
  *
- * 合并两个 registry:文件 registry + skillRegistry,按 `name` 去重,
- * **同名时 skill 覆盖文件型 agent**。
+ * 只返回文件 registry 的内容（编译期 `faapi-agents.js` 产物来源）,
+ * **不合并 [skillRegistry](./skillRegistry.ts)**——skill 与 agent 职责正交不耦合,
+ * skill 由业务方 plugin 内部使用。
  *
  * 返回 `AgentCore[]`(LLM-facing 字段,不含 filePath / hasRun)。
  * 返回副本，调用方修改不影响内部状态（与 `listTools` 同构）。
  */
 export function listAgents(): AgentCore[] {
   const merged = new Map<string, AgentCore>();
-  // 文件型先入,skill 后入覆盖同名
   for (const agent of registry.values()) merged.set(agent.name, agent);
-  for (const skill of listSkills()) merged.set(skill.name, skill);
   return Array.from(merged.values());
 }
 
@@ -152,8 +150,8 @@ export interface AgentToolDescriptor {
 /**
  * 把 agent 包装为 `AgentToolDescriptor` 供 LLM 当 tool 调用
  *
- * skill fallback:通过 [getAgent](#getAgent) 自动发现 DB-driven skill,
- * skill 同样可被父 agent 当作 tool 调用。
+ * 通过 [getAgent](#getAgent) 查询文件型 agent,不 fallback 到 skillRegistry。
+ * skill 不参与 sub-agent 递归（与 agent 职责正交不耦合）。
  *
  * 通常配合 [resolveSubAgents](#resolveSubAgents) 使用——把父 agent 的 `agents` 列表
  * 中的每个子 agent 包装为 tool，加入 LLM 可见 tool 列表。
@@ -162,7 +160,6 @@ export interface AgentToolDescriptor {
  * @returns `AgentToolDescriptor` 或 `undefined`（agent 未注册）
  */
 export function asTool(name: string): AgentToolDescriptor | undefined {
-  // 用 getAgent 而非直接读 registry,触发 skill fallback
   const agent = getAgent(name);
   if (!agent) return undefined;
   return {
@@ -183,9 +180,7 @@ export function asTool(name: string): AgentToolDescriptor | undefined {
  *
  * agent 必须显式声明用哪些 tool，显式优于隐式。
  *
- * skill fallback:通过 [getAgent](#getAgent) 自动发现 DB-driven skill,
- * skill 的 `tools` 字段同样会被解析。DB skill 引用的 tool 必须在 toolRegistry
- * 注册（文件型 tool 或未来 DB-driven tool）。
+ * 通过 [getAgent](#getAgent) 查询文件型 agent,不 fallback 到 skillRegistry。
  *
  * `tools` 中未在 toolRegistry 找到的 tool 名静默跳过（tool 可选可用，不强制存在）。
  *
@@ -196,7 +191,6 @@ export function asTool(name: string): AgentToolDescriptor | undefined {
  * @returns `ToolMetadata[]`（agent 未注册返回空数组）
  */
 export function resolveAgentTools(name: string): ToolMetadata[] {
-  // 用 getAgent 而非直接读 registry,触发 skill fallback
   const agent = getAgent(name);
   if (!agent) return [];
 
@@ -218,10 +212,10 @@ export function resolveAgentTools(name: string): ToolMetadata[] {
  * 解析 agent 可调用的子 agent 集合
  *
  * 读 `agent.agents` 字段（[extractAgentMetadata](../ast/extractAgentMetadata.md)
- * 提取的 `config.agents` 字面量列表），按名查找已注册 agent。
+ * 提取的 `config.agents` 字面量列表），按名查找已注册文件型 agent。
  *
- * skill fallback:通过 [getAgent](#getAgent) 自动发现 DB-driven skill。
- * 父 agent 可以在 `agents` 列表里引用 DB skill 名,递归调用走相同链路。
+ * 不 fallback 到 skillRegistry——skill 不参与 sub-agent 递归,
+ * 父 agent 的 `agents` 列表只能引用文件型 agent 名。
  *
  * 返回 `AgentCore[]`(LLM-facing 字段,供 `@faapi/agent` 子包包装为
  * `AgentToolDescriptor` 发给 LLM)。加载 sub-agent handler.js 执行 `run` 函数
@@ -239,13 +233,11 @@ export function resolveAgentTools(name: string): ToolMetadata[] {
  * @returns `AgentCore[]`（`agents` 未设置 / agent 未注册返回空数组）
  */
 export function resolveSubAgents(name: string): AgentCore[] {
-  // 用 getAgent 而非直接读 registry,触发 skill fallback
   const agent = getAgent(name);
   if (!agent || !agent.agents) return [];
 
   const result: AgentCore[] = [];
   for (const agentName of agent.agents) {
-    // 同样用 getAgent 触发 fallback,支持「父 agent 引用 skill 作为 sub-agent」
     const subAgent = getAgent(agentName);
     if (subAgent) result.push(subAgent);
     // 未注册的 agent 名跳过（agent 可选可用，不强制存在）

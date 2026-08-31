@@ -6,12 +6,18 @@ import type { AgentCore } from '../ast/extractAgentMetadata';
  * 与 [agentRegistry](./agentRegistry.md) 物理隔离,承载 DB-driven skills
  * (业务方在 plugin 里从数据库 / 外部源加载的 skill 元数据)。
  *
- * ## 双 registry 设计
+ * ## 与 agentRegistry 物理隔离
  *
  * - `agentRegistry` —— 编译期 `faapi-agents.js` 产物一次性水合,dev `reloadAgents`
- *   整体重新替换。来源是文件系统(`src/agents/<name>/handler.ts`)。
+ *   整体重新替换。来源是文件系统(`src/agents/<name>/handler.ts`)。承载文件型
+ *   agent,负责核心流程(含 `run` 函数的多步串联、sub-agent 递归)。
  * - `skillRegistry` —— 运行时动态,业务方 plugin `onReady` 启动期灌入 + DB change
- *   stream 单条增删。来源是数据库 / 外部 API。
+ *   stream 单条增删。来源是数据库 / 外部 API。仅供业务方 plugin 内部使用。
+ *
+ * 两者职责正交不耦合:**skill 用于拓展**,不参与 agent 查询链路、不覆盖文件型
+ * agent、不被 agent 的 `agents` 列表自动引用。agentRegistry 的查询函数
+ * (getAgent / listAgents / asTool / resolveAgentTools / resolveSubAgents)
+ * **不 fallback 到本模块**。
  *
  * 物理隔离避免 `reloadAgents` 清空 DB skill(dev 模式每次改文件都触发 reload,
  * 业务方手工重新塞 DB skill 不可接受)。
@@ -22,16 +28,6 @@ import type { AgentCore } from '../ast/extractAgentMetadata';
  * `AgentMetadata`——DB skill 无源文件,无需 `filePath` / `hasRun` / `hasConfig`
  * 等代码加载占位字段。业务方从 DB 字段直接映射到 `AgentCore` 的 LLM 可见字段
  * (name / description / systemPrompt / tools / agents / model / maxTurns)即可。
- *
- * `agentRegistry.getAgent` fallback 到本 registry 时返回 `AgentCore`,
- * 与文件型 agent 的 `getAgent` 返回类型一致(LLM-facing 链路统一)。
- * `agentRegistry.getAgentEntry` **不 fallback**——DB skill 无文件,不走 `loadAgentModule`。
- *
- * ## 查询入口 fallback
- *
- * `agentRegistry.getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents`
- * / `asTool` 在文件 registry 未命中时 fallback 到本模块,自动发现 skill。
- * fallback 优先级:**skill 优先,文件型回退**(同名时 skill 覆盖文件型 agent)。
  *
  * 详见 [skillRegistry.md](./skillRegistry.md)。
  */

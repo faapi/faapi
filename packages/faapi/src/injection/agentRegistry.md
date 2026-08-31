@@ -33,28 +33,31 @@ Phase 2.2 在基础查询 API 上扩展三个能力，对应 agent 三类用法�
 
 全量替换而非增量注册：agent 清单来自编译期产物，reload 时整体重新生成，增量追踪反而复杂（与 `hydrateToolRegistry` 同构）。
 
-### skill fallback — DB-driven skill 自动发现
+### 与 skillRegistry 的关系 — 物理隔离
 
-`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 在文件 registry 未命中（或被覆盖）时 fallback 到 [skillRegistry](./skillRegistry.md)，自动发现业务方运行时动态注册的 DB-driven skill。**`getAgentEntry` 不 fallback**——DB skill 无源文件，不走 `loadAgentModule`，调用方应改用 `getAgent` 拿 `AgentCore` 字段。
+本注册表只承载文件型 agent（编译期 `faapi-agents.js` 产物来源）。[skillRegistry](./skillRegistry.md) 是独立的运行时动态 skill 注册表，供业务方 plugin 内部使用（DB-driven skill 的 hydrate / upsert / remove）。
 
-**fallback 优先级**：`skillRegistry.getSkill(name)` 优先 → 文件 registry 回退。**同名时 skill 覆盖文件型 agent**，给业务方提供 override 能力（在 DB 里改一份 systemPrompt 即可覆盖文件型 agent，无需改源码）。
+**职责正交不耦合**：
 
-`listAgents` 合并两个 registry，按 `name` 去重（skill 优先）——`@faapi/agent` 的注入器 `agents` 参数自动看到合并列表。
+- **agent 负责核心流程**：含 `run` 函数的多步 prompt 串联、文件型入口、sub-agent 递归
+- **skill 用于拓展**：运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用
 
-`reloadAgents`（dev watcher 触发）只重新 hydrate 文件 registry，**不影响 skillRegistry**——业务方 DB skill 不会因为 dev 改文件而丢失。
+本模块的查询函数（`getAgent` / `listAgents` / `asTool` / `resolveAgentTools` / `resolveSubAgents`）**不 fallback 到 skillRegistry**——skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归。skill 不再被 agent 的 `agents` 列表自动引用。
+
+`reloadAgents`（dev watcher 触发）只重新 hydrate 文件 registry；skillRegistry 由业务方 plugin 自行管理生命周期（`hydrateSkillRegistry` / `upsertSkill` / `removeSkill`），dev 改文件不会清空 skillRegistry，业务方需自行在 `onReady` 或监听 DB change stream 时维护。
 
 ### 基础查询 API — Core/Entry 双查询模式
 
 agent 元数据分两层接口，对应两类使用方（详见 [extractAgentMetadata](../ast/extractAgentMetadata.md)）：
 
-- **`AgentCore`** —— `name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?`（LLM 可见字段，不含代码加载细节）。文件型 agent 与 DB-driven skill 都实现此接口。
-- **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`（加载 `handler.js` 用）/ `hasRun`（是否导出 `run` 函数）。仅文件型 agent 实现，DB skill 无源文件不实现。
+- **`AgentCore`** —— `name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?`（LLM 可见字段，不含代码加载细节）。文件型 agent 实现此接口。
+- **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`（加载 `handler.js` 用）/ `hasRun`（是否导出 `run` 函数）。仅文件型 agent 实现。
 
-| 方法 | 返回类型 | 用途 | 是否 fallback skillRegistry |
-| --- | --- | --- | --- |
-| `getAgent(name)` | `AgentCore \| undefined` | LLM-facing 场景：`agents` 注入器、`asTool` 描述、`resolveAgentTools` / `resolveSubAgents` 解析 | 是 |
-| `getAgentEntry(name)` | `AgentMetadata \| undefined` | 框架内部：`@faapi/agent` 子包加载 `handler.js`、检查 `hasRun` 决定走 `run` 函数还是单轮 prompt | 否（DB skill 无文件，不走 `loadAgentModule`） |
-| `listAgents()` | `AgentCore[]` | 返回所有已注册 agent（合并文件型 + DB skill，按 `name` 去重；副本，修改不影响内部状态） | 是 |
+| 方法 | 返回类型 | 用途 |
+| --- | --- | --- |
+| `getAgent(name)` | `AgentCore \| undefined` | LLM-facing 场景：`agents` 注入器、`asTool` 描述、`resolveAgentTools` / `resolveSubAgents` 解析。仅查文件 registry |
+| `getAgentEntry(name)` | `AgentMetadata \| undefined` | 框架内部：`@faapi/agent` 子包加载 `handler.js`、检查 `hasRun` 决定走 `run` 函数还是单轮 prompt |
+| `listAgents()` | `AgentCore[]` | 返回所有已注册文件型 agent（不合并 skillRegistry；副本，修改不影响内部状态） |
 
 **调用方选择**：消费 LLM 可见字段（`systemPrompt` / `tools` / `agents` / `model` / `maxTurns`）的代码用 `getAgent`；需要 `filePath` / `hasRun` 加载源码的代码用 `getAgentEntry`。
 
