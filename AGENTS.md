@@ -399,6 +399,9 @@ export default {
     defaultAgent: 'researcher',                  // 默认 agent 名（agent 参数注入读取此值）
     maxTurns: 10,                                // 默认最大对话轮数
     maxAgentDepth: 3,                            // agent 调用 agent 的最大递归深度
+    // enableTracing: false,                     // 关闭 tracing（默认 true）。生产高 QPS 端点可设 false 以零开销运行；
+                                                 //   开启时 agent.run()/stream() 返回 result.trace / chunk.traceEvent,
+                                                 //   详见 @faapi/agent 的 trace.md
   },
 
   // 自定义业务配置（任意 key，通过 ctx.config 访问）
@@ -531,7 +534,7 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 
 #### 5.6.3 双 registry 设计（agentRegistry + skillRegistry）
 
-agent 元数据有两个来源、两种生命周期：
+agent 与 skill 物理隔离，职责正交不耦合：
 
 | 来源 | registry | 注入时机 | API |
 |------|-----------|----------|-----|
@@ -540,17 +543,16 @@ agent 元数据有两个来源、两种生命周期：
 
 物理隔离的必要性：
 
+- **职责正交不耦合**——**agent 负责核心流程**（含 `run` 函数的多步 prompt 串联、文件型入口、sub-agent 递归）；**skill 用于拓展**（运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用）。两者不构成覆盖关系
 - **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 清单来自编译期产物，reload 时整体重新生成，**dev 模式 watcher 每次改文件都触发 reload**，业务方 DB skill 若混在同一 registry 会被清空，需要业务方手动重新塞，不可接受
 - **DB skill 是运行时增量**——业务方监听 DB change stream 单条增删改，与"整体替换"语义天然冲突
-- **同名 override 能力**——业务方可在 DB 里覆盖文件型 agent 的 `systemPrompt` / `tools`，物理隔离比同表 name 冲突规则更清晰
 
-`agentRegistry.getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 在文件 registry 未命中（或被覆盖）时 fallback 到 `skillRegistry`，**优先级：skill 优先 → 文件型回退**。`@faapi/agent` 子包的 `Agent` 类、`AgentHandleFactory`、`injectParams` 都自动消费 fallback 结果，无需改造。
+**agentRegistry 的查询函数不 fallback 到 skillRegistry**——`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 只查文件 registry。skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归（skill 不再被 agent 的 `agents` 列表自动引用）。skillRegistry 仅供业务方 plugin 内部使用，需要让 handler 看到 skill 时业务方自行通过注入器或中间件机制注入。
 
 DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetadata` 接口）：
 - 只填 LLM 可见字段：`name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?`
 - 无需 `filePath` / `hasRun` / `hasConfig` 占位——这些字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）
-- `agentRegistry.getAgent` fallback 到 skillRegistry 时返回 `AgentCore`，与文件型 agent 同构合并
-- DB skill 不支持自定义 `run` 函数（多步 prompt 串联）——覆盖 80% 的"配置 + tool 组合"场景,需要 `run` 的仍走文件型 agent
+- DB skill 不支持自定义 `run` 函数（多步 prompt 串联）——需要 `run` 的仍走文件型 agent
 
 详见 `src/injection/skillRegistry.md`。
 

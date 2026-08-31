@@ -8,6 +8,7 @@ import type {
   LLMUsage,
   LLMStopReason,
 } from './provider';
+import type { AgentTrace, TracingToolResult } from './trace';
 
 // ─── Mock 工具 ──────────────────────────────────────
 
@@ -750,6 +751,302 @@ describe('reactLoopStream', () => {
       const request = streamCalls.mock.calls[0][0];
       expect(request.messages[0]).toEqual({ role: 'system', content: 'be helpful' });
       expect(request.tools).toEqual([{ name: 't', description: 'd', input: { type: 'object' } }]);
+    });
+  });
+});
+
+// ─── tracing（结构化调用明细）─────────────────────────
+
+describe('tracing — reactLoop + reactLoopStream', () => {
+  /**
+   * tracing 默认开启（enableTracing 默认 true）,业务方在生产主路径显式
+   * enableTracing: false 关闭以零开销运行。
+   *
+   * ReactLoopResult.trace 填充 AgentTrace,事件按发生顺序排列。
+   * 流式版本通过 ReactLoopStreamChunk.traceEvent 增量推送。
+   */
+  const usage: LLMUsage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
+
+  /** 构造一个 sub-agent trace（用于 TracingToolResult 测试） */
+  function makeSubTrace(name: string): AgentTrace {
+    return {
+      agentName: name,
+      startedAt: 100,
+      durationMs: 50,
+      turns: 1,
+      usage,
+      stopReason: 'stop',
+      content: `sub-result-${name}`,
+      events: [
+        {
+          type: 'llm_call',
+          turn: 1,
+          startedAt: 100,
+          durationMs: 50,
+          model: 'gpt-4o',
+          inputMessages: [{ role: 'user', content: 'sub-input' }],
+          response: { role: 'assistant', content: `sub-result-${name}` },
+          stopReason: 'stop',
+          usage,
+        },
+      ],
+    };
+  }
+
+  describe('reactLoop — 非流式 tracing', () => {
+    it('默认开启:单轮直答 trace 结构完整', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({ content: 'Hello!', stopReason: 'stop', usage }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        model: 'gpt-4o',
+        executeTool: baseConfig.executeTool,
+      });
+
+      expect(result.trace).toBeDefined();
+      const trace = result.trace!;
+      expect(trace.agentName).toBe(''); // reactLoop 自身不知 agent 名,Agent 类填入
+      expect(trace.turns).toBe(1);
+      expect(trace.usage).toEqual(usage);
+      expect(trace.stopReason).toBe('stop');
+      expect(trace.content).toBe('Hello!');
+      expect(trace.durationMs).toBeGreaterThanOrEqual(0);
+      expect(trace.events).toHaveLength(1);
+
+      const evt = trace.events[0]!;
+      expect(evt.type).toBe('llm_call');
+      if (evt.type === 'llm_call') {
+        expect(evt.turn).toBe(1);
+        expect(evt.model).toBe('gpt-4o');
+        expect(evt.stopReason).toBe('stop');
+        expect(evt.usage).toEqual(usage);
+        // inputMessages 是浅拷贝快照,含该轮的 system(无) + user
+        expect(evt.inputMessages).toHaveLength(1);
+        expect(evt.inputMessages[0]!.role).toBe('user');
+        expect(evt.response).toEqual({
+          role: 'assistant',
+          content: 'Hello!',
+        });
+      }
+    });
+
+    it('enableTracing=false:trace 为 undefined(零开销)', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({ content: 'Hello!', stopReason: 'stop' }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: baseConfig.executeTool,
+        enableTracing: false,
+      });
+
+      expect(result.trace).toBeUndefined();
+    });
+
+    it('2 轮 trace:llm_call → tool_call → llm_call 顺序正确', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 'search', arguments: { q: 'foo' } }],
+          stopReason: 'tool_calls',
+          usage,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop', usage }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        model: 'gpt-4o',
+        executeTool: async () => 'search-result',
+      });
+
+      const trace = result.trace!;
+      expect(trace.turns).toBe(2);
+      expect(trace.events).toHaveLength(3);
+
+      const [llm1, tool1, llm2] = trace.events;
+      expect(llm1!.type).toBe('llm_call');
+      expect(llm1!.turn).toBe(1);
+      expect(tool1!.type).toBe('tool_call');
+      expect(tool1!.turn).toBe(1);
+      expect(llm2!.type).toBe('llm_call');
+      expect(llm2!.turn).toBe(2);
+
+      if (tool1!.type === 'tool_call') {
+        expect(tool1!.toolCallId).toBe('c1');
+        expect(tool1!.name).toBe('search');
+        expect(tool1!.arguments).toEqual({ q: 'foo' });
+        expect(tool1!.result).toBe('search-result');
+        expect(tool1!.error).toBeUndefined();
+      }
+
+      // 第 2 轮 llm_call 的 inputMessages 含第 1 轮追加的 assistant + tool 消息
+      // 顺序:user(1) + assistant(1,含 tool_calls) + tool(1) = 3 条
+      if (llm2!.type === 'llm_call') {
+        expect(llm2!.inputMessages).toHaveLength(3);
+        expect(llm2!.inputMessages[0]!.role).toBe('user');
+        expect(llm2!.inputMessages[1]!.role).toBe('assistant');
+        expect(llm2!.inputMessages[2]!.role).toBe('tool');
+      }
+    });
+
+    it('sub-agent 调用(executeTool 返回 TracingToolResult):trace 含 subagent_call 事件', async () => {
+      const subTrace = makeSubTrace('translator');
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 'agent.translator', arguments: { input: 'hi' } }],
+          stopReason: 'tool_calls',
+          usage,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop', usage }),
+      ]);
+
+      const tracingResult: TracingToolResult = {
+        __trace: true,
+        result: 'sub-result-translator',
+        trace: subTrace,
+      };
+      const executeTool = vi.fn(async () => tracingResult);
+
+      const result = await reactLoop('hi', {
+        provider,
+        model: 'gpt-4o',
+        executeTool,
+      });
+
+      const trace = result.trace!;
+      const subEvt = trace.events.find((e) => e.type === 'subagent_call');
+      expect(subEvt).toBeDefined();
+      if (subEvt!.type === 'subagent_call') {
+        expect(subEvt!.agentName).toBe('translator');
+        expect(subEvt!.input).toBe(JSON.stringify({ input: 'hi' }));
+        expect(subEvt!.trace).toEqual(subTrace); // 嵌套递归 trace
+        expect(subEvt!.result).toBe('sub-result-translator');
+        expect(subEvt!.toolCallId).toBe('c1');
+      }
+
+      // messages 里 tool 消息内容是 TracingToolResult.result stringifyResult 后的值
+      const toolMsg = result.messages.find((m) => m.role === 'tool');
+      expect(toolMsg!.content).toBe('sub-result-translator');
+    });
+
+    it('tool 抛错:tool_call 事件含 error 字段,result 为 stringifyError', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 'fail', arguments: {} }],
+          stopReason: 'tool_calls',
+          usage,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop', usage }),
+      ]);
+
+      const executeTool = vi.fn(async () => {
+        throw new Error('boom');
+      });
+
+      const result = await reactLoop('hi', {
+        provider,
+        model: 'gpt-4o',
+        executeTool,
+      });
+
+      const trace = result.trace!;
+      const toolEvt = trace.events.find((e) => e.type === 'tool_call');
+      if (toolEvt!.type === 'tool_call') {
+        expect(toolEvt!.error).toBeDefined();
+        expect(toolEvt!.result).toContain('boom');
+      }
+    });
+  });
+
+  describe('reactLoopStream — 流式 tracing', () => {
+    it('默认开启:traceEvent chunk 与 deltaContent/toolCall/toolResult/done 平行推送', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          { deltaContent: 'Hello' },
+          { deltaContent: ' world' },
+          {
+            toolCalls: [{ id: 'c1', name: 'search', arguments: { q: 'foo' } }],
+            finishReason: 'tool_calls',
+            usage,
+          },
+        ],
+        [{ deltaContent: 'final' }, { finishReason: 'stop', usage }],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', {
+          provider,
+          model: 'gpt-4o',
+          executeTool: async () => 'search-result',
+        }),
+      );
+
+      const traceEvents = chunks.filter((c) => c.traceEvent !== undefined);
+      expect(traceEvents.length).toBeGreaterThanOrEqual(3); // llm_call + tool_call + llm_call
+
+      const types = traceEvents.map((c) => c.traceEvent!.type);
+      expect(types).toContain('llm_call');
+      expect(types).toContain('tool_call');
+
+      // done chunk 含完整 trace 镜像
+      const done = chunks.find((c) => c.done !== undefined);
+      expect(done!.done).toBeDefined();
+    });
+
+    it('enableTracing=false:无 traceEvent chunk', async () => {
+      const { provider } = createMockStreamProvider([
+        [{ deltaContent: 'ok' }, { finishReason: 'stop' }],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', {
+          provider,
+          executeTool: baseConfig.executeTool,
+          enableTracing: false,
+        }),
+      );
+
+      const traceEvents = chunks.filter((c) => c.traceEvent !== undefined);
+      expect(traceEvents).toHaveLength(0);
+    });
+
+    it('sub-agent 调用:流式 traceEvent 含 subagent_call 事件', async () => {
+      const subTrace = makeSubTrace('translator');
+      const { provider } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [{ id: 'c1', name: 'agent.translator', arguments: { input: 'hi' } }],
+            finishReason: 'tool_calls',
+            usage,
+          },
+        ],
+        [{ deltaContent: 'final' }, { finishReason: 'stop', usage }],
+      ]);
+
+      const tracingResult: TracingToolResult = {
+        __trace: true,
+        result: 'sub-result-translator',
+        trace: subTrace,
+      };
+
+      const chunks = await collect(
+        reactLoopStream('hi', {
+          provider,
+          model: 'gpt-4o',
+          executeTool: async () => tracingResult,
+        }),
+      );
+
+      const traceEvents = chunks.filter((c) => c.traceEvent !== undefined);
+      const subEvt = traceEvents.find((c) => c.traceEvent!.type === 'subagent_call');
+      expect(subEvt).toBeDefined();
+      if (subEvt!.traceEvent!.type === 'subagent_call') {
+        expect(subEvt!.traceEvent!.agentName).toBe('translator');
+        expect(subEvt!.traceEvent!.trace).toEqual(subTrace);
+      }
     });
   });
 });

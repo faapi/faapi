@@ -16,6 +16,7 @@ import {
   type ReactLoopResult,
   type ReactLoopStreamChunk,
 } from './reactLoop';
+import type { TracingToolResult } from './trace';
 
 /**
  * Agent 类——按 `agent.name` 查找元数据、组装 tool 列表、提供 `run` / `stream` / `asTool`
@@ -45,6 +46,16 @@ export interface AgentRuntimeConfig {
   maxTurns?: number;
   /** agent 调用 agent 的最大递归深度（默认 3） */
   maxAgentDepth?: number;
+  /**
+   * 启用 tracing 的全局默认值（默认 true）。
+   *
+   * 开启时 `ReactLoopResult.trace` / `ReactLoopStreamChunk.traceEvent` 填充
+   * 结构化调用明细,详见 [trace.md](./trace.md)。
+   *
+   * 单次调用可通过 `AgentRunOptions.enableTracing` 覆盖。
+   * 业务方在生产主路径显式设 `false` 关闭以零开销运行。
+   */
+  enableTracing?: boolean;
 }
 
 /**
@@ -173,17 +184,25 @@ export class Agent {
   /**
    * 非流式执行——组装 config 调 [reactLoop](./reactLoop.md)
    *
+   * reactLoop 不知 agent 名（只关心循环逻辑）,返回的 `result.trace.agentName` 为空字符串。
+   * 本方法在 reactLoop 返回后填充 `this.deps.agentName`,让顶层 trace 标识"是哪个 agent 跑的"。
+   *
    * @param input 用户输入
-   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens
+   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens / enableTracing
    *                （不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
-   * @returns 最终结果（content + messages + turns + stopReason + usage）
+   * @returns 最终结果（content + messages + turns + stopReason + usage + trace?）
    * @throws {AgentError} agent 未注册
    * @throws {ReactLoopError} 超出 maxTurns
    * @throws {Error} provider.complete 抛错时立即传播
    */
   async run(input: string, options?: AgentRunOptions): Promise<ReactLoopResult> {
     const config = await this.buildLoopConfig(options);
-    return reactLoop(input, config);
+    const result = await reactLoop(input, config);
+    // reactLoop 不知 agent 名,在此填充顶层 trace.agentName（sub-agent 调本方法时也走此路径）
+    if (result.trace) {
+      result.trace.agentName = this.deps.agentName;
+    }
+    return result;
   }
 
   /**
@@ -267,6 +286,10 @@ export class Agent {
     // 解析 options.model 字符串 key → provider + model
     const { provider, model } = this.resolveModelKey(options?.model, meta);
 
+    // enableTracing 优先级:options > deps.config > 默认 true
+    // 闭包捕获 enableTracing,通过 executeTool 传递给 executeSubAgent,使其能包装 TracingToolResult
+    const enableTracing = options?.enableTracing ?? this.deps.config?.enableTracing ?? true;
+
     return {
       provider,
       systemPrompt: meta.systemPrompt,
@@ -275,7 +298,8 @@ export class Agent {
       maxTokens: options?.maxTokens,
       maxTurns: meta.maxTurns ?? this.deps.config?.maxTurns,
       tools,
-      executeTool: async (name, args) => this.executeTool(name, args),
+      enableTracing,
+      executeTool: async (name, args) => this.executeTool(name, args, enableTracing),
     };
   }
 
@@ -394,18 +418,25 @@ export class Agent {
   /**
    * tool 执行路由（由 reactLoop 调用）
    *
-   * - `agent.` 前缀 → {@link executeSubAgent} 递归
+   * - `agent.` 前缀 → {@link executeSubAgent} 递归（含 enableTracing + TracingToolResult 包装）
    * - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
+   *
+   * `enableTracing` 由 [buildLoopConfig](#buildLoopConfig) 闭包捕获传入,用于 sub-agent
+   * 调用时决定是否包装 [TracingToolResult](./trace.md) 携带 sub-trace。
    *
    * **常规 tool 校验失败**：不抛错，返回 `{ error }` 对象——reactLoop stringify 后
    * 作为 tool 结果回传 LLM，LLM 可据此修正参数重试。
    *
    * **tool 未找到 / 加载失败**：抛错，被 reactLoop catch 后同样回传 LLM。
    */
-  private async executeTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-    // sub-agent 递归
+  private async executeTool(
+    name: string,
+    args: Record<string, unknown>,
+    enableTracing: boolean,
+  ): Promise<unknown | TracingToolResult> {
+    // sub-agent 递归（携带 enableTracing,使其能包装 TracingToolResult）
     if (name.startsWith('agent.')) {
-      return this.executeSubAgent(name.slice(6), args);
+      return this.executeSubAgent(name.slice(6), args, enableTracing);
     }
 
     // 常规 tool
@@ -434,8 +465,17 @@ export class Agent {
    * sub-agent 递归执行
    *
    * 1. `maxAgentDepth` 防护——超限抛 {@link AgentRecursionError}
-   * 2. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`
-   * 3. 无 `run` 时调 `subAgent.run(JSON.stringify(args))` 走默认 reactLoop
+   * 2. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`（无 trace,与常规 tool 一致）
+   * 3. 无 `run` 时调 `subAgent.run(stringify(args), { enableTracing })` 走默认 reactLoop
+   *
+   * **tracing 路径**：`enableTracing=true` 时,subAgent.run 返回的 `result.trace`（agentName
+   * 已被 `Agent.run` 填为 subName）被包装为 [TracingToolResult](./trace.md) 返回给 reactLoop。
+   * reactLoop 通过 `isTracingToolResult` 识别后发出 `subagent_call` 事件,嵌入 sub-trace
+   * （递归结构,业务方可还原完整调用树）。`enableTracing=false` 时返回 `result.content`
+   * （unknown,与常规 tool 一致,零开销）。
+   *
+   * **自定义 run 无 trace**：业务方导出 `run` 函数时直接返回业务结果,无法采集 sub-agent
+   * 内部明细——需 trace 时应让 sub-agent 走默认 reactLoop（不导出 `run`）。
    *
    * 自定义 run 接收原始 args 对象；默认 reactLoop 接收 stringify 后的 args
    * 作为 user 消息（agent-as-tool input 为开放式 JSON）。
@@ -444,7 +484,11 @@ export class Agent {
    * 而非 `getAgent`(返回 AgentCore,无代码加载细节)。DB skill 无文件,
    * `getAgentEntry` 返回 `undefined`,走默认 reactLoop。
    */
-  private async executeSubAgent(subName: string, args: Record<string, unknown>): Promise<unknown> {
+  private async executeSubAgent(
+    subName: string,
+    args: Record<string, unknown>,
+    enableTracing: boolean,
+  ): Promise<unknown | TracingToolResult> {
     const newDepth = this.depth + 1;
     const maxDepth = this.deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
     if (newDepth > maxDepth) {
@@ -455,7 +499,7 @@ export class Agent {
     const subDeps: AgentDeps = { ...this.deps, agentName: subName };
     const subAgent = new Agent(subDeps, newDepth);
 
-    // 自定义 run：sub-agent handler 导出 run 函数时走自定义逻辑
+    // 自定义 run：sub-agent handler 导出 run 函数时走自定义逻辑（无 trace）
     // 用 getAgentEntry 拿 AgentMetadata(含 filePath/hasRun),DB skill 无文件走默认 reactLoop
     const entry = this.deps.getAgentEntry(subName);
     if (entry?.hasRun) {
@@ -465,8 +509,20 @@ export class Agent {
       }
     }
 
-    // 默认 reactLoop：stringify args 作为 user 消息
-    const result = await subAgent.run(typeof args === 'string' ? args : JSON.stringify(args));
+    // 默认 reactLoop：stringify args 作为 user 消息,传递 enableTracing 让 sub-agent 采集 trace
+    const result = await subAgent.run(typeof args === 'string' ? args : JSON.stringify(args), {
+      enableTracing,
+    });
+
+    // enableTracing=true:包装 TracingToolResult,reactLoop 据此发出 subagent_call 事件
+    // enableTracing=false:直接返回 content（unknown,与常规 tool 一致,零开销）
+    if (enableTracing && result.trace) {
+      return {
+        __trace: true,
+        result: result.content,
+        trace: result.trace,
+      } satisfies TracingToolResult;
+    }
     return result.content;
   }
 }

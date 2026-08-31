@@ -49,6 +49,17 @@ export {
   type ReactLoopStreamChunk,
 } from './reactLoop';
 
+// Tracing 类型（结构化调用明细,Phase 3.x）——单次 agent.run() 的明细 + sub-agent 嵌套 trace
+export {
+  isTracingToolResult,
+  type AgentTrace,
+  type AgentTraceEvent,
+  type LlmCallEvent,
+  type ToolCallEvent,
+  type SubAgentCallEvent,
+  type TracingToolResult,
+} from './trace';
+
 // Agent 类（Phase 3.4）——组装 reactLoop config + 执行 tool + 递归 sub-agent
 export {
   Agent,

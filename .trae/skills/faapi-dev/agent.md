@@ -45,6 +45,7 @@ export default {
     defaultAgent: 'researcher',
     maxTurns: 10,
     maxAgentDepth: 3,
+    enableTracing: true,                            // 启用 tracing（默认 true,生产高 QPS 端点可设 false 关闭以零开销运行）
   },
   plugins: ['@faapi/agent'],
 } satisfies FaapiConfig;
@@ -57,6 +58,7 @@ export default {
 | `defaultAgent` | 默认 agent 名（`agent` 参数注入读取） | 不注册工厂，`agent` 参数注入 `undefined` |
 | `maxTurns` | 默认最大对话轮数 | agent 自身 `config.maxTurns` 优先，都无时用框架默认 |
 | `maxAgentDepth` | agent 调用 agent 的最大递归深度（默认 3） | 用框架默认 3 |
+| `enableTracing` | 启用结构化 trace（默认 true,详见「Tracing」章节） | 用默认 true |
 
 **嵌套级联**：provider 级字段（`apiKey` / `baseURL` / `temperature` 等）共享给所有 model；model 级字段在 `models[modelName]` 里覆盖 provider 级同名字段。空对象 `{}` 表示用 provider 级默认。
 
@@ -217,8 +219,8 @@ export async function POST(agent: AgentHandle | undefined, body: ChatBody) {
 
 | 方法 | 说明 |
 |------|------|
-| `agent.run(input, options?)` | 非流式执行，返回 `ReactLoopResult`（content / turns / stopReason / messages / usage） |
-| `agent.stream(input, options?)` | 流式执行，yield `ReactLoopStreamChunk`（deltaContent / toolCall / toolResult / done） |
+| `agent.run(input, options?)` | 非流式执行，返回 `ReactLoopResult`（content / turns / stopReason / messages / usage / trace?） |
+| `agent.stream(input, options?)` | 流式执行，yield `ReactLoopStreamChunk`（deltaContent / toolCall / toolResult / traceEvent? / done） |
 | `agent.asTool()` | 包装为 `AgentToolDescriptor` 供父 agent 当 tool 调用（agent-as-tool 场景） |
 
 `options` 支持临时覆盖本次调用的 LLM 配置（不修改 agent 自身状态，下一次调用仍用默认）：
@@ -231,6 +233,12 @@ interface AgentRunOptions {
   temperature?: number;
   /** 最大生成 token 数（透传给 LLM API） */
   maxTokens?: number;
+  /**
+   * 启用 tracing（默认沿用全局 `config.agent.enableTracing`,全局默认 true）。
+   * 开启时返回值的 trace / traceEvent 字段填充结构化调用明细,详见「Tracing」章节。
+   * 业务方在生产主路径显式传 false 关闭以零开销运行。
+   */
+  enableTracing?: boolean;
 }
 ```
 
@@ -301,7 +309,7 @@ export async function POST(agent: AgentHandle | undefined, body: ChatBody) {
 
 ## agents 参数注入（所有 agent 元数据列表）
 
-handler 的 `agents` 参数（内置注入）返回所有已注册 agent 的 `AgentCore[]` 列表（合并文件型 + DB-driven skill，按 `name` 去重），适用于 agent 管理界面、调试端点：
+handler 的 `agents` 参数（内置注入）返回所有已注册**文件型 agent** 的 `AgentCore[]` 列表（**不合并 skillRegistry**——skill 与 agent 职责正交不耦合，skill 不参与 agent 查询链路），适用于 agent 管理界面、调试端点：
 
 ```ts
 // src/api/agents/handler.ts
@@ -333,6 +341,90 @@ dev 模式下 agent handler.js / tool handler.js / zod.js 不在启动时预编�
 - **watcher 文件变化**：清缓存，下次调用按需重建
 
 prod 模式（`faapi build`）预编译全部产物，启动时直接读取。
+
+### Tracing（结构化调用明细）
+
+`agent.run()` / `agent.stream()` 默认开启 tracing（`enableTracing` 默认 true,可经 `config.agent.enableTracing` 全局关闭或 `options.enableTracing` 单次覆盖）。开启时返回值附加结构化调用明细：
+
+- **非流式**：`ReactLoopResult.trace?: AgentTrace`（agentName + startedAt + durationMs + turns + usage + stopReason + content + events）
+- **流式**：`ReactLoopStreamChunk.traceEvent?: AgentTraceEvent`（与 deltaContent / toolCall / toolResult / done 互斥,增量推送）
+
+**事件类型**（discriminated union,按 `type` 区分）：
+
+| 事件 | 触发时机 | 含义 |
+|------|---------|------|
+| `llm_call` | 每轮调 `provider.complete()` / `provider.stream()` | 该轮 LLM 调用明细（model / inputMessages 快照 / response / stopReason / usage / timing） |
+| `tool_call` | `executeTool` 返回 unknown（常规 tool） | tool 调用明细（name / arguments / result / error? / timing） |
+| `subagent_call` | `executeTool` 返回 TracingToolResult（sub-agent 调用） | sub-agent 调用明细（agentName / input / trace 嵌套递归 / result / timing） |
+
+**典型事件序列**（一次 2 轮 `agent.run()`,第 1 轮调常规 tool,第 2 轮调 sub-agent）：
+
+```
+llm_call(turn=1) → tool_call(turn=1) → llm_call(turn=2) → subagent_call(turn=2, 含 sub-trace)
+```
+
+**触发机制：opt-in 默认开启 / opt-out 关闭**
+
+| 场景 | 配置 | 开销 |
+|------|------|------|
+| 调试 / 开发面板 / tracing 端点 | 默认（`enableTracing=true`） | 每轮 1 次 `performance.now()` 配对 + 每事件 ~100B 对象 + sub-agent 递归采集 |
+| 生产高 QPS 端点 | `agent.run(input, { enableTracing: false })` 或 `config.agent.enableTracing: false` | 零——无新对象构造,与现状完全一致 |
+
+**三层覆盖优先级**：`AgentRunOptions.enableTracing` > agent 自身配置 > `config.agent.enableTracing`（默认 true）。
+
+**sub-agent 嵌套 trace**：父 agent 调 sub-agent 时,sub-agent 的 trace 自动嵌入父 trace 的 `subagent_call` 事件（递归结构,业务方可还原完整调用树）。仅默认 reactLoop 路径有 trace——sub-agent handler 导出 `run` 函数时走自定义逻辑,无 trace（业务方自己返回业务结果）。
+
+#### 业务方使用示例
+
+**调试单个 agent 调用**：
+
+```ts
+// src/api/chat/handler.ts
+import type { AgentHandle } from '@faapi/agent';
+
+export async function POST(agent: AgentHandle | undefined, body: { input: string }) {
+  if (!agent) return new Response('agent unavailable', { status: 503 });
+  const result = await agent.run(body.input, { enableTracing: true });
+  console.log('agent trace:', JSON.stringify(result.trace, null, 2));
+  return { content: result.content, turns: result.turns };
+}
+```
+
+**生产路径关闭 tracing**（高 QPS 端点零开销）：
+
+```ts
+const result = await agent.run(body.input, { enableTracing: false });
+```
+
+或全局关闭（`faapi.config.ts`）：
+
+```ts
+agent: { enableTracing: false, /* llms 等 *\/ },
+```
+
+**流式前端展示**（SSE 推送 traceEvent）：
+
+```ts
+// src/api/chat/handler.ts
+import type { AgentHandle } from '@faapi/agent';
+
+export async function POST(agent: AgentHandle | undefined, ctx, body: { input: string }) {
+  if (!agent) return new Response('agent unavailable', { status: 503 });
+  const sse = ctx.sse();
+  for await (const chunk of agent.stream(body.input, { enableTracing: true })) {
+    if (chunk.deltaContent) sse.send({ event: 'delta', data: chunk.deltaContent });
+    if (chunk.toolCall) sse.send({ event: 'tool_call', data: chunk.toolCall });
+    if (chunk.toolResult) sse.send({ event: 'tool_result', data: chunk.toolResult });
+    if (chunk.traceEvent) sse.send({ event: 'trace', data: chunk.traceEvent });
+    if (chunk.done) sse.send({ event: 'done', data: chunk.done });
+  }
+  sse.close();
+}
+```
+
+**生产 tracing 端点**（持久化到 DB / tracing 系统）：业务方在 `/api/agent-trace` 路由开 tracing,把 `result.trace` 持久化到 DB / Jaeger / OpenTelemetry。
+
+> 类型导出自 `@faapi/agent`：`AgentTrace` / `AgentTraceEvent` / `LlmCallEvent` / `ToolCallEvent` / `SubAgentCallEvent` / `TracingToolResult` / `isTracingToolResult`。详见 [`@faapi/agent` 的 trace.md](../../../packages/agent/src/trace.md)。
 
 ## 常见坑点
 
@@ -377,11 +469,11 @@ tool 无 input 类型或 `zod.js` 加载失败时，`resolveToolSchema` 返回 `
 
 `maxAgentDepth`（默认 3）限制 agent 调用 agent 的深度，超出抛 `AgentRecursionError`。根 agent depth=1，sub-agent 递增。
 
-## DB-driven skills（运行时动态加载）
+## DB-driven skills（运行时动态加载,与 agent 物理隔离）
 
 agent 默认从 `src/agents/<name>/handler.ts` 编译期产物加载（文件型 agent）。但很多业务场景需要**运行时动态加载 skill**（admin 面板编辑、运营配置、A/B 测试）——skill 配置存在数据库 / 外部 API,不在文件系统里。
 
-faapi 提供独立 [skillRegistry](https://github.com/faapi/faapi/blob/main/packages/faapi/src/injection/skillRegistry.ts) 让业务方在 plugin 里把 DB 数据转成 `AgentCore` 后动态注册。`agentRegistry.getAgent` 等查询函数会自动 fallback 到 skillRegistry,所以 DB skill 能被 handler 的 `agent` 参数注入、sub-agent 递归调用,走与文件型 agent 完全一致的运行时链路。
+faapi 提供独立 [skillRegistry](https://github.com/faapi/faapi/blob/main/packages/faapi/src/injection/skillRegistry.ts) 让业务方在 plugin 里把 DB 数据转成 `AgentCore` 后动态注册。**skill 与 agent 物理隔离,职责正交不耦合**——agent 负责核心流程（含 `run` 函数的多步串联、文件型入口、sub-agent 递归），skill 用于拓展（运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用）。`agentRegistry.getAgent` 等查询函数**不 fallback 到 skillRegistry**——skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归。
 
 ### 接入步骤
 
@@ -394,6 +486,8 @@ import {
   hydrateSkillRegistry,
   upsertSkill,
   removeSkill,
+  getSkill,
+  listSkills,
   type AgentCore,
 } from '@faapi/faapi';
 import type { FaapiPlugin } from '@faapi/faapi';
@@ -471,7 +565,7 @@ export default {
     },
     defaultLlm: 'openai',
     defaultAgent: 'researcher',
-    // 无全局共享 tool,tool 引用列表只在每个 agent/skill 的 tools 里显式声明
+    // 无全局共享 tool,tool 引用列表只在每个 agent 的 tools 里显式声明
   },
   plugins: [
     '@faapi/agent',
@@ -489,24 +583,53 @@ export default {
   description: '翻译助手',
   systemPrompt: '你是一个翻译助手,根据用户输入语言自动翻译',
   tools: ['translate.detect', 'translate.convert'],  // 引用文件型 tool
-  agents: [],                                          // 可引用其他 DB skill 或文件型 agent
+  agents: [],                                          // 业务方自行编排使用,框架核心不消费
   model: 'gpt-4o',
   maxTurns: 5,
 }
 ```
 
-**4. handler 直接使用,无需任何特殊代码**
+**4. handler 通过自定义注入器或中间件访问 skill**
+
+skill 不再通过 `agents` 参数注入、不再被 `@faapi/agent` 子包的 Agent 类自动消费。业务方需要让 handler 看到 skill 时,自行通过注入器或中间件机制注入：
 
 ```ts
-// src/api/chat/handler.ts
-import type { AgentHandle } from '@faapi/agent';
+// src/middlewares.ts
+import { getSkill, type AgentCore } from '@faapi/faapi';
+import type { FaapiMiddleware, InjectorMap } from '@faapi/faapi';
 
-export async function POST(agent: AgentHandle | undefined, body: ChatBody) {
-  if (!agent) return new Response('agent unavailable', { status: 503 });
-  // agent.run 走 @faapi/agent 默认工厂,自动从 skillRegistry fallback 命中
-  // translator skill 能被 defaultAgent 注入或按名查找
-  const result = await agent.run(body.input);
-  return { content: result.content };
+const skillInjector: FaapiMiddleware = async (ctx, next) => {
+  // 业务方自行决定把哪个 skill 塞到 ctx(如按 query.skillName 查找)
+  const skillName = ctx.query.skillName as string | undefined;
+  if (skillName) {
+    ctx.skill = getSkill(skillName);
+  }
+  await next();
+};
+
+export default [skillInjector] satisfies FaapiMiddleware[];
+
+export const injectors: InjectorMap = {
+  // 注入器按参数名匹配 handler 参数
+  skill: (ctx) => ctx.skill,
+};
+```
+
+```ts
+// src/api/skill-runner/handler.ts
+import type { AgentCore } from '@faapi/faapi';
+
+export interface Query { skillName: string }
+export interface Body { input: string }
+
+export function POST(skill: AgentCore | undefined, body: Body) {
+  if (!skill) return new Response('skill not found', { status: 404 });
+  // 业务方自行编排 skill——此处只展示拿到的 AgentCore 字段
+  return {
+    name: skill.name,
+    systemPrompt: skill.systemPrompt,
+    // 业务方自行决定如何执行（如调自定义 LLM 客户端、组装 messages 等）
+  };
 }
 ```
 
@@ -516,28 +639,29 @@ DB skill 只实现 `AgentCore` 接口（LLM 可见字段），无需 `filePath` 
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `name` | ✅ | skill 名（唯一标识,同名时 skill 覆盖文件型 agent） |
-| `description` | 可选 | LLM 可见的 skill 描述（父 agent 决策何时调用此 sub-agent） |
+| `name` | ✅ | skill 名（唯一标识） |
+| `description` | 可选 | skill 描述（业务方自行决定如何使用，如展示在 UI、组装到 LLM 请求） |
 | `systemPrompt` | 可选 | LLM 系统提示词 |
-| `tools` | 可选 | tool 引用列表（指向文件型 tool,如 `weather.getWeather`） |
-| `agents` | 可选 | sub-agent 引用列表（可指向其他 DB skill 或文件型 agent） |
-| `model` | 可选 | 默认 model 名（在 defaultLlm provider 的 models 里查找） |
-| `maxTurns` | 可选 | 最大对话轮数（覆盖全局 `agent.maxTurns`） |
+| `tools` | 可选 | tool 引用列表（业务方自行解析使用,框架核心不消费） |
+| `agents` | 可选 | sub-agent 引用列表（业务方自行编排使用,**不再被 agent 的 `agents` 列表自动引用**） |
+| `model` | 可选 | 默认 model 名（业务方自行解析） |
+| `maxTurns` | 可选 | 最大对话轮数（业务方自行解析） |
 
 ### 双 registry 设计
 
-| 来源 | registry | 注入时机 | reload 影响 |
-|------|-----------|----------|-------------|
-| 文件型 agent（`src/agents/<name>/handler.ts`） | `agentRegistry` | `createAppBase` 启动期 | dev watcher 重新 hydrate |
-| DB skill（plugin 动态注册） | `skillRegistry` | 业务方 `onReady` + 运行时增量 | 不受影响 |
+| 来源 | registry | 注入时机 | reload 影响 | 查询链路 |
+|------|-----------|----------|-------------|---------|
+| 文件型 agent（`src/agents/<name>/handler.ts`） | `agentRegistry` | `createAppBase` 启动期 | dev watcher 重新 hydrate | 供 agent 注入器 / `@faapi/agent` 子包自动消费 |
+| DB skill（plugin 动态注册） | `skillRegistry` | 业务方 `onReady` + 运行时增量 | 不受影响 | 仅供业务方 plugin 内部主动调用 |
 
-**fallback 优先级**：skillRegistry 优先 → agentRegistry 回退。同名时 **skill 覆盖文件型 agent**,业务方可用 DB 配置 override 文件 agent 的 systemPrompt / tools 等,无需改源码。
+**职责正交不耦合**：agentRegistry 的查询函数（`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool`）**不 fallback 到 skillRegistry**。skill 不覆盖文件型 agent、不参与 sub-agent 递归——两者是补充关系而非覆盖关系。
 
 ### 限制
 
-- DB skill 不支持自定义 `run` 函数（多步 prompt 串联）——需要 `run` 函数的场景仍走文件型 agent。覆盖 80% 的"配置 + tool 组合"场景
-- DB skill 引用的 `tools` 必须在文件型 toolRegistry 注册（DB-driven tool 暂未实现）
-- DB skill 的 `model` 必须在 `llms` 配置里有对应的 provider/model
+- DB skill 不支持自定义 `run` 函数（多步 prompt 串联）——需要 `run` 函数的场景仍走文件型 agent
+- DB skill 不被 `@faapi/agent` 子包的 Agent 类自动消费、不参与 sub-agent 递归——业务方需自行编排使用
+- DB skill 引用的 `tools` / `agents` 字段由业务方自行解析使用,框架核心不消费
+- DB skill 的 `model` 字段由业务方自行解析使用,框架核心不消费
 
 ## 检查清单
 
@@ -549,6 +673,9 @@ DB skill 只实现 `AgentCore` 接口（LLM 可见字段），无需 `filePath` 
 - [ ] handler 的 `agent` 参数类型为 `AgentHandle | undefined`，处理 undefined 情况
 - [ ] 跨 provider 切模型用 `agent.run(input, { model: 'anthropic/claude-3-5-sonnet' })` 一体化形式
 - [ ] `llms.<provider>.apiKey` 通过 `process.env.OPENAI_API_KEY` 读取（配合 `.env`）
+- [ ] tracing 默认开启——生产高 QPS 端点显式 `agent.run(input, { enableTracing: false })` 或 `config.agent.enableTracing: false` 关闭以零开销运行
+- [ ] 调试 / 开发面板 / tracing 端点用 `result.trace` 或流式 `chunk.traceEvent`（`@faapi/agent` 导出 `AgentTrace` / `AgentTraceEvent` 等类型）
+- [ ] sub-agent handler 导出 `run` 函数时无 trace——需 trace 时让 sub-agent 走默认 reactLoop（不导出 `run`）
 - [ ] `pnpm typecheck` 通过
 - [ ] `faapi dev` 启动后首次 agent 调用能触发按需编译
-- [ ] 若用 DB-driven skill:plugin 在 `lifecycle.onReady` 调 `hydrateSkillRegistry` 全量灌入 + 监听 DB change stream 调 `upsertSkill` / `removeSkill` 增量更新;DB skill 实现的是 `AgentCore`（不含 `filePath` / `hasRun`）,引用的 `tools` 必须在 toolRegistry 注册、`model` 必须在 `llms` 里有对应 provider/model
+- [ ] 若用 DB-driven skill:plugin 在 `lifecycle.onReady` 调 `hydrateSkillRegistry` 全量灌入 + 监听 DB change stream 调 `upsertSkill` / `removeSkill` 增量更新;DB skill 实现的是 `AgentCore`（不含 `filePath` / `hasRun`）;skill 与 agent 物理隔离——不被 `agents` 参数注入、不被 `@faapi/agent` 子包自动消费、不参与 sub-agent 递归,业务方需自行通过注入器或中间件机制注入 skill 给 handler
