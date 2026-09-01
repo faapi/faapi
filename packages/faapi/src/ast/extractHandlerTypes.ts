@@ -2,6 +2,7 @@ import ts from 'typescript';
 import {
   resolveTypeNode,
   resolveInterfaceDeclaration,
+  setProgramContext,
   type PropertyType,
   type RuntimeType,
   SchemaExtractionError,
@@ -37,43 +38,50 @@ export function extractTypeInfo(
 
   const checker = program.getTypeChecker();
 
-  // 1. 查找 interface 声明
-  let result: HandlerTypeInfo | null = null;
+  // 设置 program 上下文,供 resolveImportAlias 兜底遍历跨文件声明使用
+  // (TypeChecker 运行时未暴露 getProgram(),通过模块级变量传入)
+  setProgramContext(program);
+  try {
+    // 1. 查找 interface 声明
+    let result: HandlerTypeInfo | null = null;
 
-  ts.forEachChild(sourceFile, (node) => {
-    if (result) return;
+    ts.forEachChild(sourceFile, (node) => {
+      if (result) return;
 
-    if (ts.isInterfaceDeclaration(node) && node.name.text === typeName) {
-      const visited = new Set<string>();
-      visited.add(typeName); // 标记当前类型，使自引用直接返回 ref
-      const runtimeType = withFileContext(filePath, typeName, () =>
-        resolveInterfaceDeclaration(node, checker, visited),
-      );
-      result = {
-        name: typeName,
-        properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
-        runtimeType,
-      };
-      return;
-    }
+      if (ts.isInterfaceDeclaration(node) && node.name.text === typeName) {
+        const visited = new Set<string>();
+        visited.add(typeName); // 标记当前类型，使自引用直接返回 ref
+        const runtimeType = withFileContext(filePath, typeName, () =>
+          resolveInterfaceDeclaration(node, checker, visited),
+        );
+        result = {
+          name: typeName,
+          properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
+          runtimeType,
+        };
+        return;
+      }
 
-    // 2. 查找 type 别名
-    if (ts.isTypeAliasDeclaration(node) && node.name.text === typeName) {
-      const visited = new Set<string>();
-      visited.add(typeName); // 标记当前类型，使自引用直接返回 ref
-      const runtimeType = withFileContext(filePath, typeName, () =>
-        resolveTypeNode(node.type, checker, visited),
-      );
-      result = {
-        name: typeName,
-        properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
-        runtimeType,
-      };
-      return;
-    }
-  });
+      // 2. 查找 type 别名
+      if (ts.isTypeAliasDeclaration(node) && node.name.text === typeName) {
+        const visited = new Set<string>();
+        visited.add(typeName); // 标记当前类型，使自引用直接返回 ref
+        const runtimeType = withFileContext(filePath, typeName, () =>
+          resolveTypeNode(node.type, checker, visited),
+        );
+        result = {
+          name: typeName,
+          properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
+          runtimeType,
+        };
+        return;
+      }
+    });
 
-  return result;
+    return result;
+  } finally {
+    setProgramContext(null);
+  }
 }
 
 /**
@@ -93,39 +101,46 @@ export function extractAllTypes(
   if (!sourceFile) return new Map();
 
   const checker = program.getTypeChecker();
-  const result = new Map<string, HandlerTypeInfo>();
 
-  ts.forEachChild(sourceFile, (node) => {
-    if (ts.isInterfaceDeclaration(node)) {
-      const visited = new Set<string>();
-      visited.add(node.name.text); // 标记当前类型，使自引用直接返回 ref
-      const runtimeType = withFileContext(filePath, node.name.text, () =>
-        resolveInterfaceDeclaration(node, checker, visited),
-      );
-      result.set(node.name.text, {
-        name: node.name.text,
-        properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
-        runtimeType,
-      });
-      return;
-    }
+  // 设置 program 上下文,供 resolveImportAlias 兜底遍历跨文件声明使用
+  setProgramContext(program);
+  try {
+    const result = new Map<string, HandlerTypeInfo>();
 
-    if (ts.isTypeAliasDeclaration(node)) {
-      const visited = new Set<string>();
-      visited.add(node.name.text); // 标记当前类型，使自引用直接返回 ref
-      const runtimeType = withFileContext(filePath, node.name.text, () =>
-        resolveTypeNode(node.type, checker, visited),
-      );
-      result.set(node.name.text, {
-        name: node.name.text,
-        properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
-        runtimeType,
-      });
-      return;
-    }
-  });
+    ts.forEachChild(sourceFile, (node) => {
+      if (ts.isInterfaceDeclaration(node)) {
+        const visited = new Set<string>();
+        visited.add(node.name.text); // 标记当前类型，使自引用直接返回 ref
+        const runtimeType = withFileContext(filePath, node.name.text, () =>
+          resolveInterfaceDeclaration(node, checker, visited),
+        );
+        result.set(node.name.text, {
+          name: node.name.text,
+          properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
+          runtimeType,
+        });
+        return;
+      }
 
-  return result;
+      if (ts.isTypeAliasDeclaration(node)) {
+        const visited = new Set<string>();
+        visited.add(node.name.text); // 标记当前类型，使自引用直接返回 ref
+        const runtimeType = withFileContext(filePath, node.name.text, () =>
+          resolveTypeNode(node.type, checker, visited),
+        );
+        result.set(node.name.text, {
+          name: node.name.text,
+          properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
+          runtimeType,
+        });
+        return;
+      }
+    });
+
+    return result;
+  } finally {
+    setProgramContext(null);
+  }
 }
 
 /**

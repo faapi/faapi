@@ -80,6 +80,21 @@ HTTP 视角：JSON 只能传输 string/number/boolean/null/array/object，无法
 
 上层 `extractTypeInfo` / `extractAllTypes` 会 catch 并补充文件路径信息后重新抛出，方便用户定位问题。
 
+## 跨文件 `import type` 解析
+
+`resolveTypeReference` 通过 `checker.getSymbolAtLocation(typeName)` 拿 symbol,处理三种 declaration 节点:`InterfaceDeclaration` / `TypeAliasDeclaration` / `EnumDeclaration`。
+
+业务项目按 faapi skill 约定使用 `moduleResolution: Bundler` + 无扩展名相对导入(如 `import type { StyleGuide } from '../../db/schema'`),checker 拿到的 symbol 的 declaration 是 `ImportSpecifier`(import 别名),不是真实的 interface 声明节点。`resolveTypeReference` 按以下顺序解析 import 别名:
+
+1. **`checker.getAliasedSymbol(symbol)`** — 跟到真实 symbol(优先路径,性能最优)
+2. **兜底:遍历 program 的所有 sourceFiles 找同名声明** — 当 `getAliasedSymbol` 返回 unknown / 无 declarations 时(如 `noEmit` 模式下 module resolution 未完全建立),通过模块级变量 `currentProgram`(由 `extractTypeInfo` / `extractAllTypes` 调用 `setProgramContext(program)` 设置)拿到 program,遍历所有非 lib 的 sourceFile,在顶层查找名为 `typeName` 的 `InterfaceDeclaration` / `TypeAliasDeclaration` / `EnumDeclaration`,找到后递归处理
+
+> **为什么用模块级变量而非 `checker.getProgram()`**:TypeScript 的 `TypeChecker` 接口声明了 `getProgram()` 方法,但运行时实例未暴露(实测 `typeof checker.getProgram === 'undefined'`)。因此采用模块级变量 `currentProgram`,由调用入口(`extractTypeInfo` / `extractAllTypes`)在分析前 `setProgramContext(program)` 设置、分析结束后 `setProgramContext(null)` 清空。串行场景安全(faapi 的 AST 提取在单线程顺序执行,无并发)。
+
+兜底遍历保证:只要业务项目 tsconfig 的 `include` 模式覆盖了被引用类型的源文件(`createProgram` 已通过 `parseJsonConfigFileContent.fileNames` 加载全部相关文件),即使 module resolution 在 `noEmit` 模式下未完全绑定 alias,也能正确解析跨文件类型。
+
+如果两条路径都失败,抛 `SchemaExtractionError`(原有行为不变)。
+
 ## Map/Set 类型
 
 `Map<K,V>` 与 `Set<T>` 在 `RuntimeType` 中分别表示为 `{ kind: 'map', key, value }` 与 `{ kind: 'set', element }`，递归解析类型参数。

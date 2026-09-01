@@ -1,6 +1,29 @@
 import ts from 'typescript';
 
 /**
+ * 模块级 Program 上下文,供 `resolveImportAlias` 兜底遍历跨文件声明使用
+ *
+ * TypeScript 的 `TypeChecker` 类型声明了 `getProgram(): Program` 方法,但
+ * 运行时实例未暴露该方法(实测 `typeof checker.getProgram === 'undefined'`)。
+ * 因此采用模块级变量在调用入口设置当前 program,resolveImportAlias 兜底时读取。
+ *
+ * 调用入口(`extractTypeInfo` / `extractAllTypes`)在分析前调
+ * `setProgramContext(program)`,分析结束后调 `setProgramContext(null)` 清空。
+ *
+ * 串行场景安全:faapi 的 AST 提取在单线程顺序执行,无并发。
+ */
+let currentProgram: ts.Program | null = null;
+
+/**
+ * 设置当前 Program 上下文(供 resolveImportAlias 兜底遍历跨文件声明使用)
+ *
+ * @param program 当前 program;分析结束后传 null 清空
+ */
+export function setProgramContext(program: ts.Program | null): void {
+  currentProgram = program;
+}
+
+/**
  * Schema 提取错误
  *
  * 遇到无法解析或不支持运行时校验的类型时抛出，
@@ -563,11 +586,124 @@ function resolveTypeReference(
         if (ts.isEnumDeclaration(declaration)) {
           return resolveEnumDeclaration(declaration);
         }
+        // import 别名（跨文件 import type）：跟到真实声明
+        // 业务项目用 moduleResolution: Bundler + 无扩展名导入时,
+        // checker 拿到的 symbol 是 ImportSpecifier(Alias),不是真实声明
+        if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration)) {
+          const resolved = resolveImportAlias(typeNode, symbol, checker, visited);
+          if (resolved) return resolved;
+        }
       }
     }
   }
 
   throw new SchemaExtractionError(typeNode.getText(), `无法解析的引用类型 "${typeName}"`);
+}
+
+/**
+ * 解析 import 别名符号,跟到真实的 interface / type alias / enum 声明
+ *
+ * 业务项目用 `moduleResolution: Bundler` + 无扩展名相对导入(如
+ * `import type { StyleGuide } from '../../db/schema'`)时,checker 拿到的 symbol
+ * 是 `ImportSpecifier`(Alias symbol),不是真实声明节点。
+ *
+ * 解析顺序:
+ * 1. `checker.getAliasedSymbol(symbol)` — 优先路径,直接跟到真实 symbol
+ * 2. 兜底:遍历 program 的所有 sourceFiles 找名为 `typeName` 的
+ *    `InterfaceDeclaration` / `TypeAliasDeclaration` / `EnumDeclaration`
+ *
+ * 兜底路径用于 `getAliasedSymbol` 在 `noEmit` 模式下未完全绑定 alias 的场景
+ * (实测:即使业务项目 tsconfig 用 Bundler + program 加载了全部相关文件,
+ * `getAliasedSymbol` 也可能返回 unknown / 无 declarations)。
+ *
+ * @returns RuntimeType 解析结果;无法解析返回 null(由调用方抛 SchemaExtractionError)
+ */
+function resolveImportAlias(
+  typeNode: ts.TypeReferenceNode,
+  symbol: ts.Symbol,
+  checker: ts.TypeChecker,
+  visited: Set<string>,
+): RuntimeType | null {
+  const typeName = typeNode.typeName.getText();
+
+  // 路径1:getAliasedSymbol 直接跟到真实 symbol
+  try {
+    const aliased = checker.getAliasedSymbol(symbol);
+    if (aliased && aliased.declarations && aliased.declarations.length > 0) {
+      const decl = aliased.declarations[0];
+      if (ts.isInterfaceDeclaration(decl)) {
+        return resolveInterfaceDeclaration(decl, checker, visited);
+      }
+      if (ts.isTypeAliasDeclaration(decl)) {
+        return resolveTypeNode(decl.type, checker, visited);
+      }
+      if (ts.isEnumDeclaration(decl)) {
+        return resolveEnumDeclaration(decl);
+      }
+    }
+  } catch {
+    // getAliasedSymbol 抛错时走兜底
+  }
+
+  // 路径2:兜底遍历 program 的 sourceFiles 找同名声明
+  // 用模块级变量 currentProgram(createProgram 时通过 setProgramContext 设置)
+  // TypeChecker 类型上声明了 getProgram() 但运行时未暴露,只能通过外部传入
+  const program = currentProgram;
+  if (!program) return null;
+
+  const allSFs = program.getSourceFiles();
+  for (const sourceFile of allSFs) {
+    // 跳过 lib.d.ts / node_modules / TypeScript 内置文件
+    if (
+      sourceFile.fileName.includes('/node_modules/') ||
+      sourceFile.fileName.includes('typescript/lib/')
+    ) {
+      continue;
+    }
+    // 顶层声明查找(用独立函数返回,避免 TS 控制流分析把闭包赋值的 let 变量收窄为 never)
+    const found = findTopLevelDecl(sourceFile, typeName);
+    if (found) {
+      if (found.kind === 'interface') {
+        return resolveInterfaceDeclaration(found.node, checker, visited);
+      }
+      if (found.kind === 'typeAlias') {
+        return resolveTypeNode(found.node.type, checker, visited);
+      }
+      if (found.kind === 'enum') {
+        return resolveEnumDeclaration(found.node);
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 在 sourceFile 顶层查找名为 typeName 的 interface / type alias / enum 声明
+ *
+ * 独立为函数是因为 TS 控制流分析对"闭包中赋值的 let 变量"保守处理:
+ * 即使 forEachChild 同步调用回调,分析器仍认为赋值可能未发生,
+ * 导致外层读取时变量被收窄为初始值类型(null)。
+ * 用函数返回值(带显式返回类型)绕过此限制。
+ */
+type TopLevelDecl =
+  | { kind: 'interface'; node: ts.InterfaceDeclaration }
+  | { kind: 'typeAlias'; node: ts.TypeAliasDeclaration }
+  | { kind: 'enum'; node: ts.EnumDeclaration };
+
+function findTopLevelDecl(sourceFile: ts.SourceFile, typeName: string): TopLevelDecl | null {
+  let found: TopLevelDecl | null = null;
+  ts.forEachChild(sourceFile, (node) => {
+    if (found) return;
+    if (ts.isInterfaceDeclaration(node) && node.name.text === typeName) {
+      found = { kind: 'interface', node };
+    } else if (ts.isTypeAliasDeclaration(node) && node.name.text === typeName) {
+      found = { kind: 'typeAlias', node };
+    } else if (ts.isEnumDeclaration(node) && node.name.text === typeName) {
+      found = { kind: 'enum', node };
+    }
+  });
+  return found;
 }
 
 /**

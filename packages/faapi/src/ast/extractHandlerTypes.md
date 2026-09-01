@@ -13,7 +13,7 @@
 
 ## 相关模块
 
-- `createProgram.ts` - 提供 Program
-- `resolveTypeNode.ts` - 解析类型节点为 RuntimeType
+- `createProgram.ts` - 提供 Program(读项目 tsconfig 加载全部相关源文件,保证跨文件 import 的源文件在 program 中)
+- `resolveTypeNode.ts` - 解析类型节点为 RuntimeType;`extractTypeInfo` / `extractAllTypes` 在分析前调 `setProgramContext(program)`、分析后调 `setProgramContext(null)`,供 `resolveImportAlias` 兜底遍历跨文件声明使用
 - `generateZodSchema.ts` - 消费 HandlerTypeInfo 生成 zod schema 代码
 - `../cli/collectRouteSchemaSources.ts` - 调用 extractTypeInfo / extractAllTypes 收集 schema 源数据
