@@ -26,6 +26,9 @@ jobs:
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
       - run: pnpm install --frozen-lockfile
+      # 发布门禁：tag 可打在任意 commit（含未过 CI 的），发布前强制 typecheck + 全量测试
+      - run: pnpm typecheck
+      - run: pnpm test
       - run: pnpm build
       - name: Set canary version from tag
         run: |
@@ -50,5 +53,8 @@ jobs:
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
       - run: pnpm install --frozen-lockfile
+      # 发布门禁：同 canary——正式发布前强制 typecheck + 全量测试
+      - run: pnpm typecheck
+      - run: pnpm test
       - run: pnpm build
       - run: pnpm changeset publish
