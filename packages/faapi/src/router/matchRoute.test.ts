@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { matchRoute, matchWsRoute } from './matchRoute';
+import { matchRoute, matchWsRoute, findAllowedMethods } from './matchRoute';
 import type { RouteManifest, WsRouteManifest } from './routeTypes';
 
 // 模拟已排序的路由清单
@@ -252,5 +252,46 @@ describe('matchWsRoute', () => {
     const result = matchWsRoute(catchAll, '/api/stream/a/b/c');
     expect(result).not.toBeNull();
     expect(result!.params).toEqual({ slug: 'a/b/c' });
+  });
+});
+
+describe('路由索引（WeakMap 按清单身份缓存）', () => {
+  it('同一清单多次匹配结果一致（索引复用不改变语义）', () => {
+    // 同一清单匹配多次：静态 + 动态 + 未命中反复交叉
+    for (let i = 0; i < 3; i++) {
+      expect(matchRoute(routes, 'GET', '/api/auth/login')?.route.method).toBe('GET');
+      expect(matchRoute(routes, 'GET', '/api/user/abc')?.params).toEqual({ id: 'abc' });
+      expect(matchRoute(routes, 'PATCH', '/api/auth/login')).toBeNull();
+    }
+  });
+
+  it('清单数组替换后索引重建（reloadRoutes 热替换语义）', () => {
+    // 模拟 reloadRoutes：新清单数组（新增路由），旧索引不能被复用
+    const reloaded: RouteManifest = [
+      ...routes,
+      {
+        method: 'DELETE',
+        urlPath: '/api/novel/list',
+        filePath: 'api/novel/list/handler.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+
+    expect(matchRoute(routes, 'DELETE', '/api/novel/list')).toBeNull();
+    expect(matchRoute(reloaded, 'DELETE', '/api/novel/list')?.route.method).toBe('DELETE');
+  });
+
+  it('findAllowedMethods：静态段多方法全量返回', () => {
+    expect(findAllowedMethods(routes, '/api/auth/login').sort()).toEqual(['GET', 'POST']);
+    expect(findAllowedMethods(routes, '/api/novel/list')).toEqual(['GET']);
+  });
+
+  it('findAllowedMethods：动态段命中时返回其方法', () => {
+    expect(findAllowedMethods(routes, '/api/user/123')).toEqual(['GET']);
+  });
+
+  it('findAllowedMethods：完全未命中返回空数组（404 判定）', () => {
+    expect(findAllowedMethods(routes, '/api/unknown')).toEqual([]);
   });
 });

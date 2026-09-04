@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import path from 'node:path';
 import type { RouteManifest, RouteMatch, WsRouteManifest, RoutesRef } from '../router/routeTypes';
-import { matchRoute, matchDynamicPath } from '../router/matchRoute';
+import { matchRoute, findAllowedMethods } from '../router/matchRoute';
 import { loadRouteModule } from '../loader/loadRouteModule';
 import { createContext } from '../runtime/createContext';
 import { resolveInput } from '../runtime/resolveInput';
@@ -153,27 +153,10 @@ function limitStreamSize(
 /**
  * 查找路径的所有允许方法（用于 405 响应）
  *
- * 性能：每次 404 请求都会遍历所有路由 + 对动态路由执行 matchDynamicPath。
- * 大项目（>100 路由）有一定开销,但 404 非热路径——正常业务请求不会命中此分支,
- * 可接受。如未来出现 404 高频场景,可考虑构建「path → allowedMethods」反向索引。
+ * 实现移至 [matchRoute](../router/matchRoute.ts)（共享路由索引：静态段 O(1) 直查,
+ * 仅动态段线性扫描）。404 非热路径,但扫描器/探活探测的 404 高频场景下
+ * 索引化仍有收益。
  */
-function findAllowedMethods(routes: RouteManifest, path: string): string[] {
-  const methods = new Set<string>();
-  for (const route of routes) {
-    if (route.urlPath === path) {
-      methods.add(route.method);
-      continue;
-    }
-    // 也检查动态路由
-    if (route.isDynamic) {
-      const params = matchDynamicPath(route.urlPath, path, route.paramNames, route.isCatchAll);
-      if (params !== null) {
-        methods.add(route.method);
-      }
-    }
-  }
-  return Array.from(methods);
-}
 
 export interface CreateServerOptions {
   routes: RouteManifest;
