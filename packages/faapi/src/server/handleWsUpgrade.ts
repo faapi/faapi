@@ -158,6 +158,12 @@ export interface AttachWsOptions {
   globalMiddlewares?: FaapiMiddleware[];
   /** 全局注入器（来自 faapi.config.ts，WS handler 可通过 ctx 间接访问全局依赖） */
   globalInjectors?: InjectorMap;
+  /**
+   * 是否信任反向代理头（X-Forwarded-For），默认 false
+   *
+   * true 时 `ctx.ip` 取 `x-forwarded-for` 第一个 IP；false（默认）时直取 socket 地址。
+   */
+  trustedProxy?: boolean;
 }
 
 /**
@@ -173,7 +179,7 @@ export interface AttachWsOptions {
  * watch 模式下 wsRoutes 通过 routesRef 引用更新。
  */
 export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
-  const { server, routesRef, rootDir, config, globalMiddlewares } = options;
+  const { server, routesRef, rootDir, config, globalMiddlewares, trustedProxy = false } = options;
 
   const wss = new WebSocketServer({ noServer: true });
 
@@ -196,7 +202,7 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
 
     // 构造 Web Request 与 FaapiContext（与 HTTP 请求一致，供中间件使用）
     const request = new Request(url, { method: 'GET', headers });
-    const ctx = createContext(request, params, config, getClientIp(req));
+    const ctx = createContext(request, params, config, getClientIp(req, trustedProxy));
     const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
 
     // 标记握手是否已完成协议升级（用于判断 socket 是否可写）

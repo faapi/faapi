@@ -203,6 +203,13 @@ export interface CreateServerOptions {
   bodyLimit?: number;
   /** HTTP/2 配置，启用时需提供 SSL 证书路径 */
   http2?: Http2Options | boolean;
+  /**
+   * 是否信任反向代理头（X-Forwarded-For），默认 false
+   *
+   * true 时 `ctx.ip` 取 `x-forwarded-for` 第一个 IP（nginx/CDN 场景）；
+   * false（默认）时直取 socket 地址——直连部署下 XFF 可被伪造，安全默认不信任。
+   */
+  trustedProxy?: boolean;
 }
 
 export interface Http2Options {
@@ -234,6 +241,7 @@ export function createServer(options: CreateServerOptions): {
     logger: loggerOption,
     bodyLimit = DEFAULT_BODY_LIMIT,
     http2: http2Option,
+    trustedProxy = false,
   } = options;
 
   // 路由可变引用容器（watch 模式热替换时 reloadRoutes 更新 .current/.wsCurrent）
@@ -300,6 +308,7 @@ export function createServer(options: CreateServerOptions): {
       config,
       globalInjectors,
       bodyLimit,
+      trustedProxy,
     ).catch(() => {
       res.statusCode = 500;
       res.end();
@@ -308,7 +317,7 @@ export function createServer(options: CreateServerOptions): {
 
   // 挂载 WebSocket 升级处理（仅当提供了 WS 路由）
   if (routesRef.wsCurrent.length > 0) {
-    attachWebSocket({ server, routesRef, rootDir, config, globalMiddlewares });
+    attachWebSocket({ server, routesRef, rootDir, config, globalMiddlewares, trustedProxy });
   }
 
   return { server, routesRef };
@@ -327,6 +336,7 @@ function prepareRequest(
   req: IncomingMessage,
   config: Record<string, unknown> | undefined,
   bodyLimit: number,
+  trustedProxy: boolean,
 ): {
   request: Request;
   url: URL;
@@ -338,7 +348,7 @@ function prepareRequest(
   const { request, url } = toWebRequest(req, bodyLimit);
   const method = request.method.toUpperCase();
   const urlPath = url.pathname;
-  const ctx = createContextFromUrl(request, url, {}, config, getClientIp(req));
+  const ctx = createContextFromUrl(request, url, {}, config, getClientIp(req, trustedProxy));
   const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
   return { request, url, ctx, meta, method, urlPath };
 }
@@ -487,13 +497,14 @@ async function handleRequest(
   config: Record<string, unknown> | undefined,
   globalInjectors: InjectorMap | undefined,
   bodyLimit: number,
+  trustedProxy: boolean,
 ): Promise<void> {
   // meta/ctx 兜底：请求准备阶段抛错（如 content-length 超限的 413）时尚无 ctx
   let meta: ResponseMeta = { headers: {}, setCookies: [] };
   let ctx: FaapiContext | undefined;
   try {
     // 1. 准备请求上下文（toWebRequest + createContext）——URL 全请求只解析一次
-    const prepared = prepareRequest(req, config, bodyLimit);
+    const prepared = prepareRequest(req, config, bodyLimit, trustedProxy);
     ctx = prepared.ctx;
     meta = prepared.meta;
     const { request, url, method, urlPath } = prepared;

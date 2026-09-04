@@ -16,18 +16,31 @@ handler 注入 `ip` 参数时需要从请求中提取客户端 IP。HTTP 请求�
 
 ## 行为
 
-优先级：
+```ts
+getClientIp(req, trustedProxy = false): string
+```
 
-1. `x-forwarded-for` 第一个 IP（反向代理场景）
-2. `req.socket.remoteAddress`（直连场景）
+- **`trustedProxy=true`**（部署在受信任反向代理之后）：`x-forwarded-for` 第一个 IP 优先，无该头时回退 socket 地址
+- **`trustedProxy=false`（默认）**：忽略 `x-forwarded-for`，直取 `req.socket.remoteAddress`
 
 IPv6 形式 `::ffff:127.0.0.1` 会被规整为 `127.0.0.1`。无法获取时返回空字符串。
 
-## 安全注意
+## 安全注意：为什么默认不信任 XFF
 
-`x-forwarded-for` 仅在受信任的反向代理后才有效。若客户端直连且未经过代理，该 header 可被伪造。生产环境建议在反向代理层（nginx）覆盖该 header。
+`x-forwarded-for` 是普通请求头——客户端直连服务时可以**任意伪造**（如 `curl -H 'X-Forwarded-For: 1.2.3.4'`），污染 `ctx.ip`，进而欺骗基于 IP 的限流 / 日志 / 访问控制。
+
+因此默认 `trustedProxy=false`（安全默认）。部署在受信任的反向代理之后时，在 `faapi.config.ts` 显式开启：
+
+```ts
+export default {
+  trustedProxy: true, // nginx/CDN 场景：ctx.ip 取 X-Forwarded-For 第一个 IP
+} satisfies FaapiConfig;
+```
+
+同时影响 HTTP 请求与 WebSocket 握手的 `ctx.ip`。
 
 ## 相关模块
 
 - [runtime/createContext](../runtime/createContext.ts) — 接收 ip 参数，存到 ctx.ip
 - [injection/injectParams](../injection/injectParams.ts) — `ip` 参数名注入 ctx.ip
+- [config/configTypes](../config/configTypes.md) — `trustedProxy` 配置字段

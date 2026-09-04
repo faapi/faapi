@@ -10,7 +10,7 @@ CLI 和 server 启动时需要统一的配置结构，包含根目录、app 目�
 
 - CLI 参数解析后生成 FaapiConfig
 - server 启动时读取 FaapiConfig
-- 扩展点：lifecycle（onReady/onClose/onError）、extendContext（扩展 ctx 方法）、cors（跨域配置）、helmet（安全头）、bodyLimit（请求体限制）、logger（结构化日志）、http2（HTTP/2 支持）、middlewares（全局中间件）、injectors（全局注入器）、plugins（应用级插件）、agent（Phase 2.4，agent 子系统全局配置）
+- 扩展点：lifecycle（onReady/onClose/onError）、extendContext（扩展 ctx 方法）、cors（跨域配置）、helmet（安全头）、bodyLimit（请求体限制）、logger（结构化日志）、http2（HTTP/2 支持）、trustedProxy（是否信任反向代理的 X-Forwarded-For，默认 false）、middlewares（全局中间件）、injectors（全局注入器）、plugins（应用级插件）、agent（Phase 2.4，agent 子系统全局配置）
 
 ## agent 配置块（Phase 2.4）
 

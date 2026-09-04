@@ -3,9 +3,7 @@ import { getClientIp } from './getClientIp';
 import type { IncomingMessage } from 'node:http';
 import { Socket } from 'node:net';
 
-function makeReq(
-  opts: { xff?: string; remoteAddress?: string } = {},
-): IncomingMessage {
+function makeReq(opts: { xff?: string; remoteAddress?: string } = {}): IncomingMessage {
   const socket = new Socket();
   // 模拟 remoteAddress
   Object.defineProperty(socket, 'remoteAddress', {
@@ -20,14 +18,29 @@ function makeReq(
 }
 
 describe('getClientIp', () => {
-  it('x-forwarded-for 优先，取第一个 IP', () => {
+  it('trustedProxy=true 时 x-forwarded-for 优先，取第一个 IP', () => {
     const req = makeReq({ xff: '203.0.113.1, 10.0.0.1', remoteAddress: '127.0.0.1' });
-    expect(getClientIp(req)).toBe('203.0.113.1');
+    expect(getClientIp(req, true)).toBe('203.0.113.1');
   });
 
-  it('x-forwarded-for trim 空白', () => {
+  it('trustedProxy=true 时 x-forwarded-for trim 空白', () => {
     const req = makeReq({ xff: '  203.0.113.2  , 10.0.0.1' });
-    expect(getClientIp(req)).toBe('203.0.113.2');
+    expect(getClientIp(req, true)).toBe('203.0.113.2');
+  });
+
+  it('默认（trustedProxy=false）忽略 x-forwarded-for（防伪造）', () => {
+    const req = makeReq({ xff: '203.0.113.1, 10.0.0.1', remoteAddress: '127.0.0.1' });
+    expect(getClientIp(req)).toBe('127.0.0.1');
+  });
+
+  it('显式 trustedProxy=false 同样忽略 x-forwarded-for', () => {
+    const req = makeReq({ xff: '203.0.113.9', remoteAddress: '192.168.1.5' });
+    expect(getClientIp(req, false)).toBe('192.168.1.5');
+  });
+
+  it('trustedProxy=true 且 XFF 为伪造多级链时仍取第一个（代理自身保证真实性）', () => {
+    const req = makeReq({ xff: '198.51.100.7, 203.0.113.1', remoteAddress: '10.0.0.1' });
+    expect(getClientIp(req, true)).toBe('198.51.100.7');
   });
 
   it('无 x-forwarded-for 时用 socket.remoteAddress', () => {
@@ -50,8 +63,8 @@ describe('getClientIp', () => {
     expect(getClientIp(req)).toBe('');
   });
 
-  it('x-forwarded-for 空字符串回退到 socket', () => {
+  it('trustedProxy=true 且 x-forwarded-for 空字符串回退到 socket', () => {
     const req = makeReq({ xff: '', remoteAddress: '127.0.0.1' });
-    expect(getClientIp(req)).toBe('127.0.0.1');
+    expect(getClientIp(req, true)).toBe('127.0.0.1');
   });
 });

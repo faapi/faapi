@@ -305,6 +305,15 @@ export interface FaapiConfig {
   logger?: LoggerOptions | boolean;
   /** HTTP/2 配置，false 禁用（默认 http/1.1） */
   http2?: Http2Options | boolean;
+  /**
+   * 是否信任反向代理头（X-Forwarded-For），默认 false
+   *
+   * - `true`：`ctx.ip` 取 `x-forwarded-for` 第一个 IP——部署在 nginx/CDN 等受信任
+   *   反向代理之后时开启
+   * - `false`（默认）：直取 socket 地址。客户端直连时 XFF 可被任意伪造，
+   *   安全默认不信任（同时影响 HTTP 与 WS 握手的 `ctx.ip`）
+   */
+  trustedProxy?: boolean;
 
   /**
    * 统一响应包装配置

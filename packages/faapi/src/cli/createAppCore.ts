@@ -179,6 +179,7 @@ const FAAPI_CONFIG_KEYS = new Set([
   'bodyLimit',
   'logger',
   'http2',
+  'trustedProxy',
   'response',
 ]);
 
@@ -321,6 +322,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     logger: config?.logger,
     bodyLimit: config?.bodyLimit,
     http2: config?.http2,
+    trustedProxy: config?.trustedProxy,
   });
 
   // 加载插件 + 应用 handler/upgrade 包装器

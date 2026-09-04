@@ -356,6 +356,10 @@ export default {
   // CORS 配置
   cors: { origin: ['https://example.com'], credentials: true },
 
+  // 是否信任反向代理头（X-Forwarded-For），默认 false
+  // true：ctx.ip 取 XFF 第一个 IP（nginx/CDN 场景）；false：直取 socket 地址（直连防伪造）
+  trustedProxy: false,
+
   // 全局中间件：对所有路由（HTTP + WebSocket 握手）生效，最外层
   // 顺序：CORS → helmet → logger → 全局 → 目录（根→路由）→ handler
   // CORS/logger 默认启用（config.cors/config.logger 配置），helmet 显式启用（config.helmet）
@@ -567,7 +571,7 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 | `headers` | 请求头 Headers 对象 | `GET(headers)` |
 | `context` / `ctx` | 完整请求上下文 | `GET(context)` |
 | `cookies` | Cookie 对象 | `GET(cookies)` |
-| `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
+| `ip` | 客户端 IP（`trustedProxy: true` 时取 X-Forwarded-For 第一个 IP，默认直取 socket 地址防伪造，见 5.5 `trustedProxy`） | `GET(ip)` |
 | `ua` | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
