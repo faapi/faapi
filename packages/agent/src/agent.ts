@@ -200,7 +200,7 @@ export class Agent {
     const result = await reactLoop(input, config);
     // reactLoop 不知 agent 名,在此填充顶层 trace.agentName（sub-agent 调本方法时也走此路径）
     if (result.trace) {
-      result.trace.agentName = this.deps.agentName;
+      result.trace.agentName = options?.agent ?? this.deps.agentName;
     }
     return result;
   }
@@ -265,23 +265,29 @@ export class Agent {
   /**
    * 组装 ReactLoopConfig
    *
-   * 1. 查 agent 元数据（未注册抛 AgentError）——用 `getAgent` 拿 AgentCore
+   * 1. 解析有效 agent 名：`options.agent` > `deps.agentName`（`config.agent.defaultAgent`）
+   * 2. 查 agent 元数据（未注册抛 AgentError）——用 `getAgent` 拿 AgentCore
    *    (LLM-facing 字段:systemPrompt / model / maxTurns)
-   * 2. buildToolDefinitions 组装 tool 列表
-   * 3. config 字段优先级（高 → 低）：`options` > agent 元数据 > 全局 AgentRuntimeConfig / deps.defaultProvider
+   * 3. buildToolDefinitions 组装 tool 列表（用有效 agent 名查 tools / sub-agents）
+   * 4. config 字段优先级（高 → 低）：`options` > agent 元数据 > 全局 AgentRuntimeConfig / deps.defaultProvider
    *
    * `options.model` 是字符串 key,由 {@link resolveModelKey} 解析为 provider + model
    * （支持 llms key 精确匹配 / `provider/model` 一体化 / 纯 model 名模糊匹配）。
    * 不传 `options.model` 时用 `deps.defaultProvider` + agent 元数据 `config.model`。
    * 详见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
+   *
+   * `options.agent` 覆盖本次调用的 agent 名——不传时用 `deps.agentName`（来自
+   * `config.agent.defaultAgent`）。`defaultAgent` 未设且 `options.agent` 未传时抛
+   * `AgentError`。
    */
   private async buildLoopConfig(options?: AgentRunOptions): Promise<ReactLoopConfig> {
-    const meta = this.deps.getAgent(this.deps.agentName);
+    const agentName = options?.agent ?? this.deps.agentName;
+    const meta = this.deps.getAgent(agentName);
     if (!meta) {
-      throw new AgentError(`Agent "${this.deps.agentName}" is not registered`);
+      throw new AgentError(`Agent "${agentName}" is not registered`);
     }
 
-    const tools = await this.buildToolDefinitions();
+    const tools = await this.buildToolDefinitions(agentName);
 
     // 解析 options.model 字符串 key → provider + model
     const { provider, model } = this.resolveModelKey(options?.model, meta);
@@ -387,11 +393,11 @@ export class Agent {
    *
    * sub-agent 的 `input` 始终为 `{ type: 'object' }`（agent 参数开放）。
    */
-  private async buildToolDefinitions(): Promise<LLMToolDefinition[]> {
+  private async buildToolDefinitions(agentName: string): Promise<LLMToolDefinition[]> {
     const definitions = new Map<string, LLMToolDefinition>();
 
     // 1. resolveAgentTools（agent 显式声明的 tools 引用）
-    for (const tool of this.deps.resolveAgentTools(this.deps.agentName)) {
+    for (const tool of this.deps.resolveAgentTools(agentName)) {
       if (definitions.has(tool.name)) continue;
       const schemaRes = await this.getToolSchema(tool);
       definitions.set(tool.name, {
@@ -402,7 +408,7 @@ export class Agent {
     }
 
     // 2. sub-agent（包装为 agent.<name>）
-    for (const subAgent of this.deps.resolveSubAgents(this.deps.agentName)) {
+    for (const subAgent of this.deps.resolveSubAgents(agentName)) {
       const name = `agent.${subAgent.name}`;
       if (definitions.has(name)) continue;
       definitions.set(name, {

@@ -59,11 +59,12 @@ export function POST(agent: AgentHandle, body: { input: string }) {
 PluginContext { config.agent, rootDir }
          ↓
 1. readAgentConfig(ctx) → AgentConfig | undefined
-2. 检查 agentConfig.llms / agentConfig.defaultAgent → 缺失时 warn + return
+2. 检查 agentConfig.llms → 缺失时 warn + return（defaultAgent 可选）
 3. 遍历 agentConfig.llms → 每项调 createProvider → Map<providerKey, LLMProvider>
 4. 读 agentConfig.defaultLlm → defaultProvider（未设时用 llms 第一个 key）
-5. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
-6. registerAgentHandleFactory(() => new Agent({ providers, defaultProvider, llms, defaultLlm, agentName, rootDir, config, ...accessors }))
+5. 读 agentConfig.defaultAgent（可选,未设时为空字符串）
+6. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
+7. registerAgentHandleFactory(() => new Agent({ providers, defaultProvider, llms, defaultLlm, agentName, rootDir, config, ...accessors }))
 ```
 
 ### 工厂函数
@@ -119,13 +120,14 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 | --- | --- |
 | `config.agent` 整块未设置 | warn + return,不注册工厂 |
 | `config.agent.llms` 未设置 | warn + return,不注册工厂 |
-| `config.agent.defaultAgent` 未设置 | warn + return,不注册工厂 |
+| `config.agent.defaultAgent` 未设置 | 正常注册,`deps.agentName` 为空字符串,handler 需 `agent.run(input, { agent: 'name' })` 显式指定 |
 | `config.agent.defaultLlm` 未设置 | 正常注册,用 `llms` 第一个 key 作默认 |
 | `config.agent.defaultLlm` 指向不存在的 key | warn + return,不注册工厂 |
 | `config.agent.maxTurns` 未设置 | 正常注册,Agent 用 agent 自身 maxTurns |
 | `config.agent.maxAgentDepth` 未设置 | 正常注册,Agent 用默认值 3 |
 
 工厂未注册时,[getAgentHandle](../../faapi/src/injection/agentHandle.md) 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。
+`defaultAgent` 未设置但工厂已注册时,`agent` 参数不为 `undefined`——Agent 实例正常注入,但 `agent.run(input)` 不传 `{ agent }` 时抛 `AgentError`。
 
 ### resolveToolSchema 实现
 

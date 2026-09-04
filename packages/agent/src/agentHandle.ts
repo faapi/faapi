@@ -43,6 +43,9 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  * `AgentRuntimeConfig` / `defaultLlm` provider。详见 [agentHandle.md](./agentHandle.md) 的
  * Run-level 覆盖优先级表。
  *
+ * `agent` 字段覆盖本次调用的 agent 名（不传时用 `config.agent.defaultAgent`，
+ * 未设 defaultAgent 时必须显式传入）。
+ *
  * @example
  * ```ts
  * // 按请求切模型（纯 model 名,在 llms 里唯一时切到对应 provider）
@@ -50,9 +53,19 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  *
  * // provider/model 一体化形式（精确切换）
  * await agent.run(input, { model: 'anthropic/claude-3-5-sonnet' });
+ *
+ * // 指定 agent（不依赖 defaultAgent 配置）
+ * await agent.run(input, { agent: 'researcher' });
  * ```
  */
 export interface AgentRunOptions {
+  /**
+   * 覆盖本次调用的 agent 名（从 agentRegistry 查找对应元数据 / tools / sub-agents）
+   *
+   * 不传时用 `config.agent.defaultAgent`。`defaultAgent` 未设时必须显式传入，
+   * 否则抛 `AgentError`。
+   */
+  agent?: string;
   /**
    * 切换 provider + model 的字符串 key（支持 llms key / `provider/model` / 纯 model 名）
    *

@@ -217,6 +217,9 @@ export interface AgentConfig {
    * Phase 2.3 的 `agent` 参数注入暂返回 `undefined`，Phase 3.x 的 @faapi/agent 插件
    * 读取此值从 [agentRegistry](../injection/agentRegistry.md) 查找对应 agent 元数据，
    * 注入 `AgentHandle`（含可调用 `run`）。
+   *
+   * 可选——未设时 handler 需通过 `agent.run(input, { agent: 'name' })` 显式指定 agent 名，
+   * 否则 `agent.run` 抛 `AgentError`。
    */
   defaultAgent?: string;
   /**

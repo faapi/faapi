@@ -1019,5 +1019,91 @@ describe('Agent', () => {
       expect(firstRequest.model).toBe('gpt-4o-mini');
       expect(secondRequest.model).toBe('gpt-4');
     });
+
+    it('options.agent 覆盖 agent 名（使用指定 agent 的元数据/tools）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const researcherMeta = agentMeta({
+        name: 'researcher',
+        systemPrompt: 'You are a researcher.',
+      });
+      const writerMeta = agentMeta({ name: 'writer', systemPrompt: 'You are a writer.' });
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: researcherMeta,
+          agentName: 'researcher',
+          subAgents: [writerMeta],
+        }),
+      );
+
+      await agent.run('hi', { agent: 'writer' });
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[0]).toEqual({ role: 'system', content: 'You are a writer.' });
+    });
+
+    it('stream 也支持 options.agent 覆盖 agent 名', async () => {
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'x' }, { finishReason: 'stop' }],
+      ]);
+      const researcherMeta = agentMeta({
+        name: 'researcher',
+        systemPrompt: 'You are a researcher.',
+      });
+      const writerMeta = agentMeta({ name: 'writer', systemPrompt: 'You are a writer.' });
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: researcherMeta,
+          agentName: 'researcher',
+          subAgents: [writerMeta],
+        }),
+      );
+
+      await collect(agent.stream('hi', { agent: 'writer' }));
+
+      const request = streamCalls.mock.calls[0][0];
+      expect(request.messages[0]).toEqual({ role: 'system', content: 'You are a writer.' });
+    });
+
+    it('options.agent 不传时用 deps.agentName（defaultAgent）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const researcherMeta = agentMeta({
+        name: 'researcher',
+        systemPrompt: 'You are a researcher.',
+      });
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: researcherMeta,
+          agentName: 'researcher',
+        }),
+      );
+
+      await agent.run('hi');
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[0]).toEqual({ role: 'system', content: 'You are a researcher.' });
+    });
+
+    it('deps.agentName 为空且不传 options.agent 时抛 AgentError', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          agentName: '',
+        }),
+      );
+
+      await expect(agent.run('hi')).rejects.toThrowError(AgentError);
+    });
   });
 });

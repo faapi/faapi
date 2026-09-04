@@ -26,14 +26,17 @@
  * 插件 setup 时：
  * 1. 遍历 `config.agent.llms` → 每项调 `createProvider` → `Map<providerKey, LLMProvider>`
  * 2. 读 `config.agent.defaultLlm` → `defaultProvider`（未设时用 `llms` 第一个 key）
- * 3. 读 `config.agent.defaultAgent` / `maxTurns` / `maxAgentDepth`
+ * 3. 读 `config.agent.defaultAgent`（可选） / `maxTurns` / `maxAgentDepth`
  * 4. 从 `@faapi/faapi` import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools /
  *    resolveSubAgents / loadAgentModule / loadToolModule）
  * 5. `registerAgentHandleFactory` 注册工厂——每次请求时构造 [Agent](./agent.md) 实例注入到
  *    handler 的 `agent` 参数
  *
- * 配置缺失时（`agent.llms` 或 `agent.defaultAgent` 未设置）跳过工厂注册并打印警告,
+ * 配置缺失时（`agent.llms` 未设置）跳过工厂注册并打印警告,
  * handler 的 `agent` 参数注入 `undefined`。
+ *
+ * `defaultAgent` 可选——未设时 handler 需通过 `agent.run(input, { agent: 'name' })`
+ * 显式指定 agent 名。
  *
  * 详见 [plugin.md](./plugin.md)。
  */
@@ -111,20 +114,16 @@ const agentPlugin: FaapiPlugin = {
   name: '@faapi/agent',
   setup(ctx: PluginContext): void {
     const agentConfig = readAgentConfig(ctx);
-
-    // 必要配置检查——缺失时跳过工厂注册,agent 参数注入 undefined
+    // 必要配置检查——llms 缺失时跳过工厂注册,agent 参数注入 undefined
     if (!agentConfig?.llms) {
       console.warn(
         '! @faapi/agent: config.agent.llms not configured, agent parameter injection disabled',
       );
       return;
     }
-    if (!agentConfig.defaultAgent) {
-      console.warn(
-        '! @faapi/agent: config.agent.defaultAgent not configured, agent parameter injection disabled',
-      );
-      return;
-    }
+
+    // defaultAgent 可选——未设时 handler 需通过 agent.run(input, { agent: 'name' }) 显式指定
+    const defaultAgent = agentConfig.defaultAgent ?? '';
 
     // 创建 LLM provider 实例 Map（key 是 provider 名,来自 config.agent.llms）
     // 单例,所有请求共享;每个 provider 实例对应一个 LlmConfig
@@ -151,7 +150,6 @@ const agentPlugin: FaapiPlugin = {
     };
 
     const rootDir = ctx.rootDir;
-    const defaultAgent = agentConfig.defaultAgent;
     // resolveToolSchema 偏函数（setup 内创建一次，工厂内复用，避免每次请求重建闭包）
     const resolveToolSchema = (tool: ToolMetadata) => resolveToolSchemaImpl(tool, rootDir);
 
@@ -183,7 +181,9 @@ const agentPlugin: FaapiPlugin = {
     });
 
     console.log(
-      `- @faapi/agent: default agent "${defaultAgent}" (provider: ${defaultLlm}) available via agent parameter injection`,
+      defaultAgent
+        ? `- @faapi/agent: default agent "${defaultAgent}" (provider: ${defaultLlm}) available via agent parameter injection`
+        : `- @faapi/agent: no defaultAgent set — use agent.run(input, { agent: 'name' }) to specify agent (provider: ${defaultLlm})`,
     );
   },
 };

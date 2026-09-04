@@ -187,19 +187,17 @@ describe('@faapi/agent plugin', () => {
       warnSpy.mockRestore();
     });
 
-    it('config.agent.defaultAgent 未设置时不注册工厂', () => {
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('config.agent.defaultAgent 未设置时正常注册工厂（agentName 为空字符串）', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
       plugin.setup(
         makeCtx({
           llms: { openai: { provider: 'openai', apiKey: 'k', models: { 'gpt-4o': {} } } },
         }),
       );
 
-      expect(registerAgentHandleFactory).not.toHaveBeenCalled();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('config.agent.defaultAgent not configured'),
-      );
-      warnSpy.mockRestore();
+      expect(registerAgentHandleFactory).toHaveBeenCalledTimes(1);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('no defaultAgent set'));
+      logSpy.mockRestore();
     });
   });
 

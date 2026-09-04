@@ -20,7 +20,7 @@ CLI 和 server 启动时需要统一的配置结构，包含根目录、app 目�
 | --- | --- | --- | --- |
 | `llms` | `Record<string, LlmConfig>` | LLM provider 配置映射（嵌套级联：key 是 provider 名，值含 `models`）。plugin setup 时遍历调 `createProvider` 创建实例存 Map | `undefined`（Phase 3.2 由 @faapi/agent 插件使用） |
 | `defaultLlm` | `string` | 默认 provider key（`agent.run` 不传 `options.model` 时用此 key 的 provider） | `undefined`（用 `llms` 第一个 key） |
-| `defaultAgent` | `string` | 默认 agent 名，用于 `agent` 参数注入（[injectParams](../injection/injectParams.md) Phase 2.3） | `undefined`（agent 参数注入返回 undefined） |
+| `defaultAgent` | `string` | 默认 agent 名（可选）。未设时 handler 需通过 `agent.run(input, { agent: 'name' })` 显式指定 | `undefined`（`agent.run` 不传 `{ agent }` 时抛 `AgentError`） |
 | `maxTurns` | `number` | 默认最大对话轮数，覆盖 agent 自身 `config.maxTurns`（agent 自身配置优先于全局） | `undefined`（用 agent 自身 maxTurns 或 Phase 3.x 默认值） |
 | `maxAgentDepth` | `number` | agent 调用 agent 的最大递归深度（防护无限递归，Phase 3.3 reactLoop 使用） | `undefined`（Phase 3.x 用默认值，如 3） |
 

@@ -396,7 +396,7 @@ export default {
       },
     },
     defaultLlm: 'openai',                        // 默认 provider key（不传用 llms 第一个）
-    defaultAgent: 'researcher',                  // 默认 agent 名（agent 参数注入读取此值）
+    defaultAgent: 'researcher',                  // 默认 agent 名（可选——未设时 handler 需 agent.run(input, { agent: 'name' }) 显式指定，不传且未设时抛 AgentError）
     maxTurns: 10,                                // 默认最大对话轮数
     maxAgentDepth: 3,                            // agent 调用 agent 的最大递归深度
     // enableTracing: false,                     // 关闭 tracing（默认 true）。生产高 QPS 端点可设 false 以零开销运行；

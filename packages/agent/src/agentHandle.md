@@ -79,6 +79,7 @@ interface AgentHandle {
 
 | 字段 | 优先级 1（最高） | 优先级 2 | 优先级 3（默认） |
 | --- | --- | --- | --- |
+| `agentName` | `options.agent` | — | `deps.agentName`（`config.agent.defaultAgent`） |
 | `provider` | `options.model` 解析出的 provider（key 含 provider 时） | — | `deps.defaultProvider`（`defaultLlm` 对应的 provider 实例） |
 | `model` | `options.model` 解析出的 model | `meta.model`（agent 元数据） | `defaultLlm` provider 的 models 第一个 key |
 | `temperature` | `options.temperature` | model 级 `models[m].temperature` | provider 级 `LlmConfig.temperature` |
@@ -118,13 +119,13 @@ interface AgentHandle {
 ### 注入流程
 
 ```
-faapi.config.ts 配置 agent.llms + agent.defaultLlm + agent.defaultAgent
+faapi.config.ts 配置 agent.llms + agent.defaultLlm + agent.defaultAgent（可选）
          ↓
 @faapi/agent plugin setup()
   ├─ 读 config.agent.llms → 遍历每个 LlmConfig 调 createProvider → Map<providerKey, LLMProvider>
   ├─ 读 config.agent.defaultLlm → defaultProvider = providers.get(defaultLlm)
-  ├─ 读 config.agent.defaultAgent / maxTurns / maxAgentDepth
-  ├─ 从 @faapi/faapi import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools / resolveSubAgents / loadAgentModule / loadToolModule）
+  ├─ 读 config.agent.defaultAgent（可选）/ maxTurns / maxAgentDepth
+  ├─ 从 @faapi/faapi import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools / resolveSubAgents / loadAgentModule / loadToolModule)
   └─ registerAgentHandleFactory((ctx) => {
        return new Agent({ providers, defaultProvider, agentName: defaultAgent, rootDir, config, getAgent, ... });
      })
@@ -132,12 +133,14 @@ faapi.config.ts 配置 agent.llms + agent.defaultLlm + agent.defaultAgent
 handler GET(agent: AgentHandle)
   └─ injectParams case 'agent' → getAgentHandle(ctx) → 工厂返回 Agent 实例
          ↓
-agent.run(input) / agent.stream(input, { model: 'gpt-4o' })
+agent.run(input) / agent.run(input, { agent: 'researcher' }) / agent.stream(input, { model: 'gpt-4o' })
 ```
 
 ### 工厂未注册时的行为
 
-工厂未注册（`@faapi/agent` 插件未加载或 `config.agent.llms` / `defaultLlm` / `defaultAgent` 未配置）时,`getAgentHandle(ctx)` 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。handler 需自行处理此情况（如返回 503 错误）。
+工厂未注册（`@faapi/agent` 插件未加载或 `config.agent.llms` 未配置）时,`getAgentHandle(ctx)` 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。handler 需自行处理此情况（如返回 503 错误）。
+
+`defaultAgent` 未设置但工厂已注册时,`agent` 参数正常注入 Agent 实例,但 `agent.run(input)` 不传 `{ agent: 'name' }` 时抛 `AgentError`（agent 名为空字符串,查注册表返回 `undefined`）。
 
 ## 相关模块
 
