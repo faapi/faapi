@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import http from 'node:http';
+import path from 'node:path';
 import type { Server } from 'node:http';
 import type { Socket } from 'node:net';
 import type { RequestHandler, UpgradeHandler } from '@faapi/faapi';
@@ -459,5 +460,172 @@ describe('@faapi/next 插件 - trustHostHeader 自动开启', () => {
     expect(mockLoadConfig).toHaveBeenCalledWith('phase-production-server', '/tmp/test', {
       silent: true,
     });
+  });
+
+  it('dir 相对路径按 rootDir 解析后传给 next()', async () => {
+    const { ctx } = createMockContext({ dir: 'web' });
+    await nextPlugin.setup(ctx);
+
+    expect(mockNextFactory).toHaveBeenCalledWith(
+      expect.objectContaining({ dir: path.resolve('/tmp/test', 'web') }),
+    );
+  });
+});
+
+describe('@faapi/next 插件 - Next.js handler 异常兜底', () => {
+  /** 构造可直接调用的假 req/res（不走真实 server，便于断言 headersSent 守卫） */
+  function makeMockRes(headersSent = false) {
+    return {
+      headersSent,
+      statusCode: 200,
+      end: vi.fn(),
+    };
+  }
+
+  /** flush 微任务队列，让 handler 内部的 .catch 分支执行完 */
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  it('nextHandle reject 时返回 500 "Next.js handler error"，不影响 faapi 路由', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { ctx, handlerWrappers } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    const faapiHandler = vi.fn();
+    const finalHandler = applyWrappers(faapiHandler, handlerWrappers);
+    const res = makeMockRes();
+
+    mockNextHandle.mockRejectedValue(new Error('boom'));
+    finalHandler({ url: '/page' } as any, res as any);
+    await flush();
+
+    expect(res.statusCode).toBe(500);
+    expect(res.end).toHaveBeenCalledWith('Next.js handler error');
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Next.js handler error'),
+      expect.any(Error),
+    );
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('nextHandle 返回 undefined（非 Promise）时不报错', async () => {
+    const { ctx, handlerWrappers } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    const finalHandler = applyWrappers(vi.fn(), handlerWrappers);
+    const res = makeMockRes();
+
+    mockNextHandle.mockReturnValue(undefined);
+    finalHandler({ url: '/page' } as any, res as any);
+    await flush();
+
+    expect(res.statusCode).toBe(200); // 未被兜底逻辑改写
+    expect(res.end).not.toHaveBeenCalled();
+  });
+
+  it('res.headersSent 已发出响应时不重复 end（守卫生效）', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { ctx, handlerWrappers } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    const finalHandler = applyWrappers(vi.fn(), handlerWrappers);
+    const res = makeMockRes(true); // headersSent = true
+
+    mockNextHandle.mockRejectedValue(new Error('boom'));
+    finalHandler({ url: '/page' } as any, res as any);
+    await flush();
+
+    expect(res.end).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+});
+
+describe('@faapi/next 插件 - upgrade handler 缺失', () => {
+  /** 让 mockNextFactory 返回无 getUpgradeHandler 的 NextApp（Next.js 旧版本行为） */
+  function mockNextWithoutUpgradeHandler(): void {
+    mockNextFactory.mockImplementationOnce((() => ({
+      getRequestHandler: () => mockNextHandle,
+      prepare: async () => {},
+    })) as any);
+  }
+
+  it('无 nextUpgradeHandler 且非 /api 路径：socket 销毁', async () => {
+    mockNextWithoutUpgradeHandler();
+    const mockFaapiUpgrade = vi.fn();
+    const { ctx, upgradeWrappers } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    const finalUpgrade = upgradeWrappers[0](mockFaapiUpgrade);
+    const mockSocket = { destroy: vi.fn() } as unknown as Socket;
+
+    finalUpgrade({ url: '/_next/webpack-hmr' } as any, mockSocket, Buffer.alloc(0));
+
+    expect(mockNextUpgradeHandler).not.toHaveBeenCalled();
+    expect(mockFaapiUpgrade).not.toHaveBeenCalled();
+    expect(mockSocket.destroy).toHaveBeenCalled();
+  });
+
+  it('无 nextUpgradeHandler 且 /api 路径：走 faapi upgradeHandler', async () => {
+    mockNextWithoutUpgradeHandler();
+    const mockFaapiUpgrade = vi.fn();
+    const { ctx, upgradeWrappers } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    const finalUpgrade = upgradeWrappers[0](mockFaapiUpgrade);
+    const mockReq = { url: '/api/chat' } as any;
+    const mockSocket = { destroy: vi.fn() } as unknown as Socket;
+    const mockHead = Buffer.alloc(0);
+
+    finalUpgrade(mockReq, mockSocket, mockHead);
+
+    expect(mockFaapiUpgrade).toHaveBeenCalledWith(mockReq, mockSocket, mockHead);
+    expect(mockSocket.destroy).not.toHaveBeenCalled();
+  });
+
+  it('/api 路径但 faapi 无 WS 路由（original 为 undefined）：回退 Next.js upgrade', async () => {
+    const { ctx, upgradeWrappers } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    // original 为 undefined（faapi 无 WS 路由），/api 前缀命中但无法交给 faapi
+    const finalUpgrade = upgradeWrappers[0](undefined);
+    const mockSocket = { destroy: vi.fn() } as unknown as Socket;
+
+    finalUpgrade({ url: '/api/chat' } as any, mockSocket, Buffer.alloc(0));
+
+    expect(mockNextUpgradeHandler).toHaveBeenCalled();
+    expect(mockSocket.destroy).not.toHaveBeenCalled();
+  });
+
+  it('/api 路径、original 为 undefined 且无 nextUpgradeHandler：socket 销毁', async () => {
+    mockNextWithoutUpgradeHandler();
+    const { ctx, upgradeWrappers } = createMockContext();
+    await nextPlugin.setup(ctx);
+
+    const finalUpgrade = upgradeWrappers[0](undefined);
+    const mockSocket = { destroy: vi.fn() } as unknown as Socket;
+
+    finalUpgrade({ url: '/api/chat' } as any, mockSocket, Buffer.alloc(0));
+
+    expect(mockSocket.destroy).toHaveBeenCalled();
+  });
+});
+
+describe('@faapi/next 插件 - next 未安装', () => {
+  it('import next 失败时抛出明确的安装提示', async () => {
+    vi.resetModules();
+    // doMock（非提升）在 resetModules 后对动态 import 生效，模拟 next 未安装
+    vi.doMock('next', () => {
+      throw new Error("Cannot find package 'next'");
+    });
+
+    try {
+      const { default: plugin } = await import('./createNextServer');
+      const { ctx } = createMockContext();
+      await expect(plugin.setup(ctx)).rejects.toThrowError(/next 包未安装/);
+    } finally {
+      vi.doUnmock('next');
+      vi.resetModules();
+    }
   });
 });
