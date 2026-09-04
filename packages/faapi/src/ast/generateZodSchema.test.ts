@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createProgram } from './createProgram';
+import { createProgram, invalidateProgramCache } from './createProgram';
 import { extractAllTypes } from './extractHandlerTypes';
 import {
   generateZodSchemaSource,
@@ -19,6 +19,12 @@ import {
  * 相同源码的测试（如 4 个 Date 测试都用 `export interface Q { createdAt: Date; }`）复用同一次 Program。
  */
 const sourceTypesCache = new Map<string, ReturnType<typeof extractAllTypes>>();
+
+// 每个测试后清空模块级 Program 缓存：sourceTypesCache 缓存的 allTypes 已是提取后的
+// 纯数据（RuntimeType），Program 不再被引用；不清理会随测试数累积耗尽 worker 堆内存（OOM）
+afterEach(() => {
+  invalidateProgramCache();
+});
 
 /**
  * 从 TypeScript 源码提取类型信息并生成 zod schema 代码

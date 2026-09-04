@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createProgram } from './createProgram';
+import { createProgram, invalidateProgramCache } from './createProgram';
 import { extractToolMetadata, type ToolPathMeta } from './extractToolMetadata';
 
 describe('extractToolMetadata', () => {
@@ -19,6 +19,8 @@ describe('extractToolMetadata', () => {
   });
 
   afterEach(() => {
+    // 清空模块级 Program 缓存，避免随测试数累积耗尽 worker 堆内存（OOM）
+    invalidateProgramCache();
     rmSync(tempDir, { recursive: true, force: true });
   });
 

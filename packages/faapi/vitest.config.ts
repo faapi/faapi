@@ -36,8 +36,6 @@ export default defineConfig({
     teardownTimeout: 30000,
     // CI（2 核）资源紧张，E2E 服务器启动 + AST 提取并行易导致 fork 子进程崩溃
     // （ERR_IPC_CHANNEL_CLOSED）；本地（多核）保持并行加速
-    // 内存上限由 package.json 的 test 脚本通过 NODE_OPTIONS=--max-old-space-size=8192
-    // 提高（AST 提取测试加载 TypeScript compiler,默认 4GB 堆内存不够）
     fileParallelism: !isCI,
     maxWorkers: isCI ? 1 : '50%',
     pool: 'forks',
@@ -46,6 +44,10 @@ export default defineConfig({
         singleFork: isCI,
         minForks: isCI ? 1 : undefined,
         maxForks: isCI ? 1 : undefined,
+        // AST 提取测试加载 TypeScript compiler + lib.d.ts，默认 4GB 堆内存不够。
+        // 在这里给 fork 子进程设堆上限（而非依赖 package.json test 脚本的 NODE_OPTIONS），
+        // 使 `pnpm test` / 直接 `pnpm vitest run` 两条路径行为一致
+        execArgv: ['--max-old-space-size=8192'],
       },
     },
     // 覆盖率默认配置：--coverage 时无需手传 CLI 参数

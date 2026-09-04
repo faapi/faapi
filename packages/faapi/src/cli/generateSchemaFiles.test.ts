@@ -7,7 +7,7 @@ import {
   generateSchemaFileSource,
   getSchemaOutputPath,
 } from './generateSchemaFiles';
-import { createProgram } from '../ast/createProgram';
+import { createProgram, invalidateProgramCache } from '../ast/createProgram';
 import { extractAllTypes } from '../ast/extractHandlerTypes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import type { RouteManifest } from '../router/routeTypes';
@@ -34,6 +34,8 @@ describe('generateSchemaFiles', () => {
   });
 
   afterEach(() => {
+    // 清空模块级 Program 缓存，避免随测试数累积耗尽 worker 堆内存（OOM）
+    invalidateProgramCache();
     rmSync(tempDir, { recursive: true, force: true });
   });
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createProgram } from './createProgram';
+import { createProgram, invalidateProgramCache } from './createProgram';
 import { extractTypeInfo } from './extractHandlerTypes';
 import { SchemaExtractionError } from './resolveTypeNode';
 
@@ -34,6 +34,9 @@ export interface POSTBody {
   });
 
   afterEach(() => {
+    // 清空模块级 Program 缓存：每个测试的 Program 含全量 lib.d.ts AST，
+    // 不清理会随测试数线性累积，全量跑时把 worker 堆内存耗尽（OOM）
+    invalidateProgramCache();
     rmSync(tempDir, { recursive: true, force: true });
   });
 
