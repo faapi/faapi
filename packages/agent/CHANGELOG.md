@@ -1,5 +1,20 @@
 # @faapi/agent
 
+## 3.3.0
+
+### Minor Changes
+
+- 515e498: `config.agent.defaultAgent` 改为可选：未设置时插件正常注册工厂，handler 通过 `agent.run(input, { agent: 'name' })` / `agent.stream(input, { agent: 'name' })` 按调用指定 agent。两者均未指定时 `run`/`stream` 抛 `AgentError`。此前未设置 `defaultAgent` 会跳过工厂注册（`agent` 参数注入 `undefined`）。
+- 21957b1: tracing 默认值从开启改为关闭（opt-in）——`enableTracing` 不再默认 `true`，不开启时 `agent.run()` / `agent.stream()` 返回的 `result.trace` / `chunk.traceEvent` 为 `undefined`，零开销运行。
+
+  tracing 采集每轮 LLM 消息快照与 tool 明细，有真实内存/CPU 开销，此前所有不知情的用户都在隐性支付这笔成本。需要观测的端点显式开启：`config.agent.enableTracing: true`（全局）或 `agent.run(input, { enableTracing: true })`（单次调用）。
+
+### Patch Changes
+
+- d9a2830: `@faapi/agent` 性能优化：tool schema 解析新增跨请求缓存。此前 Agent 工厂每请求构造新实例，每个请求都重新执行 `loadToolSchema`（dynamic import）+ `z.toJSONSchema`（CPU 密集）；现在 setup 闭包级缓存解析结果，按 zod.js 路径 + inputTypeName 作键、文件 mtime 自校验失效（dev `reloadTools` 重生成后自愈，prod 永远命中），并发请求共享同一次解析。高 QPS agent 端点每请求省去 schema 重复解析开销。
+
+  `@faapi/faapi` 新增 `getToolSchemaPath(tool, rootDir?)` 公开导出（计算 tool 的 zod.js 绝对路径，纯路径计算），与 `loadToolSchema` 共享 dist 解析逻辑。
+
 ## 3.2.1
 
 ## 3.2.0

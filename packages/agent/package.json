@@ -1,6 +1,6 @@
 {
   "name": "@faapi/agent",
-  "version": "3.2.1",
+  "version": "3.3.0",
   "description": "Agent runtime for faapi — LLM-driven ReAct loop over scanned agent / tool registries",
   "type": "module",
   "main": "./src/index.ts",

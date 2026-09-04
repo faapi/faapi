@@ -1,5 +1,34 @@
 # @faapi/faapi
 
+## 3.3.0
+
+### Minor Changes
+
+- d9a2830: `@faapi/agent` 性能优化：tool schema 解析新增跨请求缓存。此前 Agent 工厂每请求构造新实例，每个请求都重新执行 `loadToolSchema`（dynamic import）+ `z.toJSONSchema`（CPU 密集）；现在 setup 闭包级缓存解析结果，按 zod.js 路径 + inputTypeName 作键、文件 mtime 自校验失效（dev `reloadTools` 重生成后自愈，prod 永远命中），并发请求共享同一次解析。高 QPS agent 端点每请求省去 schema 重复解析开销。
+
+  `@faapi/faapi` 新增 `getToolSchemaPath(tool, rootDir?)` 公开导出（计算 tool 的 zod.js 绝对路径，纯路径计算），与 `loadToolSchema` 共享 dist 解析逻辑。
+
+- 924f0a1: 构建性能优化：schema/tool/agent 产物生成改为批量共享 TypeScript Program（新增 `createPrograms` 公开导出）。此前每个 handler 文件单独创建一个含全项目源码的 Program，N 个文件重复解析 N 遍；现在同一次生成中查找到同一 `tsconfig.json` 的文件共用一个 Program，`faapi build` 与 dev 首次请求生成 zod.js 的 AST 阶段开销从 O(N×全项目) 降为 O(全项目)，大项目下提升数量级。跨文件 `import type` 解析语义不变。
+- 8678807: 新增 `trustedProxy` 配置（默认 `false`），`ctx.ip` 默认不再信任 `X-Forwarded-For`。
+
+  此前 `getClientIp` 无条件取 XFF 第一个 IP——客户端直连时该 header 可被任意伪造，污染 `ctx.ip`（影响限流/日志/访问控制）。现在的行为：
+
+  - `trustedProxy: false`（默认）：直取 socket 地址，XFF 被忽略——直连部署防伪造
+  - `trustedProxy: true`：沿用原行为，取 XFF 第一个 IP——部署在 nginx/CDN 等受信任反向代理之后时在 `faapi.config.ts` 显式开启
+
+  **升级注意**：部署在反向代理之后、依赖 `ctx.ip` 为客户端真实 IP 的项目需显式配置 `trustedProxy: true`，否则 `ctx.ip` 会变为代理的 socket 地址。同时影响 HTTP 与 WebSocket 握手。
+
+### Patch Changes
+
+- dbcdb5c: 请求热路径优化批次（行为语义不变）：
+
+  - **URL 单次解析**：每请求只在 `toWebRequest` 内做一次 `new URL`，pathname/searchParams 由 ctx 与参数解析共享（原一次请求重复解析 3~4 次）；新增内部变体 `createContextFromUrl` / `resolveInputFromUrl`，公开 API 签名不变。
+  - **content-length 快速 413**：请求体带 `content-length` 且超过 `bodyLimit` 时在流读取前直接返回 413（chunked 无此头仍走流式限流）。
+  - **外层中间件链启动期组装**：CORS → helmet → logger → 全局中间件数组在 createServer 时构建一次，每请求不再重复 spread 重组。
+  - **dev 热路径同步 IO 短路**：`prodPathToSourcePath` 映射缓存（reloadRoutes 时清空），`loadRouteModule` 去掉冗余的每请求 `existsSync`——编译完成后稳态请求零 fs 访问。
+
+- 7140e6e: 路由匹配索引化：每请求的 O(n) 线性扫描改为静态路由 O(1) Map 命中 + 动态路由按序扫描（索引按清单数组身份 WeakMap 缓存，`reloadRoutes` 整体替换清单后自动失效，匹配语义与原实现完全等价）。`findAllowedMethods`（405 反查）同步索引化，扫描器/探活探测的高频 404 场景开销显著下降。
+
 ## 3.2.1
 
 ### Patch Changes
