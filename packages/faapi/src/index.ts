@@ -31,7 +31,7 @@ export type {
 } from './router/routeTypes';
 
 // AST 能力（供 @faapi/schema 等扩展包复用）
-export { createProgram, invalidateProgramCache } from './ast/createProgram';
+export { createProgram, createPrograms, invalidateProgramCache } from './ast/createProgram';
 export { extractTypeInfo, type HandlerTypeInfo } from './ast/extractHandlerTypes';
 export type { RuntimeType, PropertyType, TypeConstraint } from './ast/resolveTypeNode';
 export { SchemaExtractionError, resolveTypeNode } from './ast/resolveTypeNode';

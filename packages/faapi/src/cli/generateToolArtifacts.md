@@ -191,7 +191,7 @@ interface ToolSchemaSource {
 
 `generateToolArtifacts` 主入口流程：
 
-1. 对每个 `ToolManifest` 调 `createProgram` + `extractToolMetadata` → `ToolMetadata[]`（含 AST 字段）
+1. 批量 `createPrograms`（全部 tool 文件共享同一个 Program）+ 逐个 `extractToolMetadata` → `ToolMetadata[]`（含 AST 字段）
 2. `serializeTools(metadata, dist)` → `SerializedToolRecord[]`（filePath 转产物形式）
 3. `writeToolsModule(serialized, faapiToolsPath)` → 写入 `<dist>/faapi-tools.js`
 4. 若 `skipSchema=true`（dev 按需模式）→ 返回，不生成 zod.js
@@ -210,7 +210,7 @@ dev 启动时 `generateToolArtifacts(skipSchema: true)` 只生成 `faapi-tools.j
 - [extractToolMetadata](../ast/extractToolMetadata.md) — AST 增强 `ToolManifest` → `ToolMetadata`（含 description/inputTypeName）
 - [generateSchemaFiles](./generateSchemaFiles.md) — 路由 schema 生成（与本模块对称设计，复用 faapi-helpers.js）
 - [generateZodSchema](../ast/generateZodSchema.md) — RuntimeType → zod schema 代码
-- [createProgram](../ast/createProgram.md) — TypeScript Program（带缓存）
+- [createProgram](../ast/createProgram.md) — TypeScript Program（带缓存，批量走 `createPrograms` 共享）
 - [extractHandlerTypes](../ast/extractHandlerTypes.md) — `extractTypeInfo` / `extractAllTypes` 类型提取
 - [generateRoutes](./generateRoutes.md) — `faapi-routes.js` 路由清单序列化（与本模块同构）
 - [compileOnDemand](./compileOnDemand.md) — dev 按需编译/生成（阶段 1.4 复用）

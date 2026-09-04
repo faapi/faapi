@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import type { AgentManifestList } from '../agents/agentTypes';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import { extractAgentMetadata } from '../ast/extractAgentMetadata';
-import { createProgram } from '../ast/createProgram';
+import { createPrograms } from '../ast/createProgram';
 
 /**
  * 序列化的 agent manifest 记录（可写入 JS 模块，无函数引用）
@@ -155,11 +155,12 @@ export async function generateAgentArtifacts(
   rootDir: string,
   dist: string,
 ): Promise<AgentMetadata[]> {
-  // 1. AST 增强：对每个 manifest 调 extractAgentMetadata
+  // 1. AST 增强：对每个 manifest 调 extractAgentMetadata（批量共享 Program）
   const metadata: AgentMetadata[] = [];
+  const programByFile = createPrograms(agents.map((m) => path.resolve(rootDir, m.filePath)));
   for (const manifest of agents) {
     const absPath = path.resolve(rootDir, manifest.filePath);
-    const program = createProgram(absPath);
+    const program = programByFile.get(absPath)!;
     const result = extractAgentMetadata(program, absPath, {
       name: manifest.name,
       filePath: manifest.filePath,

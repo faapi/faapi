@@ -129,6 +129,9 @@ function parseTsConfig(tsconfigPath: string): TsConfigResult {
  * 修复业务项目用 `moduleResolution: Bundler` + 无扩展名相对导入时跨文件
  * `import type` 解析失败的问题。
  *
+ * 同一次生成中需要分析多个文件时用 {@link createPrograms}（按 tsconfig 分组共享
+ * 同一个 Program），避免每个文件单独创建 Program 重复解析全项目源码。
+ *
  * @param filePath 要分析的 .ts 文件绝对路径
  */
 export function createProgram(filePath: string): ts.Program {
@@ -137,6 +140,80 @@ export function createProgram(filePath: string): ts.Program {
     return cached;
   }
 
+  const program = buildProgram([filePath], findTsConfig(filePath));
+
+  programCache.set(filePath, program);
+  return program;
+}
+
+/**
+ * 为多个文件创建 Program（按 tsconfig 分组共享，带缓存）
+ *
+ * 同一次批量提取（build 时生成 routes/tools/agents 产物）中，所有向上查找到
+ * 同一个 tsconfig.json 的文件共用**同一个 Program**——rootNames 为
+ * tsconfig fileNames ∪ 全部入口文件，跨文件类型解析语义与单文件 `createProgram`
+ * 完全一致，但 N 个文件只创建 1 个 Program（原来每个文件都全量解析一遍项目源码，
+ * 是 build 时间的最大单项开销）。
+ *
+ * 缓存 key 为 `shared::<tsconfigPath>::<排序后的文件列表>`：同一批次重复调用命中
+ * 缓存；不同批次（rootNames 不同）各自创建。`invalidateProgramCache()` 同时清理
+ * 共享缓存与单文件缓存。
+ *
+ * 向上查找不到 tsconfig.json 的文件（如 os.tmpdir() 测试场景）逐个回退到
+ * {@link createProgram} 单文件行为，不参与共享。
+ *
+ * @param filePaths 要分析的 .ts 文件绝对路径列表（内部去重）
+ * @returns filePath → Program 映射（包含全部请求文件）
+ */
+export function createPrograms(filePaths: string[]): Map<string, ts.Program> {
+  const unique = [...new Set(filePaths)];
+  const result = new Map<string, ts.Program>();
+
+  // 按向上查找到的 tsconfig.json 分组（同组共享一个 Program）
+  const groups = new Map<string, { tsconfigPath: string; files: string[] }>();
+  const noTsconfigFiles: string[] = [];
+  for (const filePath of unique) {
+    const tsconfigPath = findTsConfig(filePath);
+    if (!tsconfigPath) {
+      noTsconfigFiles.push(filePath);
+      continue;
+    }
+    const group = groups.get(tsconfigPath);
+    if (group) {
+      group.files.push(filePath);
+    } else {
+      groups.set(tsconfigPath, { tsconfigPath, files: [filePath] });
+    }
+  }
+
+  for (const { tsconfigPath, files } of groups.values()) {
+    const cacheKey = `shared::${tsconfigPath}::${[...files].sort().join('|')}`;
+    let program = programCache.get(cacheKey);
+    if (!program) {
+      program = buildProgram(files, tsconfigPath);
+      programCache.set(cacheKey, program);
+    }
+    for (const filePath of files) {
+      result.set(filePath, program);
+    }
+  }
+
+  // 无 tsconfig 的文件回退单文件行为（保持与 createProgram 一致）
+  for (const filePath of noTsconfigFiles) {
+    result.set(filePath, createProgram(filePath));
+  }
+
+  return result;
+}
+
+/**
+ * 构建 Program：合并框架默认 options 与 tsconfig 的 module / moduleResolution，
+ * rootNames = 入口文件 ∪ tsconfig fileNames
+ *
+ * 由 {@link createProgram}（单文件）和 {@link createPrograms}（批量共享）共用，
+ * 保证两条路径的 Program 构建语义一致。
+ */
+function buildProgram(entryFiles: string[], tsconfigPath: string | null): ts.Program {
   // 默认选项：与项目历史行为一致（NodeNext），保证向后兼容
   const options: ts.CompilerOptions = {
     strict: true,
@@ -147,10 +224,9 @@ export function createProgram(filePath: string): ts.Program {
     noEmit: true,
   };
 
-  // rootNames 默认只包含 filePath；读 tsconfig 后扩展为全部相关文件
-  let rootNames = [filePath];
+  // rootNames 默认只包含入口文件；读 tsconfig 后扩展为全部相关文件
+  const rootNames = [...entryFiles];
 
-  const tsconfigPath = findTsConfig(filePath);
   if (tsconfigPath) {
     const tsOptions = parseTsConfig(tsconfigPath);
     if (tsOptions.module !== undefined) {
@@ -161,16 +237,13 @@ export function createProgram(filePath: string): ts.Program {
     }
     if (tsOptions.fileNames.length > 0) {
       // 确保入口文件在 rootNames 中（即使 tsconfig include 未覆盖到）
-      if (!tsOptions.fileNames.includes(filePath)) {
-        rootNames = [filePath, ...tsOptions.fileNames];
-      } else {
-        rootNames = tsOptions.fileNames;
+      for (const fileName of tsOptions.fileNames) {
+        if (!rootNames.includes(fileName)) {
+          rootNames.push(fileName);
+        }
       }
     }
   }
 
-  const program = ts.createProgram(rootNames, options);
-
-  programCache.set(filePath, program);
-  return program;
+  return ts.createProgram(rootNames, options);
 }

@@ -1,4 +1,4 @@
-import { createProgram } from '../ast/createProgram';
+import { createPrograms } from '../ast/createProgram';
 import { extractTypeInfo, extractAllTypes, type HandlerTypeInfo } from '../ast/extractHandlerTypes';
 import { getInputTypeForMethod } from '../runtime/inputType';
 import { getSchemaName } from '../validator/schemaName';
@@ -69,13 +69,12 @@ export function collectRouteSchemaSources(
     entry.methods.add(route.method);
   }
 
-  // 先收集所有文件的类型
-  const programByFile = new Map<string, ReturnType<typeof createProgram>>();
+  // 先收集所有文件的类型（批量共享 Program：同一次提取只创建一个 Program，避免逐文件全量解析）
+  const programByFile = createPrograms([...methodsByFile.keys()]);
   const allTypesByFile = new Map<string, Map<string, HandlerTypeInfo>>();
   const mergedAllTypes = new Map<string, HandlerTypeInfo>();
   for (const filePath of methodsByFile.keys()) {
-    const program = createProgram(filePath);
-    programByFile.set(filePath, program);
+    const program = programByFile.get(filePath)!;
     const allTypes = extractAllTypes(program, filePath);
     allTypesByFile.set(filePath, allTypes);
     for (const [name, info] of allTypes) {

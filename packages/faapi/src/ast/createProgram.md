@@ -1,6 +1,6 @@
 # createProgram
 
-一句话概括：创建 TypeScript Program 用于 AST 分析,带模块缓存;从源文件向上查找最近的 `tsconfig.json` 读取 `module` / `moduleResolution`,保证业务项目用 `Bundler` resolution 时 checker 能解析跨文件 `import type`。
+一句话概括：创建 TypeScript Program 用于 AST 分析,带模块缓存;从源文件向上查找最近的 `tsconfig.json` 读取 `module` / `moduleResolution`,保证业务项目用 `Bundler` resolution 时 checker 能解析跨文件 `import type`。批量场景用 `createPrograms` 按 tsconfig 分组共享同一个 Program。
 
 ## 为什么需要
 
@@ -15,11 +15,25 @@
 | 函数                         | 说明                                                                                                             |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | `createProgram(file)`      | 创建 Program(命中缓存直接返回)。从 `file` 向上查找最近的 `tsconfig.json`,提取 `compilerOptions.module` / `moduleResolution` 与默认选项合并 |
-| `invalidateProgramCache()` | 清空 Program 缓存 + tsconfig 解析缓存(dev watch 时调用,确保增量编译后读到最新 Program)                                               |
+| `createPrograms(files)`    | 批量创建 Program,**按 tsconfig 分组共享同一个 Program**(同一次生成只创建一个,见下文),返回 `Map<filePath, Program>`      |
+| `invalidateProgramCache()` | 清空 Program 缓存(单文件 + 共享)+ tsconfig 解析缓存(dev watch 时调用,确保增量编译后读到最新 Program)                      |
+
+## 批量共享(createPrograms)
+
+`faapi build` 需要为全部路由/tool/agent 文件做 AST 提取。若逐文件调 `createProgram`,每个文件都会创建一个含全项目 rootNames 的 Program,重复解析整个项目源码——这是 build 时间的最大单项开销(大项目下为数量级差异)。
+
+`createPrograms(filePaths)` 的共享规则:
+
+1. 对每个文件向上查找 tsconfig.json,**查找到同一个 tsconfig 的文件共用同一个 Program**(rootNames = tsconfig fileNames ∪ 全部入口文件)
+2. 跨文件类型解析语义与单文件 `createProgram` 完全一致(共享 Program 的 rootNames 包含全部入口文件,`resolveTypeReference` 兜底遍历不受影响)
+3. 缓存 key 为 `shared::<tsconfigPath>::<排序后的文件列表>`——同一批次重复调用命中缓存;不同批次(rootNames 不同)各自创建
+4. 查找不到 tsconfig.json 的文件(如测试场景)逐个回退单文件 `createProgram` 行为,不参与共享
+
+调用方:`collectRouteSchemaSources` / `generateToolArtifacts` / `generateAgentArtifacts` 均已改为批量共享。
 
 ## 使用场景
 
-- 启动时为每个 handler.ts / tool handler.ts / agent handler.ts 创建 Program 提取类型
+- build / dev 时为 handler.ts / tool handler.ts / agent handler.ts 提取类型——批量提取走 `createPrograms` 共享 Program,单文件提取(dev 按需生成 zod.js)走 `createProgram`
 
 - dev watch 文件变化时,先 `invalidateProgramCache()` 再重新提取
 
@@ -57,9 +71,9 @@
 
 - `../cli/buildCommand.ts` - 构建时调 `createProgram`
 
-- `../cli/collectRouteSchemaSources.ts` - 路由 schema 提取,调 `createProgram`
+- `../cli/collectRouteSchemaSources.ts` - 路由 schema 提取,批量调 `createPrograms`
 
-- `../cli/generateToolArtifacts.ts` - tool schema 提取,调 `createProgram`
+- `../cli/generateToolArtifacts.ts` - tool schema 提取,批量调 `createPrograms`
 
-- `../cli/generateAgentArtifacts.ts` - agent schema 提取,调 `createProgram`
+- `../cli/generateAgentArtifacts.ts` - agent 元数据提取,批量调 `createPrograms`
 

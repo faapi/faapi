@@ -1,13 +1,13 @@
 # collectRouteSchemaSources
 
-一句话概括：从路由清单按文件分组，用 AST（`createProgram` + `extractAllTypes` + `analyzeInjection`）提取每个路由的 schema 类型源数据，dev/prd 共用。
+一句话概括：从路由清单按文件分组，用 AST（`createPrograms` + `extractAllTypes` + `analyzeInjection`）提取每个路由的 schema 类型源数据，dev/prd 共用。
 
 ## 为什么需要
 
 `generateSchemaFiles` 需要每个路由的 input 类型信息（Query/Params/Body）来生成 `zod.js`。本函数负责从路由清单收集这些类型源数据：
 
 - 按文件分组遍历路由（同一文件的多个方法共享一次 AST 解析）
-- 对每个文件 `createProgram` + `extractAllTypes` 收集所有类型
+- 批量 `createPrograms`（全部文件共享同一个 Program）+ 逐文件 `extractAllTypes` 收集所有类型
 - 用 `analyzeInjection` 分析 handler 函数签名，找 input 类型对应的参数
 - 用 `extractTypeInfo` 提取参数的 interface 类型信息
 

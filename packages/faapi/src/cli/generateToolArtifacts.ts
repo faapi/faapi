@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import type { ToolManifestList } from '../tools/toolTypes';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import { extractToolMetadata } from '../ast/extractToolMetadata';
-import { createProgram } from '../ast/createProgram';
+import { createPrograms } from '../ast/createProgram';
 import { extractTypeInfo, extractAllTypes, type HandlerTypeInfo } from '../ast/extractHandlerTypes';
 import {
   generateZodSchemaSource,
@@ -214,10 +214,12 @@ function collectToolSchemaSources(
     list.push(tool);
   }
 
-  // 对每个文件 createProgram + extractAllTypes 收集所有类型(供解析 ref)
+  // 对每个文件 extractAllTypes 收集所有类型(供解析 ref)
+  // 批量共享 Program:同一次提取只创建一个 Program,避免逐文件全量解析
+  const programByFile = createPrograms([...toolsByFile.keys()]);
   const allTypesByFile = new Map<string, Map<string, HandlerTypeInfo>>();
   for (const filePath of toolsByFile.keys()) {
-    const program = createProgram(filePath);
+    const program = programByFile.get(filePath)!;
     const allTypes = extractAllTypes(program, filePath);
     allTypesByFile.set(filePath, allTypes);
   }
@@ -225,7 +227,7 @@ function collectToolSchemaSources(
   // 为每个 tool 提取 schema
   const sources: ToolSchemaSource[] = [];
   for (const [filePath, fileTools] of toolsByFile) {
-    const program = createProgram(filePath);
+    const program = programByFile.get(filePath)!;
     for (const tool of fileTools) {
       // inputTypeName 已在外层过滤,这里一定非空(防御性兜底)
       const inputTypeName = tool.inputTypeName!;
@@ -354,11 +356,12 @@ export async function generateToolArtifacts(
   dist: string,
   options?: { skipSchema?: boolean },
 ): Promise<ToolMetadata[]> {
-  // 1. AST 增强:对每个 manifest 调 extractToolMetadata
+  // 1. AST 增强:对每个 manifest 调 extractToolMetadata(批量共享 Program)
   const metadata: ToolMetadata[] = [];
+  const programByFile = createPrograms(tools.map((m) => path.resolve(rootDir, m.filePath)));
   for (const manifest of tools) {
     const absPath = path.resolve(rootDir, manifest.filePath);
-    const program = createProgram(absPath);
+    const program = programByFile.get(absPath)!;
     const result = extractToolMetadata(program, absPath, manifest.functionName, {
       name: manifest.name,
       filePath: manifest.filePath,

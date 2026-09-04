@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createProgram, invalidateProgramCache } from './createProgram';
+import { createProgram, createPrograms, invalidateProgramCache } from './createProgram';
 import { extractTypeInfo } from './extractHandlerTypes';
 
 /**
@@ -386,6 +386,120 @@ export interface NovelSaveInput { sg: StyleGuide }
         createProgram(f1);
         createProgram(f2);
       }).not.toThrow();
+    });
+  });
+
+  describe('createPrograms 批量共享', () => {
+    it('同一 tsconfig 下多个文件共享同一 Program 实例', () => {
+      mkdirSync(join(tempDir, 'src', 'api'), { recursive: true });
+      writeFileSync(
+        join(tempDir, 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { module: 'ESNext', moduleResolution: 'Bundler' } }),
+      );
+
+      const f1 = join(tempDir, 'src', 'api', 'a.ts');
+      const f2 = join(tempDir, 'src', 'api', 'b.ts');
+      writeFileSync(f1, `export interface A { x: number }`);
+      writeFileSync(f2, `export interface B { y: string }`);
+
+      const byFile = createPrograms([f1, f2]);
+      expect(byFile.size).toBe(2);
+      // 核心断言:两个文件拿到同一个 Program 对象（共享,非逐文件创建）
+      expect(byFile.get(f1)).toBe(byFile.get(f2));
+    });
+
+    it('共享 Program 下跨文件 import type 解析正常（Bundler resolution 回归）', () => {
+      mkdirSync(join(tempDir, 'src', 'db'), { recursive: true });
+      mkdirSync(join(tempDir, 'src', 'api'), { recursive: true });
+      writeFileSync(
+        join(tempDir, 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { module: 'ESNext', moduleResolution: 'Bundler' } }),
+      );
+      writeFileSync(
+        join(tempDir, 'src', 'db', 'schema.ts'),
+        `export interface StyleGuide { maxSentenceLength?: number }`,
+      );
+
+      const f1 = join(tempDir, 'src', 'api', 'a.ts');
+      const f2 = join(tempDir, 'src', 'api', 'b.ts');
+      writeFileSync(
+        f1,
+        `import type { StyleGuide } from '../../db/schema'
+export interface ABody { sg?: StyleGuide }`,
+      );
+      writeFileSync(
+        f2,
+        `import type { StyleGuide } from '../../db/schema'
+export interface BBody { guide?: StyleGuide }`,
+      );
+
+      // 两个 handler 文件共享一个 Program,各自的跨文件类型都要能解析
+      const byFile = createPrograms([f1, f2]);
+      const info1 = extractTypeInfo(byFile.get(f1)!, f1, 'ABody');
+      const info2 = extractTypeInfo(byFile.get(f2)!, f2, 'BBody');
+      expect(info1).not.toBeNull();
+      expect(info2).not.toBeNull();
+      const sg1 = info1!.properties.find((p) => p.name === 'sg')!;
+      const sg2 = info2!.properties.find((p) => p.name === 'guide')!;
+      expect(sg1.type.kind).toBe('object');
+      expect(sg2.type.kind).toBe('object');
+    });
+
+    it('同一批次重复调用命中缓存（返回同一 Program 实例）', () => {
+      const f1 = join(tempDir, 'a.ts');
+      writeFileSync(f1, `export interface A { x: number }`);
+      writeFileSync(
+        join(tempDir, 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { module: 'ESNext' } }),
+      );
+
+      const first = createPrograms([f1]);
+      const second = createPrograms([f1]);
+      expect(first.get(f1)).toBe(second.get(f1));
+    });
+
+    it('批量与单文件 createProgram 缓存互不干扰', () => {
+      const f1 = join(tempDir, 'a.ts');
+      writeFileSync(f1, `export interface A { x: number }`);
+      writeFileSync(
+        join(tempDir, 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { module: 'ESNext' } }),
+      );
+
+      const shared = createPrograms([f1]).get(f1)!;
+      const single = createProgram(f1);
+      // 批量走 shared:: 缓存 key,单文件走 filePath key——两者独立
+      expect(single).not.toBe(shared);
+      // 但两者语义一致:都能提取类型
+      expect(extractTypeInfo(single, f1, 'A')).not.toBeNull();
+    });
+
+    it('invalidateProgramCache 同时清空共享缓存', () => {
+      const f1 = join(tempDir, 'a.ts');
+      writeFileSync(f1, `export interface A { x: number }`);
+      writeFileSync(
+        join(tempDir, 'tsconfig.json'),
+        JSON.stringify({ compilerOptions: { module: 'ESNext' } }),
+      );
+
+      const before = createPrograms([f1]).get(f1)!;
+      invalidateProgramCache();
+      const after = createPrograms([f1]).get(f1)!;
+      expect(after).not.toBe(before);
+    });
+
+    it('无 tsconfig 的文件回退单文件 Program（不参与共享）', () => {
+      // tempDir 无 tsconfig（beforeEach 只建目录）
+      const f1 = join(tempDir, 'a.ts');
+      const f2 = join(tempDir, 'b.ts');
+      writeFileSync(f1, `export interface A { x: number }`);
+      writeFileSync(f2, `export interface B { y: string }`);
+
+      const byFile = createPrograms([f1, f2]);
+      expect(byFile.size).toBe(2);
+      // 回退单文件行为:各自独立 Program（与 createProgram 一致）
+      expect(byFile.get(f1)).not.toBe(byFile.get(f2));
+      expect(byFile.get(f1)).toBe(createProgram(f1));
     });
   });
 });
