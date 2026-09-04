@@ -104,7 +104,11 @@ export function GET(query: GETQuery) { return query; }
 
       const sources = makeSources(file, ['GET']);
       const allTypes = extractAllTypes(createProgram(file), file);
-      const source = generateSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       expect(source).toContain("import { z } from 'zod'");
       expect(source).toContain('export const GETQuerySchema');
@@ -143,7 +147,11 @@ export function POST(body: POSTBody) { return body; }
         },
       ];
 
-      const source = generateSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       expect(source).toContain('export const GETQuerySchema');
       expect(source).toContain('export const POSTBodySchema');
@@ -160,7 +168,11 @@ export function POST(body: POSTBody) { return body; }
         { urlPath: '/api/test', filePath: file, schemaName: 'GETQuery', typeInfo: null },
       ];
       const allTypes = extractAllTypes(createProgram(file), file);
-      const source = generateSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       // 仍含 import 语句
       expect(source).toContain("import { z } from 'zod'");
@@ -195,7 +207,11 @@ export function GET(query: GETQuery) { return query; }
         },
       ];
 
-      const source = generateSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
       // TreeNode 含自引用，应使用 z.lazy
       expect(source).toContain('z.lazy');
       expect(source).toContain('TreeNodeSchema');
@@ -235,7 +251,11 @@ export function POST(body: POSTBody) { return body; }
         },
       ];
 
-      const source = generateSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       // 两个 schema 都存在
       expect(source).toContain('export const GETQuerySchema');
@@ -275,7 +295,11 @@ export function GET(params: GETParams) { return params; }
         },
       ];
 
-      const source = generateSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
       expect(source).toContain('export const GETParamsSchema');
       expect(source).toContain('z.preprocess');
     });
@@ -307,7 +331,11 @@ export function POST(form: LoginForm) { return form; }
         },
       ];
 
-      const source = generateSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       // schema 名仍为 POSTBodySchema（运行时 validateInput 用此 key 查找）
       expect(source).toContain('export const POSTBodySchema');

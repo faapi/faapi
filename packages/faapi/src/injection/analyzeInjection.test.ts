@@ -1,7 +1,34 @@
 import { describe, it, expect } from 'vitest';
-import { analyzeInjection } from './analyzeInjection';
+import ts from 'typescript';
+import { analyzeInjection, analyzeInjectionInSourceFile } from './analyzeInjection';
 
 describe('analyzeInjection', () => {
+  describe('analyzeInjectionInSourceFile（复用已有 AST）', () => {
+    it('与字符串版本语义一致：识别参数名/注入类型/引用类型名', () => {
+      const sourceFile = ts.createSourceFile(
+        'route.ts',
+        `export function POST(form: LoginForm) { return form; }\n`,
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const result = analyzeInjectionInSourceFile(sourceFile, 'POST');
+      expect(result.params).toHaveLength(1);
+      expect(result.params[0].name).toBe('form');
+      expect(result.params[0].type).toBe('form');
+      expect(result.params[0].typeName).toBe('LoginForm');
+    });
+
+    it('函数不存在时返回空参数列表', () => {
+      const sourceFile = ts.createSourceFile(
+        'route.ts',
+        `export function GET(query: Query) { return query; }\n`,
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const result = analyzeInjectionInSourceFile(sourceFile, 'POST');
+      expect(result.params).toHaveLength(0);
+    });
+  });
   describe('参数名识别', () => {
     it('识别 query 参数', () => {
       const code = `

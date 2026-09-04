@@ -89,7 +89,7 @@ coerce 的具体转换规则见 [generateZodSchema](../ast/generateZodSchema) �
 
 ## 跨文件类型引用
 
-`extractAllTypes` 使用 TypeScript checker 解析类型引用，跨文件类型在 AST 提取阶段已内联为完整 RuntimeType（非 `ref`）。因此每个 zod.js 自包含，无需 import 其他 zod.js。
+跨文件类型在 AST 提取阶段已被 TypeScript checker 内联为完整 RuntimeType（非 `ref`）。同文件的循环引用（`ref`）由惰性解析器按需解析（`collectRouteSchemaSources` 返回的 `resolversByFile`，缓存幂等）。因此每个 zod.js 自包含，无需 import 其他 zod.js。
 
 `ref` 仅用于同文件内的循环引用（如 `TreeNode.children: TreeNode[]`），通过 `z.lazy` 处理。
 
@@ -106,7 +106,7 @@ async function generateSchemaFiles(
 /** 生成单个 handler 文件的 zod.js 源码 */
 function generateSchemaFileSource(
   sources: RouteSchemaSource[],
-  allTypes: Map<string, HandlerTypeInfo>,
+  resolveType: (name: string) => RuntimeType | undefined,
   helpersImportPath: string,
 ): string
 

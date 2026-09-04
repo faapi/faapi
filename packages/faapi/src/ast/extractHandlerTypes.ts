@@ -144,6 +144,45 @@ export function extractAllTypes(
 }
 
 /**
+ * 惰性类型解析器
+ *
+ * 按名称解析类型并缓存。与 extractAllTypes 的差异：extractAllTypes 提前解析
+ * 文件中全部顶层类型——与路由无关的类型也会被解析，其中任何类型含不支持语法
+ * 都会拖垮整个 build/reload；惰性解析器只在类型真正被需要时（入口类型或
+ * ref 引用）才解析，无关类型零开销。
+ */
+export interface LazyTypeResolver {
+  /**
+   * 按名称解析类型
+   *
+   * @returns 类型信息；文件中无该名称的声明时返回 null
+   * @throws SchemaExtractionError 类型声明含不支持语法时（与 extractTypeInfo 一致，不降级）
+   */
+  resolve(name: string): HandlerTypeInfo | null;
+}
+
+/**
+ * 创建文件的惰性类型解析器
+ *
+ * 缓存保证同一类型只解析一次（幂等返回同一实例）。
+ *
+ * @param program TypeScript Program（解析期间会临时设置 program 上下文，供
+ *                resolveImportAlias 兜底遍历跨文件声明使用）
+ * @param filePath 源文件绝对路径
+ */
+export function createLazyTypeResolver(program: ts.Program, filePath: string): LazyTypeResolver {
+  const cache = new Map<string, HandlerTypeInfo | null>();
+  return {
+    resolve(name: string): HandlerTypeInfo | null {
+      if (cache.has(name)) return cache.get(name)!;
+      const info = extractTypeInfo(program, filePath, name);
+      cache.set(name, info);
+      return info;
+    },
+  };
+}
+
+/**
  * 包装类型解析，捕获 SchemaExtractionError 并补充文件路径和类型名上下文
  *
  * 只包装一次（最外层），避免嵌套调用时重复包装。

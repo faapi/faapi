@@ -100,14 +100,15 @@ describe('collectRouteSchemaSources', () => {
       { method: 'POST', urlPath: '/api/multi', filePath, paramNames: [], isDynamic: false },
     ];
 
-    const { sources, allTypesByFile } = collectRouteSchemaSources(routes);
+    const { sources, resolversByFile } = collectRouteSchemaSources(routes);
     expect(sources).toHaveLength(2);
     expect(sources.map((s) => s.schemaName).sort()).toEqual(['GETQuery', 'POSTBody']);
-    // 同文件只解析一次
-    expect(allTypesByFile.size).toBe(1);
-    const types = allTypesByFile.get(filePath)!;
-    expect(types.has('Query')).toBe(true);
-    expect(types.has('Body')).toBe(true);
+    // 同文件一个惰性解析器
+    expect(resolversByFile.size).toBe(1);
+    const resolver = resolversByFile.get(filePath)!;
+    expect(resolver.resolve('Query')).not.toBeNull();
+    expect(resolver.resolve('Body')).not.toBeNull();
+    expect(resolver.resolve('NoSuchType')).toBeNull();
   });
 
   it('rootDir 传入时解析为绝对路径', () => {
@@ -131,34 +132,60 @@ describe('collectRouteSchemaSources', () => {
     expect(sources[0].typeInfo!.name).toBe('Query');
   });
 
-  it('mergedAllTypes 合并所有文件的类型', () => {
-    writeHandler(
-      'a.ts',
-      `export interface QA { a: string; }\nexport function GET(q: QA) { return q; }\n`,
-    );
-    writeHandler(
-      'b.ts',
-      `export interface QB { b: number; }\nexport function POST(q: QB) { return q; }\n`,
+  it('无关类型含不支持语法不拖垮提取（惰性解析：只解析入口类型）', () => {
+    // Unused 的 any 字段在 SchemaExtractionError 抛错名单中，
+    // 但它不被任何路由入口类型引用——惰性解析下不应被解析，提取应成功
+    const filePath = writeHandler(
+      'lazy.ts',
+      `export interface Unused { bad: any; }\nexport interface Query { q: string; }\nexport function GET(query: Query) { return query; }\n`,
     );
     const routes: RouteManifest = [
-      {
-        method: 'GET',
-        urlPath: '/api/a',
-        filePath: join(tempDir, 'a.ts'),
-        paramNames: [],
-        isDynamic: false,
-      },
-      {
-        method: 'POST',
-        urlPath: '/api/b',
-        filePath: join(tempDir, 'b.ts'),
-        paramNames: [],
-        isDynamic: false,
-      },
+      { method: 'GET', urlPath: '/api/lazy', filePath, paramNames: [], isDynamic: false },
     ];
 
-    const { mergedAllTypes } = collectRouteSchemaSources(routes);
-    expect(mergedAllTypes.has('QA')).toBe(true);
-    expect(mergedAllTypes.has('QB')).toBe(true);
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].typeInfo).not.toBeNull();
+    expect(sources[0].typeInfo!.name).toBe('Query');
+  });
+
+  it('resolversByFile 惰性解析：缓存幂等（同一类型返回同一实例）', () => {
+    const filePath = writeHandler(
+      'cached.ts',
+      `export interface Query { q: string; }\nexport function GET(query: Query) { return query; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'GET', urlPath: '/api/cached', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { resolversByFile } = collectRouteSchemaSources(routes);
+    const resolver = resolversByFile.get(filePath)!;
+    const first = resolver.resolve('Query');
+    expect(first).not.toBeNull();
+    // 缓存命中：返回同一实例（不重复解析）
+    expect(resolver.resolve('Query')).toBe(first);
+  });
+
+  it('循环引用：入口类型 runtimeType 中的 ref 可经 resolver 解析', () => {
+    const filePath = writeHandler(
+      'cyclic.ts',
+      `export interface TreeNode { children: TreeNode[]; }\nexport function POST(body: TreeNode) { return body; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'POST', urlPath: '/api/cyclic', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources, resolversByFile } = collectRouteSchemaSources(routes);
+    const runtimeType = sources[0].typeInfo!.runtimeType;
+    // 自引用字段解析为 ref（generateZodSchema 用 z.lazy 处理）
+    expect(runtimeType.kind).toBe('object');
+    const children = sources[0].typeInfo!.properties.find((p) => p.name === 'children');
+    expect(children?.type).toEqual({ kind: 'array', element: { kind: 'ref', name: 'TreeNode' } });
+
+    // ref 可经 resolver 解析回完整类型信息
+    const resolver = resolversByFile.get(filePath)!;
+    const resolved = resolver.resolve('TreeNode');
+    expect(resolved).not.toBeNull();
+    expect(resolved!.name).toBe('TreeNode');
   });
 });

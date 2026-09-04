@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import type { RouteManifest } from '../router/routeTypes';
 import type { RouteSchemaSource } from './collectRouteSchemaSources';
-import type { HandlerTypeInfo } from '../ast/extractHandlerTypes';
+import type { RuntimeType } from '../ast/resolveTypeNode';
 import { collectRouteSchemaSources } from './collectRouteSchemaSources';
 import {
   generateZodSchemaSource,
@@ -107,17 +107,17 @@ export function getHelpersImportPath(relDir: string): string {
  * 这些变量从 dist 根部的 faapi-helpers.js import（跨文件复用，仅一份声明）。
  *
  * @param sources 同一文件的 schema 提取结果（含多个方法，如 GETQuery + POSTBody）
- * @param allTypes 该文件的所有命名类型（用于解析循环引用中的 ref）
+ * @param resolveType ref 解析函数（解析循环引用中的 ref）：名称 → 运行时类型，
+ *        未声明返回 undefined。惰性实现由 collectRouteSchemaSources 的 resolversByFile 提供。
  * @param helpersImportPath 到 faapi-helpers.js 的相对 import 路径（如 '../../faapi-helpers.js'）。
  *        传空字符串表示不注入 coerce helpers 的 import（用于无 coerce schema 的文件或不支持外部 import 的测试场景）。
  * @returns zod.js 源码字符串
  */
 export function generateSchemaFileSource(
   sources: RouteSchemaSource[],
-  allTypes: Map<string, HandlerTypeInfo>,
+  resolveType: (name: string) => RuntimeType | undefined,
   helpersImportPath: string,
 ): string {
-  const resolveType = (name: string) => allTypes.get(name)?.runtimeType;
   const lines: string[] = ["import { z } from 'zod';"];
 
   // 先生成所有 schema 代码，暂存到 schemaBlocks
@@ -191,7 +191,7 @@ export async function generateSchemaFiles(
 ): Promise<void> {
   if (routes.length === 0) return;
 
-  const { sources, allTypesByFile } = collectRouteSchemaSources(routes, rootDir);
+  const { sources, resolversByFile } = collectRouteSchemaSources(routes, rootDir);
 
   // 按 filePath 分组 sources（同一 handler 的多个方法合并到一个 zod.js）
   const sourcesByFile = new Map<string, RouteSchemaSource[]>();
@@ -210,8 +210,6 @@ export async function generateSchemaFiles(
     // filePath 是绝对路径，转为相对 rootDir 的路径用于计算输出路径
     const relFile = path.relative(rootDir, filePath).replace(/\\/g, '/');
     const outputPath = getSchemaOutputPath(relFile, dist, rootDir);
-    const allTypes = allTypesByFile.get(filePath) ?? new Map();
-
     // 计算 zod.js 所在目录相对 dist 的路径（用于 import helpers）
     // 与 getSchemaOutputPath 的目录计算逻辑一致：strip src/ 前缀后取目录部分
     let relForDir = relFile;
@@ -222,7 +220,12 @@ export async function generateSchemaFiles(
     const zodRelDir = dirIdx >= 0 ? relForDir.slice(0, dirIdx) : '';
     const helpersImportPath = getHelpersImportPath(zodRelDir);
 
-    const source = generateSchemaFileSource(fileSources, allTypes, helpersImportPath);
+    const resolver = resolversByFile.get(filePath);
+    const source = generateSchemaFileSource(
+      fileSources,
+      (name) => resolver?.resolve(name)?.runtimeType,
+      helpersImportPath,
+    );
     fileEntries.push({ outputPath, source });
   }
 

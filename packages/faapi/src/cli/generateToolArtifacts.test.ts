@@ -301,7 +301,11 @@ export function getWeather(input: WeatherInput) { return input; }
 
       const sources = makeSources(file, ['WeatherInput']);
       const allTypes = extractAllTypes(createProgram(file), file);
-      const source = generateToolSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateToolSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       expect(source).toContain("import { z } from 'zod'");
       // schema 名 = inputTypeName + Schema 后缀
@@ -323,7 +327,11 @@ export function getWeather(input: WeatherInput) { return input; }
 
       const sources = makeSources(file, ['WeatherInput']);
       const allTypes = extractAllTypes(createProgram(file), file);
-      const source = generateToolSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateToolSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       // tool schema coerce=false,number/boolean 字段不应有 z.preprocess
       expect(source).not.toContain('z.preprocess');
@@ -344,7 +352,11 @@ export function multiply(input: MultiplyInput) { return input.a * input.b; }
 
       const sources = makeSources(file, ['AddInput', 'MultiplyInput']);
       const allTypes = extractAllTypes(createProgram(file), file);
-      const source = generateToolSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateToolSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       expect(source).toContain('export const AddInputSchema');
       expect(source).toContain('export const MultiplyInputSchema');
@@ -364,7 +376,11 @@ export function multiply(input: MultiplyInput) { return input.a * input.b; }
         },
       ];
       const allTypes = extractAllTypes(createProgram(file), file);
-      const source = generateToolSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateToolSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
 
       // 仍含 import 语句
       expect(source).toContain("import { z } from 'zod'");
@@ -389,7 +405,11 @@ export function tree(input: TreeInput) { return input; }
 
       const sources = makeSources(file, ['TreeInput']);
       const allTypes = extractAllTypes(createProgram(file), file);
-      const source = generateToolSchemaFileSource(sources, allTypes, '../../faapi-helpers.js');
+      const source = generateToolSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
       expect(source).toContain('z.lazy');
       expect(source).toContain('TreeNodeSchema');
     });

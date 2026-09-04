@@ -1,8 +1,12 @@
 import { createPrograms } from '../ast/createProgram';
-import { extractTypeInfo, extractAllTypes, type HandlerTypeInfo } from '../ast/extractHandlerTypes';
+import {
+  createLazyTypeResolver,
+  type HandlerTypeInfo,
+  type LazyTypeResolver,
+} from '../ast/extractHandlerTypes';
 import { getInputTypeForMethod } from '../runtime/inputType';
 import { getSchemaName } from '../validator/schemaName';
-import { analyzeInjection } from '../injection/analyzeInjection';
+import { analyzeInjectionInSourceFile } from '../injection/analyzeInjection';
 import type { RouteManifest } from '../router/routeTypes';
 import path from 'node:path';
 
@@ -38,23 +42,22 @@ export interface RouteSchemaSource {
  *
  * dev 和 prd 共享的核心提取流程：
  * 1. 按文件分组遍历路由
- * 2. 对每个文件 createProgram + extractAllTypes 收集所有类型
- * 3. 用 analyzeInjection + extractTypeInfo 提取每个路由的 schema 类型
- * 4. 同时返回按文件分组的 allTypesMap 和合并后的全局 allTypes
+ * 2. 批量共享 Program（同一次提取只按文件组创建少量 Program）
+ * 3. 对每个路由用 analyzeInjectionInSourceFile 定位入口参数类型，
+ *    extractTypeInfo 解析入口类型（入口类型必须严格解析，失败抛 SchemaExtractionError）
+ * 4. 返回按文件分组的惰性类型解析器——generateSchemaFiles 生成 zod.js 时
+ *    遇到 ref（同文件循环引用）按需解析并缓存
  *
- * 调用方基于返回的 sources 和 allTypes 各自做最终转换：
- * - dev：生成 JS 模块文件 → import 加载（用 allTypesByFile）
- * - prd：生成 JS 模块代码 → SchemaModuleEntry[]（用 allTypesByFile）
+ * 惰性语义：与路由无关的类型（未被任何入口类型引用）不会被解析——文件里
+ * 存在一个含不支持语法的无关类型不再拖垮整个 build/reload。
  */
 export function collectRouteSchemaSources(
   routes: RouteManifest,
   rootDir?: string,
 ): {
   sources: RouteSchemaSource[];
-  /** 按文件分组的类型映射（prd writeSchemaModule 用） */
-  allTypesByFile: Map<string, Map<string, HandlerTypeInfo>>;
-  /** 合并后的全局类型映射（兼容旧调用方保留，新路径使用 allTypesByFile） */
-  mergedAllTypes: Map<string, HandlerTypeInfo>;
+  /** 按文件分组的惰性类型解析器（generateSchemaFiles 解析 ref 用） */
+  resolversByFile: Map<string, LazyTypeResolver>;
 } {
   // 按文件分组收集方法（去重）
   // key 是文件绝对路径（createProgram 需要），但 schema key 用 urlPath
@@ -69,17 +72,13 @@ export function collectRouteSchemaSources(
     entry.methods.add(route.method);
   }
 
-  // 先收集所有文件的类型（批量共享 Program：同一次提取只创建一个 Program，避免逐文件全量解析）
+  // 批量共享 Program：同一次提取只创建一个 Program，避免逐文件全量解析
   const programByFile = createPrograms([...methodsByFile.keys()]);
-  const allTypesByFile = new Map<string, Map<string, HandlerTypeInfo>>();
-  const mergedAllTypes = new Map<string, HandlerTypeInfo>();
+
+  // 每个文件一个惰性解析器：入口类型立即解析，ref 按需解析（缓存幂等）
+  const resolversByFile = new Map<string, LazyTypeResolver>();
   for (const filePath of methodsByFile.keys()) {
-    const program = programByFile.get(filePath)!;
-    const allTypes = extractAllTypes(program, filePath);
-    allTypesByFile.set(filePath, allTypes);
-    for (const [name, info] of allTypes) {
-      mergedAllTypes.set(name, info);
-    }
+    resolversByFile.set(filePath, createLazyTypeResolver(programByFile.get(filePath)!, filePath));
   }
 
   // 每个文件提取 schema（key 用 urlPath）
@@ -87,11 +86,13 @@ export function collectRouteSchemaSources(
   for (const [filePath, entry] of methodsByFile) {
     const program = programByFile.get(filePath)!;
     const sourceFile = program.getSourceFile(filePath);
-    const code = sourceFile?.text ?? '';
+    if (!sourceFile) continue;
+    const resolver = resolversByFile.get(filePath)!;
     for (const method of entry.methods) {
       const inputType = getInputTypeForMethod(method);
       const schemaName = getSchemaName(method, inputType);
-      const meta = analyzeInjection(code, method);
+      // 复用 program 已解析的 SourceFile，逐方法零重复 parse
+      const meta = analyzeInjectionInSourceFile(sourceFile, method);
       // POST/PUT/PATCH（inputType='body'）：优先找 body 参数，找不到再找 form 参数。
       // form 与 body 共享 schema 名（POSTBody），运行时 validateInput 仍按 POSTBodySchema 查找；
       // 差异仅在校验：form 声明时通过 source.coerce=true 显式覆盖（form 值均为 string，
@@ -100,7 +101,8 @@ export function collectRouteSchemaSources(
         meta.params.find((p) => p.type === inputType) ??
         (inputType === 'body' ? meta.params.find((p) => p.type === 'form') : undefined);
       const isForm = param?.type === 'form';
-      const typeInfo = param?.typeName ? extractTypeInfo(program, filePath, param.typeName) : null;
+      // 入口类型：必须严格解析（失败抛 SchemaExtractionError，带文件/类型上下文）
+      const typeInfo = param?.typeName ? resolver.resolve(param.typeName) : null;
       sources.push({
         urlPath: entry.urlPath,
         filePath,
@@ -111,5 +113,5 @@ export function collectRouteSchemaSources(
     }
   }
 
-  return { sources, allTypesByFile, mergedAllTypes };
+  return { sources, resolversByFile };
 }

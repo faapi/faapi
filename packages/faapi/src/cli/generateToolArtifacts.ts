@@ -5,7 +5,13 @@ import type { ToolManifestList } from '../tools/toolTypes';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import { extractToolMetadata } from '../ast/extractToolMetadata';
 import { createPrograms } from '../ast/createProgram';
-import { extractTypeInfo, extractAllTypes, type HandlerTypeInfo } from '../ast/extractHandlerTypes';
+import {
+  extractTypeInfo,
+  createLazyTypeResolver,
+  type HandlerTypeInfo,
+  type LazyTypeResolver,
+} from '../ast/extractHandlerTypes';
+import type { RuntimeType } from '../ast/resolveTypeNode';
 import {
   generateZodSchemaSource,
   generateHelpersFileSource,
@@ -192,14 +198,17 @@ export function hydrateTools(manifest: SerializedToolRecord[]): ToolMetadata[] {
  * 跳过 inputTypeName 为 undefined 的 tool(无参数/无类型标注/内联类型字面量),
  * 不生成对应 schema(与路由的"无类型声明的方法不导出 Schema"对齐)。
  *
- * @returns sources(用于生成 zod.js) + allTypesByFile(用于解析 ref)
+ * 与路由的 collectRouteSchemaSources 一致采用惰性解析：入口类型（inputTypeName）
+ * 立即解析且必须严格校验，ref 按需解析并缓存——与 tool 无关的类型零开销。
+ *
+ * @returns sources(用于生成 zod.js) + resolversByFile(用于解析 ref)
  */
 function collectToolSchemaSources(
   tools: ToolMetadata[],
   rootDir: string,
 ): {
   sources: ToolSchemaSource[];
-  allTypesByFile: Map<string, Map<string, HandlerTypeInfo>>;
+  resolversByFile: Map<string, LazyTypeResolver>;
 } {
   // 按文件分组 tool(同一 handler.ts 多个 tool 合并到一个 zod.js)
   const toolsByFile = new Map<string, ToolMetadata[]>();
@@ -214,14 +223,11 @@ function collectToolSchemaSources(
     list.push(tool);
   }
 
-  // 对每个文件 extractAllTypes 收集所有类型(供解析 ref)
   // 批量共享 Program:同一次提取只创建一个 Program,避免逐文件全量解析
   const programByFile = createPrograms([...toolsByFile.keys()]);
-  const allTypesByFile = new Map<string, Map<string, HandlerTypeInfo>>();
+  const resolversByFile = new Map<string, LazyTypeResolver>();
   for (const filePath of toolsByFile.keys()) {
-    const program = programByFile.get(filePath)!;
-    const allTypes = extractAllTypes(program, filePath);
-    allTypesByFile.set(filePath, allTypes);
+    resolversByFile.set(filePath, createLazyTypeResolver(programByFile.get(filePath)!, filePath));
   }
 
   // 为每个 tool 提取 schema
@@ -231,7 +237,7 @@ function collectToolSchemaSources(
     for (const tool of fileTools) {
       // inputTypeName 已在外层过滤,这里一定非空(防御性兜底)
       const inputTypeName = tool.inputTypeName!;
-      const typeInfo = extractTypeInfo(program, filePath, inputTypeName);
+      const typeInfo = extractTypeInfo(program, filePath, inputTypeName); // 入口类型,严格解析
       sources.push({
         name: tool.name,
         filePath,
@@ -241,7 +247,7 @@ function collectToolSchemaSources(
     }
   }
 
-  return { sources, allTypesByFile };
+  return { sources, resolversByFile };
 }
 
 /**
@@ -261,16 +267,15 @@ function collectToolSchemaSources(
  * 无 inputTypeName 的 tool 不导出对应 Schema(collectToolSchemaSources 已过滤)。
  *
  * @param sources 同一文件的 schema 提取结果(含多个 tool)
- * @param allTypes 该文件的所有命名类型(用于解析循环引用中的 ref)
+ * @param resolveType ref 解析函数(解析循环引用中的 ref):名称 → 运行时类型,未声明返回 undefined
  * @param helpersImportPath 到 faapi-helpers.js 的相对 import 路径(如 `../../faapi-helpers.js`)。
  *        传空字符串表示不注入 coerce helpers 的 import(用于无 helpers 引用的文件或测试场景)。
  */
 export function generateToolSchemaFileSource(
   sources: ToolSchemaSource[],
-  allTypes: Map<string, HandlerTypeInfo>,
+  resolveType: (name: string) => RuntimeType | undefined,
   helpersImportPath: string,
 ): string {
-  const resolveType = (name: string) => allTypes.get(name)?.runtimeType;
   const lines: string[] = ["import { z } from 'zod';"];
 
   // 先生成所有 schema 代码,暂存到 schemaBlocks
@@ -386,7 +391,7 @@ export async function generateToolArtifacts(
     return metadata;
   }
 
-  const { sources, allTypesByFile } = collectToolSchemaSources(metadata, rootDir);
+  const { sources, resolversByFile } = collectToolSchemaSources(metadata, rootDir);
   if (sources.length === 0) {
     return metadata; // 无 inputTypeName 的 tool,不生成 zod.js
   }
@@ -407,7 +412,7 @@ export async function generateToolArtifacts(
   for (const [filePath, fileSources] of sourcesByFile) {
     const relFile = path.relative(rootDir, filePath).replace(/\\/g, '/');
     const outputPath = getToolSchemaOutputPath(relFile, dist, rootDir);
-    const allTypes = allTypesByFile.get(filePath) ?? new Map();
+    const resolver = resolversByFile.get(filePath);
 
     // 计算 zod.js 所在目录相对 dist 的路径(用于 import helpers)
     let relForDir = relFile;
@@ -418,7 +423,11 @@ export async function generateToolArtifacts(
     const zodRelDir = dirIdx >= 0 ? relForDir.slice(0, dirIdx) : '';
     const helpersImportPath = getHelpersImportPath(zodRelDir);
 
-    const source = generateToolSchemaFileSource(fileSources, allTypes, helpersImportPath);
+    const source = generateToolSchemaFileSource(
+      fileSources,
+      (name) => resolver?.resolve(name)?.runtimeType,
+      helpersImportPath,
+    );
     fileEntries.push({ outputPath, source });
   }
 

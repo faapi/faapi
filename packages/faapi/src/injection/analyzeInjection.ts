@@ -30,10 +30,29 @@ export interface InjectionMeta {
 
 /**
  * AST 分析 handler 函数，提取参数注入元数据
+ *
+ * @param code handler 源码字符串
+ * @param functionName 函数导出名（如 'GET'）
  */
 export function analyzeInjection(code: string, functionName: string): InjectionMeta {
   const sourceFile = ts.createSourceFile('temp.ts', code, ts.ScriptTarget.Latest, true);
+  return analyzeInjectionInSourceFile(sourceFile, functionName);
+}
 
+/**
+ * 从已有 SourceFile 分析 handler 函数的参数注入元数据
+ *
+ * 与 analyzeInjection 语义一致，但接受 AST 节点而非源码字符串——
+ * 调用方（如 collectRouteSchemaSources）的 program 中已有解析好的 SourceFile，
+ * 逐方法重新 parse 同一文件字符串是纯浪费（同文件 N 个方法 = N 次全量重复解析）。
+ *
+ * @param sourceFile 已解析的 AST
+ * @param functionName 函数导出名（如 'GET'）
+ */
+export function analyzeInjectionInSourceFile(
+  sourceFile: ts.SourceFile,
+  functionName: string,
+): InjectionMeta {
   const params: ParamMeta[] = [];
 
   // 遍历 AST 查找目标函数

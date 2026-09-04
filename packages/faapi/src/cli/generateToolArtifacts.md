@@ -153,7 +153,7 @@ function getRuntimeToolSchemaPath(filePath: string, dist: string, rootDir: strin
 /** 生成单个 tool handler.ts 的 zod.js 源码（dev 按需生成时复用） */
 function generateToolSchemaFileSource(
   sources: ToolSchemaSource[],
-  allTypes: Map<string, HandlerTypeInfo>,
+  resolveType: (name: string) => RuntimeType | undefined,
   helpersImportPath: string,
 ): string
 ```
@@ -211,7 +211,7 @@ dev 启动时 `generateToolArtifacts(skipSchema: true)` 只生成 `faapi-tools.j
 - [generateSchemaFiles](./generateSchemaFiles.md) — 路由 schema 生成（与本模块对称设计，复用 faapi-helpers.js）
 - [generateZodSchema](../ast/generateZodSchema.md) — RuntimeType → zod schema 代码
 - [createProgram](../ast/createProgram.md) — TypeScript Program（带缓存，批量走 `createPrograms` 共享）
-- [extractHandlerTypes](../ast/extractHandlerTypes.md) — `extractTypeInfo` / `extractAllTypes` 类型提取
+- [extractHandlerTypes](../ast/extractHandlerTypes.md) — `extractTypeInfo` / `createLazyTypeResolver` 类型提取（惰性解析）
 - [generateRoutes](./generateRoutes.md) — `faapi-routes.js` 路由清单序列化（与本模块同构）
 - [compileOnDemand](./compileOnDemand.md) — dev 按需编译/生成（阶段 1.4 复用）
 - [toolRegistry](../injection/toolRegistry.md) — 运行时 tool 注册表（消费水合后的 `ToolMetadata[]`）
