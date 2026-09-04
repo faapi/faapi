@@ -77,7 +77,7 @@ class Agent {
 的「`options.model` 字符串 key 解析规则」。
 
 `options.enableTracing` 用于覆盖全局 tracing 配置（默认沿用 `config.agent.enableTracing`,
-全局默认 `true`）,详见 [trace](./trace.md) 的「触发机制」章节。
+全局默认 `false`——opt-in）,详见 [trace](./trace.md) 的「触发机制」章节。
 
 ### config 组装流程
 
@@ -94,7 +94,7 @@ class Agent {
 | `temperature` | `options.temperature` | — | `LlmConfig.temperature`（provider 级透传） |
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（provider 级透传） |
 | `maxTurns` | — | `meta.maxTurns` | `AgentRuntimeConfig.maxTurns` |
-| `enableTracing` | `options.enableTracing` | — | `AgentRuntimeConfig.enableTracing`（默认 `true`） |
+| `enableTracing` | `options.enableTracing` | — | `AgentRuntimeConfig.enableTracing`（默认 `false`） |
 
 `options.model` 是字符串 key,解析规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
 不传 `options.model` 时用 `deps.defaultProvider` + agent 元数据 `config.model`（或该 provider 的 models 第一个）。

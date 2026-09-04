@@ -47,13 +47,12 @@ export interface AgentRuntimeConfig {
   /** agent 调用 agent 的最大递归深度（默认 3） */
   maxAgentDepth?: number;
   /**
-   * 启用 tracing 的全局默认值（默认 true）。
+   * 启用 tracing 的全局默认值（默认 false——opt-in,不开启零开销）。
    *
    * 开启时 `ReactLoopResult.trace` / `ReactLoopStreamChunk.traceEvent` 填充
    * 结构化调用明细,详见 [trace.md](./trace.md)。
    *
    * 单次调用可通过 `AgentRunOptions.enableTracing` 覆盖。
-   * 业务方在生产主路径显式设 `false` 关闭以零开销运行。
    */
   enableTracing?: boolean;
 }
@@ -292,9 +291,9 @@ export class Agent {
     // 解析 options.model 字符串 key → provider + model
     const { provider, model } = this.resolveModelKey(options?.model, meta);
 
-    // enableTracing 优先级:options > deps.config > 默认 true
+    // enableTracing 优先级:options > deps.config > 默认 false（opt-in,零开销）
     // 闭包捕获 enableTracing,通过 executeTool 传递给 executeSubAgent,使其能包装 TracingToolResult
-    const enableTracing = options?.enableTracing ?? this.deps.config?.enableTracing ?? true;
+    const enableTracing = options?.enableTracing ?? this.deps.config?.enableTracing ?? false;
 
     return {
       provider,

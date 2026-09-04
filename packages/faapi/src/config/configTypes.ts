@@ -235,22 +235,23 @@ export interface AgentConfig {
    */
   maxAgentDepth?: number;
   /**
-   * 启用 tracing 的全局默认值（默认 true）
+   * 启用 tracing 的全局默认值（默认 false——opt-in,不开启零开销）
    *
    * 开启时 `agent.run()` / `agent.stream()` 返回的 `result.trace` /
    * `chunk.traceEvent` 填充结构化调用明细（按轮次组织的 LLM 调用、tool 调用、
    * sub-agent 嵌套调用事件,含 timing 与 token 用量）。
    *
    * 三层覆盖优先级：`AgentRunOptions.enableTracing` > agent 自身配置 >
-   * 此全局配置 > 默认 `true`。
+   * 此全局配置 > 默认 `false`。
    *
-   * 业务方在生产主路径（高 QPS 端点）显式设 `false` 关闭以零开销运行：
+   * tracing 采集每轮 LLM 消息快照与 tool 明细,有真实内存/CPU 开销——
+   * 需要观测的端点显式开启：
    *
    * ```ts
    * import type { FaapiConfig } from '@faapi/faapi';
    * export default {
    *   agent: {
-   *     enableTracing: false,
+   *     enableTracing: true, // 全局开启;单次调用可用 run(input, { enableTracing: true }) 覆盖
    *     llms: { openai: { provider: 'openai', apiKey: '...', models: { 'gpt-4o': {} } } },
    *   },
    * } satisfies FaapiConfig;

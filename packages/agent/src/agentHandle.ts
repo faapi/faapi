@@ -77,12 +77,11 @@ export interface AgentRunOptions {
   /** 最大生成 token 数（透传给 LLM API） */
   maxTokens?: number;
   /**
-   * 启用 tracing（默认沿用全局 `config.agent.enableTracing`,全局默认 `true`）。
+   * 启用 tracing（默认沿用全局 `config.agent.enableTracing`,全局默认 `false`——
+   * opt-in,不开启零开销）。
    *
    * 开启时 `ReactLoopResult.trace` / `ReactLoopStreamChunk.traceEvent` 填充
    * 结构化调用明细,详见 [trace.md](./trace.md)。
-   *
-   * 业务方在生产主路径显式传 `false` 关闭以零开销运行。
    */
   enableTracing?: boolean;
 }

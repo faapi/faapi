@@ -399,7 +399,7 @@ export default {
     defaultAgent: 'researcher',                  // 默认 agent 名（可选——未设时 handler 需 agent.run(input, { agent: 'name' }) 显式指定，不传且未设时抛 AgentError）
     maxTurns: 10,                                // 默认最大对话轮数
     maxAgentDepth: 3,                            // agent 调用 agent 的最大递归深度
-    // enableTracing: false,                     // 关闭 tracing（默认 true）。生产高 QPS 端点可设 false 以零开销运行；
+    // enableTracing: true,                      // 开启 tracing（默认 false——opt-in，不开启零开销）。
                                                  //   开启时 agent.run()/stream() 返回 result.trace / chunk.traceEvent,
                                                  //   详见 @faapi/agent 的 trace.md
   },

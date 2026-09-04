@@ -1,6 +1,6 @@
 # trace
 
-一句话概括：单次 `agent.run()` / `agent.stream()` 的结构化调用明细——按轮次组织 LLM 调用、tool 调用、sub-agent 嵌套调用事件,含 timing 与 token 用量,默认开启（opt-out 关闭）。
+一句话概括：单次 `agent.run()` / `agent.stream()` 的结构化调用明细——按轮次组织 LLM 调用、tool 调用、sub-agent 嵌套调用事件,含 timing 与 token 用量,默认关闭（opt-in 开启,不开启零开销）。
 
 ## 为什么需要
 
@@ -29,10 +29,10 @@
 | `AgentTraceEvent` | discriminated union,按 `type` 区分：`llm_call` / `tool_call` / `subagent_call` |
 | `TracingToolResult` | sub-agent 调用的特殊返回值（`{ __trace: true, result, trace }`）,reactLoop 据此识别 sub-agent 调用 |
 
-### 触发机制：opt-in / opt-out
+### 触发机制：opt-in
 
-- **默认开启**（`enableTracing` 默认 `true`）——调试友好,业务方在生产主路径显式 `enableTracing: false` 关闭以零开销运行
-- 三层覆盖优先级：`AgentRunOptions.enableTracing` > `Agent` 实例配置 > `config.agent.enableTracing`（默认 true）
+- **默认关闭**（`enableTracing` 默认 `false`——opt-in,不开启零开销）,tracing 采集每轮 LLM 消息快照与 tool 明细有真实内存/CPU 开销,需要观测的端点显式开启：`config.agent.enableTracing: true`（全局）或 `agent.run(input, { enableTracing: true })`（单次）
+- 三层覆盖优先级：`AgentRunOptions.enableTracing` > `Agent` 实例配置 > `config.agent.enableTracing`（默认 false）
 
 ### 暴露方式
 

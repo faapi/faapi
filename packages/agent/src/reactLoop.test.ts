@@ -759,8 +759,8 @@ describe('reactLoopStream', () => {
 
 describe('tracing — reactLoop + reactLoopStream', () => {
   /**
-   * tracing 默认开启（enableTracing 默认 true）,业务方在生产主路径显式
-   * enableTracing: false 关闭以零开销运行。
+   * tracing 默认关闭（enableTracing 默认 false——opt-in,不开启零开销）,
+   * 需要观测的调用显式传 enableTracing: true 开启。
    *
    * ReactLoopResult.trace 填充 AgentTrace,事件按发生顺序排列。
    * 流式版本通过 ReactLoopStreamChunk.traceEvent 增量推送。
@@ -794,7 +794,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
   }
 
   describe('reactLoop — 非流式 tracing', () => {
-    it('默认开启:单轮直答 trace 结构完整', async () => {
+    it('显式开启:单轮直答 trace 结构完整', async () => {
       const { provider } = createMockProvider([
         llmResponse({ content: 'Hello!', stopReason: 'stop', usage }),
       ]);
@@ -803,6 +803,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
         provider,
         model: 'gpt-4o',
         executeTool: baseConfig.executeTool,
+        enableTracing: true,
       });
 
       expect(result.trace).toBeDefined();
@@ -830,6 +831,19 @@ describe('tracing — reactLoop + reactLoopStream', () => {
           content: 'Hello!',
         });
       }
+    });
+
+    it('默认关闭:不传 enableTracing 时 trace 为 undefined（零开销）', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({ content: 'Hello!', stopReason: 'stop' }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: baseConfig.executeTool,
+      });
+
+      expect(result.trace).toBeUndefined();
     });
 
     it('enableTracing=false:trace 为 undefined(零开销)', async () => {
@@ -860,6 +874,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
         provider,
         model: 'gpt-4o',
         executeTool: async () => 'search-result',
+        enableTracing: true,
       });
 
       const trace = result.trace!;
@@ -914,6 +929,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
         provider,
         model: 'gpt-4o',
         executeTool,
+        enableTracing: true,
       });
 
       const trace = result.trace!;
@@ -950,6 +966,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
         provider,
         model: 'gpt-4o',
         executeTool,
+        enableTracing: true,
       });
 
       const trace = result.trace!;
@@ -962,7 +979,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
   });
 
   describe('reactLoopStream — 流式 tracing', () => {
-    it('默认开启:traceEvent chunk 与 deltaContent/toolCall/toolResult/done 平行推送', async () => {
+    it('显式开启:traceEvent chunk 与 deltaContent/toolCall/toolResult/done 平行推送', async () => {
       const { provider } = createMockStreamProvider([
         [
           { deltaContent: 'Hello' },
@@ -981,6 +998,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
           provider,
           model: 'gpt-4o',
           executeTool: async () => 'search-result',
+          enableTracing: true,
         }),
       );
 
@@ -1013,6 +1031,22 @@ describe('tracing — reactLoop + reactLoopStream', () => {
       expect(traceEvents).toHaveLength(0);
     });
 
+    it('默认关闭:不传 enableTracing 时无 traceEvent chunk', async () => {
+      const { provider } = createMockStreamProvider([
+        [{ deltaContent: 'ok' }, { finishReason: 'stop' }],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', {
+          provider,
+          executeTool: baseConfig.executeTool,
+        }),
+      );
+
+      const traceEvents = chunks.filter((c) => c.traceEvent !== undefined);
+      expect(traceEvents).toHaveLength(0);
+    });
+
     it('sub-agent 调用:流式 traceEvent 含 subagent_call 事件', async () => {
       const subTrace = makeSubTrace('translator');
       const { provider } = createMockStreamProvider([
@@ -1037,6 +1071,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
           provider,
           model: 'gpt-4o',
           executeTool: async () => tracingResult,
+          enableTracing: true,
         }),
       );
 

@@ -217,7 +217,7 @@ function extractSubAgentName(toolName: string): string {
  * @throws {Error} provider.complete 抛错时立即传播
  */
 export async function reactLoop(input: string, config: ReactLoopConfig): Promise<ReactLoopResult> {
-  const enableTracing = config.enableTracing ?? true;
+  const enableTracing = config.enableTracing ?? false;
   const messages = buildInitialMessages(input, config.systemPrompt);
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
@@ -368,7 +368,7 @@ export async function* reactLoopStream(
   input: string,
   config: ReactLoopConfig,
 ): AsyncIterable<ReactLoopStreamChunk> {
-  const enableTracing = config.enableTracing ?? true;
+  const enableTracing = config.enableTracing ?? false;
   const messages = buildInitialMessages(input, config.systemPrompt);
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);

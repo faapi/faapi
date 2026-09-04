@@ -3,8 +3,9 @@ import type { LLMMessage, LLMStopReason, LLMUsage } from './provider';
 /**
  * 单次 agent.run() / agent.stream() 的结构化调用明细
  *
- * 默认开启（`enableTracing` 默认 `true`）,业务方在生产主路径显式
- * `enableTracing: false` 关闭以零开销运行。详见 [trace.md](./trace.md)。
+ * 默认关闭（`enableTracing` 默认 `false`——opt-in,不开启零开销）,
+ * 通过 `config.agent.enableTracing: true` 全局开启或单次调用
+ * `agent.run(input, { enableTracing: true })` 开启。详见 [trace.md](./trace.md)。
  */
 export interface AgentTrace {
   /** agent 名 */
