@@ -6,11 +6,14 @@ import { isDevOnDemandEnabled } from '../cli/compileOnDemand';
 
 /**
  * 校验结果类型
+ *
+ * data 为校验/解析后的原始值（通常为对象；数组 body 为数组，
+ * 顶层 primitive body——如 `type POSTBody = string`——为对应原始值）。
  */
 export interface ValidationResult {
   valid: boolean;
   issues: ValidationIssue[];
-  data: Record<string, unknown>;
+  data: unknown;
 }
 
 /**
@@ -103,13 +106,9 @@ export async function validateInput(
 
   const schema = mod[schemaKey];
 
-  // 无类型声明：跳过校验
+  // 无类型声明：跳过校验，input 原样透传（数组/原始值 body 不再静默替换为 {}）
   if (schema === undefined || schema === null) {
-    const data =
-      typeof input === 'object' && input !== null && !Array.isArray(input)
-        ? (input as Record<string, unknown>)
-        : {};
-    return { valid: true, issues: [], data };
+    return { valid: true, issues: [], data: input };
   }
 
   // schema 必须是带 safeParse 的 zod schema
@@ -120,26 +119,20 @@ export async function validateInput(
     throw new InternalError(`Schema 不是有效的 zod schema: ${schemaPath}#${schemaName}`);
   }
 
-  const inputObj =
-    typeof input === 'object' && input !== null && !Array.isArray(input)
-      ? (input as Record<string, unknown>)
-      : {};
-
-  // zod safeParse 校验（query/params 的 preprocess 已在 schema 生成阶段内联）
+  // zod safeParse 校验：input 原样传入（schema 生成端支持数组/顶层 primitive body，
+  // 预先替换数组会使命中 z.array 的合法 body 永远失败且 issue 误导为 received object）
+  // query/params 的 preprocess 已在 schema 生成阶段内联
   const zodSchema = schema as { safeParse: (v: unknown) => ZodSafeParseResult };
-  const result = zodSchema.safeParse(inputObj);
+  const result = zodSchema.safeParse(input);
 
   if (result.success) {
-    const data =
-      typeof result.data === 'object' && result.data !== null && !Array.isArray(result.data)
-        ? (result.data as Record<string, unknown>)
-        : {};
-    return { valid: true, issues: [], data };
+    // 解析后的数据原样返回（z.array schema 的 data 是数组，顶层 primitive 是原始值）
+    return { valid: true, issues: [], data: result.data };
   }
 
   // 将 zod issues 转为 ValidationIssue
   const issues = mapZodIssues(result.error);
-  return { valid: false, issues, data: inputObj };
+  return { valid: false, issues, data: input };
 }
 
 /**

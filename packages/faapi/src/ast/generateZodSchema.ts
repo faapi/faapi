@@ -127,6 +127,19 @@ export function runtimeTypeToZodExpression(
   if (ctx.coerce && (type.kind === 'number' || type.kind === 'boolean')) {
     return wrapCoercePreprocess(type.kind, withConstraints);
   }
+  // coerce 模式下，数字/布尔字面量同样需要字符串转换：query 声明 `status: 1 | 2`
+  // 时 URL 传来 "1"（string），裸 z.literal(1) 必然校验失败。union 成员经本函数
+  // 递归生成，字面量成员逐个包裹（string 字面量天然命中，无需转换）
+  if (
+    ctx.coerce &&
+    type.kind === 'literal' &&
+    (typeof type.value === 'number' || typeof type.value === 'boolean')
+  ) {
+    return wrapCoercePreprocess(
+      typeof type.value === 'number' ? 'number' : 'boolean',
+      withConstraints,
+    );
+  }
   return withConstraints;
 }
 

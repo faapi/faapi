@@ -33,6 +33,12 @@ export function GET(query: GETQuery) { return query; }
     );
     mkdirSync(join(tempDir, 'noschema'), { recursive: true });
     writeFileSync(join(tempDir, 'noschema', 'noschema.ts'), `export const GET = () => 'hello';\n`);
+    // 数组 body / 无 schema 的 POST handler
+    mkdirSync(join(tempDir, 'arraybody'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'arraybody', 'arraybody.ts'),
+      `export type POSTBody = string[];\nexport function POST(body: POSTBody) { return body; }\n`,
+    );
 
     // 路由清单：filePath 用相对路径（相对 rootDir）
     const routes: RouteManifest = [
@@ -47,6 +53,13 @@ export function GET(query: GETQuery) { return query; }
         method: 'GET',
         urlPath: '/api/noschema',
         filePath: 'noschema/noschema.ts',
+        paramNames: [],
+        isDynamic: false,
+      },
+      {
+        method: 'POST',
+        urlPath: '/api/arraybody',
+        filePath: 'arraybody/arraybody.ts',
         paramNames: [],
         isDynamic: false,
       },
@@ -81,8 +94,8 @@ export function GET(query: GETQuery) { return query; }
       pageSize: '20',
     });
     expect(result.valid).toBe(true);
-    expect(result.data.page).toBe(1);
-    expect(result.data.pageSize).toBe(20);
+    expect((result.data as Record<string, unknown>).page).toBe(1);
+    expect((result.data as Record<string, unknown>).pageSize).toBe(20);
   });
 
   it('query string 自动 coerce 为 boolean 后校验通过', async () => {
@@ -92,7 +105,7 @@ export function GET(query: GETQuery) { return query; }
       active: 'true',
     });
     expect(result.valid).toBe(true);
-    expect(result.data.active).toBe(true);
+    expect((result.data as Record<string, unknown>).active).toBe(true);
   });
 
   it('coerce 失败时报类型不匹配错误', async () => {
@@ -126,5 +139,23 @@ export function GET(query: GETQuery) { return query; }
     await expect(validateInput(nonExistent, 'GET', 'query', {})).rejects.toThrow(
       /Schema 模块加载失败/,
     );
+  });
+
+  it('数组 body + z.array schema: 校验通过且 data 保持数组', async () => {
+    const result = await validateInput(schemaPathFor('arraybody/arraybody.ts'), 'POST', 'body', [
+      'a',
+      'b',
+    ]);
+    expect(result.valid).toBe(true);
+    expect(result.data).toEqual(['a', 'b']);
+  });
+
+  it('数组 body 无 schema: data 原样保持数组（不再静默替换为 {}）', async () => {
+    // noschema.ts 只有 GET——用 POST method 时 schema 名 POSTBodySchema 不存在 → 无 schema 分支
+    const result = await validateInput(schemaPathFor('noschema/noschema.ts'), 'POST', 'body', [
+      'x',
+    ]);
+    expect(result.valid).toBe(true);
+    expect(result.data).toEqual(['x']);
   });
 });

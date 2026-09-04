@@ -34,6 +34,7 @@ faapi 通过 TypeScript AST 分析 handler 参数类型，生成运行时校验�
 | `union` | `z.union([m0, m1, ...])` 或 `m0.nullable()` | 联合，含 null 时用 nullable |
 | `date` | `z.coerce.date()` | 接受 string/Date，自动解析 ISO 8601 |
 | `record` | `z.record(keySchema, valueSchema)` | Record<K, V> |
+| `literal`（number/boolean 值） | `z.preprocess(coerceNumber/coerceBoolean, z.literal(...))`（仅 coerce=true） | query 声明 `status: 1 \| 2` 时 URL string 转换后命中；union 成员级包裹，string 字面量天然命中 |
 | `map` | `z.preprocess(coerceMap, z.map(keySchema, valueSchema))` | Map<K,V>，JSON entries 数组 `[[k,v],...]` 经 coerceMap 还原为 Map 实例 |
 | `set` | `z.preprocess(coerceSet, z.set(elementSchema))` | Set<T>，JSON 数组 `[item,...]` 经 coerceSet 还原为 Set 实例 |
 | `ref` | `TypeNameSchema` | 命名类型引用，跨文件 import 或本文件 const |

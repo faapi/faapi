@@ -747,7 +747,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 - 循环引用通过 zod 的 `z.lazy(() => ...)` 延迟求值处理。
 - 跨文件类型引用：TypeScript checker 在 AST 提取阶段已解析为完整 `RuntimeType`（内联），每个 `zod.js` 自包含，无需跨文件 import。
 - coerce 内联到 zod schema：query/params 来自 URL 值均为 string，类型转换（string→number/boolean）在代码生成阶段用 `z.preprocess` 内联到 schema，不再有独立的 `coerceInput` 步骤。
-  - `generateZodSchemaSource` 新增 `coerce` 参数（默认 `false`），`true` 时为 number/boolean 字段（含嵌套元素）包 `z.preprocess`。
+  - `generateZodSchemaSource` 新增 `coerce` 参数（默认 `false`），`true` 时为 number/boolean 字段（含嵌套元素）及数字/布尔字面量（含 union 成员级）包 `z.preprocess`。
   - 公用函数提取到 dist 根部的 `faapi-helpers.js`（仅一份，ESM export `coerceNumber` / `coerceBoolean`），各 `zod.js` 通过相对路径 `import` 复用，而非每个文件内联声明；无 coerce schema 时不生成该文件，zod.js 也不注入 import。
   - `generateSchemaFileSource` 根据 schemaName 推断 inputType：以 `Query`/`Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）。
   - `mapZodCode` 新增 `not_finite → COERCE_FAILED` 映射（实际场景中 coerce 失败多报 `invalid_type`）。

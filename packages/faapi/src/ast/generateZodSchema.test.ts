@@ -704,6 +704,55 @@ describe('generateZodSchema', () => {
       });
     });
 
+    describe('coerce=true 时数字/布尔字面量包 preprocess', () => {
+      it('数字字面量字段: "1" → 1 命中 z.literal(1)', () => {
+        const schema = makeZodSchemaObject(`export interface Q { kind: 1; }`, 'Q', true);
+        const r = schema.safeParse({ kind: '1' });
+        expect(r.success).toBe(true);
+        if (r.success) expect(r.data.kind).toBe(1);
+        // 原始 number 也通过
+        expect(schema.safeParse({ kind: 1 }).success).toBe(true);
+      });
+
+      it('数字字面量联合字段(status: 1 | 2): URL string "1" 命中成员', () => {
+        const code = makeZodSchema(`export interface Q { status: 1 | 2; }`, 'Q', true);
+        // union 成员级各自包 preprocess（string literal 无需转换，不受影响）
+        expect(code).toMatch(
+          /z\.union\(\[\s*z\.preprocess\(coerceNumber, z\.literal\(1\)\),\s*z\.preprocess\(coerceNumber, z\.literal\(2\)\)\s*\]\)/,
+        );
+        const schema = makeZodSchemaObject(`export interface Q { status: 1 | 2; }`, 'Q', true);
+        expect(schema.safeParse({ status: '1' }).success).toBe(true);
+        expect(schema.safeParse({ status: '2' }).success).toBe(true);
+        expect(schema.safeParse({ status: '3' }).success).toBe(false);
+      });
+
+      it('混合联合(status: "active" | 1): string 成员天然命中, number 成员转换命中', () => {
+        const code = makeZodSchema(`export interface Q { status: 'active' | 1; }`, 'Q', true);
+        // 仅数字成员包 preprocess
+        expect(code).toContain('z.preprocess(coerceNumber, z.literal(1))');
+        expect(code).toContain('z.literal("active")');
+        const schema = makeZodSchemaObject(
+          `export interface Q { status: 'active' | 1; }`,
+          'Q',
+          true,
+        );
+        expect(schema.safeParse({ status: 'active' }).success).toBe(true);
+        expect(schema.safeParse({ status: '1' }).success).toBe(true);
+        expect(schema.safeParse({ status: 'inactive' }).success).toBe(false);
+      });
+
+      it('布尔字面量字段: "true" → true 命中 z.literal(true)', () => {
+        const schema = makeZodSchemaObject(`export interface Q { flag: true; }`, 'Q', true);
+        expect(schema.safeParse({ flag: 'true' }).success).toBe(true);
+        expect(schema.safeParse({ flag: false }).success).toBe(false);
+      });
+
+      it('string 字面量不包 preprocess（URL 天然 string）', () => {
+        const code = makeZodSchema(`export interface Q { mode: 'fast'; }`, 'Q', true);
+        expect(code).not.toContain('z.preprocess');
+      });
+    });
+
     describe('coerce=false 时无 preprocess（默认行为）', () => {
       it('生成代码不包含 z.preprocess', () => {
         const code = makeZodSchema(`export interface Q { page: number; active: boolean; }`, 'Q');
