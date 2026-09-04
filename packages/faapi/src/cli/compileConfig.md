@@ -76,6 +76,17 @@ export default base;
                     (单一运行时对象，instanceof 生效)
 ```
 
+## mtime 短路缓存
+
+watcher 每次重建、buildCommand 每次构建都会调 `compileConfig`。为避免配置源毫无变化时重复付出 3 次 esbuild build + 依赖图递归读盘的开销，`compileConfig` 内置模块级 mtime 短路缓存（key 为 `rootDir::dist`）：
+
+- 编译成功后记录全部输入文件（config 源 + 递归收集的依赖模块）的 mtime
+- 再次调用时：输入文件 mtime 全部一致且主产物 `faapi-config.js` 仍存在 → 跳过编译，返回 `{ generated: true, outputFile, skipped: true }`
+- 任一输入变化/缺失、或产物被删 → 全量重编译并更新缓存
+- 编译抛错时不写缓存（下次调用可重试）
+
+watcher 重建场景的收益最直接：改一个 handler.ts 触发重建时，config 无变化则 0 次 esbuild build。buildCommand 步骤 0/2 的重复编译也由此自然短路（两步之间无源码变更）。
+
 ## 边界情况
 
 - **无基础配置文件**：不生成产物，`loadConfig` 返回 `null`（配置可选）

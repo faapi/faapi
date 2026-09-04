@@ -75,6 +75,45 @@ export interface CompileConfigResult {
   generated: boolean;
   /** 输出文件绝对路径（generated=false 时为空字符串） */
   outputFile: string;
+  /** 是否命中 mtime 短路缓存跳过了编译（watcher 重建场景，输入无变化时省 3 次 esbuild build） */
+  skipped: boolean;
+}
+
+/**
+ * compileConfig 的 mtime 短路缓存
+ *
+ * watcher 每次重建都会调 compileConfig；若无短路，即使配置源毫无变化，
+ * 也要付出 3 次 esbuild build + collectRelativeImports 递归读整个依赖图的开销。
+ *
+ * key 为 `rootDir::dist`，value 记录上次编译的全部输入文件 mtime。
+ * 再次调用时输入文件集合 mtime 全部一致且产物仍存在 → 跳过编译；
+ * 任一变化/缺失 → 全量重编译并更新缓存。编译抛错时不写缓存（下次可重试）。
+ */
+interface CompileConfigCacheEntry {
+  /** 上次编译的输入文件（绝对路径 → mtimeMs） */
+  inputs: Map<string, number>;
+  /** 主产物绝对路径（faapi-config.js） */
+  outputFile: string;
+}
+
+const compileConfigCache = new Map<string, CompileConfigCacheEntry>();
+
+/** 检查缓存是否仍然新鲜：产物存在 + 全部输入文件存在且 mtime 一致 */
+async function isCacheFresh(entry: CompileConfigCacheEntry): Promise<boolean> {
+  try {
+    await fs.promises.stat(entry.outputFile);
+  } catch {
+    return false;
+  }
+  for (const [filePath, mtimeMs] of entry.inputs) {
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (stat.mtimeMs !== mtimeMs) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -210,11 +249,21 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
   const baseConfigName = findBaseConfig(rootDir);
   if (!baseConfigName) {
     // 无基础配置文件：不生成产物，loadConfig 会返回 null
-    return { generated: false, outputFile: '' };
+    return { generated: false, outputFile: '', skipped: false };
   }
 
   const absDist = path.resolve(rootDir, dist);
   await fs.promises.mkdir(absDist, { recursive: true });
+
+  const outputFile = path.resolve(absDist, 'faapi-config.js');
+  const cacheKey = `${toRealPath(rootDir)}::${dist}`;
+
+  // mtime 短路：上次编译的全部输入文件无变化且产物仍存在 → 跳过编译
+  const cached = compileConfigCache.get(cacheKey);
+  if (cached && (await isCacheFresh(cached))) {
+    return { generated: true, outputFile: cached.outputFile, skipped: true };
+  }
+  compileConfigCache.delete(cacheKey);
 
   // 收集 config 入口文件（绝对路径）
   const configEntryPoints: string[] = [path.resolve(rootDir, baseConfigName)];
@@ -268,7 +317,6 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
 
   const entryCode = [baseImport, exportDefault].join('\n');
 
-  const outputFile = path.resolve(absDist, 'faapi-config.js');
   await esbuild.build({
     stdin: { contents: entryCode, resolveDir: absDist, loader: 'ts' },
     outfile: outputFile,
@@ -282,5 +330,18 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
     logLevel: 'silent',
   });
 
-  return { generated: true, outputFile };
+  // 编译成功：记录全部输入文件的 mtime（config 源 + src 内/外依赖模块），
+  // 供下次调用的 mtime 短路判断。编译抛错时不走此处（下次可重试）。
+  const inputs = new Map<string, number>();
+  for (const filePath of [...configEntryPoints, ...appDirFiles, ...nonAppDirFiles]) {
+    try {
+      const stat = await fs.promises.stat(filePath);
+      inputs.set(filePath, stat.mtimeMs);
+    } catch {
+      // 收集阶段存在的文件理论上不会消失；消失则不缓存该文件，下次触发重编译
+    }
+  }
+  compileConfigCache.set(cacheKey, { inputs, outputFile });
+
+  return { generated: true, outputFile, skipped: false };
 }

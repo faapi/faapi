@@ -3,6 +3,7 @@ import path from 'node:path';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
 import type { DevApp } from './createDevApp';
+import { createRebuildScheduler } from './rebuildScheduler';
 
 export interface WatchOptions {
   /** 项目根目录 */
@@ -19,7 +20,7 @@ export interface WatchOptions {
  * 监听源码 `.ts` 变化，增量编译 + 重生成 config/schema 产物 + 调 `app.reloadRoutes()` 热替换。
  *
  * 与 `app.reloadRoutes()` 的分工：
- * - watcher：增量编译变化文件 + 重生成 `faapi-config.js`（如配置源码变化）
+ * - watcher：增量编译变化文件 + 重生成 `faapi-config.js`（compileConfig 内部有 mtime 短路，无变化时跳过编译）
  * - `reloadRoutes()`：重新扫描路由 + 重新生成 schema + 清缓存 + 更新 server 路由引用
  *
  * 注意：`faapi-routes.js` 不在 watcher 中重生成——reloadRoutes 直接调 scanRoutes 重新扫描，
@@ -28,64 +29,53 @@ export interface WatchOptions {
  * chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ignored` 函数过滤。
  * 监听整个 src 比 glob 更合理：handler.ts 引用的 util.ts 变化也能触发重建。
  *
- * 重建流程（debounce 100ms）：
+ * 重建调度（createRebuildScheduler，debounce 100ms）：
  * 1. 增量编译变化的文件（add/change 事件累积的文件）
- * 2. 重生成 `faapi-config.js`（compileConfig 内部按文件存在性跳过编译）
+ * 2. 重生成 `faapi-config.js`（compileConfig 内部 mtime 短路：源文件无变化时跳过编译）
  * 3. 调 `app.reloadRoutes()`（scanRoutes + generateSchemaFiles + 更新引用）
+ *
+ * 重建进行中不重入：新事件只累积文件，当前轮结束后自动串行补跑（见 rebuildScheduler.md）。
+ * 重建失败时待编译文件回灌，等待下次文件事件一起重编译（不主动重试）。
  *
  * unlink（文件删除）不增量编译（无文件可编译），但触发 reloadRoutes（路由结构变化）。
  */
 export function startWatcher(options: WatchOptions): void {
   const { rootDir, app, devDist } = options;
 
-  // 重建定时器（debounce）
-  let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
-  // 累积变化的文件（绝对路径），用于增量编译
-  let pendingFiles: Set<string> = new Set();
-
-  async function rebuildRoutes(): Promise<void> {
-    try {
-      // 1. 增量编译变化的文件（add/change 事件累积的文件）
-      const filesToCompile = Array.from(pendingFiles);
-      pendingFiles = new Set();
-      if (filesToCompile.length > 0) {
-        await compileDevRoutes({
-          rootDir,
-          dist: devDist,
-          files: filesToCompile,
-        });
-      }
-
-      // 2. 重生成 faapi-config.js（如配置源码变化）
-      //    compileConfig 内部按源文件存在性决定是否生成，无配置则跳过
-      await compileConfig({ rootDir, dist: devDist });
-
-      // 3. 调 app.reloadRoutes()（scanRoutes + generateSchemaFiles + 清缓存 + 更新引用）
-      await app.reloadRoutes();
-      // 4. 调 app.reloadTools()（scanTools + 重生成 faapi-tools.js + 清缓存）
-      //    与 reloadRoutes 分离——tool 清单独立重建，无 tool 文件时 scanTools 返回空（快速跳过）
-      await app.reloadTools();
-      // 5. 调 app.reloadAgents()（scanAgents + 重生成 faapi-agents.js + 清缓存）
-      //    与 reloadTools 分离——agent 清单独立重建，无 agent 文件时 scanAgents 返回空（快速跳过）
-      await app.reloadAgents();
-
-      const recompiledCount = filesToCompile.length;
-      console.log(
-        `- Routes rebuilt${recompiledCount > 0 ? `, ${recompiledCount} file(s) recompiled` : ''}`,
-      );
-    } catch (err) {
-      console.error('- Error rebuilding routes:', err instanceof Error ? err.message : String(err));
+  async function rebuildRoutes(files: string[]): Promise<void> {
+    // 1. 增量编译变化的文件（add/change 事件累积的文件）
+    if (files.length > 0) {
+      await compileDevRoutes({
+        rootDir,
+        dist: devDist,
+        files,
+      });
     }
+
+    // 2. 重生成 faapi-config.js（compileConfig 内部 mtime 短路，配置源无变化时跳过）
+    await compileConfig({ rootDir, dist: devDist });
+
+    // 3. 调 app.reloadRoutes()（scanRoutes + generateSchemaFiles + 清缓存 + 更新引用）
+    await app.reloadRoutes();
+    // 4. 调 app.reloadTools()（scanTools + 重生成 faapi-tools.js + 清缓存）
+    //    与 reloadRoutes 分离——tool 清单独立重建，无 tool 文件时 scanTools 返回空（快速跳过）
+    await app.reloadTools();
+    // 5. 调 app.reloadAgents()（scanAgents + 重生成 faapi-agents.js + 清缓存）
+    //    与 reloadTools 分离——agent 清单独立重建，无 agent 文件时 scanAgents 返回空（快速跳过）
+    await app.reloadAgents();
+
+    console.log(
+      `- Routes rebuilt${files.length > 0 ? `, ${files.length} file(s) recompiled` : ''}`,
+    );
   }
 
-  // debounce 重建：编辑器保存时可能触发多次写操作
-  function scheduleRebuild(): void {
-    if (rebuildTimer) clearTimeout(rebuildTimer);
-    rebuildTimer = setTimeout(() => {
-      rebuildTimer = null;
-      void rebuildRoutes();
-    }, 100);
-  }
+  // 重建调度器：debounce 合并 + 重入保护 + 失败回灌（见 rebuildScheduler.md）
+  const scheduler = createRebuildScheduler({
+    rebuild: rebuildRoutes,
+    onError: (err) => {
+      console.error('- Error rebuilding routes:', err instanceof Error ? err.message : String(err));
+    },
+  });
 
   // 监听文件变化
   // chokidar v4 移除了 glob 模式支持，改为监听 src 整个目录 + ignored 函数过滤
@@ -116,16 +106,14 @@ export function startWatcher(options: WatchOptions): void {
   });
 
   watcher.on('add', (file) => {
-    pendingFiles.add(path.resolve(rootDir, file));
-    scheduleRebuild();
+    scheduler.addFiles([path.resolve(rootDir, file)]);
   });
   watcher.on('change', (file) => {
-    pendingFiles.add(path.resolve(rootDir, file));
-    scheduleRebuild();
+    scheduler.addFiles([path.resolve(rootDir, file)]);
   });
   watcher.on('unlink', () => {
     // 文件删除：不增量编译（无文件可编译），但触发重生成产物 + reloadRoutes（路由结构变化）
-    scheduleRebuild();
+    scheduler.schedule();
   });
   watcher.on('error', (err) => {
     console.error('- Watcher error:', err instanceof Error ? err.message : String(err));

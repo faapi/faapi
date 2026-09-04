@@ -165,7 +165,7 @@ describe('devCommand', () => {
       const calls: string[] = [];
       vi.mocked(compileConfig).mockImplementation(async () => {
         calls.push('compileConfig');
-        return { generated: false, outputFile: '' };
+        return { generated: false, outputFile: '', skipped: false };
       });
       vi.mocked(loadConfig).mockImplementation(async () => {
         calls.push('loadConfig');

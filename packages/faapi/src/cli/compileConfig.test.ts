@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import fs, { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { compileConfig } from './compileConfig';
@@ -314,5 +314,76 @@ export default {
     const product = readFileSync(join(tempDir, 'dist', 'faapi-config.js'), 'utf-8');
     expect(product).toMatch(/from\s+['"]\.\/faapi\.config\.js['"]/);
     expect(product).not.toMatch(/deepMerge/);
+  });
+
+  describe('mtime 短路缓存（watcher 重建场景）', () => {
+    it('连续调用源文件无变化时跳过编译', async () => {
+      writeFile('faapi.config.ts', `export default { port: 3000 };\n`);
+
+      const first = await compileConfig({ rootDir: tempDir, dist: 'dist' });
+      expect(first.generated).toBe(true);
+      expect(first.skipped).toBe(false);
+
+      const second = await compileConfig({ rootDir: tempDir, dist: 'dist' });
+      expect(second.generated).toBe(true);
+      expect(second.skipped).toBe(true);
+      expect(existsSync(join(tempDir, 'dist', 'faapi-config.js'))).toBe(true);
+    });
+
+    it('config 源文件变化后重新编译', async () => {
+      writeFile('faapi.config.ts', `export default { port: 3000 };\n`);
+      await compileConfig({ rootDir: tempDir, dist: 'dist' });
+
+      // 修改源文件内容（utimes 显式推进 mtime，避免同毫秒写入 mtime 相同）
+      writeFile('faapi.config.ts', `export default { port: 8080 };\n`);
+      const future = new Date(Date.now() + 5000);
+      await fs.promises.utimes(join(tempDir, 'faapi.config.ts'), future, future);
+
+      const result = await compileConfig({ rootDir: tempDir, dist: 'dist' });
+      expect(result.skipped).toBe(false);
+
+      const config = await importProduct<{ port: number }>();
+      expect(config.port).toBe(8080);
+    });
+
+    it('config 引用的项目模块变化后重新编译', async () => {
+      writeFile('faapi.config.ts', `import { tag } from './lib/tag';\nexport default { tag };\n`);
+      writeFile('lib/tag.ts', `export const tag = 'v1';\n`);
+      await compileConfig({ rootDir: tempDir, dist: 'dist' });
+
+      // 只改依赖模块，config 源不变
+      writeFile('lib/tag.ts', `export const tag = 'v2';\n`);
+      const future = new Date(Date.now() + 5000);
+      await fs.promises.utimes(join(tempDir, 'lib/tag.ts'), future, future);
+
+      const result = await compileConfig({ rootDir: tempDir, dist: 'dist' });
+      expect(result.skipped).toBe(false);
+
+      const config = await importProduct<{ tag: string }>();
+      expect(config.tag).toBe('v2');
+    });
+
+    it('产物被删后重新编译', async () => {
+      writeFile('faapi.config.ts', `export default { port: 3000 };\n`);
+      await compileConfig({ rootDir: tempDir, dist: 'dist' });
+
+      rmSync(join(tempDir, 'dist'), { recursive: true, force: true });
+
+      const result = await compileConfig({ rootDir: tempDir, dist: 'dist' });
+      expect(result.skipped).toBe(false);
+      expect(existsSync(join(tempDir, 'dist', 'faapi-config.js'))).toBe(true);
+    });
+
+    it('编译失败不缓存，修复后能重新编译', async () => {
+      writeFile('faapi.config.ts', `export default { port: };\n`); // 语法错误
+
+      await expect(compileConfig({ rootDir: tempDir, dist: 'dist' })).rejects.toThrow();
+
+      // 修复后重新编译成功
+      writeFile('faapi.config.ts', `export default { port: 3000 };\n`);
+      const result = await compileConfig({ rootDir: tempDir, dist: 'dist' });
+      expect(result.generated).toBe(true);
+      expect(existsSync(join(tempDir, 'dist', 'faapi-config.js'))).toBe(true);
+    });
   });
 });

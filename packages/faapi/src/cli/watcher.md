@@ -46,10 +46,11 @@ chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ign
 
 ## 重建流程
 
-文件变化 → debounce(100ms) → 重建：
+文件事件由 `createRebuildScheduler`（见 [rebuildScheduler.md](./rebuildScheduler.md)）调度：
+debounce(100ms) 合并、重建进行中不重入（当前轮结束后串行补跑）、失败回灌待编译集合。重建：
 
 1. **增量编译**变化的文件（`compileDevRoutes` with `files` 参数，只编译 add/change 的文件）
-2. **重生成 `faapi-config.js`**（`compileConfig`，内部按源文件存在性决定是否生成，无配置则跳过）
+2. **重生成 `faapi-config.js`**（`compileConfig`，内部有 mtime 短路：config 源及其依赖模块无变化时跳过编译，无配置文件则跳过）
 3. **调 `app.reloadRoutes()`**（由 `createDevApp` 提供，完成以下工作）：
    - 更新模块加载时间戳（`setLoadTimestamp(Date.now())`，ESM import 绕过缓存）
    - 清理中间件 + Program + schema 缓存
