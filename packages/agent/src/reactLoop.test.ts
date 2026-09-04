@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { reactLoop, reactLoopStream, ReactLoopError } from './reactLoop';
+import { AgentAbortError } from './provider';
 import type {
   LLMProvider,
   LLMResponse,
@@ -1083,5 +1084,33 @@ describe('tracing — reactLoop + reactLoopStream', () => {
         expect(subEvt!.traceEvent!.trace).toEqual(subTrace);
       }
     });
+  });
+
+  it('config.signal 已 aborted → 循环开始前抛 AgentAbortError,provider 未被调用', async () => {
+    const { provider, completeCalls } = createMockProvider([llmResponse({ content: 'x' })]);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      reactLoop('hi', {
+        provider,
+        executeTool: async () => '',
+        signal: controller.signal,
+      }),
+    ).rejects.toBeInstanceOf(AgentAbortError);
+    expect(completeCalls).not.toHaveBeenCalled();
+  });
+
+  it('signal 透传到 provider.complete 的请求参数', async () => {
+    const { provider, completeCalls } = createMockProvider([llmResponse({ content: 'ok' })]);
+    const controller = new AbortController();
+
+    await reactLoop('hi', {
+      provider,
+      executeTool: async () => '',
+      signal: controller.signal,
+    });
+    expect(completeCalls).toHaveBeenCalledTimes(1);
+    expect(completeCalls.mock.calls[0][0]).toMatchObject({ signal: controller.signal });
   });
 });

@@ -158,6 +158,21 @@ export interface LlmConfig {
    */
   models: Record<string, LlmModelConfig>;
   /**
+   * LLM 请求超时（毫秒，可选——未设置时无超时）
+   *
+   * provider 层用 `AbortSignal.timeout` 实现，与 run-level 的 `signal` 组合生效。
+   * 超时触发抛 `LLMProviderError`（message 含 timed out），计入重试（429/5xx/网络错误同策略）。
+   */
+  timeoutMs?: number;
+  /**
+   * 429 / 5xx / 网络错误的最大重试次数（默认 2，设 0 关闭重试）
+   *
+   * 退避策略：优先尊重响应的 `Retry-After` 头（秒，封顶 30s），否则指数退避
+   * 500ms * 2^attempt。4xx 其他状态（400/401 等）是确定性错误，不重试。
+   * 流式请求仅在「连接建立前」重试，流开始输出后中断不重试。
+   */
+  maxRetries?: number;
+  /**
    * 其他透传参数（provider 级，如 temperature / top_p / max_tokens）
    *
    * 这些字段原样传给 LLM API，由 provider 适配器处理。

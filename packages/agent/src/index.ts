@@ -23,6 +23,7 @@
 // LLM Provider 抽象与工厂（Phase 3.2）
 export {
   createProvider,
+  AgentAbortError,
   LLMProviderError,
   type LLMProvider,
   type LLMMessage,

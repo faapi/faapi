@@ -79,6 +79,27 @@ export interface LLMCompleteRequest {
   temperature?: number;
   /** 最大生成 token 数 */
   maxTokens?: number;
+  /**
+   * 取消信号（透传到底层 HTTP 请求）
+   *
+   * abort 时请求中断并抛 `AgentAbortError`；与 `LlmConfig.timeoutMs` 的
+   * 超时信号组合生效（任一触发即中断）。
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Agent 执行被取消
+ *
+ * 外部 `AbortSignal` 触发时抛出（请求前预检查或请求中断）。
+ * 业务方通过 `instanceof AgentAbortError` 区分「用户取消」与真实错误——
+ * 取消不是故障，不应触发告警/重试逻辑。
+ */
+export class AgentAbortError extends Error {
+  constructor(message = 'Agent execution aborted') {
+    super(message);
+    this.name = 'AgentAbortError';
+  }
 }
 
 /**

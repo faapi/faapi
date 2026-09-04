@@ -62,6 +62,9 @@ function createProvider(config: LlmConfig): LLMProvider;
 - 不支持的 `provider` → 抛 `Error("Unsupported LLM provider: <name>")`，不返回 stub
 - HTTP / 网络错误由具体 provider 抛 `LLMProviderError`（含 status + body 摘要）
 - JSON / SSE 解析错误抛带上下文的 `Error`
+- **重试**：429 / 5xx / 网络错误自动重试（`LlmConfig.maxRetries` 默认 2,设 0 关闭）,退避优先尊重 `Retry-After` 头（封顶 30s）,否则指数退避 500ms * 2^attempt；4xx 其他状态不重试；流式仅在连接建立前重试
+- **超时**：`LlmConfig.timeoutMs`（毫秒,可选）,重试时刷新预算
+- **取消**：请求参数 `signal` 透传到底层 HTTP；外部取消抛 `AgentAbortError`（用户取消,与超时/错误区分,不重试）
 
 ## 透传字段
 

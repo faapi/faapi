@@ -60,6 +60,13 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  */
 export interface AgentRunOptions {
   /**
+   * 取消信号（透传到每轮 LLM 请求）
+   *
+   * abort 后当前轮请求中断并抛 `AgentAbortError`，循环不再进入下一轮。
+   * 业务方（如 SSE/WS 客户端断开）可通过 `req.signal` 等接入取消链路。
+   */
+  signal?: AbortSignal;
+  /**
    * 覆盖本次调用的 agent 名（从 agentRegistry 查找对应元数据 / tools / sub-agents）
    *
    * 不传时用 `config.agent.defaultAgent`。`defaultAgent` 未设时必须显式传入，

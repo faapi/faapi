@@ -1106,4 +1106,17 @@ describe('Agent', () => {
       await expect(agent.run('hi')).rejects.toThrowError(AgentError);
     });
   });
+
+  it('run(options.signal) 透传到 provider.complete 的请求参数', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'ok', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
+
+    const controller = new AbortController();
+    await agent.run('hi', { signal: controller.signal });
+
+    const request = completeCalls.mock.calls[0][0];
+    expect(request.signal).toBe(controller.signal);
+  });
 });

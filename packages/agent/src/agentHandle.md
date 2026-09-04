@@ -47,6 +47,7 @@ export async function POST(agent: AgentHandle, body: { input: string }) {
 
 ```ts
 interface AgentRunOptions {
+  signal?: AbortSignal;  // 取消信号：abort 后当前轮请求中断并抛 AgentAbortError,不再进入下一轮
   /**
    * 切换 provider + model 的字符串 key,支持三种形式：
    * - llms 的 key 精确匹配（如 'openai'）→ 用该 provider + 其 models 的第一个 model

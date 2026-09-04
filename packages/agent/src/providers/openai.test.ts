@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createOpenAIProvider, LLMProviderError } from './openai';
+import { AgentAbortError } from '../provider';
 import type { LlmConfig } from '@faapi/faapi';
 
 /** 构造 OpenAI chat completions 成功响应 body */
@@ -687,6 +688,155 @@ describe('createOpenAIProvider', () => {
           // 不应该到这里
         }
       }).rejects.toThrowError(/Invalid SSE chunk/i);
+    });
+  });
+
+  describe('重试 / 超时 / 取消', () => {
+    it('429 + Retry-After: 0 → 自动重试后成功（fetch 共 2 次）', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+        )
+        .mockResolvedValueOnce(jsonResponse(openaiResponse({ content: 'ok' })));
+
+      const provider = createOpenAIProvider(baseConfig);
+      const res = await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
+      expect(res.message.content).toBe('ok');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('429 重试耗尽（maxRetries: 1）→ 抛 LLMProviderError(status=429)', async () => {
+      fetchMock.mockResolvedValue(
+        new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+      );
+      const provider = createOpenAIProvider({ ...baseConfig, maxRetries: 1 });
+
+      await expect(
+        provider.complete({ messages: [{ role: 'user', content: 'hi' }] }),
+      ).rejects.toMatchObject({ name: 'LLMProviderError', status: 429 });
+      expect(fetchMock).toHaveBeenCalledTimes(2); // 首次 + 1 次重试
+    });
+
+    it('500 重试后成功', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          new Response('boom', { status: 500, headers: { 'Retry-After': '0' } }),
+        )
+        .mockResolvedValueOnce(jsonResponse(openaiResponse({ content: 'ok' })));
+
+      const provider = createOpenAIProvider(baseConfig);
+      const res = await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
+      expect(res.message.content).toBe('ok');
+    });
+
+    it('400 不重试（fetch 只调 1 次）', async () => {
+      fetchMock.mockResolvedValue(new Response('bad request', { status: 400 }));
+      const provider = createOpenAIProvider(baseConfig);
+
+      await expect(
+        provider.complete({ messages: [{ role: 'user', content: 'hi' }] }),
+      ).rejects.toMatchObject({ name: 'LLMProviderError', status: 400 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('maxRetries: 0 不重试', async () => {
+      fetchMock.mockResolvedValue(
+        new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+      );
+      const provider = createOpenAIProvider({ ...baseConfig, maxRetries: 0 });
+
+      await expect(
+        provider.complete({ messages: [{ role: 'user', content: 'hi' }] }),
+      ).rejects.toMatchObject({ status: 429 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('网络错误重试后成功', async () => {
+      fetchMock
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce(jsonResponse(openaiResponse({ content: 'ok' })));
+
+      const provider = createOpenAIProvider(baseConfig);
+      const res = await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
+      expect(res.message.content).toBe('ok');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('外部 signal 已 aborted → 抛 AgentAbortError 且不发起请求', async () => {
+      const provider = createOpenAIProvider(baseConfig);
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        provider.complete({
+          messages: [{ role: 'user', content: 'hi' }],
+          signal: controller.signal,
+        }),
+      ).rejects.toBeInstanceOf(AgentAbortError);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('运行中 abort → fetch 中断并抛 AgentAbortError', async () => {
+      const controller = new AbortController();
+      fetchMock.mockImplementation(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () =>
+              reject(new DOMException('This operation was aborted', 'AbortError')),
+            );
+          }),
+      );
+      const provider = createOpenAIProvider(baseConfig);
+
+      const p = provider.complete({
+        messages: [{ role: 'user', content: 'hi' }],
+        signal: controller.signal,
+      });
+      controller.abort();
+      await expect(p).rejects.toBeInstanceOf(AgentAbortError);
+    });
+
+    it('timeoutMs 超时 → 抛 LLMProviderError（message 含 timed out）', async () => {
+      fetchMock.mockImplementation(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () =>
+              reject(new DOMException('This operation was aborted', 'AbortError')),
+            );
+          }),
+      );
+      const provider = createOpenAIProvider({ ...baseConfig, timeoutMs: 30 });
+
+      await expect(
+        provider.complete({ messages: [{ role: 'user', content: 'hi' }] }),
+      ).rejects.toThrow(/timed out/);
+    });
+
+    it('stream 提前 break → 底层 body 被 cancel', async () => {
+      let cancelCalled = false;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseData({ choices: [{ delta: { content: 'A' } }] })));
+          // 不 close——模拟长流
+        },
+        cancel() {
+          cancelCalled = true;
+        },
+      });
+      fetchMock.mockResolvedValue(
+        new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      );
+
+      const provider = createOpenAIProvider(baseConfig);
+      for await (const _chunk of provider.stream({
+        messages: [{ role: 'user', content: 'hi' }],
+      })) {
+        break; // 消费一个 chunk 后提前退出
+      }
+      // 给 generator finally 一点时间
+      await new Promise((r) => setTimeout(r, 10));
+      expect(cancelCalled).toBe(true);
     });
   });
 });

@@ -1,4 +1,5 @@
 import type { LlmConfig } from '@faapi/faapi';
+import { AgentAbortError } from '../provider';
 import type {
   LLMCompleteRequest,
   LLMMessage,
@@ -30,7 +31,15 @@ const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
  * - `model` —— 由 `request.model` 或 `config.models` 第一个 key 决定,不由 config 透传
  * - `models` —— 嵌套级联的 model 配置映射,非 OpenAI API 字段
  */
-const RESERVED_CONFIG_KEYS = new Set(['provider', 'apiKey', 'model', 'baseURL', 'models']);
+const RESERVED_CONFIG_KEYS = new Set([
+  'provider',
+  'apiKey',
+  'model',
+  'baseURL',
+  'models',
+  'timeoutMs',
+  'maxRetries',
+]);
 
 /**
  * LLM Provider 错误
@@ -121,6 +130,8 @@ interface ToolCallAccumulator {
 export function createOpenAIProvider(config: LlmConfig): LLMProvider {
   const baseURL = (config.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '');
   const apiKey = config.apiKey;
+  /** 429/5xx/网络错误的最大重试次数（默认 2,设 0 关闭重试） */
+  const maxRetries = typeof config.maxRetries === 'number' ? config.maxRetries : 2;
 
   /**
    * 构造 OpenAI chat completions 请求体
@@ -189,25 +200,113 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
     return headers;
   }
 
-  /** 调 fetch,统一捕获网络错误 */
-  async function safeFetch(url: string, init: RequestInit): Promise<Response> {
+  /**
+   * 调 fetch,统一捕获网络错误
+   *
+   * abort 错误分类用外部 signal（effectiveSignal 的组合信号 aborted 时无法区分
+   * 是外部取消还是超时触发）：externalSignal.aborted → AgentAbortError（用户取消）；
+   * 否则 AbortError → LLMProviderError（timeoutMs 超时）。
+   */
+  async function safeFetch(
+    url: string,
+    init: RequestInit,
+    externalSignal: AbortSignal | undefined,
+  ): Promise<Response> {
     try {
       return await fetch(url, init);
     } catch (err) {
+      if (externalSignal?.aborted) {
+        throw new AgentAbortError();
+      }
+      if ((err as { name?: string })?.name === 'AbortError') {
+        throw new LLMProviderError(`LLM request timed out after ${config.timeoutMs}ms`);
+      }
       const reason = err instanceof Error ? err.message : String(err);
       throw new LLMProviderError(`Network error: ${reason}`, { cause: err });
     }
   }
 
-  /** 校验 HTTP 响应状态,非 2xx 抛 LLMProviderError */
-  async function ensureOk(response: Response): Promise<string> {
-    if (response.ok) return '';
-    const bodyText = await response.text();
-    const excerpt = bodyText.slice(0, 500);
-    throw new LLMProviderError(`HTTP ${response.status}: ${excerpt}`, {
-      status: response.status,
-      body: excerpt,
-    });
+  /**
+   * 判断 LLMProviderError 是否可重试：429 / 5xx / 网络错误（status undefined）。
+   * 4xx 其他（400/401/403/404 等）是确定性错误,重试无意义。
+   */
+  function isRetryable(err: unknown): boolean {
+    if (!(err instanceof LLMProviderError)) return false;
+    if (err.status === undefined) return true; // 网络错误
+    return err.status === 429 || err.status >= 500;
+  }
+
+  /** 单次重试等待：优先 Retry-After 头（秒,封顶 30s）,否则指数退避 500ms * 2^attempt */
+  function retryDelayMs(response: Response | undefined, attempt: number): number {
+    const retryAfter = response?.headers.get('retry-after');
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      if (!isNaN(seconds) && seconds >= 0) return Math.min(seconds * 1000, 30_000);
+    }
+    return 500 * 2 ** attempt;
+  }
+
+  /** 组合外部 signal 与超时信号（LlmConfig.timeoutMs,未设置时不加超时） */
+  function effectiveSignal(request: LLMCompleteRequest): AbortSignal | undefined {
+    const { signal } = request;
+    const timeoutMs = typeof config.timeoutMs === 'number' ? config.timeoutMs : undefined;
+    if (!signal && !timeoutMs) return undefined;
+    const signals: AbortSignal[] = [];
+    if (signal) signals.push(signal);
+    if (timeoutMs) signals.push(AbortSignal.timeout(timeoutMs));
+    return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+  }
+
+  /**
+   * fetch + 状态校验 + 自动重试（complete 与 stream 共用）
+   *
+   * 重试条件：429 / 5xx / 网络错误,退避策略见 retryDelayMs。
+   * 每次尝试前预检查外部 signal（已取消则不发请求）；init（含超时信号）在
+   * 每次尝试时重建——重试获得全新的 timeoutMs 预算（复用已 aborted 的
+   * AbortSignal.timeout 会让后续尝试立即/永远失败）。流式响应仅在
+   * 「连接建立前」重试——流开始输出后中断不重试（部分内容已消费）。
+   */
+  async function fetchOkWithRetry(
+    url: string,
+    baseInit: Omit<RequestInit, 'signal'>,
+    request: LLMCompleteRequest,
+    maxRetries: number,
+  ): Promise<Response> {
+    let lastErr: unknown;
+    let lastResponse: Response | undefined;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (request.signal?.aborted) {
+        throw new AgentAbortError();
+      }
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, retryDelayMs(lastResponse, attempt - 1)));
+      }
+      const init: RequestInit = { ...baseInit, signal: effectiveSignal(request) };
+      let response: Response;
+      try {
+        response = await safeFetch(url, init, request.signal);
+      } catch (err) {
+        if (!isRetryable(err)) throw err;
+        lastErr = err;
+        continue;
+      }
+      if (response.ok) return response;
+      // body 读取失败（如 mock/异常流复用同一 Response）不阻断重试分类
+      let excerpt = '<body unreadable>';
+      try {
+        excerpt = (await response.text()).slice(0, 500);
+      } catch {
+        // 保持占位符
+      }
+      const err = new LLMProviderError(`HTTP ${response.status}: ${excerpt}`, {
+        status: response.status,
+        body: excerpt,
+      });
+      if (!isRetryable(err)) throw err;
+      lastErr = err;
+      lastResponse = response;
+    }
+    throw lastErr;
   }
 
   // ─── complete ──────────────────────────────────────
@@ -215,14 +314,13 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
   async function complete(request: LLMCompleteRequest): Promise<LLMResponse> {
     const url = `${baseURL}/chat/completions`;
     const body = buildRequestBody(request);
-    const init: RequestInit = {
+    const baseInit: Omit<RequestInit, 'signal'> = {
       method: 'POST',
       headers: buildHeaders(),
       body: JSON.stringify(body),
     };
 
-    const response = await safeFetch(url, init);
-    await ensureOk(response);
+    const response = await fetchOkWithRetry(url, baseInit, request, maxRetries);
 
     const bodyText = await response.text();
     let json: OpenAIResponseJson;
@@ -267,14 +365,13 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
     const body = buildRequestBody(request);
     body.stream = true;
 
-    const init: RequestInit = {
+    const baseInit: Omit<RequestInit, 'signal'> = {
       method: 'POST',
       headers: buildHeaders(),
       body: JSON.stringify(body),
     };
 
-    const response = await safeFetch(url, init);
-    await ensureOk(response);
+    const response = await fetchOkWithRetry(url, baseInit, request, maxRetries);
 
     if (!response.body) {
       throw new LLMProviderError('Response body is null (streaming unsupported)', {
@@ -348,7 +445,13 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
       // 流自然结束（无 [DONE]）,emit 最终 chunk
       yield finalizeStreamChunk(accumulators, finishReason, usage);
     } finally {
-      reader.releaseLock();
+      // 提前 break/异常时主动 cancel 底层流,释放 HTTP 连接（仅 releaseLock 会让
+      // undici 连接等到 body 缓冲耗尽或超时才归还）
+      try {
+        await reader.cancel();
+      } catch {
+        reader.releaseLock();
+      }
     }
   }
 

@@ -303,6 +303,7 @@ export class Agent {
       maxTokens: options?.maxTokens,
       maxTurns: meta.maxTurns ?? this.deps.config?.maxTurns,
       tools,
+      signal: options?.signal,
       enableTracing,
       executeTool: async (name, args) => this.executeTool(name, args, enableTracing),
     };

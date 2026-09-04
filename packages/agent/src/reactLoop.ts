@@ -1,3 +1,4 @@
+import { AgentAbortError } from './provider';
 import type {
   LLMMessage,
   LLMProvider,
@@ -61,6 +62,13 @@ export interface ReactLoopConfig {
   temperature?: number;
   /** 最大生成 token 数 */
   maxTokens?: number;
+  /**
+   * 取消信号（透传到每轮 LLM 请求）
+   *
+   * 循环每轮开始前预检查：已取消时抛 `AgentAbortError`（不再发起 LLM 调用）；
+   * 执行中取消由 provider 的请求中断传播。tool 执行不被取消（业务自决）。
+   */
+  signal?: AbortSignal;
   /**
    * 启用 tracing（默认 true）。开启时填充 `ReactLoopResult.trace` /
    * `ReactLoopStreamChunk.traceEvent`,详见 [trace.md](./trace.md)。
@@ -229,6 +237,10 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
   const traceEvents: AgentTraceEvent[] | undefined = enableTracing ? [] : undefined;
 
   while (turns < maxTurns) {
+    // 取消预检查：已取消则不再发起本轮 LLM 调用
+    if (config.signal?.aborted) {
+      throw new AgentAbortError();
+    }
     turns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
@@ -237,6 +249,7 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
     const response = await config.provider.complete({
       messages: [...messages],
       ...extras,
+      signal: config.signal,
     });
 
     if (response.usage) {
@@ -376,6 +389,10 @@ export async function* reactLoopStream(
   let turns = 0;
 
   while (turns < maxTurns) {
+    // 取消预检查：已取消则不再发起本轮 LLM 调用
+    if (config.signal?.aborted) {
+      throw new AgentAbortError();
+    }
     turns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
@@ -389,6 +406,7 @@ export async function* reactLoopStream(
     for await (const chunk of config.provider.stream({
       messages: [...messages],
       ...extras,
+      signal: config.signal,
     })) {
       // 增量内容
       if (typeof chunk.deltaContent === 'string' && chunk.deltaContent.length > 0) {

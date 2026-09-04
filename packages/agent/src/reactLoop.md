@@ -110,6 +110,10 @@ interface ReactLoopStreamChunk {
 
 每个 chunk 至多含一个字段。`deltaContent` 在 LLM 流式输出时多次 yield；`toolCall`/`toolResult` 在 tool 执行时配对 yield；`done` 只在结束时 yield 一次。
 
+## 取消（AbortSignal）
+
+`ReactLoopConfig.signal` 透传到每轮 LLM 请求。循环每轮开始前预检查：已取消抛 `AgentAbortError`（provider 未被调用）；执行中取消由 provider 请求中断传播（同样抛 `AgentAbortError`）。tool 执行不被取消（业务自决）。业务方通过 `instanceof AgentAbortError` 区分取消与真实错误（不触发告警/重试）。
+
 ## 相关模块
 
 - [provider](./provider.md) — `LLMProvider` 接口、`LLMMessage` / `LLMToolCall` / `LLMResponse` 等类型
