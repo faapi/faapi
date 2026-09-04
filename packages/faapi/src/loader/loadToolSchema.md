@@ -14,6 +14,14 @@ faapi 核心不依赖 zod（zod 是 peerDep），因此 `loadToolSchema` 返回 
 
 - `@faapi/agent` 的 `plugin.ts` 实现 `resolveToolSchema`：加载 zod.js → `z.toJSONSchema(schema)` 生成 JSON Schema 发给 LLM → `schema.safeParse(input)` 校验 LLM 返回的参数
 - `agent.run` 调用 tool 前的 input 校验（`AgentDeps.resolveToolSchema?.(tool)` → `ToolSchemaResolution.validate(args)`）
+- `@faapi/agent` 的跨请求 schema 缓存用 [getToolSchemaPath](#gettooltlschemapath) 计算缓存键 + mtime 校验目标
+
+## 导出
+
+| 函数 | 说明 |
+| --- | --- |
+| `loadToolSchema(tool, rootDir?)` | 动态加载 tool 的 zod.js，返回 `{ schema, schemaName } \| undefined` |
+| `getToolSchemaPath(tool, rootDir?)` | 计算 zod.js 绝对路径（纯路径计算，无 fs 访问；与 `loadToolSchema` 内部逻辑同源，共享 `getDist()`） |
 
 ## 流程
 

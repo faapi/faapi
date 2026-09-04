@@ -70,7 +70,7 @@ export {
 // 动态加载器（dev 按需编译模式需 rootDir,prod 模式直接 import 产物）
 export { loadAgentModule } from './loader/loadAgentModule';
 export { loadToolModule } from './loader/loadToolModule';
-export { loadToolSchema } from './loader/loadToolSchema';
+export { loadToolSchema, getToolSchemaPath } from './loader/loadToolSchema';
 
 // agent handle 工厂注册（Phase 3.5）——@faapi/agent 插件 setup 时注册,
 // injectParams 在 agent 参数注入时调工厂获取 AgentHandle

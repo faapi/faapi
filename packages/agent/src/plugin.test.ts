@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Server } from 'node:http';
+import { mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // ─── Mock @faapi/faapi ───────────────────────────────
 // 捕获 registerAgentHandleFactory 调用 + 控制注册表/加载器访问器返回值
@@ -54,6 +57,7 @@ import {
   getAgentEntry,
   resolveAgentTools,
   loadToolSchema,
+  getToolSchemaPath,
   type AgentConfig,
   type PluginContext,
   type AgentCore,
@@ -281,6 +285,92 @@ describe('@faapi/agent plugin', () => {
 
       expect(result.content).toBe('ok');
       expect(loadToolSchema).toHaveBeenCalledWith(testTool, '/project');
+    });
+  });
+
+  describe('resolveToolSchema 跨请求缓存', () => {
+    const cacheTool: ToolMetadata = {
+      name: 'cache.tool',
+      functionName: 'cacheFn',
+      inputTypeName: 'CacheInput',
+      filePath: 'dist/tools/cache/handler.js',
+    };
+
+    /** setup 并注册 tool + mock schema，返回工厂函数 */
+    function setupWithCacheTool(): ((ctx: unknown) => unknown) | undefined {
+      vi.mocked(loadToolSchema).mockResolvedValue({
+        schema: z.object({ city: z.string() }),
+        schemaName: 'CacheInputSchema',
+      });
+      vi.mocked(resolveAgentTools).mockReturnValue([cacheTool]);
+      plugin.setup(makeCtx(fullAgentConfig));
+      return vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
+        | ((ctx: unknown) => unknown)
+        | undefined;
+    }
+
+    it('两个请求（两个 Agent 实例）只解析一次 schema', async () => {
+      const factory = setupWithCacheTool();
+      const a1 = factory!(makeReqCtx()) as AgentHandle;
+      const a2 = factory!(makeReqCtx()) as AgentHandle;
+
+      await a1.run('hi');
+      await a2.run('hi');
+
+      // 第二个请求命中插件级缓存（zod.js mtime 未变），不重新 loadToolSchema
+      expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(1);
+    });
+
+    it('并发请求共享同一次解析（in-flight 去重）', async () => {
+      const factory = setupWithCacheTool();
+      const a1 = factory!(makeReqCtx()) as AgentHandle;
+      const a2 = factory!(makeReqCtx()) as AgentHandle;
+
+      // 同一轮事件循环发起：第二个请求命中已缓存的 in-flight Promise
+      await Promise.all([a1.run('hi'), a2.run('hi')]);
+
+      expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(1);
+    });
+
+    it('zod.js mtime 变化后重新解析（dev reloadTools 自愈）', async () => {
+      // 真实 tmp 文件：缓存用 statSync 校验 mtime，mock 的 loadToolSchema 不读文件
+      const rootDir = join(
+        tmpdir(),
+        `faapi-agent-cache-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      const tool = { ...cacheTool, filePath: 'src/tools/cache/handler.js' };
+      vi.mocked(loadToolSchema).mockResolvedValue({
+        schema: z.object({ city: z.string() }),
+        schemaName: 'CacheInputSchema',
+      });
+      vi.mocked(resolveAgentTools).mockReturnValue([tool]);
+      const zodPath = getToolSchemaPath(tool, rootDir);
+      mkdirSync(join(zodPath, '..'), { recursive: true });
+      writeFileSync(zodPath, 'export const CacheInputSchema = {};');
+
+      try {
+        const ctx = makeCtx(fullAgentConfig);
+        (ctx as { rootDir: string }).rootDir = rootDir;
+        plugin.setup(ctx);
+        const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
+          | ((ctx: unknown) => unknown)
+          | undefined;
+
+        const a1 = factory!(makeReqCtx()) as AgentHandle;
+        await a1.run('hi');
+        expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(1);
+
+        // bump mtime（模拟 dev reloadTools 重生成 zod.js）
+        const later = new Date(Date.now() + 10_000);
+        utimesSync(zodPath, later, later);
+
+        const a2 = factory!(makeReqCtx()) as AgentHandle;
+        await a2.run('hi');
+        // mtime 变化 → 缓存失效 → 重新解析
+        expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(2);
+      } finally {
+        rmSync(rootDir, { recursive: true, force: true });
+      }
     });
   });
 });

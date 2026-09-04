@@ -51,11 +51,13 @@ import {
   loadAgentModule,
   loadToolModule,
   loadToolSchema,
+  getToolSchemaPath,
   type FaapiPlugin,
   type PluginContext,
   type AgentConfig,
   type ToolMetadata,
 } from '@faapi/faapi';
+import { statSync } from 'node:fs';
 import { z } from 'zod';
 import { Agent, type AgentRuntimeConfig, type ToolSchemaResolution } from './agent';
 import type { LLMProvider } from './provider';
@@ -150,8 +152,36 @@ const agentPlugin: FaapiPlugin = {
     };
 
     const rootDir = ctx.rootDir;
-    // resolveToolSchema 偏函数（setup 内创建一次，工厂内复用，避免每次请求重建闭包）
-    const resolveToolSchema = (tool: ToolMetadata) => resolveToolSchemaImpl(tool, rootDir);
+    // 跨请求 schema 缓存（setup 闭包级,工厂每次请求 new Agent 但共享此缓存）
+    //
+    // Agent 工厂每请求构造新实例,实例级 schemaCache（agent.ts）随实例丢弃——
+    // 若无此缓存,每个请求都要重新 loadToolSchema（dynamic import + existsSync）+
+    // z.toJSONSchema（CPU 密集）。缓存键为 `zodPath#inputTypeName`,值携带 zod.js 的
+    // mtime：每次查找 statSync 一次（与原 loadToolSchema 内部的 existsSync 同级开销,
+    // 非新增 IO）,mtime 变化即重新解析——dev reloadTools 重生成 zod.js 后自愈,
+    // prod 产物固化下永远命中,无需 faapi 核心 reload 链路通知本插件。
+    const schemaCache = new Map<
+      string,
+      { mtimeMs: number; resolution: Promise<ToolSchemaResolution | undefined> }
+    >();
+    const resolveToolSchema = (tool: ToolMetadata): Promise<ToolSchemaResolution | undefined> => {
+      const zodPath = getToolSchemaPath(tool, rootDir);
+      const key = `${zodPath}#${tool.inputTypeName ?? ''}`;
+      let mtimeMs = -1;
+      try {
+        mtimeMs = statSync(zodPath).mtimeMs;
+      } catch {
+        // zod.js 不存在（无 inputTypeName / 尚未生成）→ mtimeMs 保持 -1
+      }
+      const hit = schemaCache.get(key);
+      if (hit && hit.mtimeMs === mtimeMs) {
+        return hit.resolution;
+      }
+      // in-flight Promise 直接缓存:同一 tool 的并发请求共享同一次解析
+      const resolution = resolveToolSchemaImpl(tool, rootDir);
+      schemaCache.set(key, { mtimeMs, resolution });
+      return resolution;
+    };
 
     // 注册 agent handle 工厂——每次请求时构造 Agent 实例
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生

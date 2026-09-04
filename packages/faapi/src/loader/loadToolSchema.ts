@@ -34,6 +34,20 @@ function getDist(): string {
 }
 
 /**
+ * 计算 tool 的 zod.js 绝对路径（纯路径计算，无 fs 访问）
+ *
+ * 与 [loadToolSchema](./loadToolSchema.ts) 内部使用的路径逻辑同源（共享 `getDist()`），
+ * 供 `@faapi/agent` 的跨请求 schema 缓存用作缓存键 + mtime 校验目标。
+ *
+ * @param tool tool 元数据（含 `filePath`）
+ * @param rootDir 项目根目录（`tool.filePath` 是相对路径时拼接）
+ */
+export function getToolSchemaPath(tool: ToolMetadata, rootDir?: string): string {
+  const dist = getDist();
+  return getRuntimeToolSchemaPath(tool.filePath, dist, rootDir ?? process.cwd());
+}
+
+/**
  * 动态加载 tool 的 zod.js schema 模块
  *
  * 与 [loadToolModule](./loadToolModule.md) 对称——一个加载 handler.js（tool 函数），
@@ -59,8 +73,7 @@ export async function loadToolSchema(
   if (!tool.inputTypeName) return undefined;
 
   const schemaName = `${tool.inputTypeName}Schema`;
-  const dist = getDist();
-  const zodPath = getRuntimeToolSchemaPath(tool.filePath, dist, rootDir ?? process.cwd());
+  const zodPath = getToolSchemaPath(tool, rootDir);
 
   // zod.js 文件不存在 → 返回 undefined（schema 可选）
   if (!existsSync(zodPath)) return undefined;
