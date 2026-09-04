@@ -1,6 +1,6 @@
 # compileBuildRoutes
 
-一句话概括：build 模式逐文件编译 TypeScript 源码到 `dist/` 产物（`bundle: false`），额外启用 `define` + `minifySyntax` 做编译期常量替换与死分支删除。
+一句话概括：build 模式逐文件编译 TypeScript 源码到 `dist/` 产物（`bundle: false`），额外启用 `define` + `minifySyntax` 做编译期常量替换与死分支删除。（实现由 [compileSourceFiles](./compileSourceFiles.md) 提供，本模块为 build 模式薄封装：仅 `atomicWrite` / `production` 选项差异）
 
 ## 为什么需要
 

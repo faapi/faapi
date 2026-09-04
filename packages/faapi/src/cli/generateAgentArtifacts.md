@@ -43,7 +43,7 @@ agentRegistry 单例
 
 源码 `src/agents/researcher/handler.ts` → 产物 `dist/agents/researcher/handler.js`（dev 为 `.faapi/agents/researcher/handler.js`）。
 
-打平 `src/` 前缀 + dist 前缀 + `.ts` → `.js`，与 [generateToolArtifacts.toProdFilePath](./generateToolArtifacts.md) / [generateRoutes.toProdFilePath](./generateRoutes.md) 同构。
+打平 `src/` 前缀 + dist 前缀 + `.ts` → `.js`。实现为 [utils/prodPaths.toProdFilePath](../utils/prodPaths.md)（路由/tool/agent 清单生成的单一来源）。
 
 ### undefined 字段处理
 

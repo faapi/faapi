@@ -20,6 +20,7 @@ import { clearAgentHandleFactory } from '../injection/agentHandle';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { FaapiConfig } from '../config/configTypes';
+import { ROUTE_PATTERNS } from '../utils/prodPaths';
 
 export interface InjectOptions {
   method?: string;
@@ -46,7 +47,6 @@ const TOOLS_FILE = 'faapi-tools.js';
 /** agent 清单文件名（build/dev 启动时生成，可选产物——无 agent 的项目不生成） */
 const AGENTS_FILE = 'faapi-agents.js';
 /** 路由源码目录（写死为 src，路由 .ts 文件位于 src/api/ 下） */
-const PATTERNS = ['src/api/**/*.ts'];
 
 /**
  * 加载 faapi-tools.js 并水合到 toolRegistry（单例）
@@ -542,7 +542,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   const ctx: AppContext = {
     rootDir,
     dist,
-    patterns: PATTERNS,
+    patterns: ROUTE_PATTERNS,
     server,
     routesRef,
     config,

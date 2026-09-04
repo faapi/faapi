@@ -47,7 +47,7 @@
 
 | 函数 | 说明 |
 |------|------|
-| `toProdExtension(filePath)` | 源文件后缀转产物后缀：`.ts`/`.tsx`/`.jsx` → `.js`，其余原样 |
+| `toProdExtension(filePath)` | 源文件后缀转产物后缀：`.ts`/`.tsx`/`.jsx` → `.js`，其余原样（实现位于 [utils/prodPaths.ts](../utils/prodPaths.md)，本模块兼容 re-export） |
 | `createAliasPlugin(config)` | 构造 esbuild `Plugin`，重写相对 specifier + 别名 specifier |
 | `buildAliasPlugins(rootDir)` | 读 tsconfig 并构造插件数组（始终返回含本插件，相对路径重写不依赖 tsconfig） |
 

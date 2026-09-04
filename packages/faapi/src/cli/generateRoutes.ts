@@ -7,6 +7,7 @@ import type {
   WsRouteRecord,
 } from '../router/routeTypes';
 import type { HttpMethod } from '../router/constants';
+import { toProdFilePath } from '../utils/prodPaths';
 
 /**
  * 序列化路由记录（可写入 JS 模块，无函数引用）
@@ -37,24 +38,6 @@ export interface SerializedWsRouteRecord {
 export interface SerializedRouteManifest {
   routes: SerializedRouteRecord[];
   wsRoutes: SerializedWsRouteRecord[];
-}
-
-/**
- * 把源码 filePath（src/api/hello/handler.ts）转为产物路径（dist/api/hello/handler.js）
- *
- * 产物结构打平 src/ 前缀：去掉 `src/`，加 dist 前缀，.ts → .js。
- *
- * @param filePath 源码相对路径
- * @param dist 产物目录（dist 或 .faapi）
- */
-function toProdFilePath(filePath: string, dist: string): string {
-  let rel = filePath.replace(/\\/g, '/');
-  // 去掉 src/ 前缀（打平产物结构）
-  if (rel.startsWith('src/')) {
-    rel = rel.slice(4);
-  }
-  const jsPath = rel.replace(/\.ts$/, '.js');
-  return jsPath.startsWith(`${dist}/`) ? jsPath : `${dist}/${jsPath}`;
 }
 
 /**

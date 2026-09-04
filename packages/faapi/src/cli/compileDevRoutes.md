@@ -1,6 +1,6 @@
 # compileDevRoutes
 
-一句话概括：dev 模式逐文件编译 TypeScript 源码到 `.faapi/` 产物（`bundle: false`），支持全量编译与增量编译，配合原子写避免 watch 期间运行时读到半成品产物。
+一句话概括：dev 模式逐文件编译 TypeScript 源码到 `.faapi/` 产物（`bundle: false`），支持全量编译与增量编译，配合原子写避免 watch 期间运行时读到半成品产物。（实现由 [compileSourceFiles](./compileSourceFiles.md) 提供，本模块为 dev 模式薄封装：仅 `atomicWrite` / `production` 选项差异）
 
 ## 为什么需要
 

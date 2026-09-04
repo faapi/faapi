@@ -14,13 +14,13 @@ import { loadEnv } from './loadEnv';
 import { startWatcher } from './watcher';
 import { createDevApp } from './createDevApp';
 import { setDevOnDemandEnabled, setDevDist } from './compileOnDemand';
+import { ROUTE_PATTERNS } from '../utils/prodPaths';
 
 /** dev 模式产物目录（固定为 .faapi，不可修改） */
 const DEV_DIST = '.faapi';
 /** 路由清单文件名 */
 const ROUTES_FILE = 'faapi-routes.js';
 /** 路由源码目录（写死为 src，路由 .ts 文件位于 src/api/ 下） */
-const PATTERNS = ['src/api/**/*.ts'];
 
 /** dev 命令选项（来自 CLI 参数） */
 export interface DevCommandOptions {
@@ -80,7 +80,7 @@ export async function devCommand(options?: DevCommandOptions): Promise<void> {
 
   // 4. 生成路由清单 + schema 文件（scanRoutes 不 import，仅读源码 + 正则提取方法名）
   console.log('- Generating route manifest and schema...');
-  await generateRouteArtifacts(rootDir, PATTERNS, devDist);
+  await generateRouteArtifacts(rootDir, ROUTE_PATTERNS, devDist);
 
   // 5. 生成 tool 清单（scanTools 不 import，仅读源码 + 正则提取函数名）
   //    按需模式跳过 zod.js 生成——首次请求时按需生成（与路由 schema 策略一致）

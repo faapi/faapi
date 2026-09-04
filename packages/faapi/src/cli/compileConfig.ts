@@ -2,30 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { Plugin } from 'esbuild';
 import { buildAliasPlugins, resolveRelativeSpecifier } from './aliasPlugin';
-
-/**
- * 规范化路径为 realpath（处理 macOS /tmp → /private/tmp 等符号链接场景）
- *
- * 目录不存在时回退到原路径（不抛错），保证调用方逻辑稳定。
- */
-function toRealPath(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
-/**
- * 判断 filePath 是否位于 dir 目录下（不依赖路径前缀字符串比较，兼容符号链接规范化差异）
- *
- * 基于 `path.relative`：相对路径不以 `..` 开头且非绝对路径时视为位于 dir 下。
- * 调用前应先用 `toRealPath` 规范化两侧路径，确保前缀一致。
- */
-function isInsideDir(filePath: string, dir: string): boolean {
-  const rel = path.relative(dir, filePath);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-}
+import { isInsideDir, toProdExtension, toRealPath } from '../utils/prodPaths';
 
 /**
  * 基础配置文件查找顺序（与 loadConfig 保持一致）
@@ -44,16 +21,6 @@ function findBaseConfig(rootDir: string): string | null {
     }
   }
   return null;
-}
-
-/**
- * 源文件后缀 → 产物后缀（.ts/.tsx/.jsx → .js，其余原样）
- */
-function toProdExtension(filePath: string): string {
-  if (filePath.endsWith('.ts')) return filePath.slice(0, -3) + '.js';
-  if (filePath.endsWith('.tsx')) return filePath.slice(0, -4) + '.js';
-  if (filePath.endsWith('.jsx')) return filePath.slice(0, -4) + '.js';
-  return filePath;
 }
 
 /**

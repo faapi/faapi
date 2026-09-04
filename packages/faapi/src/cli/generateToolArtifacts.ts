@@ -5,6 +5,8 @@ import type { ToolManifestList } from '../tools/toolTypes';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import { extractToolMetadata } from '../ast/extractToolMetadata';
 import { createPrograms } from '../ast/createProgram';
+import { toProdFilePath } from '../utils/prodPaths';
+import { getSchemaOutputPath } from './generateSchemaFiles';
 import {
   extractTypeInfo,
   createLazyTypeResolver,
@@ -64,71 +66,16 @@ export interface ToolSchemaSource {
 const TOOLS_FILE = 'faapi-tools.js';
 
 /**
- * 源文件路径 → tool zod.js 产物路径
+ * tool zod.js 输出路径 / 运行时路径计算
  *
- * 每个 tool handler 目录下生成一个 `zod.js`(与 `handler.js` 同级,文件名固定为 `zod.js`):
- * - `src/tools/weather/handler.ts` → `<dist>/tools/weather/zod.js`
- * - `src/tools/web-search/handler.ts` → `<dist>/tools/web-search/zod.js`
- *
- * 路径计算与 [getSchemaOutputPath](./generateSchemaFiles.ts) 一致——剥离 `src/` 前缀打平产物结构,
- * basename 固定为 `zod.js`(与 handler.js 同级)。
- *
- * @param sourceFile 源文件相对路径(相对 rootDir,如 `src/tools/weather/handler.ts`)
- * @param dist 输出目录(如 `dist` 或 `.faapi`)
- * @param rootDir 项目根目录
+ * 与路由 schema 的路径规则完全一致（strip src/ 前缀 + dist + 固定 zod.js 文件名，
+ * 见 generateSchemaFiles.ts 的实现），此处别名 re-export 保持 tool 侧语义命名。
+ * 此前两份逐字同构实现已合并。
  */
-export function getToolSchemaOutputPath(sourceFile: string, dist: string, rootDir: string): string {
-  let rel = sourceFile.replace(/\\/g, '/');
-  if (rel.startsWith('src/')) {
-    rel = rel.slice(4);
-  }
-  const idx = rel.lastIndexOf('/');
-  const relDir = idx >= 0 ? rel.slice(0, idx) : '';
-  return path.resolve(rootDir, dist, relDir, 'zod.js');
-}
-
-/**
- * 运行时从 tool.filePath(产物形式)计算对应 zod.js 绝对路径
- *
- * 与 [getRuntimeSchemaPath](./generateSchemaFiles.ts) 同构,统一处理 dev/prod 两种模式:
- * - dev:filePath 是源码路径(`src/...`),strip `src/` 前缀 + join dist
- * - prod:filePath 是产物路径(`<dist>/...`),strip `<dist>/` 前缀 + join dist
- *
- * basename 固定为 `zod.js`(与 handler.js 同级)。
- *
- * @param filePath tool.filePath(dev 为源码路径,prod 为产物路径)
- * @param dist 输出目录(如 `dist` 或 `.faapi`)
- * @param rootDir 项目根目录
- */
-export function getRuntimeToolSchemaPath(filePath: string, dist: string, rootDir: string): string {
-  let rel = filePath.replace(/\\/g, '/');
-  if (rel.startsWith('src/')) {
-    rel = rel.slice(4);
-  } else if (rel.startsWith(`${dist}/`)) {
-    rel = rel.slice(dist.length + 1);
-  }
-  const idx = rel.lastIndexOf('/');
-  const relDir = idx >= 0 ? rel.slice(0, idx) : '';
-  return path.resolve(rootDir, dist, relDir, 'zod.js');
-}
-
-/**
- * 把源码 filePath(`src/tools/weather/handler.ts`)转为产物路径(`<dist>/tools/weather/handler.js`)
- *
- * 产物结构打平 `src/` 前缀:去掉 `src/`,加 dist 前缀,`.ts` → `.js`。
- *
- * 与 [generateRoutes.toProdFilePath](./generateRoutes.ts) 同构,但不强制加 dist 前缀
- * (若 filePath 已是 `<dist>/...` 形式则保持)。
- */
-function toProdFilePath(filePath: string, dist: string): string {
-  let rel = filePath.replace(/\\/g, '/');
-  if (rel.startsWith('src/')) {
-    rel = rel.slice(4);
-  }
-  const jsPath = rel.replace(/\.ts$/, '.js');
-  return jsPath.startsWith(`${dist}/`) ? jsPath : `${dist}/${jsPath}`;
-}
-
+export {
+  getSchemaOutputPath as getToolSchemaOutputPath,
+  getRuntimeSchemaPath as getRuntimeToolSchemaPath,
+} from './generateSchemaFiles';
 /**
  * 序列化 tool 清单为可写入 JS 模块的结构
  *
@@ -411,7 +358,7 @@ export async function generateToolArtifacts(
   const fileEntries: { outputPath: string; source: string }[] = [];
   for (const [filePath, fileSources] of sourcesByFile) {
     const relFile = path.relative(rootDir, filePath).replace(/\\/g, '/');
-    const outputPath = getToolSchemaOutputPath(relFile, dist, rootDir);
+    const outputPath = getSchemaOutputPath(relFile, dist, rootDir);
     const resolver = resolversByFile.get(filePath);
 
     // 计算 zod.js 所在目录相对 dist 的路径(用于 import helpers)

@@ -212,6 +212,8 @@ dev 启动时 `generateToolArtifacts(skipSchema: true)` 只生成 `faapi-tools.j
 - [generateZodSchema](../ast/generateZodSchema.md) — RuntimeType → zod schema 代码
 - [createProgram](../ast/createProgram.md) — TypeScript Program（带缓存，批量走 `createPrograms` 共享）
 - [extractHandlerTypes](../ast/extractHandlerTypes.md) — `extractTypeInfo` / `createLazyTypeResolver` 类型提取（惰性解析）
+- [generateSchemaFiles.ts](./generateSchemaFiles.md) — `getToolSchemaOutputPath` / `getRuntimeToolSchemaPath` 为其同规则函数的别名 re-export
+- [../utils/prodPaths.md](../utils/prodPaths.md) — `toProdFilePath` 产物路径转换（单一来源）
 - [generateRoutes](./generateRoutes.md) — `faapi-routes.js` 路由清单序列化（与本模块同构）
 - [compileOnDemand](./compileOnDemand.md) — dev 按需编译/生成（阶段 1.4 复用）
 - [toolRegistry](../injection/toolRegistry.md) — 运行时 tool 注册表（消费水合后的 `ToolMetadata[]`）

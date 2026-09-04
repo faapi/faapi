@@ -4,6 +4,7 @@ import type { AgentManifestList } from '../agents/agentTypes';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import { extractAgentMetadata } from '../ast/extractAgentMetadata';
 import { createPrograms } from '../ast/createProgram';
+import { toProdFilePath } from '../utils/prodPaths';
 
 /**
  * 序列化的 agent manifest 记录（可写入 JS 模块，无函数引用）
@@ -42,23 +43,6 @@ export interface SerializedAgentRecord {
  * faapi-agents.js 文件名（与 faapi-routes.js / faapi-tools.js 同构）
  */
 const AGENTS_FILE = 'faapi-agents.js';
-
-/**
- * 把源码 filePath（`src/agents/researcher/handler.ts`）转为产物路径（`<dist>/agents/researcher/handler.js`）
- *
- * 产物结构打平 `src/` 前缀：去掉 `src/`，加 dist 前缀，`.ts` → `.js`。
- *
- * 与 [generateToolArtifacts.toProdFilePath](./generateToolArtifacts.md) 同构，
- * 区别仅在于 tool 在 `tools/` 子路径，agent 在 `agents/` 子路径。
- */
-function toProdFilePath(filePath: string, dist: string): string {
-  let rel = filePath.replace(/\\/g, '/');
-  if (rel.startsWith('src/')) {
-    rel = rel.slice(4);
-  }
-  const jsPath = rel.replace(/\.ts$/, '.js');
-  return jsPath.startsWith(`${dist}/`) ? jsPath : `${dist}/${jsPath}`;
-}
 
 /**
  * 序列化 agent 清单为可写入 JS 模块的结构

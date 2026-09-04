@@ -2,19 +2,11 @@ import type { Plugin } from 'esbuild';
 import path from 'node:path';
 import fs from 'node:fs';
 import { resolveAlias } from '../utils/resolveAlias';
+import { APP_DIR, isInsideDir, toProdExtension, toRealPath } from '../utils/prodPaths';
 import { readTsconfig, type TsconfigPathsConfig } from '../utils/readTsconfig';
 
-/**
- * 源文件后缀 → 产物后缀
- *
- * .ts/.tsx/.jsx → .js；.mjs/.cjs/.js 保持。
- */
-export function toProdExtension(filePath: string): string {
-  if (filePath.endsWith('.ts')) return filePath.slice(0, -3) + '.js';
-  if (filePath.endsWith('.tsx')) return filePath.slice(0, -4) + '.js';
-  if (filePath.endsWith('.jsx')) return filePath.slice(0, -4) + '.js';
-  return filePath;
-}
+// 兼容 re-export：toProdExtension 此前由本模块导出
+export { toProdExtension };
 
 /**
  * 把候选源文件路径转为产物 import 路径（相对 importer，POSIX 风格，带 .js 后缀）
@@ -26,40 +18,6 @@ function toProdImportPath(sourceFile: string, importer: string): string {
   if (!rel.startsWith('.')) rel = './' + rel;
   return toProdExtension(rel);
 }
-
-/**
- * 规范化路径为 realpath（处理 macOS /tmp → /private/tmp 等符号链接场景）
- *
- * 目录不存在时回退到原路径（不抛错），保证调用方逻辑稳定。
- */
-function toRealPath(p: string): string {
-  try {
-    return fs.realpathSync(p);
-  } catch {
-    return p;
-  }
-}
-
-/**
- * 判断 filePath 是否位于 dir 目录下（不依赖路径前缀字符串比较，兼容符号链接规范化差异）
- *
- * 基于 `path.relative`：相对路径不以 `..` 开头且非绝对路径时视为位于 dir 下。
- * 调用前应先用 `toRealPath` 规范化两侧路径，确保前缀一致。
- */
-function isInsideDir(filePath: string, dir: string): boolean {
-  const rel = path.relative(dir, filePath);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-}
-
-/**
- * 路由源码目录（写死为 src）
- *
- * 用于 config 文件（位于 rootDir，不在 src 下）引用 src 内模块时的前缀剥离：
- * - 源文件 `<rootDir>/src/lib/errors.ts` → 产物 `dist/lib/errors.js`
- * - config 产物位于 `dist/faapi.config.js`（dist 根）
- * - import 路径相对 dist 根：`./lib/errors.js`
- */
-const APP_DIR = 'src';
 
 /**
  * 把 src 下的源文件路径转为剥离 src/ 前缀的产物 import 路径（POSIX 风格，带 .js 后缀）

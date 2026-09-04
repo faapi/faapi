@@ -10,6 +10,7 @@ import { generateAgentArtifacts } from './generateAgentArtifacts';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { compileBuildRoutes } from './compileBuildRoutes';
+import { ROUTE_PATTERNS } from '../utils/prodPaths';
 import { compileConfig } from './compileConfig';
 import { loadConfig } from '../config/loadConfig';
 import path from 'node:path';
@@ -18,7 +19,6 @@ import fs from 'node:fs';
 /** build 模式默认产物目录 */
 const DEFAULT_DIST = 'dist';
 /** 路由源码目录（写死为 src，路由 .ts 文件位于 src/api/ 下） */
-const PATTERNS = ['src/api/**/*.ts'];
 
 /**
  * 构建命令选项
@@ -96,7 +96,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
 
   // 3. 扫描路由（扫描源码 .ts 文件列表，但 import 产物 .js 拿方法名）
   console.log('\n[3/8] Scanning routes...');
-  const { routes, wsRoutes } = await scanRoutes(rootDir, PATTERNS, outdir);
+  const { routes, wsRoutes } = await scanRoutes(rootDir, ROUTE_PATTERNS, outdir);
   const sorted = sortRoutes(routes);
   console.log(`  Found ${sorted.length} routes, ${wsRoutes.length} WS routes`);
 

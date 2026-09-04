@@ -7,6 +7,7 @@ import { filePathToUrlPath, extractParamNames, isCatchAllSegment } from './parse
 import { loadMergedMiddlewares } from '../middleware/loadMiddlewares';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
+import { toProdFilePath } from '../utils/prodPaths';
 
 /**
  * 匹配源码中导出的 HTTP 方法或 WS 函数
@@ -99,21 +100,6 @@ function collectMiddlewarePaths(routeFilePath: string, rootDir: string, dist?: s
   // paths 是从路由目录向上收集的，需反转为根在前
   paths.reverse();
   return paths;
-}
-
-/**
- * 把源码 filePath（如 src/api/hello/handler.ts）转为产物相对路径（如 .faapi/api/hello/handler.js）
- *
- * 与 generateRoutes.toProdFilePath 一致逻辑（去 src/ 前缀 + dist 前缀 + .ts → .js），
- * 抽到此处供 collectMiddlewarePaths 复用。
- */
-function toProdFilePath(filePath: string, dist: string): string {
-  let rel = filePath.replace(/\\/g, '/');
-  if (rel.startsWith('src/')) {
-    rel = rel.slice(4);
-  }
-  const jsPath = rel.replace(/\.ts$/, '.js');
-  return jsPath.startsWith(`${dist}/`) ? jsPath : `${dist}/${jsPath}`;
 }
 
 /**

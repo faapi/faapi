@@ -32,7 +32,7 @@ faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为
 
 ### 产物路径打平 src 前缀
 
-`toProdFilePath` 将源码相对路径转为产物相对路径时，会剥离 `src/` 前缀，与 `compileDevRoutes` / `compileBuildRoutes` 的 `outbase` 设置一致：
+`toProdFilePath`（实现位于 [utils/prodPaths.ts](../utils/prodPaths.md)）将源码相对路径转为产物相对路径时，会剥离 `src/` 前缀，与 `compileDevRoutes` / `compileBuildRoutes` 的 `outbase` 设置一致：
 
 - 源码：`src/api/hello/handler.ts`
 - 产物：`<dist>/api/hello/handler.js`（去掉 `src/` 前缀）
