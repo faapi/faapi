@@ -585,6 +585,87 @@ describe('createOpenAIProvider', () => {
     });
   });
 
+  describe('stream — CRLF 行尾兼容', () => {
+    it('CRLF 事件分隔（\\r\\n\\r\\n）:正常推送 deltaContent 并识别 [DONE]', async () => {
+      fetchMock.mockResolvedValue(
+        sseResponse([
+          'data: {"choices":[{"delta":{"content":"Hello"}}]}\r\n\r\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\r\n\r\n',
+          'data: [DONE]\r\n\r\n',
+        ]),
+      );
+
+      const provider = createOpenAIProvider(baseConfig);
+      const chunks = [];
+      for await (const chunk of provider.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+        chunks.push(chunk);
+      }
+
+      const contents = chunks.map((c) => c.deltaContent ?? '').join('');
+      expect(contents).toBe('Hello');
+      expect(chunks[chunks.length - 1].finishReason).toBe('stop');
+    });
+
+    it('CR 事件分隔（\\r\\r,SSE 规范允许）:正常解析', async () => {
+      fetchMock.mockResolvedValue(
+        sseResponse([
+          'data: {"choices":[{"delta":{"content":"A"}}]}\r\r',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\r\r',
+          'data: [DONE]\r\r',
+        ]),
+      );
+
+      const provider = createOpenAIProvider(baseConfig);
+      const chunks = [];
+      for await (const chunk of provider.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+        chunks.push(chunk);
+      }
+
+      const contents = chunks.map((c) => c.deltaContent ?? '').join('');
+      expect(contents).toBe('A');
+      expect(chunks[chunks.length - 1].finishReason).toBe('stop');
+    });
+
+    it('混合行尾（LF 与 CRLF 混用）:正常解析', async () => {
+      fetchMock.mockResolvedValue(
+        sseResponse([
+          'data: {"choices":[{"delta":{"content":"X"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"Y"}}]}\r\n\r\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\r\n',
+          'data: [DONE]\r\n',
+        ]),
+      );
+
+      const provider = createOpenAIProvider(baseConfig);
+      const chunks = [];
+      for await (const chunk of provider.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+        chunks.push(chunk);
+      }
+
+      const contents = chunks.map((c) => c.deltaContent ?? '').join('');
+      expect(contents).toBe('XY');
+      expect(chunks[chunks.length - 1].finishReason).toBe('stop');
+    });
+
+    it('CRLF 多行事件（注释行 + data 行）:注释被跳过，data 正常解析', async () => {
+      fetchMock.mockResolvedValue(
+        sseResponse([
+          ': keepalive\r\ndata: {"choices":[{"delta":{"content":"A"}}]}\r\n\r\n',
+          'data: [DONE]\r\n\r\n',
+        ]),
+      );
+
+      const provider = createOpenAIProvider(baseConfig);
+      const chunks = [];
+      for await (const chunk of provider.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+        chunks.push(chunk);
+      }
+
+      const contents = chunks.map((c) => c.deltaContent ?? '').join('');
+      expect(contents).toBe('A');
+    });
+  });
+
   describe('stream — 错误路径', () => {
     it('HTTP 错误抛 LLMProviderError', async () => {
       fetchMock.mockResolvedValue(new Response('unauthorized', { status: 401 }));

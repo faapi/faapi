@@ -37,7 +37,7 @@ OpenAI 的 chat completions API 已成为事实标准——Anthropic、Google、
 
 1. 构造请求体（同 complete + `stream: true`）
 2. POST + 读 `response.body`（ReadableStream）
-3. 用 `TextDecoder` + 缓冲区解析 SSE：按 `\n\n` 分割事件，每行 `data: <json>` 或 `data: [DONE]`
+3. 用 `TextDecoder` + 缓冲区解析 SSE：按两个连续行结束符分割事件（SSE 规范允许 LF / CRLF / CR，兼容 CRLF 行尾的 OpenAI 兼容网关），每行 `data: <json>` 或 `data: [DONE]`
 4. 对每个 chunk：
    - `delta.content` → emit `{ deltaContent: chunk }`
    - `delta.tool_calls` → 按 `index` 累积 `id` / `function.name` / `function.arguments`（字符串拼接）

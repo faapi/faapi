@@ -137,11 +137,15 @@ export type TypeConstraint =
  * @param typeNode TypeScript 类型节点
  * @param checker  类型 checker（用于解析引用类型）
  * @param visited  防止递归循环
+ * @param bindings 泛型形参绑定（形参名 → 已解析的实参类型），解析泛型声明的
+ *                 类型体时传入；形参名在 resolveTypeReference 入口优先命中，
+ *                 遮蔽同名的真实类型声明
  */
 export function resolveTypeNode(
   typeNode: ts.TypeNode,
   checker?: ts.TypeChecker,
   visited: Set<string> = new Set(),
+  bindings: Map<string, RuntimeType> = new Map(),
 ): RuntimeType {
   const kind = typeNode.kind;
 
@@ -207,7 +211,7 @@ export function resolveTypeNode(
   if (ts.isArrayTypeNode(typeNode)) {
     return {
       kind: 'array',
-      element: resolveTypeNode(typeNode.elementType, checker, visited),
+      element: resolveTypeNode(typeNode.elementType, checker, visited, bindings),
     };
   }
 
@@ -216,7 +220,7 @@ export function resolveTypeNode(
     const elements: TupleElement[] = typeNode.elements.map((e) => {
       // 剩余元素：...T
       if (ts.isRestTypeNode(e)) {
-        const inner = resolveTypeNode(e.type, checker, visited);
+        const inner = resolveTypeNode(e.type, checker, visited, bindings);
         // ...T[] → 元素类型是 T 的数组元素
         if (inner.kind === 'array') {
           return { type: inner.element, optional: false, rest: true };
@@ -227,7 +231,7 @@ export function resolveTypeNode(
       // 命名元组成员：[name: string, age?: number]
       if (ts.isNamedTupleMember(e)) {
         return {
-          type: resolveTypeNode(e.type, checker, visited),
+          type: resolveTypeNode(e.type, checker, visited, bindings),
           optional: !!e.questionToken,
           rest: false,
         };
@@ -235,14 +239,14 @@ export function resolveTypeNode(
       // 可选元素：number?（无名称,有 ?）
       if (ts.isOptionalTypeNode(e)) {
         return {
-          type: resolveTypeNode(e.type, checker, visited),
+          type: resolveTypeNode(e.type, checker, visited, bindings),
           optional: true,
           rest: false,
         };
       }
       // 普通元素
       return {
-        type: resolveTypeNode(e, checker, visited),
+        type: resolveTypeNode(e, checker, visited, bindings),
         optional: false,
         rest: false,
       };
@@ -252,7 +256,7 @@ export function resolveTypeNode(
 
   // 联合类型：A | B
   if (ts.isUnionTypeNode(typeNode)) {
-    const members = typeNode.types.map((t) => resolveTypeNode(t, checker, visited));
+    const members = typeNode.types.map((t) => resolveTypeNode(t, checker, visited, bindings));
     return { kind: 'union', members };
   }
 
@@ -260,7 +264,7 @@ export function resolveTypeNode(
   if (ts.isIntersectionTypeNode(typeNode)) {
     const properties: PropertyType[] = [];
     for (const t of typeNode.types) {
-      const resolved = resolveTypeNode(t, checker, visited);
+      const resolved = resolveTypeNode(t, checker, visited, bindings);
       if (resolved.kind === 'object') {
         properties.push(...resolved.properties);
       }
@@ -270,7 +274,7 @@ export function resolveTypeNode(
 
   // 内联对象类型：{ name: string; age?: number }
   if (ts.isTypeLiteralNode(typeNode)) {
-    return resolveTypeLiteral(typeNode, checker, visited);
+    return resolveTypeLiteral(typeNode, checker, visited, bindings);
   }
 
   // keyof T — 用 checker 解析为字面量联合
@@ -281,12 +285,28 @@ export function resolveTypeNode(
   // readonly T（如 readonly string[] / readonly [T, U]）— 编译期约束，运行时不校验
   // 递归解析内部类型即可，等同于去掉 readonly 修饰符
   if (ts.isTypeOperatorNode(typeNode) && typeNode.operator === ts.SyntaxKind.ReadonlyKeyword) {
-    return resolveTypeNode(typeNode.type, checker, visited);
+    return resolveTypeNode(typeNode.type, checker, visited, bindings);
   }
 
   // 引用类型：Date / 自定义 interface / Array<T> / Record<K,V> / Partial<T> 等
   if (ts.isTypeReferenceNode(typeNode)) {
-    return resolveTypeReference(typeNode, checker, visited);
+    return resolveTypeReference(typeNode, checker, visited, bindings);
+  }
+
+  // interface extends 的 heritage 子句（ExpressionWithTypeArguments）
+  // 构造 TypeRefLike 视图（expression → typeName），复用 resolveTypeReference
+  // 解析（覆盖 Date / Array<T> / 自定义 interface 等全部分支）
+  if (ts.isExpressionWithTypeArguments(typeNode)) {
+    return resolveTypeReference(
+      {
+        getText: () => typeNode.getText(),
+        typeName: typeNode.expression as ts.EntityName,
+        typeArguments: typeNode.typeArguments,
+      },
+      checker,
+      visited,
+      bindings,
+    );
   }
 
   // 其他无法识别的语法节点
@@ -300,6 +320,7 @@ function resolveTypeLiteral(
   typeNode: ts.TypeLiteralNode,
   checker?: ts.TypeChecker,
   visited: Set<string> = new Set(),
+  bindings: Map<string, RuntimeType> = new Map(),
 ): RuntimeType {
   const properties: PropertyType[] = [];
 
@@ -309,7 +330,7 @@ function resolveTypeLiteral(
       const name = member.name.getText();
       const optional = !!member.questionToken;
       const type = member.type
-        ? resolveTypeNode(member.type, checker, visited)
+        ? resolveTypeNode(member.type, checker, visited, bindings)
         : { kind: 'any' as const };
       const constraints = extractConstraintsFromJsDoc(member, name);
       validateConstraints(constraints, type, name);
@@ -320,10 +341,10 @@ function resolveTypeLiteral(
     // 索引签名：[key: string]: T → 转为 record
     if (ts.isIndexSignatureDeclaration(member)) {
       const keyType = member.parameters[0]?.type
-        ? resolveTypeNode(member.parameters[0].type, checker, visited)
+        ? resolveTypeNode(member.parameters[0].type, checker, visited, bindings)
         : { kind: 'any' as const };
       const valueType = member.type
-        ? resolveTypeNode(member.type, checker, visited)
+        ? resolveTypeNode(member.type, checker, visited, bindings)
         : { kind: 'any' as const };
       return { kind: 'record', key: keyType, value: valueType };
     }
@@ -429,14 +450,36 @@ function resolveKeyOf(typeNode: ts.TypeOperatorNode, checker?: ts.TypeChecker): 
 }
 
 /**
+ * resolveTypeReference 所需的最小节点结构
+ *
+ * TypeReferenceNode 与 interface extends 的 heritage 节点（ExpressionWithTypeArguments）
+ * 均满足该结构——后者用 expression 充当 typeName，typeArguments 同名。
+ */
+interface TypeRefLike {
+  getText(): string;
+  typeName: ts.EntityName | ts.LeftHandSideExpression;
+  typeArguments?: readonly ts.TypeNode[];
+}
+
+/**
  * 解析类型引用（Date / 自定义 interface / Array<T> / Record<K,V> 等）
+ *
+ * 泛型形参优先：typeName 命中 bindings 时直接返回绑定的实参类型
+ * （泛型声明体内部引用形参的场景，形参遮蔽同名真实类型）。
  */
 function resolveTypeReference(
-  typeNode: ts.TypeReferenceNode,
+  typeNode: TypeRefLike,
   checker?: ts.TypeChecker,
   visited: Set<string> = new Set(),
+  bindings: Map<string, RuntimeType> = new Map(),
 ): RuntimeType {
   const typeName = typeNode.typeName.getText();
+
+  // 泛型形参命中：直接返回已绑定的实参类型
+  const bound = bindings.get(typeName);
+  if (bound) {
+    return bound;
+  }
 
   // Date 类型
   if (typeName === 'Date') {
@@ -450,7 +493,7 @@ function resolveTypeReference(
   ) {
     return {
       kind: 'array',
-      element: resolveTypeNode(typeNode.typeArguments[0], checker, visited),
+      element: resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings),
     };
   }
 
@@ -458,8 +501,8 @@ function resolveTypeReference(
   if (typeName === 'Record' && typeNode.typeArguments?.length === 2) {
     return {
       kind: 'record',
-      key: resolveTypeNode(typeNode.typeArguments[0], checker, visited),
-      value: resolveTypeNode(typeNode.typeArguments[1], checker, visited),
+      key: resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings),
+      value: resolveTypeNode(typeNode.typeArguments[1], checker, visited, bindings),
     };
   }
 
@@ -468,7 +511,7 @@ function resolveTypeReference(
     (typeName === 'Partial' || typeName === 'Required' || typeName === 'Readonly') &&
     typeNode.typeArguments?.length === 1
   ) {
-    const inner = resolveTypeNode(typeNode.typeArguments[0], checker, visited);
+    const inner = resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings);
     if (inner.kind === 'object' && typeName === 'Partial') {
       // Partial 所有字段变可选
       return {
@@ -481,7 +524,7 @@ function resolveTypeReference(
 
   // Pick<T, K> / Omit<T, K> — 解析 T 的字段，按 K 筛选/排除
   if ((typeName === 'Pick' || typeName === 'Omit') && typeNode.typeArguments?.length === 2) {
-    const innerType = resolveTypeNode(typeNode.typeArguments[0], checker, visited);
+    const innerType = resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings);
     if (innerType.kind !== 'object') {
       throw new SchemaExtractionError(
         typeNode.getText(),
@@ -491,7 +534,7 @@ function resolveTypeReference(
 
     // K 解析顺序：AST 字面量联合 → checker 解析（覆盖类型别名 / keyof T）
     const keyTypeNode = typeNode.typeArguments[1];
-    let keys = extractLiteralKeys(resolveTypeNode(keyTypeNode, checker, visited));
+    let keys = extractLiteralKeys(resolveTypeNode(keyTypeNode, checker, visited, bindings));
     if (keys === null) {
       keys = extractKeysFromChecker(keyTypeNode, checker);
     }
@@ -518,8 +561,8 @@ function resolveTypeReference(
     }
     return {
       kind: 'map',
-      key: resolveTypeNode(typeNode.typeArguments[0], checker, visited),
-      value: resolveTypeNode(typeNode.typeArguments[1], checker, visited),
+      key: resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings),
+      value: resolveTypeNode(typeNode.typeArguments[1], checker, visited, bindings),
     };
   }
 
@@ -533,7 +576,7 @@ function resolveTypeReference(
     }
     return {
       kind: 'set',
-      element: resolveTypeNode(typeNode.typeArguments[0], checker, visited),
+      element: resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings),
     };
   }
 
@@ -576,11 +619,25 @@ function resolveTypeReference(
       if (declaration) {
         // interface 声明
         if (ts.isInterfaceDeclaration(declaration)) {
-          return resolveInterfaceDeclaration(declaration, checker, visited);
+          return resolveInterfaceDeclaration(
+            declaration,
+            checker,
+            visited,
+            bindings,
+            typeNode.typeArguments,
+          );
         }
         // type 别名声明
         if (ts.isTypeAliasDeclaration(declaration)) {
-          return resolveTypeNode(declaration.type, checker, visited);
+          const declBindings = bindTypeParameters(
+            declaration.typeParameters,
+            typeNode.typeArguments,
+            bindings,
+            checker,
+            visited,
+            typeNode,
+          );
+          return resolveTypeNode(declaration.type, checker, visited, declBindings);
         }
         // enum 声明 → 字面量联合
         if (ts.isEnumDeclaration(declaration)) {
@@ -590,7 +647,14 @@ function resolveTypeReference(
         // 业务项目用 moduleResolution: Bundler + 无扩展名导入时,
         // checker 拿到的 symbol 是 ImportSpecifier(Alias),不是真实声明
         if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration)) {
-          const resolved = resolveImportAlias(typeNode, symbol, checker, visited);
+          const resolved = resolveImportAlias(
+            typeNode,
+            symbol,
+            checker,
+            visited,
+            bindings,
+            typeNode.typeArguments,
+          );
           if (resolved) return resolved;
         }
       }
@@ -598,6 +662,43 @@ function resolveTypeReference(
   }
 
   throw new SchemaExtractionError(typeNode.getText(), `无法解析的引用类型 "${typeName}"`);
+}
+
+/**
+ * 绑定泛型形参与实参，返回声明体解析用的 bindings
+ *
+ * - 实参表达式在调用方作用域解析（用 outerBindings，可引用外层形参）
+ * - 默认类型在声明方作用域解析（用正在构造的 bindings，可引用前面形参，如 `<T, U = T[]>`）
+ * - 实参与默认类型均缺失时抛 SchemaExtractionError（TS 本身也编译不过，防御性报错）
+ * - 声明无 typeParameters 时原样返回 outerBindings
+ */
+function bindTypeParameters(
+  typeParameters: readonly ts.TypeParameterDeclaration[] | undefined,
+  typeArguments: readonly ts.TypeNode[] | undefined,
+  outerBindings: Map<string, RuntimeType>,
+  checker: ts.TypeChecker | undefined,
+  visited: Set<string>,
+  errorNode: { getText(): string },
+): Map<string, RuntimeType> {
+  if (!typeParameters || typeParameters.length === 0) return outerBindings;
+
+  const bindings = new Map(outerBindings);
+  for (let i = 0; i < typeParameters.length; i++) {
+    const param = typeParameters[i];
+    if (!param) continue;
+    const arg = typeArguments?.[i];
+    if (arg) {
+      bindings.set(param.name.text, resolveTypeNode(arg, checker, visited, outerBindings));
+    } else if (param.default) {
+      bindings.set(param.name.text, resolveTypeNode(param.default, checker, visited, bindings));
+    } else {
+      throw new SchemaExtractionError(
+        errorNode.getText(),
+        `泛型参数 "${param.name.text}" 缺少类型实参（且无默认类型）`,
+      );
+    }
+  }
+  return bindings;
 }
 
 /**
@@ -619,10 +720,12 @@ function resolveTypeReference(
  * @returns RuntimeType 解析结果;无法解析返回 null(由调用方抛 SchemaExtractionError)
  */
 function resolveImportAlias(
-  typeNode: ts.TypeReferenceNode,
+  typeNode: TypeRefLike,
   symbol: ts.Symbol,
   checker: ts.TypeChecker,
   visited: Set<string>,
+  bindings: Map<string, RuntimeType> = new Map(),
+  typeArguments?: readonly ts.TypeNode[],
 ): RuntimeType | null {
   const typeName = typeNode.typeName.getText();
 
@@ -632,10 +735,18 @@ function resolveImportAlias(
     if (aliased && aliased.declarations && aliased.declarations.length > 0) {
       const decl = aliased.declarations[0];
       if (ts.isInterfaceDeclaration(decl)) {
-        return resolveInterfaceDeclaration(decl, checker, visited);
+        return resolveInterfaceDeclaration(decl, checker, visited, bindings, typeArguments);
       }
       if (ts.isTypeAliasDeclaration(decl)) {
-        return resolveTypeNode(decl.type, checker, visited);
+        const declBindings = bindTypeParameters(
+          decl.typeParameters,
+          typeArguments,
+          bindings,
+          checker,
+          visited,
+          typeNode,
+        );
+        return resolveTypeNode(decl.type, checker, visited, declBindings);
       }
       if (ts.isEnumDeclaration(decl)) {
         return resolveEnumDeclaration(decl);
@@ -664,10 +775,18 @@ function resolveImportAlias(
     const found = findTopLevelDecl(sourceFile, typeName);
     if (found) {
       if (found.kind === 'interface') {
-        return resolveInterfaceDeclaration(found.node, checker, visited);
+        return resolveInterfaceDeclaration(found.node, checker, visited, bindings, typeArguments);
       }
       if (found.kind === 'typeAlias') {
-        return resolveTypeNode(found.node.type, checker, visited);
+        const declBindings = bindTypeParameters(
+          found.node.typeParameters,
+          typeArguments,
+          bindings,
+          checker,
+          visited,
+          typeNode,
+        );
+        return resolveTypeNode(found.node.type, checker, visited, declBindings);
       }
       if (found.kind === 'enum') {
         return resolveEnumDeclaration(found.node);
@@ -744,21 +863,40 @@ function resolveEnumDeclaration(node: ts.EnumDeclaration): RuntimeType {
 }
 
 /**
- * 解析 interface 声明（含继承）
+ * 解析 interface 声明（含继承与泛型形参绑定）
+ *
+ * @param node interface 声明节点
+ * @param checker 类型 checker
+ * @param visited 防止递归循环
+ * @param outerBindings 外层泛型形参绑定（调用方作用域）
+ * @param typeArguments 本次引用携带的类型实参（如 `Base<string>` 的 [string]），
+ *                      与 node.typeParameters 按位置配对构造声明体 bindings
  */
 export function resolveInterfaceDeclaration(
   node: ts.InterfaceDeclaration,
   checker?: ts.TypeChecker,
   visited: Set<string> = new Set(),
+  outerBindings: Map<string, RuntimeType> = new Map(),
+  typeArguments?: readonly ts.TypeNode[],
 ): RuntimeType {
   const properties: PropertyType[] = [];
   const propMap = new Map<string, PropertyType>();
+
+  // 绑定本声明的泛型形参（声明体与 heritage 均在该作用域下解析）
+  const bindings = bindTypeParameters(
+    node.typeParameters,
+    typeArguments,
+    outerBindings,
+    checker,
+    visited,
+    node,
+  );
 
   // 处理继承的父接口
   for (const heritageClause of node.heritageClauses ?? []) {
     if (heritageClause.token === ts.SyntaxKind.ExtendsKeyword) {
       for (const expr of heritageClause.types) {
-        const parentType = resolveTypeNode(expr, checker, visited);
+        const parentType = resolveTypeNode(expr, checker, visited, bindings);
         if (parentType.kind === 'object') {
           for (const prop of parentType.properties) {
             propMap.set(prop.name, prop);
@@ -774,7 +912,7 @@ export function resolveInterfaceDeclaration(
       const name = member.name.getText();
       const optional = !!member.questionToken;
       const type = member.type
-        ? resolveTypeNode(member.type, checker, visited)
+        ? resolveTypeNode(member.type, checker, visited, bindings)
         : { kind: 'any' as const };
       const constraints = extractConstraintsFromJsDoc(member, name);
       validateConstraints(constraints, type, name);
@@ -786,10 +924,10 @@ export function resolveInterfaceDeclaration(
     // 索引签名 → record
     if (ts.isIndexSignatureDeclaration(member)) {
       const keyType = member.parameters[0]?.type
-        ? resolveTypeNode(member.parameters[0].type, checker, visited)
+        ? resolveTypeNode(member.parameters[0].type, checker, visited, bindings)
         : { kind: 'any' as const };
       const valueType = member.type
-        ? resolveTypeNode(member.type, checker, visited)
+        ? resolveTypeNode(member.type, checker, visited, bindings)
         : { kind: 'any' as const };
       return { kind: 'record', key: keyType, value: valueType };
     }

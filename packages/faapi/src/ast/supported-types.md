@@ -67,7 +67,8 @@ readonly 是 TypeScript 的编译期约束，运行时不产生校验语义，AS
 | `Map<K, V>` | `map` | JSON 序列化为 entries 数组 `[["k",v],...]`，运行时 `z.preprocess(coerceMap, z.map(...))` 还原 |
 | `Set<T>` | `set` | JSON 序列化为数组 `[item,...]`，运行时 `z.preprocess(coerceSet, z.set(...))` 还原 |
 | type 别名 | 递归解析 | |
-| interface（含 `extends` 继承） | `object` | 合并父接口属性 |
+| interface（含 `extends` 继承） | `object` | 合并父接口属性；支持多继承与多级继承 |
+| 泛型 interface / type 别名 | 实参绑定后递归解析 | `Box<string>` 按位置绑定实参；支持默认类型（`<T = string>`）；形参遮蔽同名真实类型；实参缺失且无默认时抛错 |
 | `enum`（字符串/数值枚举） | `union` | 字面量联合；隐式数值枚举递增 |
 | 自引用 / 循环引用 | `ref` | 由 `generateZodSchema` 用 `z.lazy(() => ...)` 处理 |
 | 跨文件类型引用（import） | checker 内联 | 每个 `zod.js` 自包含，无需跨文件 import |

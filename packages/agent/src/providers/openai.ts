@@ -297,11 +297,13 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // SSE 事件以 \n\n 分隔
-        let sep: number;
-        while ((sep = buffer.indexOf('\n\n')) >= 0) {
-          const eventStr = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
+        // SSE 事件以两个连续行结束符分隔（规范允许 LF / CRLF / CR）
+        while (true) {
+          const boundary = findSseEventBoundary(buffer);
+          if (!boundary) break;
+          const [start, length] = boundary;
+          const eventStr = buffer.slice(0, start);
+          buffer = buffer.slice(start + length);
 
           const data = extractSSEData(eventStr);
           if (data === null) continue; // 注释行 / 心跳行 / 非 data 行
@@ -448,7 +450,8 @@ function mapUsage(u?: {
 /** 从 SSE 事件块提取 data: 行内容(多行用 \n 拼接) */
 function extractSSEData(event: string): string | null {
   const dataLines: string[] = [];
-  for (const line of event.split('\n')) {
+  // SSE 规范允许 LF / CRLF / CR 三种行结束符
+  for (const line of event.split(/\r\n|\n|\r/)) {
     // 跳过空行 / 注释行 / 心跳行
     if (line === '' || line.startsWith(':')) continue;
     if (line.startsWith('data:')) {
@@ -458,6 +461,44 @@ function extractSSEData(event: string): string | null {
   }
   if (dataLines.length === 0) return null;
   return dataLines.join('\n');
+}
+
+/**
+ * 查找 buffer 中下一个 SSE 事件边界（两个连续行结束符）
+ *
+ * SSE 规范（WHATWG Server-Sent Events）的行结束符为 LF、CRLF 或 CR，
+ * 事件以两个连续行结束符分隔。部分 OpenAI 兼容网关使用 CRLF 行尾，
+ * 仅按 `\n\n` 分割会导致事件永不切分、`[DONE]` 比较失败。
+ *
+ * @returns [边界起始索引, 边界字符长度]；buffer 中无完整事件边界时返回 null
+ */
+function findSseEventBoundary(buffer: string): [number, number] | null {
+  let eolCount = 0;
+  let boundaryStart = -1;
+  for (let i = 0; i < buffer.length; ) {
+    const ch = buffer[i];
+    let eolLen = 0;
+    if (ch === '\n') {
+      eolLen = 1;
+    } else if (ch === '\r') {
+      eolLen = buffer[i + 1] === '\n' ? 2 : 1;
+    }
+    if (eolLen === 0) {
+      // 非行结束符字符：重置计数
+      eolCount = 0;
+      i++;
+      continue;
+    }
+    eolCount++;
+    if (eolCount === 1) {
+      boundaryStart = i;
+    } else {
+      // 第二个连续行结束符结束 → 事件边界
+      return [boundaryStart, i + eolLen - boundaryStart];
+    }
+    i += eolLen;
+  }
+  return null;
 }
 
 /** 累积 tool call chunk 到按 index 的 Map */

@@ -87,6 +87,269 @@ export interface POSTBody {
     expect(info).toBeNull();
   });
 
+  describe('interface extends 继承', () => {
+    it('单继承：合并父接口属性', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Base {
+  id: number;
+  createdAt: string;
+}
+
+export interface GETQuery extends Base {
+  page: number;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      expect(info!.runtimeType.kind).toBe('object');
+      const names = info!.properties.map((p) => p.name).sort();
+      expect(names).toEqual(['createdAt', 'id', 'page']);
+    });
+
+    it('子接口同名字段覆盖父接口', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Base {
+  id: string;
+  page: number;
+}
+
+export interface GETQuery extends Base {
+  id: number;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const id = info!.properties.find((p) => p.name === 'id');
+      expect(id).toEqual({ name: 'id', type: { kind: 'number' }, optional: false });
+      expect(info!.properties).toHaveLength(2);
+    });
+
+    it('多继承：合并全部父接口属性', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Paged {
+  page: number;
+}
+
+export interface Filtered {
+  keyword: string;
+}
+
+export interface GETQuery extends Paged, Filtered {
+  extra: boolean;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const names = info!.properties.map((p) => p.name).sort();
+      expect(names).toEqual(['extra', 'keyword', 'page']);
+    });
+
+    it('可选字段继承', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Base {
+  name?: string;
+}
+
+export interface GETQuery extends Base {
+  page: number;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const name = info!.properties.find((p) => p.name === 'name');
+      expect(name).toEqual({ name: 'name', type: { kind: 'string' }, optional: true });
+    });
+
+    it('泛型父接口：extends Base<T> 绑定类型参数', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Identifiable<T> {
+  id: T;
+}
+
+export interface GETQuery extends Identifiable<string> {
+  page: number;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const id = info!.properties.find((p) => p.name === 'id');
+      expect(id).toEqual({ name: 'id', type: { kind: 'string' }, optional: false });
+    });
+
+    it('间接多级继承：A extends B extends C', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A {
+  a: string;
+}
+
+export interface B extends A {
+  b: number;
+}
+
+export interface C extends B {
+  c: boolean;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'C');
+
+      expect(info).not.toBeNull();
+      const names = info!.properties.map((p) => p.name).sort();
+      expect(names).toEqual(['a', 'b', 'c']);
+    });
+
+    it('循环继承：返回 ref 而非无限递归', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A extends B {
+  a: string;
+}
+
+export interface B extends A {
+  b: number;
+}
+
+export interface GETQuery extends A {
+  page: number;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      // 循环继承在 TS 中本就非法，AST 层面应通过 visited 防护返回 ref，不无限递归
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+      expect(info).not.toBeNull();
+      const a = info!.properties.find((p) => p.name === 'a');
+      expect(a).toBeDefined();
+    });
+  });
+
+  describe('泛型类型（类型实参绑定）', () => {
+    it('泛型 type alias：字段引用 Box<string> 绑定 T 为 string', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Box<T> {
+  value: T;
+}
+
+export interface GETQuery {
+  box: Box<string>;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const box = info!.properties.find((p) => p.name === 'box');
+      expect(box?.type).toEqual({
+        kind: 'object',
+        properties: [{ name: 'value', type: { kind: 'string' }, optional: false }],
+      });
+    });
+
+    it('泛型 type alias 嵌套容器：Box<Map<string, T>> 绑定嵌套形参', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Box<T> {
+  data: Map<string, T>;
+}
+
+export interface GETQuery {
+  box: Box<number>;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const box = info!.properties.find((p) => p.name === 'box');
+      expect(box?.type).toEqual({
+        kind: 'object',
+        properties: [
+          {
+            name: 'data',
+            type: { kind: 'map', key: { kind: 'string' }, value: { kind: 'number' } },
+            optional: false,
+          },
+        ],
+      });
+    });
+
+    it('泛型 type alias 默认形参：裸引用时使用默认类型', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Page<T = string> {
+  data: T;
+}
+
+export interface GETQuery {
+  page: Page;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const page = info!.properties.find((p) => p.name === 'page');
+      expect(page?.type).toEqual({
+        kind: 'object',
+        properties: [{ name: 'data', type: { kind: 'string' }, optional: false }],
+      });
+    });
+
+    it('泛型形参遮蔽同名全局类型', () => {
+      // 同文件存在名为 T 的真实 interface，形参 T 应遮蔽它
+      writeFileSync(
+        tempFile,
+        `export interface T {
+  global: string;
+}
+
+export interface Box<T> {
+  value: T;
+}
+
+export interface GETQuery {
+  a: Box<number>;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const a = info!.properties.find((p) => p.name === 'a');
+      expect(a?.type).toEqual({
+        kind: 'object',
+        properties: [{ name: 'value', type: { kind: 'number' }, optional: false }],
+      });
+    });
+  });
+
   describe('Pick / Omit 工具类型', () => {
     let pickFile: string;
     let omitFile: string;

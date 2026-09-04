@@ -22,7 +22,7 @@ export function POST(ctx) {
 | 方法 | 行为 |
 |------|------|
 | POST | 解析 JSON-RPC，分发到 mcpServer，返回 JSON 响应或 202（通知） |
-| GET | 打开 SSE 流(200 + text/event-stream),定期发心跳保持连接;客户端断开时清理资源 |
+| GET | 打开 SSE 流(200 + text/event-stream),定期发心跳保持连接并续期 session;携带的 session id 无效/已过期时返回 404;客户端断开时清理资源 |
 | DELETE | 按 Mcp-Session-Id 销毁会话 |
 
 ## 协议头校验
@@ -44,6 +44,7 @@ initialize 响应通过 `result.protocolVersion` 返回协商版本,后续请求
 GET 请求返回 200 + `text/event-stream` 响应,通过 `ReadableStream` 持续推送心跳(`: keepalive\n\n`)维持连接。
 
 - **心跳间隔**:默认 30 秒,通过 `createMcpServer({ sseHeartbeatMs })` 配置
+- **心跳续期 session**:心跳 tick 调用 `SessionManager.touch(sessionId)` 刷新 `lastActivity`,只收推送不发请求的客户端不会因空闲 TTL 被过期清理导致连接被强制断开
 - **客户端断开**:stream `cancel` 触发,清理定时器 + 注销订阅者
 - **响应头**:`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`
 
@@ -54,6 +55,7 @@ GET 请求若携带 `Mcp-Session-Id` 头,会在 stream `start` 时通过 `Sessio
 - 服务端调用 `sendLogging` / `sendResourceUpdated` 等推送方法时,通过 `broadcastToSession` 将通知消息推送到所有订阅者的 controller
 - 客户端断开(stream `cancel`)时,通过 `removeSubscriber` 注销,避免内存泄漏
 - GET 请求无 `Mcp-Session-Id` 时,仅维持心跳连接(不注册订阅者,无法接收业务推送)
+- GET 请求携带无效/已过期的 `Mcp-Session-Id` 时返回 404(MCP 规范),客户端可据此重新 initialize 而非静默空转
 
 ### 推送消息格式
 

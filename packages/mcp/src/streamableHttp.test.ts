@@ -483,17 +483,83 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       await reader.cancel();
     });
 
-    it('GET 携带不存在的 Mcp-Session-Id 时仍打开流(但不注册订阅者)', async () => {
+    it('GET 携带不存在的 Mcp-Session-Id 时返回 404(MCP 规范:无效 session)', async () => {
       const req = new Request('http://localhost/mcp', {
         method: 'GET',
         headers: { 'Mcp-Session-Id': 'nonexistent' },
       });
       const res = await handleMcpRequest(req, mcp);
-      expect(res.status).toBe(200);
-      expect(res.headers.get('Content-Type')).toBe('text/event-stream');
-      const reader = res.body!.getReader();
+      expect(res.status).toBe(404);
+    });
+
+    it('GET 携带已过期 Mcp-Session-Id 时返回 404', async () => {
+      const shortTtl = createMcpServer({
+        name: 'test-server',
+        version: '1.0.0',
+        sessionTtl: 30,
+      });
+      const initReq = new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      });
+      const initRes = await handleMcpRequest(initReq, shortTtl);
+      const sid = initRes.headers.get('Mcp-Session-Id')!;
+
+      // 等待 session 过期（ttl=30ms）
+      await new Promise((r) => setTimeout(r, 60));
+
+      const req = new Request('http://localhost/mcp', {
+        method: 'GET',
+        headers: { 'Mcp-Session-Id': sid },
+      });
+      const res = await handleMcpRequest(req, shortTtl);
+      expect(res.status).toBe(404);
+    });
+
+    it('SSE 心跳续期 session TTL：活跃长连接不因空闲过期断开', async () => {
+      // ttl 100ms < 心跳间隔 30ms × 3：无续期时 session 会在流保持期间过期
+      const server = createMcpServer({
+        name: 'test-server',
+        version: '1.0.0',
+        sessionTtl: 100,
+        sseHeartbeatMs: 30,
+      });
+      const initReq = new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      });
+      const initRes = await handleMcpRequest(initReq, server);
+      const sid = initRes.headers.get('Mcp-Session-Id')!;
+
+      const getReq = new Request('http://localhost/mcp', {
+        method: 'GET',
+        headers: { 'Mcp-Session-Id': sid },
+      });
+      const getRes = await handleMcpRequest(getReq, server);
+      expect(getRes.status).toBe(200);
+      const reader = getRes.body!.getReader();
+      await reader.read();
+
+      // 持续 250ms（远超 ttl=100ms），期间心跳每 30ms 续期一次
+      await new Promise((r) => setTimeout(r, 250));
+
+      // session 仍存活且订阅者未断开
+      const session = server.getSessionManager().get(sid);
+      expect(session).toBeDefined();
+      expect(session!.subscribers.size).toBe(1);
+
+      // 流仍在推送心跳（未被 closeSubscribers 关闭）
       const { value } = await reader.read();
       expect(new TextDecoder().decode(value)).toContain(':');
+
       await reader.cancel();
     });
   });

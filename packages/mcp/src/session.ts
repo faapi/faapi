@@ -137,6 +137,26 @@ export class SessionManager {
     return true;
   }
 
+  /**
+   * 续期会话（仅刷新 lastActivity，不创建、不校验存在性以外的语义）
+   *
+   * SSE 心跳路径使用：只收推送不发请求的客户端依赖心跳维持会话活跃，
+   * 避免活跃长连接因空闲 TTL 被过期清理。
+   *
+   * @returns 会话存在且未过期返回 true；不存在或已过期返回 false（不复活过期会话）
+   */
+  touch(id: string): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    if (this.ttlEnabled && Date.now() - session.lastActivity > this.ttl) {
+      this.closeSubscribers(session);
+      this.sessions.delete(id);
+      return false;
+    }
+    session.lastActivity = Date.now();
+    return true;
+  }
+
   /** 销毁会话(关闭所有 SSE 订阅者) */
   delete(id: string): boolean {
     const session = this.sessions.get(id);

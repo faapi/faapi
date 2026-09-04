@@ -53,6 +53,11 @@ export async function handleMcpRequest(request: Request, server: McpServer): Pro
  *
  * 若携带 Mcp-Session-Id 头,会在 stream start 时注册 SSE 订阅者,
  * 服务端 sendLogging 等推送方法可通过 broadcastToSession 推送到客户端。
+ * 心跳 tick 同时续期 session（touch）,只收推送不发请求的客户端
+ * 不会因空闲 TTL 被过期清理导致连接被强制断开。
+ *
+ * 携带的 Mcp-Session-Id 无效或已过期时返回 404（MCP 规范）,
+ * 客户端可据此重新 initialize 而非静默空转。
  *
  * 客户端断开时 stream cancel 触发,清理定时器 + 注销订阅者避免泄漏。
  */
@@ -66,6 +71,14 @@ function handleGet(server: McpServer, request: Request): Response {
 
   const sessionId = request.headers.get('mcp-session-id') ?? undefined;
 
+  // 携带 session id 但无效/已过期 → 404（不打开空转的流）
+  if (sessionId && !server.getSessionManager().has(sessionId)) {
+    return jsonResponse(
+      404,
+      createErrorResponse(null, ErrorCode.RequestTimeout, 'Session not found'),
+    );
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       // 初始连接确认
@@ -76,13 +89,19 @@ function handleGet(server: McpServer, request: Request): Response {
         subscriber = server.getSessionManager().addSubscriber(sessionId, controller);
       }
 
-      // 心跳定时器
+      // 心跳定时器（同时续期 session,防止活跃长连接被空闲 TTL 清理）
       interval = setInterval(() => {
         try {
+          if (sessionId) {
+            server.getSessionManager().touch(sessionId);
+          }
           controller.enqueue(encoder.encode(`: keepalive ${Date.now()}\n\n`));
         } catch {
-          // controller 已关闭,清理定时器
+          // controller 已关闭,清理定时器 + 注销订阅者
           if (interval) clearInterval(interval);
+          if (subscriber) {
+            server.getSessionManager().removeSubscriber(subscriber);
+          }
         }
       }, heartbeatMs);
     },
