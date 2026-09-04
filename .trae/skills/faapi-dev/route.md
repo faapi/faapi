@@ -171,7 +171,7 @@ export function PUT(params: Params, body: UpdateBody) {
 | `headers` | Headers 对象 | `GET(headers)` |
 | `context` / `ctx` | 完整请求上下文 | `GET(ctx)` |
 | `cookies` | Cookie 对象 | `GET(cookies)` |
-| `ip` | 客户端 IP（X-Forwarded-For 优先） | `GET(ip)` |
+| `ip` | 客户端 IP（默认直取 socket 地址防伪造；`trustedProxy: true` 时取 X-Forwarded-For 第一个 IP，见 config.md） | `GET(ip)` |
 | `ua` | 客户端 User-Agent（请求头 `user-agent` 原值） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |

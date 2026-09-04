@@ -198,7 +198,7 @@ export function GET(db: Db, user: User) {
 | `ctx.query` | URL 查询参数（URLSearchParams） |
 | `ctx.params` | 动态路由参数 |
 | `ctx.cookies` | Cookie 键值对 |
-| `ctx.ip` | 客户端 IP（X-Forwarded-For 优先） |
+| `ctx.ip` | 客户端 IP（默认直取 socket 地址防伪造；`trustedProxy: true` 时取 X-Forwarded-For 第一个 IP，见 config.md） |
 | `ctx.ua` | 客户端 User-Agent（请求头 `user-agent` 原值） |
 | `ctx.config` | 配置文件中的自定义业务配置 |
 | `ctx.json(data, status?)` | 返回 JSON 响应 |

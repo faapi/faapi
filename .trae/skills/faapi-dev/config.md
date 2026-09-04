@@ -38,6 +38,9 @@ export default {
   logger: { log: pinoLogger.info },
   // HTTP/2
   http2: { key: '/path/to/key.pem', cert: '/path/to/cert.pem' },
+  // 是否信任反向代理头（X-Forwarded-For），默认 false
+  // true：ctx.ip 取 XFF 第一个 IP（nginx/CDN 场景）；false：直取 socket 地址（直连防伪造）
+  trustedProxy: false,
   // agent 子系统配置 → [agent.md](./agent.md)
   agent: {
     llms: {
@@ -59,7 +62,7 @@ export default {
 } satisfies FaapiConfig;
 ```
 
-框架内置 key：`cors` / `lifecycle` / `middlewares` / `injectors` / `extendContext` / `plugins` / `helmet` / `bodyLimit` / `logger` / `http2` / `agent`。业务配置用其他 key（db、redis 等），不与框架 key 冲突。
+框架内置 key：`cors` / `lifecycle` / `middlewares` / `injectors` / `extendContext` / `plugins` / `helmet` / `bodyLimit` / `logger` / `http2` / `trustedProxy` / `agent`。业务配置用其他 key（db、redis 等），不与框架 key 冲突。
 
 > 统一响应格式与自定义错误响应通过辅助函数 + 全局中间件实现,详见 [response.md](./response.md)。
 
@@ -135,7 +138,7 @@ export default {
       },
     },
     defaultLlm: 'openai',                     // 默认 provider key（未设时用 llms 第一个 key）
-    defaultAgent: 'researcher',               // handler 的 `agent` 参数注入读取此值
+    defaultAgent: 'researcher',               // 可选——未设时 handler 需 agent.run(input, { agent: 'name' }) 显式指定
     maxTurns: 10,                             // 默认最大对话轮数（agent 自身 config.maxTurns 优先）
     maxAgentDepth: 3,                         // agent 调用 agent 的最大递归深度（默认 3）
   },
@@ -148,7 +151,7 @@ export default {
 | `agent` 整块 | 不注册 agent handle 工厂，`agent` 参数注入 `undefined` |
 | `agent.llms` | 不注册工厂，打印警告 |
 | `agent.defaultLlm` | 用 `Object.keys(llms)[0]` |
-| `agent.defaultAgent` | 不注册工厂，打印警告 |
+| `agent.defaultAgent` | 正常注册工厂（v3.3.0 起可选）——handler 需 `agent.run(input, { agent: 'name' })` 显式指定，不传且未设时抛 `AgentError` |
 | `agent.maxTurns` | 用 agent 自身 `config.maxTurns`，都无时用框架默认 |
 | `agent.maxAgentDepth` | 用默认值 3 |
 

@@ -199,10 +199,10 @@ export default {
 插件 setup 时：
 1. 读 `config.agent.llms` → 遍历每项调 `createProvider` → 构建 `providers: Map<string, LLMProvider>`
 2. 读 `config.agent.defaultLlm`（未设时取 `llms` 第一个 key）→ 默认 provider
-3. 读 `config.agent.defaultAgent` / `maxTurns` / `maxAgentDepth`
+3. 读 `config.agent.defaultAgent`（可选,未设时为空字符串）/ `maxTurns` / `maxAgentDepth`
 4. 注册 agent handle 工厂——handler 的 `agent` 参数注入 `AgentHandle` 实例（含 `run` / `stream` / `asTool`，运行时 `options.model` 支持字符串 key 切换 provider/model）
 
-`config.agent.llms` 或 `defaultAgent` 未配置时跳过工厂注册并 warn，`agent` 参数注入 `undefined`。
+`config.agent.llms` 未配置时跳过工厂注册并 warn，`agent` 参数注入 `undefined`；`defaultAgent` 未设置时工厂正常注册，`agent.run(input)` 不传 `{ agent }` 抛 `AgentError`。
 
 详见 [agent.md](./agent.md)。
 

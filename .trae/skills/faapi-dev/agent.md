@@ -42,10 +42,10 @@ export default {
       // },
     },
     defaultLlm: 'openai',                            // 默认 provider key（未设时用 llms 第一个 key）
-    defaultAgent: 'researcher',
+    defaultAgent: 'researcher',                      // 可选——未设时 handler 需 agent.run(input, { agent: 'name' }) 显式指定
     maxTurns: 10,
     maxAgentDepth: 3,
-    enableTracing: true,                            // 启用 tracing（默认 true,生产高 QPS 端点可设 false 关闭以零开销运行）
+    // enableTracing: true,                          // 启用 tracing（默认 false——opt-in,不开启零开销;需要观测的端点显式开启）
   },
   plugins: ['@faapi/agent'],
 } satisfies FaapiConfig;
@@ -55,10 +55,10 @@ export default {
 |------|------|---------|
 | `llms` | LLM provider 配置映射（key 是 provider 名，值含 `models`） | 不注册工厂，`agent` 参数注入 `undefined` |
 | `defaultLlm` | 默认 provider key（未设时用 `llms` 第一个 key） | 用 `Object.keys(llms)[0]` |
-| `defaultAgent` | 默认 agent 名（`agent` 参数注入读取） | 不注册工厂，`agent` 参数注入 `undefined` |
+| `defaultAgent` | 默认 agent 名（可选，`agent` 参数注入时作为 `agent.run` 的缺省 agent） | 正常注册工厂，`deps.agentName` 为空字符串——handler 需 `agent.run(input, { agent: 'name' })` 显式指定，不传且未设时抛 `AgentError` |
 | `maxTurns` | 默认最大对话轮数 | agent 自身 `config.maxTurns` 优先，都无时用框架默认 |
 | `maxAgentDepth` | agent 调用 agent 的最大递归深度（默认 3） | 用框架默认 3 |
-| `enableTracing` | 启用结构化 trace（默认 true,详见「Tracing」章节） | 用默认 true |
+| `enableTracing` | 启用结构化 trace（默认 false——opt-in,详见「Tracing」章节） | 用默认 false（零开销） |
 
 **嵌套级联**：provider 级字段（`apiKey` / `baseURL` / `temperature` 等）共享给所有 model；model 级字段在 `models[modelName]` 里覆盖 provider 级同名字段。空对象 `{}` 表示用 provider 级默认。
 
@@ -227,6 +227,9 @@ export async function POST(agent: AgentHandle | undefined, body: ChatBody) {
 
 ```ts
 interface AgentRunOptions {
+  /** 覆盖本次调用的 agent 名（从 agentRegistry 查找对应元数据/tools/sub-agents）。
+   *  不传时用 `config.agent.defaultAgent`；未设 defaultAgent 时必须显式传入，否则抛 AgentError */
+  agent?: string;
   /** 切换 provider + model 的字符串 key（支持三种形式,见下文） */
   model?: string;
   /** 采样温度（透传给 LLM API,覆盖 provider/model 级 temperature） */
@@ -234,11 +237,22 @@ interface AgentRunOptions {
   /** 最大生成 token 数（透传给 LLM API） */
   maxTokens?: number;
   /**
-   * 启用 tracing（默认沿用全局 `config.agent.enableTracing`,全局默认 true）。
+   * 启用 tracing（默认沿用全局 `config.agent.enableTracing`,全局默认 false——opt-in）。
    * 开启时返回值的 trace / traceEvent 字段填充结构化调用明细,详见「Tracing」章节。
-   * 业务方在生产主路径显式传 false 关闭以零开销运行。
    */
   enableTracing?: boolean;
+}
+```
+
+**`options.agent` 按调用指定 agent**（v3.3.0）——多 agent 项目可不设 `defaultAgent`，按请求路由到不同 agent：
+
+```ts
+// src/api/chat/handler.ts
+export function POST(agent: AgentHandle, body: { input: string; mode: string }) {
+  // 不传 options.agent → 用 config.agent.defaultAgent（未设时抛 AgentError）
+  // 按请求参数路由到不同 agent：tools/sub-agents/systemPrompt 都按指定 agent 解析
+  const name = body.mode === 'write' ? 'writer' : 'researcher';
+  return agent.run(body.input, { agent: name });
 }
 ```
 
@@ -263,7 +277,7 @@ await agent.run(input, { model: 'anthropic/claude-3-5-sonnet' });
 await agent.run(input, { model: 'anthropic' });
 ```
 
-工厂未注册时（`@faapi/agent` 插件未加载或 `config.agent.llms` / `defaultAgent` 未配置）注入 `undefined`，handler 需自行处理。
+工厂未注册时（`@faapi/agent` 插件未加载或 `config.agent.llms` 未配置）注入 `undefined`，handler 需自行处理。`defaultAgent` 未设置时工厂正常注册，但 `agent.run(input)` 不传 `{ agent }` 会抛 `AgentError`。
 
 ## 多 agent 协作示例
 
@@ -344,7 +358,7 @@ prod 模式（`faapi build`）预编译全部产物，启动时直接读取。
 
 ### Tracing（结构化调用明细）
 
-`agent.run()` / `agent.stream()` 默认开启 tracing（`enableTracing` 默认 true,可经 `config.agent.enableTracing` 全局关闭或 `options.enableTracing` 单次覆盖）。开启时返回值附加结构化调用明细：
+`agent.run()` / `agent.stream()` 默认关闭 tracing（`enableTracing` 默认 false——opt-in,可经 `config.agent.enableTracing: true` 全局开启或 `options.enableTracing` 单次开启）。开启时返回值附加结构化调用明细：
 
 - **非流式**：`ReactLoopResult.trace?: AgentTrace`（agentName + startedAt + durationMs + turns + usage + stopReason + content + events）
 - **流式**：`ReactLoopStreamChunk.traceEvent?: AgentTraceEvent`（与 deltaContent / toolCall / toolResult / done 互斥,增量推送）
@@ -363,14 +377,14 @@ prod 模式（`faapi build`）预编译全部产物，启动时直接读取。
 llm_call(turn=1) → tool_call(turn=1) → llm_call(turn=2) → subagent_call(turn=2, 含 sub-trace)
 ```
 
-**触发机制：opt-in 默认开启 / opt-out 关闭**
+**触发机制：opt-in（v3.3.0 起默认关闭）**
 
 | 场景 | 配置 | 开销 |
 |------|------|------|
-| 调试 / 开发面板 / tracing 端点 | 默认（`enableTracing=true`） | 每轮 1 次 `performance.now()` 配对 + 每事件 ~100B 对象 + sub-agent 递归采集 |
-| 生产高 QPS 端点 | `agent.run(input, { enableTracing: false })` 或 `config.agent.enableTracing: false` | 零——无新对象构造,与现状完全一致 |
+| 生产主路径（默认） | 不配置 | 零——无新对象构造,enableTracing 缺省 false |
+| 调试 / 开发面板 / tracing 端点 | `agent.run(input, { enableTracing: true })` 或 `config.agent.enableTracing: true` | 每轮 1 次 `performance.now()` 配对 + 每事件 ~100B 对象 + sub-agent 递归采集 |
 
-**三层覆盖优先级**：`AgentRunOptions.enableTracing` > agent 自身配置 > `config.agent.enableTracing`（默认 true）。
+**三层覆盖优先级**：`AgentRunOptions.enableTracing` > agent 自身配置 > `config.agent.enableTracing`（默认 false）。
 
 **sub-agent 嵌套 trace**：父 agent 调 sub-agent 时,sub-agent 的 trace 自动嵌入父 trace 的 `subagent_call` 事件（递归结构,业务方可还原完整调用树）。仅默认 reactLoop 路径有 trace——sub-agent handler 导出 `run` 函数时走自定义逻辑,无 trace（业务方自己返回业务结果）。
 
@@ -390,17 +404,9 @@ export async function POST(agent: AgentHandle | undefined, body: { input: string
 }
 ```
 
-**生产路径关闭 tracing**（高 QPS 端点零开销）：
+**生产路径不开启 tracing**（默认即零开销，无需任何配置）：
 
-```ts
-const result = await agent.run(body.input, { enableTracing: false });
-```
-
-或全局关闭（`faapi.config.ts`）：
-
-```ts
-agent: { enableTracing: false, /* llms 等 *\/ },
-```
+tracing 自 v3.3.0 起默认关闭——不配置 `enableTracing` 时 `result.trace` 为 `undefined`，零开销。仅在需要观测的端点单次开启（`agent.run(input, { enableTracing: true })`）或全局开启（`config.agent.enableTracing: true`）。
 
 **流式前端展示**（SSE 推送 traceEvent）：
 
@@ -673,7 +679,7 @@ DB skill 只实现 `AgentCore` 接口（LLM 可见字段），无需 `filePath` 
 - [ ] handler 的 `agent` 参数类型为 `AgentHandle | undefined`，处理 undefined 情况
 - [ ] 跨 provider 切模型用 `agent.run(input, { model: 'anthropic/claude-3-5-sonnet' })` 一体化形式
 - [ ] `llms.<provider>.apiKey` 通过 `process.env.OPENAI_API_KEY` 读取（配合 `.env`）
-- [ ] tracing 默认开启——生产高 QPS 端点显式 `agent.run(input, { enableTracing: false })` 或 `config.agent.enableTracing: false` 关闭以零开销运行
+- [ ] tracing 默认关闭（v3.3.0 起 opt-in）——需要观测的端点显式 `agent.run(input, { enableTracing: true })` 或 `config.agent.enableTracing: true` 开启;不开启时 `result.trace` 为 `undefined`,零开销
 - [ ] 调试 / 开发面板 / tracing 端点用 `result.trace` 或流式 `chunk.traceEvent`（`@faapi/agent` 导出 `AgentTrace` / `AgentTraceEvent` 等类型）
 - [ ] sub-agent handler 导出 `run` 函数时无 trace——需 trace 时让 sub-agent 走默认 reactLoop（不导出 `run`）
 - [ ] `pnpm typecheck` 通过
