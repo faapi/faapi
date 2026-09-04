@@ -160,6 +160,7 @@ function prodPathToSourcePath(
 
 - 产物 `<rootDir>/<dist>/api/hello/handler.js` → 源码 `<rootDir>/src/api/hello/handler.ts`
 - 反推规则：去 `<dist>/` 前缀 → 加 `src/` 前缀 → `.js` → `.ts`（.ts 不存在时回退 .js，兼容用户直接放 .js 源码的少见场景）
+- **映射缓存**：dev 按需模式下每请求都会调用，映射结果按产物路径缓存（`sourcePathCache` Map），稳态请求零 fs 访问；`clearCompiledFiles()`（reloadRoutes 时调用）一并清空——源文件新建/删除后映射重建
 
 `ensureSchemaGenerated` 与 `loadRouteModule` 都用它把 `route.filePath`（产物路径）反推源码路径。
 

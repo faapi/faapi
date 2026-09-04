@@ -11,6 +11,7 @@
 ## 使用场景
 
 - 请求处理时创建上下文（`createContext`，运行时 + 测试同构）
+- 请求热路径用 `createContextFromUrl(request, url, params, config?, ip?)` 变体——createServer 每请求已在 `toWebRequest` 解析过一次 URL（pathname/searchParams），此变体接收已解析的 URL 对象，避免一次请求重复 `new URL` 3~4 次；searchParams 与调用方共享（只读）。普通场景用 `createContext`
 - 测试时便捷创建上下文（`createTestContext`，纯测试语法糖）
 - 提取请求相关信息（含内联读取 `user-agent` 请求头存到 `ctx.ua`；`ctx.ip` 由调用方从 `IncomingMessage` 提取后传入）
 - 执行 config.extendContext 扩展钩子（用户可挂载自定义 ctx 方法）

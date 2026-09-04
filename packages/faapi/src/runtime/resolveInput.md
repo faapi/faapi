@@ -11,6 +11,7 @@ GET/DELETE 从 URL 提取 query，POST/PUT/PATCH 从请求体提取数据，需�
 ## 使用场景
 
 - 请求处理时解析输入
+- 请求热路径用 `resolveInputFromUrl(method, request, url)` 变体——createServer 每请求已持有解析好的 URL（`toWebRequest` 内唯一一次 `new URL`），query 分支复用其 searchParams，避免重复解析。普通场景用 `resolveInput`
 - 根据 method 选择输入来源（query 或 body）
 - 根据 Content-Type 选择 body 解析方式
 

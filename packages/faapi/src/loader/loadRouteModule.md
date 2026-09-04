@@ -20,9 +20,10 @@ dev 按需编译模式（Vite 风格）下，handler.js 不在启动时预编译
 ```
 loadRouteModule(filePath, method, rootDir)
   ├─ if (isDevOnDemandEnabled() && rootDir):
-  │    ├─ prodPathToSourcePath(filePath, rootDir, dist) → 源码 .ts 路径
+  │    ├─ prodPathToSourcePath(filePath, rootDir, dist) → 源码 .ts 路径（映射缓存,稳态零 fs）
   │    ├─ ensureCompiled(sourcePath, rootDir, dist)
-  │    │    ├─ compiledFiles.has → 跳过
+  │    │    ├─ compiledFiles.has → 跳过（内存 Set,每请求最快路径）
+  │    │    ├─ 源文件不存在 → 返回 false（不在此处 existsSync,避免每请求冗余 IO）
   │    │    ├─ mtime fresh → 跳过
   │    │    └─ compileDevRoutes({ files: [sourcePath] }) → 单文件编译
   │    └─ 编译失败 → 抛 "Failed to compile route module"

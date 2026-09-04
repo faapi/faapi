@@ -103,11 +103,13 @@ export function _resetDevOnDemandState(): void {
 /**
  * 清空所有按需编译缓存（reloadRoutes 时调用）
  *
- * 同时清空 in-flight mutex Map，避免 watcher 重置后旧 Promise 永久阻塞。
+ * 同时清空 in-flight mutex Map + 产物→源码映射缓存（源文件新建/删除后映射需重建），
+ * 避免 watcher 重置后旧 Promise 永久阻塞。
  */
 export function clearCompiledFiles(): void {
   state.compiledFiles.clear();
   state.inFlightCompilations.clear();
+  sourcePathCache.clear();
 }
 
 /**
@@ -326,22 +328,20 @@ export async function deleteSchemaFiles(
 // ─── 路径转换 ────────────────────────────────────────────────────────
 
 /**
- * 从产物绝对路径反推源码绝对路径
+ * 从产物绝对路径反推源码绝对路径（带映射缓存）
  *
- * 产物路径形如 `<rootDir>/<dist>/api/hello/handler.js`，
- * 源码路径形如 `<rootDir>/src/api/hello/handler.ts`。
+ * 源码 `<rootDir>/src/api/hello/handler.ts` → 产物 `<rootDir>/<dist>/api/hello/handler.js`
  *
- * 反推规则：
- * 1. 去掉 `<dist>/` 前缀
- * 2. 加 `src/` 前缀
- * 3. `.js` → `.ts`（如果 .ts 不存在则保持 .js）
- *
- * @param prodAbsPath 产物绝对路径
- * @param rootDir 项目根目录
- * @param dist 产物目录
- * @returns 源码绝对路径（.ts 优先，.js 兜底）
+ * dev 按需模式下**每请求**都会调此函数（loadRouteModule / ensureSchemaGenerated），
+ * 缓存映射后稳态请求零 fs 访问。映射仅取决于源文件的存在性——源文件新建/删除
+ * 通过 `clearCompiledFiles()`（reloadRoutes 时调用）清缓存。
  */
+const sourcePathCache = new Map<string, string>();
+
 export function prodPathToSourcePath(prodAbsPath: string, rootDir: string, dist: string): string {
+  const cached = sourcePathCache.get(prodAbsPath);
+  if (cached) return cached;
+
   const rel = path.relative(rootDir, prodAbsPath).replace(/\\/g, '/');
   // 去掉 <dist>/ 前缀
   let relWithoutDist = rel;
@@ -353,9 +353,15 @@ export function prodPathToSourcePath(prodAbsPath: string, rootDir: string, dist:
   // .js → .ts（.ts 不存在时回退 .js）
   const tsRel = srcRel.replace(/\.js$/, '.ts');
   const tsAbs = path.resolve(rootDir, tsRel);
-  if (fs.existsSync(tsAbs)) return tsAbs;
-  // .ts 不存在，保持 .js（极少见，可能是用户直接放 .js 源码）
-  return path.resolve(rootDir, srcRel);
+  let result: string;
+  if (fs.existsSync(tsAbs)) {
+    result = tsAbs;
+  } else {
+    // .ts 不存在，保持 .js（极少见，可能是用户直接放 .js 源码）
+    result = path.resolve(rootDir, srcRel);
+  }
+  sourcePathCache.set(prodAbsPath, result);
+  return result;
 }
 
 // ─── Dev 按需模式标记 ────────────────────────────────────────────────

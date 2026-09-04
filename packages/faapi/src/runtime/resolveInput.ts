@@ -24,6 +24,20 @@ import { ValidationError } from '../errors/httpErrors';
  * @throws {ValidationError} 当请求体非空但 JSON 格式非法时
  */
 export async function resolveInput(method: string, request: Request): Promise<unknown> {
+  return resolveInputFromUrl(method, request, new URL(request.url));
+}
+
+/**
+ * resolveInput 的热路径变体：URL 由调用方解析一次后传入
+ *
+ * createServer 每请求已持有解析好的 URL（pathname/searchParams 复用），
+ * 通过此变体避免 query 分支的重复 `new URL(request.url)`。
+ */
+export async function resolveInputFromUrl(
+  method: string,
+  request: Request,
+  url: URL,
+): Promise<unknown> {
   const inputType = getInputTypeForMethod(method);
 
   // 主输入是 body 的方法：解析请求体
@@ -72,6 +86,5 @@ export async function resolveInput(method: string, request: Request): Promise<un
   }
 
   // 主输入是 query 的方法（GET / DELETE / HEAD）：从 URL 提取 query
-  const url = new URL(request.url);
   return queryToObject(url.searchParams);
 }

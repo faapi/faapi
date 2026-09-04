@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import type { HttpMethod } from '../router/constants';
 import { resolveExport } from './resolveExports';
 import { validateRouteModule } from './validateRouteModule';
@@ -37,11 +36,14 @@ export async function loadRouteModule(
   // Dev 按需模式：先确保编译再 import
   // 避免"import 失败 → 编译 → 重试 import"模式——首次 import 不存在的文件会污染
   // Vite SSR 内部状态，导致编译创建文件后重试 import 仍失败（CI Linux 上复现）
+  //
+  // 不在此处 existsSync(sourcePath)：ensureCompiled 内部对缺失源文件直接返回 false,
+  // 外层检查是冗余的每请求同步 IO（编译完成一次后内存 Set 命中即短路）
   if (isDevOnDemandEnabled() && rootDir) {
     const dist = getDevDist();
     if (dist) {
       const sourcePath = prodPathToSourcePath(filePath, rootDir, dist);
-      if (sourcePath && fs.existsSync(sourcePath)) {
+      if (sourcePath) {
         try {
           await ensureCompiled(sourcePath, rootDir, dist);
         } catch (compileErr) {

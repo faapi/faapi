@@ -49,7 +49,23 @@ export function createContext(
   config: Record<string, unknown> = {},
   ip: string = '',
 ): FaapiContext {
-  const url = new URL(request.url);
+  return createContextFromUrl(request, new URL(request.url), params, config, ip);
+}
+
+/**
+ * createContext 的热路径变体：URL 由调用方解析一次后传入
+ *
+ * createServer 每请求需要 pathname/searchParams，若各自 `new URL(request.url)`
+ * 一次请求要重复解析 3~4 次。此变体接收已解析的 URL 对象，searchParams 与
+ * 调用方共享（只读）。普通场景用 {@link createContext}。
+ */
+export function createContextFromUrl(
+  request: Request,
+  url: URL,
+  params: Record<string, string>,
+  config: Record<string, unknown> = {},
+  ip: string = '',
+): FaapiContext {
   const meta: ResponseMeta = { headers: {}, setCookies: [] };
   const parsedCookies = parseCookies(request.headers.get('cookie') ?? '');
   const cookiesObj: Record<string, string> = {};

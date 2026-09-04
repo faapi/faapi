@@ -654,4 +654,37 @@ describe('HTTP Server E2E', () => {
       expect(body).toBe('data: first\n\nevent: progress\ndata: 50\n\nevent: done\ndata: 100\n\n');
     });
   });
+
+  // 请求体大小限制
+  describe('bodyLimit', () => {
+    it('content-length 超限时直接返回 413（免流式读取）', async () => {
+      const { server: smallSrv } = createServer({
+        routes: [],
+        rootDir: FIXTURES_DIR,
+        dist: schemaDist ?? '.faapi',
+        bodyLimit: 10, // 10 字节
+      });
+      const addr = await new Promise<import('node:net').AddressInfo>((resolve, reject) => {
+        smallSrv.listen(0, () => {
+          const a = smallSrv.address();
+          if (typeof a === 'object' && a !== null) resolve(a);
+          else reject(new Error('no address'));
+        });
+      });
+
+      try {
+        // Node fetch 自动带 content-length: 100
+        const res = await fetch(`http://localhost:${addr.port}/api/anything`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: 'x'.repeat(100),
+        });
+        expect(res.status).toBe(413);
+        const body = await res.json();
+        expect(body.error.code).toBe('PAYLOAD_TOO_LARGE');
+      } finally {
+        await closeServer(smallSrv);
+      }
+    });
+  });
 });

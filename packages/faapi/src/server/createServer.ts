@@ -11,8 +11,8 @@ import path from 'node:path';
 import type { RouteManifest, RouteMatch, WsRouteManifest, RoutesRef } from '../router/routeTypes';
 import { matchRoute, findAllowedMethods } from '../router/matchRoute';
 import { loadRouteModule } from '../loader/loadRouteModule';
-import { createContext } from '../runtime/createContext';
-import { resolveInput } from '../runtime/resolveInput';
+import { createContextFromUrl } from '../runtime/createContext';
+import { resolveInputFromUrl } from '../runtime/resolveInput';
 import { invokeHandler, compose, mergeMeta } from '../runtime/invokeHandler';
 import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
 import { sendNodeResponse } from '../response/sendNodeResponse';
@@ -45,13 +45,21 @@ import { loadMergedMiddlewares } from '../middleware/loadMiddlewares';
  */
 const DEFAULT_BODY_LIMIT = 10 * 1024 * 1024; // 10MB
 
-function toWebRequest(req: IncomingMessage, bodyLimit: number = DEFAULT_BODY_LIMIT): Request {
+function toWebRequest(
+  req: IncomingMessage,
+  bodyLimit: number = DEFAULT_BODY_LIMIT,
+): {
+  request: Request;
+  /** 已解析的 URL（pathname/searchParams 由调用方复用,免重复 new URL） */
+  url: URL;
+} {
   // 协议判断：优先 X-Forwarded-Proto（反向代理），否则 http
   const forwardedProto = req.headers['x-forwarded-proto'];
   const protocol = Array.isArray(forwardedProto)
     ? (forwardedProto[0]?.split(',')[0]?.trim() ?? 'http')
     : (forwardedProto?.split(',')[0]?.trim() ?? 'http');
   const host = req.headers.host ?? 'localhost';
+  // 全请求唯一一次 URL 解析——pathname/searchParams 由 ctx/routePipeline 复用
   const url = new URL(req.url ?? '/', `${protocol}://${host}`);
 
   const headers = nodeHttpToWebHeaders(req);
@@ -60,19 +68,32 @@ function toWebRequest(req: IncomingMessage, bodyLimit: number = DEFAULT_BODY_LIM
 
   // GET/HEAD 不应该有 body
   if (method === 'GET' || method === 'HEAD') {
-    return new Request(url.toString(), { method, headers });
+    return { request: new Request(url.toString(), { method, headers }), url };
+  }
+
+  // content-length 快速判定：声明长度超限直接抛 PayloadTooLargeError,
+  // 免去流包装 + 逐 chunk 读取（chunked 无此头,仍走 limitStreamSize 流式限流）
+  const contentLength = req.headers['content-length'];
+  if (contentLength !== undefined) {
+    const declared = Number(Array.isArray(contentLength) ? contentLength[0] : contentLength);
+    if (Number.isFinite(declared) && declared > bodyLimit) {
+      throw new PayloadTooLargeError(bodyLimit);
+    }
   }
 
   // 将 Node.js IncomingMessage 转为 Web ReadableStream
   // 并限制请求体大小（防止 DoS）
   const stream = Readable.toWeb(req) as ReadableStream<Uint8Array>;
   const limitedStream = limitStreamSize(stream, bodyLimit);
-  return new Request(url.toString(), {
-    method,
-    headers,
-    body: limitedStream,
-    duplex: 'half',
-  } as RequestInit);
+  return {
+    request: new Request(url.toString(), {
+      method,
+      headers,
+      body: limitedStream,
+      duplex: 'half',
+    } as RequestInit),
+    url,
+  };
 }
 
 /**
@@ -245,6 +266,13 @@ export function createServer(options: CreateServerOptions): {
         : loggerMiddleware(loggerOption);
   if (loggerMiddlewareInst) configMiddlewares.push(loggerMiddlewareInst);
 
+  // 外层中间件链启动期组装一次（CORS → helmet → logger → 全局），
+  // 每请求不再重复 spread 重组数组
+  const outerMiddlewares: FaapiMiddleware[] = [...configMiddlewares];
+  if (globalMiddlewares && globalMiddlewares.length > 0) {
+    outerMiddlewares.push(...globalMiddlewares);
+  }
+
   const server = ((): Server => {
     if (http2Option) {
       const h2Opts = typeof http2Option === 'object' ? http2Option : {};
@@ -267,10 +295,9 @@ export function createServer(options: CreateServerOptions): {
       dist,
       req,
       res,
-      configMiddlewares,
+      outerMiddlewares,
       onError,
       config,
-      globalMiddlewares,
       globalInjectors,
       bodyLimit,
     ).catch(() => {
@@ -292,6 +319,9 @@ export function createServer(options: CreateServerOptions): {
  *
  * 提取为独立函数，让 handleRequest 主流程聚焦于路由 + 中间件调度，
  * 便于单测与未来扩展（如自定义 context 字段来源）。
+ *
+ * URL 全请求只解析一次（toWebRequest 内），pathname/searchParams
+ * 由 ctx / routePipeline 共享，避免一次请求重复 new URL 3~4 次。
  */
 function prepareRequest(
   req: IncomingMessage,
@@ -299,17 +329,18 @@ function prepareRequest(
   bodyLimit: number,
 ): {
   request: Request;
+  url: URL;
   ctx: FaapiContext;
   meta: ResponseMeta;
   method: string;
   urlPath: string;
 } {
-  const request = toWebRequest(req, bodyLimit);
+  const { request, url } = toWebRequest(req, bodyLimit);
   const method = request.method.toUpperCase();
-  const urlPath = new URL(request.url).pathname;
-  const ctx = createContext(request, {}, config, getClientIp(req));
+  const urlPath = url.pathname;
+  const ctx = createContextFromUrl(request, url, {}, config, getClientIp(req));
   const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
-  return { request, ctx, meta, method, urlPath };
+  return { request, url, ctx, meta, method, urlPath };
 }
 
 /**
@@ -343,14 +374,14 @@ function createRoutePipeline(opts: {
   routes: RouteManifest;
   method: string;
   urlPath: string;
+  url: URL;
   ctx: FaapiContext;
   request: Request;
   rootDir: string;
   dist: string;
-  globalMiddlewares: FaapiMiddleware[] | undefined;
   globalInjectors: InjectorMap | undefined;
 }): () => Promise<Response> {
-  const { routes, method, urlPath, ctx, request, rootDir, dist, globalInjectors } = opts;
+  const { routes, method, urlPath, url, ctx, request, rootDir, dist, globalInjectors } = opts;
   return async () => {
     // 1. 路由匹配（未命中抛 RouteNotFound / MethodNotAllowed）
     const match = resolveRouteOrThrow(routes, method, urlPath);
@@ -361,8 +392,8 @@ function createRoutePipeline(opts: {
     const absoluteFilePath = path.resolve(rootDir, route.filePath);
     const routeModule = await loadRouteModule(absoluteFilePath, route.method, rootDir);
 
-    // 3. 参数解析（query / body / form / files 等）
-    const input = await resolveInput(route.method, request);
+    // 3. 参数解析（query / body / form / files 等）——复用已解析的 URL
+    const input = await resolveInputFromUrl(route.method, request, url);
 
     // 4. schema 校验（运行时按 route.filePath 计算 zod.js 路径 + safeParse）
     const inputType = getInputTypeForMethod(route.method);
@@ -422,18 +453,21 @@ async function sendSuccessResponse(response: Response, res: ServerResponse): Pro
  *   2. 内置兜底仍抛错 → 最简 500 JSON 响应
  *   3. 响应发出后 → onError 触发副作用(不修改已发出的响应)
  *   注:业务方如需进一步自定义错误响应,在全局中间件中 try/catch next() 即可
+ *
+ * `ctx` 可为 undefined——请求准备阶段抛错（如 content-length 超限）时尚未构造 ctx,
+ * 此时错误格式用默认 fail 包装,onError 不触发（与原"裸 500"路径一致）。
  */
 async function sendErrorResponse(
   err: unknown,
   meta: ResponseMeta,
   res: ServerResponse,
   onError: ((error: unknown, ctx: FaapiContext) => Promise<void> | void) | undefined,
-  ctx: FaapiContext,
+  ctx: FaapiContext | undefined,
 ): Promise<void> {
-  await sendNodeResponse(mergeMeta(buildErrorResponse(err, ctx.config), meta), res);
+  await sendNodeResponse(mergeMeta(buildErrorResponse(err, ctx?.config), meta), res);
 
   // 响应已发出，触发 onError 副作用（日志/告警/链路追踪），自身抛错被忽略
-  if (onError) {
+  if (onError && ctx) {
     try {
       await onError(err, ctx);
     } catch {
@@ -448,44 +482,42 @@ async function handleRequest(
   dist: string,
   req: IncomingMessage,
   res: ServerResponse,
-  configMiddlewares: FaapiMiddleware[],
+  outerMiddlewares: FaapiMiddleware[],
   onError: ((error: unknown, ctx: FaapiContext) => Promise<void> | void) | undefined,
   config: Record<string, unknown> | undefined,
-  globalMiddlewares: FaapiMiddleware[] | undefined,
   globalInjectors: InjectorMap | undefined,
   bodyLimit: number,
 ): Promise<void> {
-  // 1. 准备请求上下文（toWebRequest + createContext）
-  const { request, ctx, meta, method, urlPath } = prepareRequest(req, config, bodyLimit);
-
-  // 2. 创建路由执行管线（路由匹配 + 校验 + 中间件加载 + handler 调用）
-  const routePipeline = createRoutePipeline({
-    routes,
-    method,
-    urlPath,
-    ctx,
-    request,
-    rootDir,
-    dist,
-    globalMiddlewares,
-    globalInjectors,
-  });
-
-  // 3. 组装外层中间件链：CORS → helmet → logger → 全局 → routePipeline
-  //    顺序：CORS → helmet → logger → 全局 → routePipeline（含目录中间件 + handler）
-  const outerMiddlewares: FaapiMiddleware[] = [];
-  if (configMiddlewares.length > 0) outerMiddlewares.push(...configMiddlewares);
-  if (globalMiddlewares && globalMiddlewares.length > 0) {
-    outerMiddlewares.push(...globalMiddlewares);
-  }
-
+  // meta/ctx 兜底：请求准备阶段抛错（如 content-length 超限的 413）时尚无 ctx
+  let meta: ResponseMeta = { headers: {}, setCookies: [] };
+  let ctx: FaapiContext | undefined;
   try {
-    // 4. 执行（有外层中间件走 compose 洋葱模型，否则直接跑 routePipeline）
+    // 1. 准备请求上下文（toWebRequest + createContext）——URL 全请求只解析一次
+    const prepared = prepareRequest(req, config, bodyLimit);
+    ctx = prepared.ctx;
+    meta = prepared.meta;
+    const { request, url, method, urlPath } = prepared;
+
+    // 2. 创建路由执行管线（路由匹配 + 校验 + 中间件加载 + handler 调用）
+    const routePipeline = createRoutePipeline({
+      routes,
+      method,
+      urlPath,
+      url,
+      ctx,
+      request,
+      rootDir,
+      dist,
+      globalInjectors,
+    });
+
+    // 3. 执行外层中间件链（CORS → helmet → logger → 全局 → routePipeline，
+    //    数组已在 createServer 启动期组装，此处仅按需 compose）
     const response =
       outerMiddlewares.length > 0
         ? await compose(outerMiddlewares, ctx, routePipeline)
         : await routePipeline();
-    // 5. 发送响应
+    // 4. 发送响应
     await sendSuccessResponse(response, res);
   } catch (err: unknown) {
     await sendErrorResponse(err, meta, res, onError, ctx);
