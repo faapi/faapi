@@ -1113,4 +1113,189 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     expect(completeCalls).toHaveBeenCalledTimes(1);
     expect(completeCalls.mock.calls[0][0]).toMatchObject({ signal: controller.signal });
   });
+
+  it('maxHistoryTokens 未设置时行为不变（历史全量发送）', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop('go', {
+      provider,
+      systemPrompt: 'sys',
+      executeTool: async () => 'r',
+    });
+
+    // 第二轮 messages 含 system + user + assistant + tool（无裁剪）
+    const second = completeCalls.mock.calls[1][0].messages;
+    expect(second.map((m: LLMMessage) => m.role)).toEqual(['system', 'user', 'assistant', 'tool']);
+  });
+
+  it('maxHistoryTokens 超预算时裁掉最旧轮组，system 与初始 user 保留', async () => {
+    // 预算只够装下 system + user + 最近一轮：第一轮 assistant/tool 被裁
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({
+        toolCalls: [{ id: 'c2', name: 't2', arguments: {} }],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop('go', {
+      provider,
+      systemPrompt: 'sys',
+      executeTool: async () => 'r'.repeat(200), // tool 结果很大，轮组很快超预算
+      maxHistoryTokens: 120, // ≈240 字符：system+user+单轮装得下，两轮装不下
+    });
+
+    // 第三轮请求：最旧轮组（c1 的 assistant + tool）已被裁掉，system/user 保留
+    const third = completeCalls.mock.calls[2][0].messages;
+    const roles = third.map((m: LLMMessage) => m.role);
+    expect(roles[0]).toBe('system');
+    expect(roles[1]).toBe('user');
+    expect(third.some((m: LLMMessage) => m.toolCallId === 'c1')).toBe(false);
+    expect(third.some((m: LLMMessage) => m.toolCallId === 'c2')).toBe(true);
+  });
+
+  it('裁剪以轮组为原子单位：assistant.toolCalls 与 tool 结果不拆散', async () => {
+    // 一轮带 2 个 toolCalls，tool 结果也大——轮组要么完整保留要么整体消失
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [
+          { id: 'a1', name: 't1', arguments: {} },
+          { id: 'a2', name: 't2', arguments: {} },
+        ],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop('go', {
+      provider,
+      executeTool: async () => 'x'.repeat(500),
+      maxHistoryTokens: 10, // 极小预算：轮组必然放不下，但最近轮组强制保留
+    });
+
+    // 第二轮：轮组超预算仍完整保留（至少保留最近一轮），且配对完整
+    const second = completeCalls.mock.calls[1][0].messages;
+    const assistant = second.find((m: LLMMessage) => m.role === 'assistant');
+    expect(assistant?.toolCalls).toHaveLength(2);
+    const toolIds = second
+      .filter((m: LLMMessage) => m.role === 'tool')
+      .map((m: LLMMessage) => m.toolCallId);
+    expect(toolIds).toEqual(['a1', 'a2']);
+  });
+
+  it('流式循环同样执行裁剪', async () => {
+    const { provider, streamCalls } = createMockStreamProvider([
+      [{ toolCalls: [{ id: 'c1', name: 't1', arguments: {} }], finishReason: 'tool_calls' }],
+      [{ toolCalls: [{ id: 'c2', name: 't2', arguments: {} }], finishReason: 'tool_calls' }],
+      [{ deltaContent: 'done', finishReason: 'stop' }],
+    ]);
+
+    const chunks = [];
+    for await (const chunk of reactLoopStream('go', {
+      provider,
+      systemPrompt: 'sys',
+      executeTool: async () => 'r'.repeat(200),
+      maxHistoryTokens: 120,
+    })) {
+      chunks.push(chunk);
+    }
+
+    const third = streamCalls.mock.calls[2][0].messages;
+    expect(third.some((m: LLMMessage) => m.toolCallId === 'c1')).toBe(false);
+    expect(third.some((m: LLMMessage) => m.toolCallId === 'c2')).toBe(true);
+  });
+
+  it('同轮多个 tool_call 并行执行（并发峰值 > 1）', async () => {
+    let running = 0;
+    let peak = 0;
+    const { provider } = createMockProvider([
+      llmResponse({
+        toolCalls: [
+          { id: 'c1', name: 't1', arguments: {} },
+          { id: 'c2', name: 't2', arguments: {} },
+        ],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop('go', {
+      provider,
+      executeTool: async () => {
+        running++;
+        peak = Math.max(peak, running);
+        await new Promise((r) => setTimeout(r, 50));
+        running--;
+        return 'ok';
+      },
+    });
+
+    expect(peak).toBe(2);
+  });
+
+  it('并行后 tool 结果仍按 toolCalls 顺序回传（慢的先完成不乱序）', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [
+          { id: 'slow', name: 't1', arguments: {} },
+          { id: 'fast', name: 't2', arguments: {} },
+        ],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop('go', {
+      provider,
+      executeTool: async (_name, args) => {
+        // t1 睡 80ms（后完成），t2 立即返回（先完成）
+        if (args.order === 'slow') await new Promise((r) => setTimeout(r, 80));
+        return `done:${String(args.order)}`;
+      },
+    });
+
+    const toolMsgs = completeCalls.mock.calls[1][0].messages.filter(
+      (m: LLMMessage) => m.role === 'tool',
+    );
+    // 顺序与 toolCalls 声明一致：slow 在前、fast 在后（与完成顺序无关）
+    expect(toolMsgs.map((m: LLMMessage) => m.toolCallId)).toEqual(['slow', 'fast']);
+  });
+
+  it('并行执行时单个 tool 抛错不影响其他 tool 的结果回传', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [
+          { id: 'c1', name: 'boom', arguments: {} },
+          { id: 'c2', name: 'ok', arguments: {} },
+        ],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop('go', {
+      provider,
+      executeTool: async (name) => {
+        if (name === 'boom') throw new Error('tool exploded');
+        return 'fine';
+      },
+    });
+
+    const toolMsgs = completeCalls.mock.calls[1][0].messages.filter(
+      (m: LLMMessage) => m.role === 'tool',
+    );
+    expect(toolMsgs).toHaveLength(2);
+    expect(JSON.stringify(toolMsgs[0]?.content)).toContain('tool exploded');
+    expect(JSON.stringify(toolMsgs[1]?.content)).toContain('fine');
+  });
 });

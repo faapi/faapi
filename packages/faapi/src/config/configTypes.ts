@@ -284,6 +284,15 @@ export interface AgentConfig {
    *
    * 典型用法：中间件解析 `ctx.workspace` 后在此校验/强制改写 `args.workspaceId`。
    */
+  /**
+   * 发送给 LLM 的历史 token 预算（近似估算，未设置 = 不裁剪）
+   *
+   * 多轮 tool 循环中对话历史只增不减，大 tool 结果会撑爆模型上下文窗口导致
+   * 下一轮 400。超预算时从最旧的轮组开始裁剪（system 与初始 user 保留、
+   * tool 配对不拆散），只作用于发给 LLM 的消息副本。详见 @faapi/agent 的
+   * reactLoop 文档历史裁剪章节。
+   */
+  maxHistoryTokens?: number;
   beforeToolCall?: (
     name: string,
     args: Record<string, unknown>,

@@ -47,6 +47,8 @@ export interface AgentRuntimeConfig {
   maxTurns?: number;
   /** agent 调用 agent 的最大递归深度（默认 3） */
   maxAgentDepth?: number;
+  /** 发送给 LLM 的历史 token 预算（近似估算,未设置 = 不裁剪）——透传 reactLoop,见 reactLoop.md 历史裁剪章节 */
+  maxHistoryTokens?: number;
   /**
    * 启用 tracing 的全局默认值（默认 false——opt-in,不开启零开销）。
    *

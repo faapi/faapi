@@ -70,6 +70,14 @@ export interface ReactLoopConfig {
    */
   signal?: AbortSignal;
   /**
+   * 发送给 LLM 的历史 token 预算（近似估算：字符数 / 2；未设置 = 不裁剪，向后兼容）
+   *
+   * 超预算时从最旧的「轮组」（assistant + 其后全部 tool 结果）开始裁剪，
+   * system 与初始 user 永不裁剪，至少保留最近一轮。裁剪只作用于发给 LLM 的
+   * 消息副本，本地 `messages` 与 trace 不受影响。详见 reactLoop.md 的历史裁剪章节。
+   */
+  maxHistoryTokens?: number;
+  /**
    * 启用 tracing（默认 true）。开启时填充 `ReactLoopResult.trace` /
    * `ReactLoopStreamChunk.traceEvent`,详见 [trace.md](./trace.md)。
    *
@@ -183,6 +191,61 @@ function buildInitialMessages(input: string, systemPrompt?: string): LLMMessage[
 }
 
 /** 构造 LLM complete/stream 请求参数（除 messages 外的公共字段） */
+/** 近似 token 估算：字符数 / 2（中英混合保守值，不引入 tokenizer 依赖） */
+function estimateTokens(chars: number): number {
+  return Math.ceil(chars / 2);
+}
+
+function estimateMessageTokens(message: LLMMessage): number {
+  let chars = message.content.length;
+  if (message.toolCalls) {
+    chars += JSON.stringify(message.toolCalls).length;
+  }
+  if (message.toolCallId) {
+    chars += message.toolCallId.length;
+  }
+  return estimateTokens(chars);
+}
+
+/**
+ * 按预算裁剪发给 LLM 的历史（见 reactLoop.md 历史裁剪章节）
+ *
+ * - 头部保留段（system + 初始 user，直到第一个 assistant）永不裁剪
+ * - 轮组（assistant + 其后全部 tool 结果）为原子单位，从最旧开始丢
+ * - 至少保留最近一轮（即使其自身超预算，也不发送空历史）
+ */
+export function trimHistory(messages: LLMMessage[], maxTokens: number): LLMMessage[] {
+  // 头部：system + 初始 user（第一个 assistant 之前的连续前缀）
+  let headEnd = 0;
+  while (headEnd < messages.length && messages[headEnd].role !== 'assistant') {
+    headEnd++;
+  }
+  const head = messages.slice(0, headEnd);
+
+  // 轮组划分：rest 中每个 assistant 开启一个新轮组，其后 tool 消息归属之
+  const turns: LLMMessage[][] = [];
+  for (const message of messages.slice(headEnd)) {
+    if (message.role === 'assistant' || turns.length === 0) {
+      turns.push([message]);
+    } else {
+      turns[turns.length - 1]!.push(message);
+    }
+  }
+  if (turns.length === 0) return messages;
+
+  // 从最新往旧收集，预算内尽量多保留；最近一轮无条件保留
+  const kept: LLMMessage[][] = [];
+  let total = head.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turnTokens = turns[i]!.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+    if (kept.length > 0 && total + turnTokens > maxTokens) break;
+    kept.unshift(turns[i]!);
+    total += turnTokens;
+  }
+
+  return [...head, ...kept.flat()];
+}
+
 function buildRequestExtras(config: ReactLoopConfig) {
   return {
     tools: config.tools,
@@ -244,10 +307,14 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
     turns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
+    // 历史裁剪（maxHistoryTokens）：只作用于发给 LLM 的消息副本，本地 messages 不变
+    const outgoing = config.maxHistoryTokens
+      ? trimHistory(messages, config.maxHistoryTokens)
+      : messages;
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
-    const inputSnapshot = enableTracing ? [...messages] : undefined;
+    const inputSnapshot = enableTracing ? [...outgoing] : undefined;
     const response = await config.provider.complete({
-      messages: [...messages],
+      messages: [...outgoing],
       ...extras,
       signal: config.signal,
     });
@@ -298,28 +365,37 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
       };
     }
 
-    // 执行每个 tool call
-    for (const toolCall of response.message.toolCalls) {
-      const toolStartedAt = enableTracing ? nowMs() : 0;
-      let resultStr: string;
-      let rawResult: unknown | TracingToolResult;
-      let toolErr: unknown;
-      let hasError = false;
-      try {
-        rawResult = await config.executeTool(toolCall.name, toolCall.arguments);
-        // TracingToolResult:提取 result 字段作为 tool 消息内容
-        if (isTracingToolResult(rawResult)) {
-          resultStr = stringifyResult(rawResult.result);
-        } else {
-          resultStr = stringifyResult(rawResult);
+    // 并行执行同轮全部 tool_call——多个独立 tool 的总耗时从「各 tool 之和」
+    // 降为「最慢一个」。每个 toolCall 独立 try/catch（单个失败不影响其余），
+    // 结果按下方的 toolCalls 声明顺序回传（与完成顺序无关，保证 tool 配对语义）。
+    // 注：beforeToolCall/afterToolCall 钩子会并发触发，业务方钩子不应依赖调用顺序。
+    // 流式路径（reactLoopStream）保持串行——yield 顺序受消费端约束。
+    const settled = await Promise.all(
+      response.message.toolCalls.map(async (toolCall) => {
+        const toolStartedAt = enableTracing ? nowMs() : 0;
+        let resultStr: string;
+        let rawResult: unknown | TracingToolResult;
+        let toolErr: unknown;
+        let hasError = false;
+        try {
+          rawResult = await config.executeTool(toolCall.name, toolCall.arguments);
+          // TracingToolResult:提取 result 字段作为 tool 消息内容
+          if (isTracingToolResult(rawResult)) {
+            resultStr = stringifyResult(rawResult.result);
+          } else {
+            resultStr = stringifyResult(rawResult);
+          }
+        } catch (err) {
+          hasError = true;
+          toolErr = err;
+          resultStr = stringifyError(err);
+          rawResult = undefined;
         }
-      } catch (err) {
-        hasError = true;
-        toolErr = err;
-        resultStr = stringifyError(err);
-        rawResult = undefined;
-      }
+        return { toolCall, toolStartedAt, resultStr, rawResult, toolErr, hasError };
+      }),
+    );
 
+    for (const { toolCall, toolStartedAt, resultStr, rawResult, toolErr, hasError } of settled) {
       if (enableTracing) {
         const toolEndedAt = nowMs();
         if (isTracingToolResult(rawResult)) {
@@ -396,15 +472,19 @@ export async function* reactLoopStream(
     turns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
+    // 历史裁剪（maxHistoryTokens）：只作用于发给 LLM 的消息副本，本地 messages 不变
+    const outgoing = config.maxHistoryTokens
+      ? trimHistory(messages, config.maxHistoryTokens)
+      : messages;
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
-    const inputSnapshot = enableTracing ? [...messages] : undefined;
+    const inputSnapshot = enableTracing ? [...outgoing] : undefined;
     let turnContent = '';
     let toolCalls: LLMToolCall[] | undefined;
     let finishReason: LLMStopReason | undefined;
     let turnUsage: LLMUsage | undefined;
 
     for await (const chunk of config.provider.stream({
-      messages: [...messages],
+      messages: [...outgoing],
       ...extras,
       signal: config.signal,
     })) {

@@ -71,6 +71,28 @@ tool 执行错误回传 LLM 是业界惯例（OpenAI Agents SDK / LangChain / Cr
 - agent 自身 `config.maxTurns` 覆盖全局默认
 - 超出时抛 `ReactLoopError`，包含已用轮数和 maxTurns 值
 
+### 同轮 tool_call 并行执行
+
+LLM 一轮可返回多个 tool_call，非流式路径**并行执行**（`Promise.all`）——总耗时从各 tool 之和降为最慢一个。语义约束：
+
+- **结果按 toolCalls 声明顺序回传**（与完成顺序无关），tool 消息与 id 的配对语义不变
+- **每个 toolCall 独立 try/catch**——单个失败不影响其余的结果回传
+- **`beforeToolCall` / `afterToolCall` 钩子会并发触发**——业务方钩子不应依赖调用顺序（读 ctx 做鉴权/改写与顺序无关）
+- 流式路径（`reactLoopStream`）保持**串行**——chunk 的 yield 顺序受消费端约束
+
+### 历史裁剪（`maxHistoryTokens`）
+
+多轮 tool 循环中 `messages` 只增不减，大 tool 结果（如整个文件内容）会把对话历史撑爆模型上下文窗口——下一轮 LLM 直接 400，整个 run 失败。`ReactLoopConfig.maxHistoryTokens`（token 预算，未设置 = 不裁剪，向后兼容）按预算裁剪**发给 LLM 的**消息：
+
+- **裁剪单位是「轮组」**：一条 assistant 消息（可能带 toolCalls）+ 其后全部对应 tool 结果。以轮组为原子单位保证 OpenAI 的 tool 配对约束不被破坏（不裁半轮）
+- **永不裁剪**：system 消息 + 初始 user 输入（用户目标保留，丢的是中间过程）
+- **至少保留最近一轮**：即使最新轮组自己超预算也保留（不发送空历史）
+- **token 为近似估算**（`字符数 / 2`，中英混合保守值），不引入 tokenizer 依赖
+- **本地历史不丢**：裁剪只作用于每轮发给 LLM 的消息副本，`messages` 本体与 trace 的 `inputSnapshot` 完整性不受影响（`inputSnapshot` 记录的是实际发送的裁剪后消息）
+- 非流式与流式两条循环行为一致
+
+取舍：被裁掉的旧轮组不生成摘要（compaction 属后续能力）——需要保留长期上下文的场景应在 tool 内控制返回体积，或用 `maxTurns` 控制总轮数。
+
 ### `maxAgentDepth` 防护
 
 reactLoop 本身不跟踪 agent 递归深度——`maxAgentDepth` 防护在 [Agent 类](./agent.md) 的 `executeSubAgent` 实现中：

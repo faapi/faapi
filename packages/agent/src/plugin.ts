@@ -149,6 +149,7 @@ const agentPlugin: FaapiPlugin = {
     const runtimeConfig: AgentRuntimeConfig = {
       maxTurns: agentConfig.maxTurns,
       maxAgentDepth: agentConfig.maxAgentDepth,
+      maxHistoryTokens: agentConfig.maxHistoryTokens,
       // 鉴权钩子（authHooks,见 ./authHooks.md）——业务方在 config.agent 声明
       beforeToolCall: agentConfig.beforeToolCall,
       afterToolCall: agentConfig.afterToolCall,
