@@ -34,21 +34,15 @@ export default defineConfig({
     hookTimeout: 30000,
     teardownTimeout: 30000,
     // 文件级并行 + fork 池上限 2。
-    // 历史：CI 曾因资源紧张串行化（fileParallelism:false + maxWorkers:1，见 a3f7014/dcb7827，
-    // 症状含 OOM 与 fork 子进程 ERR_IPC_CHANNEL_CLOSED——后者是内存压力下子进程被杀的表现）。
-    // 已解除的条件：CI 按包拆 matrix（每 job 独占 runner，public repo 标准规格 4 vCPU / 16 GB，
-    // 包间内存竞争消除）；execArgv 8GB 是每个 fork 进程各自的上限，2 workers 理论上限 16GB
-    // 但实际 RSS 远低于上限（仅 AST 测试真正吃堆）。本地 CI=true 全量含 e2e 实测通过后放开。
+    // 历史：CI 曾因资源紧张串行化（fileParallelism:false + maxWorkers:1 + singleFork，
+    // 见 a3f7014/dcb7827，症状含 OOM 与 fork 子进程 ERR_IPC_CHANNEL_CLOSED——后者是
+    // 内存压力下子进程被杀的表现），当时还在 fork 子进程设过 8GB 堆上限。
+    // 两者均已随条件解除而移除：CI 按包拆 matrix（每 job 独占 4 vCPU / 16 GB runner，
+    // 包间内存竞争消除）；forks 池默认 isolation——每个测试文件独立子进程、跑完即退，
+    // 单文件堆工作集远低于 V8 默认 4GB 上限（8GB 防御针对的是 singleFork 单进程
+    // 累计全部文件的场景）。maxWorkers:2 理论堆上限 2×4=8GB，远离物理内存。
     maxWorkers: 2,
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        // AST 提取测试加载 TypeScript compiler + lib.d.ts，默认 4GB 堆内存不够。
-        // 在这里给 fork 子进程设堆上限（而非依赖 package.json test 脚本的 NODE_OPTIONS），
-        // 使 `pnpm test` / 直接 `pnpm vitest run` 两条路径行为一致
-        execArgv: ['--max-old-space-size=8192'],
-      },
-    },
     // 覆盖率默认配置：--coverage 时无需手传 CLI 参数
     // - 排除测试文件本身、e2e、类型声明、入口 barrel
     // - 单元测试（不含 e2e）即可驱动主要业务代码覆盖率
