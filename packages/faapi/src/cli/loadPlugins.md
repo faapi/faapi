@@ -25,14 +25,21 @@ plugins: [
 
 ## 加载流程
 
-1. 遍历 declarations，解析为统一格式 { specifier, options, enable }
+1. 遍历 declarations，解析为统一格式 { specifier, options, enable }（非法声明进 `failures`，不崩启动）
 2. `enable: false` 跳过（唯一运行时开关——插件不应引入环境变量做冗余控制，详见 [pluginTypes.md](../config/pluginTypes.md#开关约定)）
 3. name 去重（已加载的跳过）
-4. await import(specifier) 加载
+4. await import(resolveSpecifier(specifier, rootDir)) 加载——相对路径声明（`./x.js`）相对**项目根目录**解析为 file URL（此前相对 faapi 包自身产物解析，几乎必然失败）；绝对路径转 file URL；包名原样
 5. 取 mod.default ?? mod 作为插件对象
 6. 注入 wrapHandler / wrapUpgradeHandler 收集器到 ctx
 7. 调用 plugin.setup(ctx)
-8. 返回收集到的 handlerWrappers / upgradeWrappers
+8. 返回收集到的 handlerWrappers / upgradeWrappers + `failures` 清单
+
+## 错误口径（单一语义）
+
+任何插件级失败（import 失败、缺 setup、setup 抛错、非法声明）不中断其他插件、
+不崩启动，但会收集进返回值 `failures` 并在加载完成后统一 `console.error` 汇总——
+鉴权/CORS 类插件静默丢失等同裸奔，必须对业务方可见（此前仅单条 `console.warn`，
+易被淹没）。调用方可依据 `failures` 做更严格的启动门禁。
 
 ## 包装器应用
 

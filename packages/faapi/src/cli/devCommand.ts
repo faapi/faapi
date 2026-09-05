@@ -79,7 +79,7 @@ export async function devCommand(options?: DevCommandOptions): Promise<void> {
   const _config = await loadConfig(rootDir, devDist);
 
   // 4. 生成路由清单 + schema 文件（scanRoutes 不 import，仅读源码 + 正则提取方法名）
-  console.log('- Generating route manifest and schema...');
+  console.log('- Generating route manifest (schema generated on demand)...');
   await generateRouteArtifacts(rootDir, ROUTE_PATTERNS, devDist);
 
   // 5. 生成 tool 清单（scanTools 不 import，仅读源码 + 正则提取函数名）

@@ -167,6 +167,8 @@ describe('cors middleware', () => {
 
       expect(result).toBeUndefined();
       expect(ctx.meta.headers['Access-Control-Allow-Origin']).toBeUndefined();
+      // 动态 origin 下拒绝响应也必须带 Vary: Origin（防 CDN 缓存污染）
+      expect(ctx.meta.headers['Vary']).toBe('Origin');
     });
   });
 

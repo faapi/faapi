@@ -1195,5 +1195,90 @@ export interface GETQuery {
       const program = createProgram(tempFile);
       expect(() => extractTypeInfo(program, tempFile, 'GETQuery')).toThrow(SchemaExtractionError);
     });
+
+    it('接口方法签名成员：显式抛 SchemaExtractionError（不静默丢弃）', () => {
+      writeFileSync(
+        tempFile,
+        `export interface GETQuery {
+  run(input: string): void;
+  name: string;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractTypeInfo(program, tempFile, 'GETQuery')).toThrow(SchemaExtractionError);
+    });
+
+    it('对象字面量方法签名成员：显式抛 SchemaExtractionError', () => {
+      writeFileSync(
+        tempFile,
+        `export interface GETQuery {
+  handler: {
+    handle(req: string): void;
+    version: number;
+  };
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractTypeInfo(program, tempFile, 'GETQuery')).toThrow(SchemaExtractionError);
+    });
+
+    it('Required<T> 恢复必填（不再静默保留 optional）', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Base {
+  name?: string;
+  age: number;
+}
+export interface GETQuery {
+  user: Required<Base>;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+      expect(info).not.toBeNull();
+      const rt = info!.runtimeType as {
+        properties: Array<{ name: string; type: { properties?: Array<{ optional: boolean }> } }>;
+      };
+      const user = rt.properties.find((p) => p.name === 'user')!;
+      const props = (user.type as { properties: Array<{ name: string; optional: boolean }> })
+        .properties;
+      // Required 把 Base 的可选 name 恢复为必填
+      expect(props.find((p) => p.name === 'name')!.optional).toBe(false);
+      expect(props.find((p) => p.name === 'age')!.optional).toBe(false);
+    });
+
+    it('交叉类型同名字段类型冲突：显式抛 SchemaExtractionError（TS 中为 never）', () => {
+      writeFileSync(
+        tempFile,
+        `export interface GETQuery {
+  merged: { a: string; x: string } & { b: number; x: number };
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractTypeInfo(program, tempFile, 'GETQuery')).toThrow(SchemaExtractionError);
+    });
+
+    it('交叉类型同名字段类型一致：去重保留一份', () => {
+      writeFileSync(
+        tempFile,
+        `export interface GETQuery {
+  merged: { a: string } & { a: string; b: number };
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+      expect(info).not.toBeNull();
+      const rt = info!.runtimeType as {
+        properties: Array<{ name: string; type: { properties: Array<{ name: string }> } }>;
+      };
+      const merged = rt.properties.find((p) => p.name === 'merged')!;
+      const names = merged.type.properties.map((p) => p.name);
+      expect(names).toEqual(['a', 'b']); // a 只出现一次
+    });
   });
 });

@@ -15,18 +15,23 @@
 - 生成 `dist/faapi-routes.js`（序列化路由清单）
 - 生成 `dist/faapi-tools.js`（序列化 tool 清单）+ tool handler 的 `zod.js`
 
+## 输出目录清空（emptyOutDir 语义）
+
+构建开始前清空输出目录——删除路由后 `dist/` 残留旧 handler.js / zod.js / map 文件，
+体积膨胀且误导排查。防误删保护：outdir 必须严格位于 rootDir 内（两侧 realpath 归一化）
+且不等于 rootDir，否则跳过清空并告警。
+
 ## 构建步骤
 
-构建前先 `compileConfig` + `loadConfig` 读应用行为配置（build 时无 `dist/` 产物，先生成临时配置产物再读），随后执行 7 步：
+构建前清空输出目录，然后 `compileConfig` + `loadConfig` 读应用行为配置（build 时无 `dist/` 产物，先生成配置产物再读——该次编译即唯一的配置编译，配置产物随构建流程生成，无需重复编译），随后执行：
 
-1. **扫描源文件**（全量扫描 `src/**/*.ts`，排除测试文件和声明文件，作为编译 entryPoints）
-2. **编译 TypeScript**（`compileBuildRoutes`：`bundle: false` 逐文件编译，与 dev 一致，打平 src 前缀）
-3. **重新编译配置文件**（`compileConfig`：`faapi.config.ts` → `dist/faapi-config.js`，确保使用最新源码，单文件输出）
-4. **扫描路由**（`scanRoutes` 从产物 `.js` import 拿方法名，filePath 保持源码 `.ts`）+ 排序 + 冲突检测
-5. **生成 schema 文件**（`generateSchemaFiles` → `dist/**/zod.js`，AST 从源码 `.ts`）
-6. **生成路由清单**（`serializeRoutes` + `writeRoutesModule` → `dist/faapi-routes.js`）
-7. **生成 tool 清单 + schema**（`scanTools` 扫描 `src/tools` + `generateToolArtifacts` AST 增强 → `dist/faapi-tools.js` + 每个 tool 的 `zod.js`）
-8. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp, loadEnv } from '@faapi/faapi'` + 兜底 `NODE_ENV=production` + `loadEnv(cwd)` + `createProdApp()` + `listen()`；`--dist` 选项写入 `main.js`，端口由运行时 `PORT` 环境变量决定）
+1. **编译 TypeScript**（`compileBuildRoutes`：`bundle: false` 逐文件编译，与 dev 一致，打平 src 前缀；全量扫描 `src/**/*.ts` 排除测试/声明文件）
+2. **扫描路由**（`scanRoutes` 从产物 `.js` import 拿方法名，filePath 保持源码 `.ts`）+ 排序 + 冲突检测
+3. **生成 schema 文件**（`generateSchemaFiles` → `dist/**/zod.js`，AST 从源码 `.ts`）
+4. **生成路由清单**（`serializeRoutes` + `writeRoutesModule` → `dist/faapi-routes.js`）
+5. **生成 tool 清单 + schema**（`scanTools` 扫描 `src/tools` + `generateToolArtifacts` AST 增强 → `dist/faapi-tools.js` + 每个 tool 的 `zod.js`）
+6. **生成 agent 清单**（`scanAgents` + `generateAgentArtifacts` → `dist/faapi-agents.js`）
+7. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp, loadEnv } from '@faapi/faapi'` + 兜底 `NODE_ENV=production` + `loadEnv(cwd)` + `createProdApp()` + `listen()`；`--dist` 选项以 `JSON.stringify` 写入 `main.js`（Windows 反斜杠路径不损坏），端口由运行时 `PORT` 环境变量决定）
 
 ## 编译模式
 

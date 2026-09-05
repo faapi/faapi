@@ -7,8 +7,11 @@
 作为 `faapi` 命令的入口点，分发到对应命令，处理顶层错误。
 
 **命令分发**：
-- `faapi build` → 调用 `buildCommand`（逐文件编译（bundle: false）到 `dist/` + 生成产物三元组 + 生成 `dist/main.js` 启动入口）
+- `faapi build` → 调用 `buildCommand`（清空产物目录 + 逐文件编译（bundle: false）到 `dist/` + 生成产物三元组 + 生成 `dist/main.js` 启动入口）
 - `faapi` / `faapi dev` → 调用 `devCommand`（编译到 `.faapi/` + 生成产物三元组 + 调 `createDevApp` 启动 dev 应用 + 启动 watcher）
+- `faapi --version` → 输出版本号（从最近的 package.json 逐级探测读取）
+
+**顶层错误处理**：命令执行失败时输出一行友好摘要并置 `process.exitCode = 1`，不再裸堆栈糊屏；设 `FAAPI_DEBUG=1` 附加完整堆栈。
 
 ## 零入口设计
 

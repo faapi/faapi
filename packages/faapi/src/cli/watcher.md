@@ -44,7 +44,9 @@ chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ign
 - 目录不忽略（chokidar 需要递归进入子目录）
 - 文件仅监听 `.ts` 和 `.js` 后缀（`.js` 用于 `faapi.config.js`）
 
-config 文件事件分流：`faapi.config.{ts,js}` 的 add/change 事件只调 `scheduler.schedule()`（重生成 `faapi-config.js`，mtime 短路），不进 `addFiles` 增量编译——config 位于 src/outbase 之外，喂给 `compileDevRoutes` 会让 esbuild 把 `..` 段转义成 `_.._` 目录，在 `.faapi` 下堆积垃圾产物且编译白跑。
+config/tsconfig 事件分流：`faapi.config.{ts,js}` 与 `tsconfig.json` 的 add/change 事件只调 `scheduler.schedule()`（重生成 `faapi-config.js`，mtime 短路），不进 `addFiles` 增量编译——config 位于 src/outbase 之外，喂给 `compileDevRoutes` 会让 esbuild 把 `..` 段转义成 `_.._` 目录，在 `.faapi` 下堆积垃圾产物且编译白跑。`tsconfig.json` 影响别名重写并计入 compileConfig 的 mtime 缓存输入，不监听的话改 paths 后要等下一个无关文件变化才生效。
+
+测试/声明文件过滤：`*.test.ts` / `*.e2e.test.ts` / `*.d.ts` 的事件完全跳过——build/dev 全量编译都不含它们，喂给增量编译会让测试文件的语法错误打断整轮重建（与 `collectSourceFiles` 的 ignore 规则一致）。
 
 ## 重建流程
 

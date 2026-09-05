@@ -43,6 +43,27 @@ describe('buildCommand', () => {
     writeFileSync(abs, content, 'utf-8');
   }
 
+  it('build 清空输出目录：删除路由后旧产物不残留（emptyOutDir 语义）', async () => {
+    writeFile('src/api/old/handler.ts', `export function GET() { return 1; }\n`);
+    writeFile(
+      'tsconfig.json',
+      `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
+    );
+    // 第一次构建：产生 old 路由的产物
+    await buildCommand({ rootDir: tempDir });
+    expect(existsSync(join(tempDir, OUT, 'api/old/handler.js'))).toBe(true);
+
+    // 删除旧路由、新增新路由，再构建
+    rmSync(join(tempDir, 'src/api/old'), { recursive: true, force: true });
+    writeFile('src/api/new/handler.ts', `export function GET() { return 2; }\n`);
+    await buildCommand({ rootDir: tempDir });
+
+    // 旧产物被清空，新产物存在
+    expect(existsSync(join(tempDir, OUT, 'api/old/handler.js'))).toBe(false);
+    expect(existsSync(join(tempDir, OUT, 'api/new/handler.js'))).toBe(true);
+    expect(existsSync(join(tempDir, OUT, 'faapi-routes.js'))).toBe(true);
+  }, 20000);
+
   it('完整构建：逐文件编译 + 产物生成 + 配置合并', async () => {
     // 共享 utils（验证不 bundle inline，作为独立产物存在）
     writeFile(

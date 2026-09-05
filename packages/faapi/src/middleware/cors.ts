@@ -47,16 +47,9 @@ export function cors(options: CorsOptions = {}): FaapiMiddleware {
       allowOrigin = origin.includes(reqOrigin) ? reqOrigin : null;
     }
 
-    if (!allowOrigin) {
-      await next();
-      return;
-    }
-
-    // 设置 CORS 响应头
-    ctx.setHeader('Access-Control-Allow-Origin', allowOrigin);
-
-    // 当 origin 为动态值（true 或数组）时，必须设置 Vary: Origin，
-    // 防止 CDN/浏览器错误缓存针对某个 Origin 的响应给其他 Origin
+    // 当 origin 为动态值（true 或数组）时，响应内容（是否带 ACAO）随 Origin 头变化
+    // ——不匹配被拒的响应同样必须带 Vary: Origin。缺了它，CDN/浏览器按 URL 缓存
+    // "无 ACAO 的拒绝响应"后，可能服务给后续合法 Origin 的请求（缓存污染面）
     if (origin === true || Array.isArray(origin)) {
       const existingVary = ctx.headers.get('vary');
       if (existingVary) {
@@ -67,6 +60,14 @@ export function cors(options: CorsOptions = {}): FaapiMiddleware {
         ctx.setHeader('Vary', 'Origin');
       }
     }
+
+    if (!allowOrigin) {
+      await next();
+      return;
+    }
+
+    // 设置 CORS 响应头
+    ctx.setHeader('Access-Control-Allow-Origin', allowOrigin);
 
     ctx.setHeader('Access-Control-Allow-Methods', methods.join(', '));
 

@@ -61,16 +61,16 @@ readonly 是 TypeScript 的编译期约束，运行时不产生校验语义，AS
 | `Record<K, V>` | `record` | |
 | 命名空间类型（`NS.Type`） | 递归解析 | QualifiedName 引用经 checker 定位到真实声明 |
 | 索引签名与属性共存 | `object` + catchall | `{ a: string; [k: string]: unknown }` 属性保留，索引签名生成 `.catchall(...)`——此前索引签名会丢弃全部属性 |
-| 交叉类型（全部成员为 object） | `object` | 合并属性；含非 object 成员（branded 类型如 `string & {...}`）显式抛 SchemaExtractionError，不静默放宽校验 |
+| 交叉类型（全部成员为 object） | `object` | 合并属性（同名字段类型一致去重、带约束者优先；类型/可选性冲突即 TS 的 never，显式抛 SchemaExtractionError）；含非 object 成员（branded 类型如 `string & {...}`）显式抛 SchemaExtractionError，不静默放宽校验 |
 | `Partial<T>` | `object` | 所有字段变 optional |
-| `Required<T>` | 内部类型 kind | best effort，直接返回内部类型 |
-| `Readonly<T>` | 内部类型 kind | best effort，直接返回内部类型 |
+| `Required<T>` | `object` | 所有字段恢复必填（与 Partial 对称） |
+| `Readonly<T>` | 内部类型 kind | 编译期约束无运行时语义，等同去掉 readonly 修饰符递归解析 |
 | `Pick<T, K>` | `object` | 筛选字段；K 支持字面量联合、类型别名、`keyof T` |
 | `Omit<T, K>` | `object` | 排除字段；K 支持字面量联合、类型别名、`keyof T` |
 | `Map<K, V>` | `map` | JSON 序列化为 entries 数组 `[["k",v],...]`，运行时 `z.preprocess(coerceMap, z.map(...))` 还原 |
 | `Set<T>` | `set` | JSON 序列化为数组 `[item,...]`，运行时 `z.preprocess(coerceSet, z.set(...))` 还原 |
 | type 别名 | 递归解析 | |
-| interface（含 `extends` 继承） | `object` | 合并父接口属性；支持多继承与多级继承 |
+| interface（含 `extends` 继承） | `object` | 合并父接口属性；支持多继承与多级继承。方法签名/存取器成员显式抛 SchemaExtractionError（不静默丢弃） |
 | 泛型 interface / type 别名 | 实参绑定后递归解析 | `Box<string>` 按位置绑定实参；支持默认类型（`<T = string>`）；形参遮蔽同名真实类型；实参缺失且无默认时抛错 |
 | `enum`（字符串/数值枚举） | `union` | 字面量联合；隐式数值枚举递增 |
 | 自引用 / 循环引用 | `ref` | 由 `generateZodSchema` 用 `z.lazy(() => ...)` 处理 |

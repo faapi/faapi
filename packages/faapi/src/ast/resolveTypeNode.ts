@@ -262,7 +262,7 @@ export function resolveTypeNode(
 
   // 交叉类型：A & B → 合并对象属性（全部成员均为 object 时）
   if (ts.isIntersectionTypeNode(typeNode)) {
-    const properties: PropertyType[] = [];
+    const propMap = new Map<string, PropertyType>();
     for (const t of typeNode.types) {
       const resolved = resolveTypeNode(t, checker, visited, bindings);
       if (resolved.kind !== 'object') {
@@ -273,9 +273,29 @@ export function resolveTypeNode(
           `交叉类型包含非 object 成员（${resolved.kind}）,运行时无法校验——branded 类型建议改用具体类型或 unknown`,
         );
       }
-      properties.push(...resolved.properties);
+      for (const prop of resolved.properties) {
+        const existing = propMap.get(prop.name);
+        if (!existing) {
+          propMap.set(prop.name, prop);
+          continue;
+        }
+        // 同名字段：类型或可选性不一致即 TS 语义下的 never——运行时无法校验,
+        // 显式抛错；一致则去重（优先保留带约束的声明,更严格）
+        if (
+          JSON.stringify(existing.type) !== JSON.stringify(prop.type) ||
+          existing.optional !== prop.optional
+        ) {
+          throw new SchemaExtractionError(
+            typeNode.getText(),
+            `交叉类型成员的同名字段 "${prop.name}" 类型冲突（TS 中为 never）,运行时无法校验`,
+          );
+        }
+        if (!existing.constraints?.length && prop.constraints?.length) {
+          propMap.set(prop.name, prop);
+        }
+      }
     }
-    return { kind: 'object', properties };
+    return { kind: 'object', properties: [...propMap.values()] };
   }
 
   // 内联对象类型：{ name: string; age?: number }
@@ -333,6 +353,17 @@ function resolveTypeLiteral(
   let catchall: RuntimeType | undefined;
 
   for (const member of typeNode.members) {
+    // 方法签名/存取器：运行时 JSON 数据无方法语义,静默丢弃会弱化校验——显式抛错
+    if (
+      ts.isMethodSignature(member) ||
+      ts.isGetAccessorDeclaration(member) ||
+      ts.isSetAccessorDeclaration(member)
+    ) {
+      throw new SchemaExtractionError(
+        member.getText(),
+        '对象类型含方法签名或存取器,运行时 JSON 数据无法校验方法——请改用具体属性类型',
+      );
+    }
     // 属性签名：name: string
     if (ts.isPropertySignature(member) && member.name) {
       const name = member.name.getText();
@@ -514,7 +545,7 @@ function resolveTypeReference(
     };
   }
 
-  // Partial<T> / Required<T> / Readonly<T> — best effort，解析内部类型
+  // Partial<T> / Required<T> / Readonly<T> — 解析内部类型
   if (
     (typeName === 'Partial' || typeName === 'Required' || typeName === 'Readonly') &&
     typeNode.typeArguments?.length === 1
@@ -527,6 +558,14 @@ function resolveTypeReference(
         properties: inner.properties.map((p) => ({ ...p, optional: true })),
       };
     }
+    if (inner.kind === 'object' && typeName === 'Required') {
+      // Required 恢复所有字段为必填——静默保留 optional 会让校验弱于 TS 类型
+      return {
+        kind: 'object',
+        properties: inner.properties.map((p) => ({ ...p, optional: false })),
+      };
+    }
+    // Readonly：编译期约束，运行时无校验语义，原样返回（等同去掉 readonly 修饰符）
     return inner;
   }
 
@@ -920,6 +959,17 @@ export function resolveInterfaceDeclaration(
 
   // 处理自身成员（覆盖继承的同名字段）
   for (const member of node.members) {
+    // 方法签名/存取器：运行时 JSON 数据无方法语义,静默丢弃会弱化校验——显式抛错
+    if (
+      ts.isMethodSignature(member) ||
+      ts.isGetAccessorDeclaration(member) ||
+      ts.isSetAccessorDeclaration(member)
+    ) {
+      throw new SchemaExtractionError(
+        member.getText(),
+        '接口含方法签名或存取器,运行时 JSON 数据无法校验方法——请改用具体属性类型',
+      );
+    }
     if (ts.isPropertySignature(member) && member.name) {
       const name = member.name.getText();
       const optional = !!member.questionToken;

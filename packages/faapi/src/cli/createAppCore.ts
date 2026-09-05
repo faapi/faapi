@@ -355,13 +355,17 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   });
 
   // 加载插件 + 应用 handler/upgrade 包装器
-  const { handlerWrappers, upgradeWrappers } = await loadPlugins(config?.plugins, {
+  const { handlerWrappers, upgradeWrappers } = await loadPlugins(
+    config?.plugins,
+    {
+      rootDir,
+      routes: sorted,
+      getRoutes: () => sorted,
+      server,
+      config: pluginConfig,
+    },
     rootDir,
-    routes: sorted,
-    getRoutes: () => sorted,
-    server,
-    config: pluginConfig,
-  });
+  );
   applyPluginWrappers(server, handlerWrappers, upgradeWrappers);
 
   // 关闭状态标记（避免重复关闭）

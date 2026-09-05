@@ -73,7 +73,22 @@ export function startWatcher(options: WatchOptions): void {
   const scheduler = createRebuildScheduler({
     rebuild: rebuildRoutes,
     onError: (err) => {
-      console.error('- Error rebuilding routes:', err instanceof Error ? err.message : String(err));
+      // esbuild 抛错带结构化 errors 数组（file/line/text/frame）——逐条输出，
+      // 压扁成 err.message 会让用户只剩一句摘要找不到位置
+      console.error('- Error rebuilding routes:');
+      const esbuildErr = err as {
+        errors?: Array<{ location?: { file?: string; line?: number }; text?: string }>;
+      };
+      if (Array.isArray(esbuildErr?.errors) && esbuildErr.errors.length > 0) {
+        for (const e of esbuildErr.errors) {
+          const loc = e.location?.file
+            ? `${e.location.file}${e.location.line != null ? `:${e.location.line}` : ''}: `
+            : '';
+          console.error(`  ${loc}${e.text ?? 'compile error'}`);
+        }
+      } else {
+        console.error(' ', err instanceof Error ? err.message : String(err));
+      }
     },
   });
 
@@ -83,7 +98,10 @@ export function startWatcher(options: WatchOptions): void {
   // 同时监听根目录的 faapi.config.{ts,js}（配置变化时重生成 faapi-config.js）
   const CONFIG_FILES = ['faapi.config.ts', 'faapi.config.js'];
   const configAbsPaths = new Set(CONFIG_FILES.map((f) => path.resolve(rootDir, f)));
-  const watchPaths = ['src', ...CONFIG_FILES];
+  // tsconfig.json 变化影响 alias 重写与 mtime 缓存输入（compileConfig 明确把
+  // tsconfig 计入缓存输入），不监听的话改 paths 后要等下一个无关文件变化才生效
+  const watchPaths = ['src', 'tsconfig.json', ...CONFIG_FILES];
+  const scheduleOnly = new Set([...configAbsPaths, path.resolve(rootDir, 'tsconfig.json')]);
   const watcher = chokidar.watch(watchPaths, {
     cwd: rootDir,
     ignoreInitial: true,
@@ -110,22 +128,27 @@ export function startWatcher(options: WatchOptions): void {
   // config 文件事件只触发重生成（compileConfig mtime 短路：无变化时跳过），
   // 不进增量编译——config 在 src/outbase 之外，喂给 compileDevRoutes 会让 esbuild
   // 把 `..` 段转义成 `_.._` 目录，在 .faapi 下堆积垃圾产物
-  watcher.on('add', (file) => {
+  watcher.on('add', (file) => handleFileEvent(file));
+  watcher.on('change', (file) => handleFileEvent(file));
+
+  /**
+   * 文件事件分流：
+   * - config / tsconfig：只 schedule（compileConfig mtime 短路，无变化跳过）
+   * - test/d.ts：完全跳过（build/dev 全量编译都不含它们，喂给增量编译会让
+   *   测试文件的语法错误打断整轮重建）
+   * - 其余源码：进增量编译
+   */
+  function handleFileEvent(file: string): void {
     const abs = path.resolve(rootDir, file);
-    if (configAbsPaths.has(abs)) {
+    if (scheduleOnly.has(abs)) {
       scheduler.schedule();
       return;
     }
-    scheduler.addFiles([abs]);
-  });
-  watcher.on('change', (file) => {
-    const abs = path.resolve(rootDir, file);
-    if (configAbsPaths.has(abs)) {
-      scheduler.schedule();
+    if (/\.(test|e2e\.test)\.tsx?$/.test(abs.replace(/\\/g, '/')) || abs.endsWith('.d.ts')) {
       return;
     }
     scheduler.addFiles([abs]);
-  });
+  }
   watcher.on('unlink', () => {
     // 文件删除：不增量编译（无文件可编译），但触发重生成产物 + reloadRoutes（路由结构变化）
     scheduler.schedule();

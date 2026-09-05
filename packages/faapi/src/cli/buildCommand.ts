@@ -15,6 +15,7 @@ import { compileConfig } from './compileConfig';
 import { loadConfig } from '../config/loadConfig';
 import path from 'node:path';
 import fs from 'node:fs';
+import { isInsideDir, toRealPath } from '../utils/prodPaths';
 
 /** build 模式默认产物目录 */
 const DEFAULT_DIST = 'dist';
@@ -61,6 +62,19 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   const rootDir = options?.rootDir ?? process.cwd();
   const outdir = options?.dist ?? DEFAULT_DIST;
 
+  // 清空输出目录（Vite emptyOutDir 语义）：删除路由后 dist 残留旧 handler.js /
+  // zod.js / map 文件，体积膨胀且误导排查。防误删保护：outdir 必须严格位于
+  // rootDir 内（两侧 realpath 归一化，tmpdir 符号链接不误判）且不等于 rootDir
+  const absOut = path.resolve(rootDir, outdir);
+  const realRoot = toRealPath(path.resolve(rootDir));
+  if (isInsideDir(toRealPath(absOut), realRoot)) {
+    fs.rmSync(absOut, { recursive: true, force: true });
+  } else {
+    console.warn(
+      `! Output directory "${outdir}" is outside the project root, skipping clean (stale artifacts may remain)`,
+    );
+  }
+
   // 加载 config
   // build 时无产物，先 compileConfig 生成临时产物到 outdir，再用 loadConfig 读
   await compileConfig({ rootDir, dist: outdir });
@@ -84,15 +98,8 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
     return;
   }
 
-  // 2. 编译配置文件（faapi.config.ts → <dist>/faapi-config.js）
-  //    重新编译以确保使用最新源码（步骤 0 的编译是为了读 config）
-  console.log('\n[2/8] Compiling config...');
-  const configResult = await compileConfig({ rootDir, dist: outdir });
-  if (configResult.generated) {
-    console.log(`  Written to ${configResult.outputFile}`);
-  } else {
-    console.log('  No config file found, skipped');
-  }
+  // 2. 配置产物已在步骤 0 编译（compileConfig 内部有 mtime 缓存，无源码变化
+  //    时重复调用只会命中缓存——此前重复调用还打印 "Written to" 撒谎日志）
 
   // 3. 扫描路由（扫描源码 .ts 文件列表，但 import 产物 .js 拿方法名）
   console.log('\n[3/8] Scanning routes...');
