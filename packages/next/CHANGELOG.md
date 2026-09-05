@@ -1,5 +1,27 @@
 # @faapi/next
 
+## 4.0.0
+
+### Patch Changes
+
+- Updated dependencies [0337482]
+- Updated dependencies [8947f46]
+- Updated dependencies [eadf440]
+- Updated dependencies
+- Updated dependencies [981c99f]
+- Updated dependencies [f60d137]
+- Updated dependencies [f60d137]
+- Updated dependencies [d822718]
+- Updated dependencies [c18c62e]
+- Updated dependencies [13c6297]
+- Updated dependencies [6f2903f]
+- Updated dependencies [b31a442]
+- Updated dependencies [3c12dc6]
+- Updated dependencies [4617c07]
+- Updated dependencies [9d5865d]
+- Updated dependencies [a0cb30c]
+  - @faapi/faapi@4.0.0
+
 ## 3.3.0
 
 ## 3.2.1

@@ -1,5 +1,175 @@
 # @faapi/faapi
 
+## 4.0.0
+
+### Major Changes
+
+- a0cb30c: # 注册表实例化（方案 A）：tool/agent/skill/agentHandle 注册表从进程级全局单例改为 app 实例级状态
+
+  ## 变更
+
+  每个 app（`createAppBase`）现在创建并持有独立的注册表集合（`AppRegistries`），水合、请求链路、插件、lifecycle 钩子均读写 app 自己的实例，`app.close()` 随实例销毁。多 app 同进程互不串台——此前模块级全局单例 + hydrate 整体替换语义下，后创建的 app 会覆盖先创建的 app 的清单，跨项目数据串台且无报错。
+
+  ## 破坏性变更
+  - **app 不再填充全局单例**：启动后 `getTool()` / `listAgents()` 等全局函数返回默认实例（空）——请改用 `app.registries`（`AppBase` 新增字段）或 `ctx.registries`
+  - **`app.close()` 只清自己的实例**：不再调用全局 `clearToolRegistry()` 等
+  - **业务方 skill 灌入路径变更**：`lifecycle.onReady(ctx)` 的 `ctx` 新增 `registries` 字段，请改用 `ctx.registries.skill.hydrate/upsert`——经全局 `hydrateSkillRegistry` 灌入的数据不会进入 app 的请求链路
+  - **`PluginContext` 新增必填 `registries`**：自定义插件若实现了 PluginContext 形状的 mock/适配需补此字段
+  - **`@faapi/agent` 插件**：工厂注册与 deps 改走 `ctx.registries`（app 实例）——模拟插件 setup 的测试需改用真实 `createAppRegistries()`
+
+  ## 新增 API
+  - `createAppRegistries()`：创建一套 app 级注册表
+  - `AppRegistries` / `ToolRegistry` / `AgentRegistry` / `SkillRegistry` / `AgentHandleStore` 类型
+  - `AppBase.registries` / `AppContext.registries` / `FaapiContext.registries?` / `LifecycleContext.registries` / `PluginContext.registries`
+  - `@faapi/faapi/testing` 的 `CreateTestContextOptions.registries?`
+
+  ## 兼容保留
+
+  四个注册表模块的全局函数（`getTool` / `hydrateToolRegistry` / `getAgent` / `listAgents` / `hydrateSkillRegistry` / `upsertSkill` / `registerAgentHandleFactory` 等）保留，作为**默认实例**的便捷访问器（编程式直调 / 单元测试场景）。注意默认实例与 app 实例相互独立。
+
+### Minor Changes
+
+- 0337482: agent / tools 调用链新增鉴权钩子与请求上下文传递（authHooks）：
+
+  - **ctx 全链路传递**：`@faapi/agent` 工厂捕获请求上下文（此前工厂签名接收 ctx 但未使用），tool handler 签名扩为 `(args, ctx)`、sub-agent 自定义 `run(args, ctx)`——中间件塞入的身份信息（`ctx.user` / `ctx.workspace` 等）首次可流达 tool 层；sub-agent 递归经 deps 展开自动传导
+  - **`beforeToolCall` 执行守卫**（`config.agent`）：所有 tool + sub-agent 调用的必经单点（拦截在 `agent.` 分流之前，一个钩子覆盖两者）。三种返回：`void` 放行 / `{ error }` 拒绝（不执行，error 回传 LLM 调整策略）/ `{ args }` 改写后放行——多租户场景强制注入可信 `workspaceId`，不信任 LLM 传入的标识参数
+  - **`afterToolCall` 审计钩子**：tool / sub-agent 成功返回后调用（异常路径不调用），用于日志/审计/计量
+  - **`filterTools` 可见性过滤**：每次 `run` / `stream` 组装 LLM 可见 tools 清单后过滤（含 agent-as-tool 项）——无权 tool 不进 LLM 视野，比执行时拒绝省一轮调用
+  - **不引入洋葱中间件**：拒绝语义是 `{ error }` 回传 LLM 而非 403 短路，钩子对覆盖中间件全部实际用途；入口鉴权沿用现有 HTTP 中间件，零新增
+  - 设计文档见 `@faapi/agent` 的 `authHooks.md`；使用场景见 faapi-dev 技能 agent.md 的「agent / tools 鉴权（工作区）」章节
+
+- 8947f46: agent 循环可靠性两项改进：
+
+  - **历史 token 预算（`maxHistoryTokens`）**：多轮 tool 循环中对话历史只增不减，大 tool 结果会把发给 LLM 的消息撑爆上下文窗口导致下一轮 400、整个 run 失败。现在可配置 token 预算（近似估算），超预算时从最旧的「轮组」（assistant + 其后全部 tool 结果）开始裁剪——system 与初始 user 永不裁剪、tool 配对不拆散、至少保留最近一轮；裁剪只作用于发给 LLM 的消息副本，本地历史与 trace 不受影响。非流式与流式一致。被裁掉的旧轮不生成摘要（compaction 属后续能力）
+  - **同轮多 tool_call 并行执行**（非流式路径）：LLM 一轮返回多个 tool_call 时从串行改为 `Promise.all` 并行，总耗时从各 tool 之和降为最慢一个。结果仍按 toolCalls 声明顺序回传（与完成顺序无关）、单个 tool 失败不影响其余；`beforeToolCall`/`afterToolCall` 钩子会并发触发（业务方钩子不应依赖调用顺序）；流式路径保持串行（yield 顺序受消费端约束）
+  - `config.agent.maxHistoryTokens`（faapi 配置面）同步新增，plugin 转发至 reactLoop
+
+- d822718: 框架评估修复批次 3：响应压缩、ETag/304 协商与 dev schema 后台预生成。
+
+  - **响应压缩（`config.compression`，默认关闭）**：按 `Accept-Encoding` 协商 br > gzip > deflate（含 q 值与 `*` 通配），压缩 JSON/文本响应；SSE/流式、已压缩、`no-transform`、低于 threshold（默认 1024 字节）的响应自动跳过；无条件补 `Vary: Accept-Encoding`（与 CORS 的 `Vary: Origin` 合并存放）。JSON API 响应体积通常缩小 5-10 倍
+  - **ETag/304 条件请求协商（`config.etag`，默认关闭）**：GET/HEAD 2xx 响应自动生成弱 ETag（SHA-1），`If-None-Match` 弱比较命中返回 304。弱校验器与压缩正确配合（ETag 基于未压缩表示，304 无 body 时压缩自动跳过）；handler 显式 `ctx.setETag()` 时不覆盖。此前框架只有 `setETag` 写头，既不生成也不协商，条件请求能力缺位
+  - **dev schema 后台预生成**：watcher 热替换后按需模式此前只删 zod.js 不重建，每次保存后所有路由的首个请求都要在请求路径上同步付全项目 Program 创建 + schema 生成的代价（p99 尖刺）。现在 reload 后台批量预生成（不阻塞 reload 与请求），请求路径的按需生成（mtime 缓存 + in-flight mutex + 原子写）兜底协同
+
+### Patch Changes
+
+- eadf440: agent 子系统 LLM 调用层新增超时、重试与取消支持（生产长任务稳定性）：
+
+  - **取消（AbortSignal）**：`agent.run/stream` 的 options 新增 `signal`，沿 agentHandle → Agent → reactLoop → provider 透传到底层 HTTP 请求。循环每轮开始前预检查，执行中取消请求中断并抛 `AgentAbortError`（新导出）——业务方通过 `instanceof` 区分用户取消与真实错误（SSE/WS 客户端断开后不再白烧 token）
+  - **超时**：`LlmConfig.timeoutMs`（毫秒，可选，未设置时无超时），provider 层用 `AbortSignal.timeout` 实现，与 run-level `signal` 组合生效；超时触发抛 `LLMProviderError`（message 含 timed out）
+  - **重试**：429 / 5xx / 网络错误自动重试，`LlmConfig.maxRetries`（默认 2，设 0 关闭）。退避优先尊重响应 `Retry-After` 头（封顶 30s），否则指数退避 500ms × 2^attempt；4xx 其他状态（400/401 等）确定性错误不重试；流式仅在连接建立前重试，每次重试刷新超时预算
+  - **流取消**：stream 提前终止（消费者 break）时主动 `reader.cancel()` 释放底层 HTTP 连接，不再等待 body 缓冲耗尽
+
+- 类型校验四项边界修复：
+
+  - **命名空间类型（`NS.Type`）可解析**：QualifiedName 引用此前直接抛"无法解析的引用类型"，现在经 checker 定位到 namespace 内真实声明
+  - **索引签名与属性共存不再丢属性**：`{ a: string; [k: string]: unknown }` 此前索引签名直接吞掉全部具名属性（含继承的），现在属性保留、索引签名生成 `z.object({...}).catchall(...)`——开放对象与封闭字段可同时校验
+  - **交叉类型含非 object 成员显式抛错**：branded 类型（`string & { __brand: 'X' }`）此前静默丢弃非 object 成员导致校验被放宽，现在按"不降级放行"约定抛 SchemaExtractionError
+  - **元组可选前缀 + rest 保留可选性**：`[string?, ...number[]]` 此前 rest 分支丢弃 fixedOptional，空数组（TS 合法）被误拒；zod v4 原生支持 `z.tuple([X.optional()]).rest(...)`，生成端直接应用
+
+- 981c99f: AST 提取链路惰性化重构（健壮性 + 性能）
+
+  - **无关类型不再拖垮 build**：schema 提取改为惰性解析——只解析路由入口类型及其引用可达的类型，文件中未被任何入口引用的类型（哪怕含不支持语法）不再触发 `SchemaExtractionError` 拖垮整个 build/reload。此前 `extractAllTypes` 提前解析文件全部顶层类型，一个无关的坏类型就会让提取整体失败
+  - **消除重复解析**：`analyzeInjection` 新增 `analyzeInjectionInSourceFile` 变体，复用 program 已解析的 SourceFile——此前同一文件 N 个方法会重复 `createSourceFile` 全量 parse N 次；入口类型经 `createLazyTypeResolver` 缓存解析，消除 `extractAllTypes` + `extractTypeInfo` 对同一类型的重复提取
+  - **API 调整**：`collectRouteSchemaSources` 返回值中 `allTypesByFile` / `mergedAllTypes` 替换为 `resolversByFile`（按文件的惰性类型解析器，`resolve(name)` 缓存幂等）；`generateSchemaFileSource` / `generateToolSchemaFileSource` 的 `allTypes` Map 参数改为 `resolveType` 函数。`extractAllTypes` 保留为独立 AST 能力不变
+  - tool schema 收集（`collectToolSchemaSources`）同步惰性化，收益与路由 schema 一致
+
+- f60d137: 框架评估修复批次 1：三个 P0 功能缺陷 + 热路径性能 + 安全边界。
+
+  **@faapi/faapi**
+
+  - **dev 按需编译补齐依赖闭包（P0）**：`ensureCompiled` 此前只编译 handler 单文件，handler 引用的共享模块（`../../lib/db`）无产物，首次请求 import 即 `ERR_MODULE_NOT_FOUND`——真实项目 dev 模式不可用。现在通过 `collectRelativeImports`（相对 import + tsconfig paths 别名，见 `collectImports.md`）收集 src 内传递依赖后批量编译；`middlewares.ts` 同样在首次加载前按需编译（`ensureMiddlewaresCompiled`）。新增依赖闭包完整请求链路 e2e
+  - **zod.js 命名类型文件级去重（P0）**：同一 handler 文件的多个方法引用同一命名类型时，产物含重复 `const` 声明，zod.js import 即 SyntaxError、该文件所有路由 500。现在命名类型声明按名去重后提升到文件头只生成一次（`generateZodSchemaSourceParts` 结构化片段，消灭 import 剥离正则的字符串协议）
+  - **跨文件类型二次引用不再静默降级 `z.unknown()`（P0）**：`import type { User }` 类型二次引用经惰性解析器找不到声明时静默生成 `z.unknown()`，校验弱于 TS 类型且无告警。现在 `extractTypeInfo` 回退到 program 其他源文件查找同名顶层声明（与 `resolveImportAlias` 兜底语义一致），仍找不到时按"不降级放行"约定显式抛 `SchemaExtractionError`
+  - **每请求热路径去掉 TS AST 解析**：`resolveInjection` 此前每请求对 handler 做 `fn.toString()` + 完整 TS 解析（无缓存），现在按函数引用 WeakMap 缓存，handler 只解析一次
+  - **`listen()` 处理 `error` 事件**：端口被占用（`EADDRINUSE`）此前以裸堆栈崩进程且 Promise 永不 settle，现在 reject 携带端口号与排查提示的友好错误
+  - **SSE 断连内存泄漏**：客户端断开时源流不销毁导致 `SseWriter.aborted` 永不置位、数据堆积在无消费者的流 buffer。现在断连时销毁源流（触发 web stream cancel）并按正常完成收尾；`handleRequest` catch 对已断开连接跳过 500 兜底与 onError 误报
+  - **WS 修复**：upgrade 监听器整体兜底 catch（此前路由匹配/上下文构造抛错即 unhandled rejection 崩进程）；二进制帧透传 Buffer（此前强制 utf8 解码不可逆损坏二进制协议）；upgrade 监听无条件挂载（修复 dev watch 中新增第一个 WS 路由永远 404）
+  - **DELETE body 语义对齐**：此前 DELETE 校验后的 query 被当作 body 注入（handler 声明 `body` 静默拿到 query），且请求体流不消费导致 keep-alive 连接无法复用。现在 DELETE body 单独解析注入（无 schema 不校验）
+  - **状态码映射对齐 zod v4**：缺失必填字段此前返回 422 `TYPE_MISMATCH`（文档承诺 400 `MISSING_FIELD`），现在正确映射；补 `invalid_format`/`invalid_key`/`invalid_element` 映射，删除 zod v3 遗留死代码
+  - **main.js 路径转义**：`--dist` 传入 Windows 反斜杠路径时生成损坏代码（`.\build` 的 `\b` 变退格转义），改用 `JSON.stringify` 生成合法字符串字面量
+  - **watcher 修复**：config 文件事件不再喂给 `compileDevRoutes`（此前在 `.faapi/_.._/` 下堆积垃圾产物）；`ignored` 过滤改按路径段判断（不误伤 `node_modules-helper.ts` 类合法文件名）
+
+  **@faapi/mcp**
+
+  - **`tools/call` 参数净化**：校验后此前 `Object.assign(args, parsed.data)` 把 schema 未声明的任意字段原样透传给 handler（strip 语义失效，原型污染类注入面），现在直接传 `parsed.data`
+  - **协议对齐**：参数校验失败改为返回 `isError: true` 的 tool result（LLM 可自纠）而非协议层 -32602；非 initialize 请求要求完成握手（`notifications/initialized`）+ 携带有效 `Mcp-Session-Id`（防跳过能力协商/匿名调 tool）
+  - **Origin 校验**：新增 `allowedOrigins` 选项（`createMcpHandler`/`createMcpNodeHandler` 透传），MCP 规范建议的 DNS rebinding 防护
+  - 移除未使用的必需 peerDependency `@faapi/faapi`（独立 MCP SDK 不应强制拖入整个框架）
+
+  **@faapi/agent**
+
+  - **`tools`/`agents` 声明成为执行白名单**：此前声明只约束 LLM 可见性，LLM 幻觉或被提示注入时可执行任意已注册 tool/sub-agent。现在执行前按声明集合强制校验，未声明拒绝并回传 LLM（每个 depth 层按自己的声明集合校验）
+
+- f60d137: 框架评估修复批次 2：HTTP 语义补齐、优雅停机、性能与产物一致性。
+
+  - **HEAD 回退 GET**：无显式 HEAD 路由时复用 GET handler（Node 自动丢弃 body）。探活、CDN 健康检查、HTTP 客户端预检常用 HEAD——此前只定义 GET 的路由对 HEAD 返回 405，监控大面积误报。`findAllowedMethods` 在 GET 允许时把 HEAD 加入 Allow 头（RFC 9110）
+  - **默认优雅停机**：`listen()` 现在默认注册 SIGTERM/SIGINT 处理（进程级仅一次），收到信号走 `app.close()`（drain 在途请求 + `onClose` 钩子 + 注册表清理）后退出——此前仅在配置了 `onClose` 时注册。`close()` 从"立即 `closeAllConnections` 硬关"改为 drain 语义：断开空闲 keep-alive → 等在途请求完成 → SSE/WS 长连接超时（`FAAPI_SHUTDOWN_TIMEOUT_MS`，默认 10s）后强制断开。滚动部署不再硬断连接
+  - **query 重复 key 聚合为数组**：`?tag=a&tag=b` 现在得 `{ tag: ['a', 'b'] }`（对齐 Express qs / Hono getAll）——此前 last-wins 静默丢弃，声明 `string[]` 的 query 字段永远校验失败（解析端从未产出数组）。单值字段行为不变
+  - **dev 按需 Program 缓存按 tsconfig 共享**：共享缓存 key 此前含文件列表，每个路由文件各自持有一份全项目 TS Program（内存 O(路由数 × 项目大小)，无淘汰）；现在同一 tsconfig 只建一份 Program，通过 `getSourceFile` 校验覆盖全部入口
+  - **产物原子写**：zod.js、faapi-routes.js、faapi-tools.js、faapi-agents.js、faapi-helpers.js 统一改为 tmp+rename 原子写（新增 `utils/atomicWrite`）——dev watch 重建与在途请求并发时，请求不会再 import 到截断的半成品产物
+  - **`formatErrorResponse` 不再就地改写业务方 `response.fail` 返回对象**：issues 附加改为浅拷贝扩展，业务方复用/冻结 fail 返回对象不再引发跨请求污染或静默失败
+  - **rebuildScheduler 待编译文件去重**：编辑器连续保存触发的多次 change 事件不再导致同一文件在同一轮重复编译
+  - **readTsconfig 按 mtime 缓存**：watcher 每轮重建、每次首请求按需编译都会读 tsconfig，Compiler API 解析（含 extends 链合并）结果按 mtime 缓存，tsconfig 变化自动失效
+
+- c18c62e: 框架评估修复批次 4：注册表清理所有权、MCP 定时器泄漏、观测数据修正与会话上限。
+
+  **@faapi/faapi**
+
+  - **注册表清理所有权守卫**：`app.close()` 此前无条件清空全局 tool/agent/skill 注册表与 agent handle 工厂——同进程多 app 场景（测试/嵌入）下，先创建的 app close 会清掉运行中 app 的注册表。现在仅在自身是当前单例 app 时清理，与单例清理的所有权检查语义对称
+
+  **@faapi/mcp**
+
+  - **Node 适配器 SSE 断连泄漏修复**：客户端断开后源流不销毁，底层 web ReadableStream 的 `cancel()` 永不触发——SSE 心跳 `setInterval` 持续 enqueue 到无消费者的流（定时器 + 队列持续泄漏）。现在断连时销毁源流并按正常完成收尾（与主包 sendNodeResponse 语义一致）
+  - **SessionManager 会话数上限**：新增 `sessionMaxSessions` 选项（默认 1000，0 不限），`create` 时超限按 LRU（最久未活动）淘汰并关闭订阅者——防 initialize 洪水在 TTL 窗口内无限堆内存
+
+  **@faapi/agent**
+
+  - **并行 tool tracing durationMs 失真修复**：结束时间此前在 `Promise.all` 之后的串行循环里统一采集，同轮每个 tool 的 `durationMs` 都包含等待其他 tool 的时间（全部失真为「最慢 tool」耗时）。现在在各自执行闭包内采集，`durationMs` 只反映自身执行耗时
+
+- 13c6297: 框架评估修复批次 5：AST 静默弱化、插件加载口径、build 清目录与 CLI DX。
+
+  - **AST 三类静默弱化消除（不再违背「不降级放行」约定）**：
+    - 接口/对象类型含方法签名或存取器此前被静默丢弃（校验弱于 TS 类型且无告警），现在显式抛 `SchemaExtractionError`
+    - `Required<T>` 此前原样返回内部类型（可选字段在 schema 中仍是 optional），现在与 `Partial` 对称恢复必填；`Readonly<T>` 明确为编译期约束等同去掉修饰符
+    - 交叉类型同名字段此前直接 push 合并（重复字段后者静默胜出，校验比 TS 宽松），现在按名去重（类型一致时保留带约束的声明），类型/可选性冲突（TS 语义为 never）显式抛错
+  - **loadPlugins 错误口径统一**：插件失败此前仅单条 `console.warn` 易被淹没（prod 下鉴权类插件静默丢失等同裸奔），现在收集进返回值 `failures` 并在加载完成后 `console.error` 汇总；非法声明不再崩启动；`path` 声明相对项目根目录解析为 file URL（此前相对 faapi 包产物解析，几乎必然失败）
+  - **build 清空输出目录（emptyOutDir 语义）**：删除/重命名路由后 `dist/` 不再残留死产物；防误删保护——outdir 不在 rootDir 内时跳过清空并告警
+  - **build 移除重复 `compileConfig` 调用**：mtime 缓存引入后第二次调用只命中缓存却打印 "Written to" 谎报日志
+  - **CLI**：`faapi --version` 输出版本号；命令失败输出一行友好摘要（`FAAPI_DEBUG=1` 附完整堆栈），不再裸堆栈糊屏
+  - **watcher**：重建失败逐条输出 esbuild 结构化错误（file:line + text），不再压扁成一句摘要；监听 `tsconfig.json` 变化（别名重写与 mtime 缓存输入）；增量编译跳过 `*.test.ts` / `*.e2e.test.ts` / `*.d.ts`（测试文件语法错误不再打断 dev 重建）
+  - **CORS**：动态 origin（true/数组）下 Origin 不匹配的拒绝响应同样补 `Vary: Origin`——缺了它 CDN 按 URL 缓存拒绝响应后可能服务给合法 Origin（缓存污染面）
+
+- 6f2903f: 框架评估修复批次 6：低影响性能微优化与诊断增强。
+
+  - **响应头零重建**：仅 headers 型 meta（helmet 开启后每请求 ~13 个静态头）此前导致 `ctx.ok()` / `ctx.fail()` / 中间件返回的 Response 每请求经历 `new Headers()` 拷贝 + `new Response()` 重建；现在延迟到 Node 发送层一次性 `setHeader`（`pendingMeta` 通道，WeakMap 弱键），compression / etag 重建路径自动搬运
+  - **动态路由 pattern 预编译**：模式段 split 此前每请求对每条动态路由重复执行，现在索引构建期一次性预编译（`DynamicEntry.segments`）
+  - **路由派生路径缓存**：每请求的 `path.resolve`（handler 绝对路径）与 `getRuntimeSchemaPath` 字符串运算按 route 对象 WeakMap 缓存（清单替换自动失效）
+  - **空白 body 判空**：`text.trim() === ''` 的全量字符串拷贝改为 length 短路 + 正则扫描
+  - **目录中间件首载 in-flight 去重**：冷启动并发首请求对同一 middlewares.ts 不再重复 import + 合并（对照 compileOnDemand 的 mutex 模式）
+  - **SchemaExtractionError 带 file:line:column**：不支持语法 / 方法签名 / 交叉冲突等抛错点经 `SchemaExtractionError.at(node)` 携带精确源码位置，几百行类型文件不再靠肉眼定位
+  - **coerceBoolean 大小写不敏感**：`"True"` / `"TRUE"` 现可正确转换（对齐 HTML 表单习惯）
+  - **build 检查 CJS 项目**：package.json 缺 `"type": "module"` 时构建告警（产物为 ESM，`node dist/main` 否则报难以关联的语法错误）
+
+- b31a442: 修复两处参数校验正确性问题：
+
+  - **数字/布尔字面量的 query 校验不再必然失败**：query/params 声明 `status: 1 | 2` 这类字面量（联合）时，URL 传来的是字符串 `"1"`，此前裸 `z.literal(1)` 必然校验失败。现在 coerce 模式下数字/布尔字面量（含 union 成员级）自动包 `z.preprocess` 做字符串转换；混合联合（`'active' | 1`）中仅数字/布尔成员包裹，string 字面量天然命中
+  - **数组 body 不再被静默替换为 `{}`**：`type POSTBody = string[]` 生成的 schema 是 `z.array`，但运行时校验前数组输入被替换为 `{}`，导致合法数组 body 永远校验失败且 issue 误导为 `received object`；无 schema 时数组 body 也会被静默吞掉。现在校验输入与校验结果均原样透传，数组/顶层原始值 body（如 `type POSTBody = string`）正常工作
+
+- 3c12dc6: 修复三处正确性问题：
+
+  - **@faapi/faapi**：`interface extends` 继承不再抛 SchemaExtractionError（heritage 节点此前未接入解析链，与文档承诺不符）；同时新增泛型类型支持——泛型 interface / type 别名按位置绑定类型实参（`Box<string>`）、支持默认类型形参（`<T = string>`）、泛型形参遮蔽同名真实类型，实参缺失且无默认时显式抛错
+  - **@faapi/mcp**：GET SSE 心跳 tick 续期 session（`SessionManager.touch`），只收推送不发请求的客户端不再因空闲 TTL 被 30 分钟强制断开；携带无效/已过期 `Mcp-Session-Id` 的 GET 请求改为返回 404（MCP 规范），客户端可据此重新 initialize 而非静默空转
+  - **@faapi/agent**：OpenAI provider 的 SSE 解析兼容 CRLF / CR 行尾（SSE 规范允许），使用 CRLF 行尾的 OpenAI 兼容网关此前流式输出完全失效（事件无法切分、`[DONE]` 识别失败）
+
+- 4617c07: watcher 加固：修复重建调度与编译效率问题
+
+  - **重入竞态修复**：重建链（增量编译 + config 重生成 + reload 三件套）很容易超过 debounce 的 100ms 窗口，此前重建进行中的文件事件会并发触发第二个重建，导致并发写产物、状态交错不一致。新增 `createRebuildScheduler` 调度器：重建进行中不重入，新事件只累积文件，当前轮结束后自动串行补跑
+  - **编译失败不再丢文件**：此前待编译集合在编译前被清空，编译失败（如语法错误）后这批文件被丢弃，同批次无关文件必须等下次修改才能重编译。现在失败批次回灌待编译集合，等待下次文件事件一起重编译（不主动定时重试，避免错误刷屏）
+  - **config 重编译短路**：`compileConfig` 内置 mtime 短路缓存——watcher 每次重建（改任意 src 文件）此前都无条件执行 3 次 esbuild build + 依赖图递归读盘；现在 config 源及其依赖无变化时直接跳过。`faapi build` 步骤 0/2 的重复编译也由此自然短路
+
+- 9d5865d: - **@faapi/mcp**：过期 session 不再参与广播与查询——`broadcastToSession` 对目标会话做过期检查（过期即清扫并关闭订阅者，不投递），`allSessionIds` / `findSubscribersOfUri` 遍历前清扫过期会话。长时间无新 `initialize` 的服务此前会累积幽灵 session（常驻内存、持续接收广播的空转 enqueue），现在广播/查询路径惰性清除
+  - **@faapi/faapi**：内部重构——`extractToolMetadata` / `extractAgentMetadata` 的 JSDoc 工具函数（`hasExportModifier` / `getJSDocFromNode` / `extractDescription` / `@tag` 覆盖名提取）统一到 `jsDocMetadata` 模块，消除逐字重复
+
 ## 3.3.0
 
 ### Minor Changes

@@ -1,5 +1,35 @@
 # @faapi/schema
 
+## 4.0.0
+
+### Patch Changes
+
+- 06b1f05: 修复 resource 批量重建的 N+1 广播风暴：
+
+  - `mcpServer` 的 `removeResource` / `removeResourceTemplate` 新增 `{ silent: true }` 选项——跳过 `notifications/resources/list_changed` 逐次广播
+  - `@faapi/schema` 的 schemaServer 资源重建（先清 N 个旧 resource 再注册）改为静默删除、末尾统一广播一次——路由多的项目此前每次 dev reload 会向所有 SSE session 发送 N+1 次相同通知
+
+- Updated dependencies [0337482]
+- Updated dependencies [8947f46]
+- Updated dependencies [eadf440]
+- Updated dependencies
+- Updated dependencies [981c99f]
+- Updated dependencies [f60d137]
+- Updated dependencies [f60d137]
+- Updated dependencies [d822718]
+- Updated dependencies [c18c62e]
+- Updated dependencies [13c6297]
+- Updated dependencies [6f2903f]
+- Updated dependencies [b31a442]
+- Updated dependencies [3c12dc6]
+- Updated dependencies [4617c07]
+- Updated dependencies [5d95fdd]
+- Updated dependencies [9d5865d]
+- Updated dependencies [06b1f05]
+- Updated dependencies [a0cb30c]
+  - @faapi/faapi@4.0.0
+  - @faapi/mcp@4.0.0
+
 ## 3.3.0
 
 ## 3.2.1
