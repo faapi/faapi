@@ -33,14 +33,8 @@ export default defineConfig({
     // V8 注入让 setup 变慢，默认 10s 不够。提升到 30s 让 e2e 在 coverage 模式下不超时
     hookTimeout: 30000,
     teardownTimeout: 30000,
-    // 文件级并行 + fork 池上限 2。
-    // 历史：CI 曾因资源紧张串行化（fileParallelism:false + maxWorkers:1 + singleFork，
-    // 见 a3f7014/dcb7827，症状含 OOM 与 fork 子进程 ERR_IPC_CHANNEL_CLOSED——后者是
-    // 内存压力下子进程被杀的表现），当时还在 fork 子进程设过 8GB 堆上限。
-    // 两者均已随条件解除而移除：CI 按包拆 matrix（每 job 独占 4 vCPU / 16 GB runner，
-    // 包间内存竞争消除）；forks 池默认 isolation——每个测试文件独立子进程、跑完即退，
-    // 单文件堆工作集远低于 V8 默认 4GB 上限（8GB 防御针对的是 singleFork 单进程
-    // 累计全部文件的场景）。maxWorkers:2 理论堆上限 2×4=8GB，远离物理内存。
+    // fork 池上限 2：CI test 按包拆 matrix（每 job 独占 4 vCPU / 16 GB runner），
+    // 2 workers 与 CPU 数匹配、内存充裕——forks 池每个测试文件独立子进程，单文件堆远低于 V8 默认 4GB
     maxWorkers: 2,
     pool: 'forks',
     // 覆盖率默认配置：--coverage 时无需手传 CLI 参数
