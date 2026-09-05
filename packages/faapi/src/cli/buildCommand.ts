@@ -149,8 +149,10 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   console.log('\n[8/8] Generating entry file...');
   const mainPath = path.resolve(rootDir, outdir, 'main.js');
   // 非默认 dist 时写入 createProdApp 参数，让 prod 启动时能定位到产物目录
+  // JSON.stringify 生成合法 JS 字符串字面量：Windows 反斜杠路径（.\build 的 \b 是退格转义）
+  // 与含引号路径不再损坏
   const createProdAppArgs =
-    options?.dist && options.dist !== DEFAULT_DIST ? `{ dist: '${outdir}' }` : '';
+    options?.dist && options.dist !== DEFAULT_DIST ? `{ dist: ${JSON.stringify(outdir)} }` : '';
   const mainContent = `// 由 faapi build 自动生成，请勿手动编辑
 import { createProdApp, loadEnv } from '@faapi/faapi';
 

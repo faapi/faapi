@@ -65,6 +65,20 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       const sessionId = initRes.headers.get('Mcp-Session-Id');
       expect(sessionId).toBeTruthy();
 
+      // 完成握手（notifications/initialized）
+      await handleMcpRequest(
+        new Request('http://localhost/mcp', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            'Mcp-Session-Id': sessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+        }),
+        mcp,
+      );
+
       // tools/list 带 session
       const listReq = new Request('http://localhost/mcp', {
         method: 'POST',
@@ -95,6 +109,26 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       const res = await handleMcpRequest(req, mcp);
       expect(res.status).toBe(404);
     });
+
+    it('缺失 Mcp-Session-Id 头的请求返回 400（防跳过握手直接调 tool）', async () => {
+      const req = new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'hello' },
+        }),
+      });
+      const res = await handleMcpRequest(req, mcp);
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error.message).toContain('Mcp-Session-Id');
+    });
   });
 
   // ─── POST: tools/call ─────────────────────────────────
@@ -111,7 +145,14 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
           body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize' }),
         });
         const res = await handleMcpRequest(initReq, server);
-        return res.headers.get('Mcp-Session-Id')!;
+        const sid = res.headers.get('Mcp-Session-Id')!;
+        // 完成握手：MCP 规范要求客户端在 initialize 后发送 notifications/initialized，
+        // 非 initialize 请求要求 session.initialized（与官方 SDK 行为一致）
+        await handleMcpRequest(
+          batchReq(sid, { jsonrpc: '2.0', method: 'notifications/initialized' }),
+          server,
+        );
+        return sid;
       })();
     }
 
@@ -201,6 +242,20 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       });
       const initRes = await handleMcpRequest(initReq, mcp);
       const sessionId = initRes.headers.get('Mcp-Session-Id');
+
+      // 完成握手（notifications/initialized）
+      await handleMcpRequest(
+        new Request('http://localhost/mcp', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            'Mcp-Session-Id': sessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+        }),
+        mcp,
+      );
 
       const callReq = new Request('http://localhost/mcp', {
         method: 'POST',
@@ -712,6 +767,20 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       const initRes = await handleMcpRequest(initReq, mcp);
       const sessionId = initRes.headers.get('Mcp-Session-Id');
 
+      // 完成握手（notifications/initialized）
+      await handleMcpRequest(
+        new Request('http://localhost/mcp', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            'Mcp-Session-Id': sessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+        }),
+        mcp,
+      );
+
       const pingReq = new Request('http://localhost/mcp', {
         method: 'POST',
         headers: {
@@ -725,6 +794,71 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.result).toEqual({});
+    });
+  });
+
+  // ─── Origin 校验（DNS rebinding 防护）──────────────────
+
+  describe('Origin 校验', () => {
+    it('配置 allowedOrigins 且 Origin 不匹配时返回 403', async () => {
+      const req = new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Origin: 'https://evil.example.com',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      });
+      const res = await handleMcpRequest(req, mcp, {
+        allowedOrigins: ['https://good.example.com'],
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('配置 allowedOrigins 且 Origin 匹配时正常处理', async () => {
+      const req = new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Origin: 'https://good.example.com',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      });
+      const res = await handleMcpRequest(req, mcp, {
+        allowedOrigins: ['https://good.example.com'],
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('未携带 Origin 头（非浏览器客户端）时放行', async () => {
+      const req = new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      });
+      const res = await handleMcpRequest(req, mcp, {
+        allowedOrigins: ['https://good.example.com'],
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('未配置 allowedOrigins 时不校验 Origin（兼容默认）', async () => {
+      const req = new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Origin: 'https://any.example.com',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
+      });
+      const res = await handleMcpRequest(req, mcp);
+      expect(res.status).toBe(200);
     });
   });
 });

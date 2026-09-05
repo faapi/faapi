@@ -165,17 +165,19 @@ type ZodSafeParseResult = ZodSafeParseSuccess | ZodSafeParseError;
  * 将 zod v4 error issues 映射为框架的 ValidationIssue
  *
  * zod code → 框架 ValidationErrorCode 映射：
- * - invalid_type / invalid_union → TYPE_MISMATCH（422）
- * - too_small / too_big / invalid_string → INVALID_VALUE（422）
- * - invalid_value（v4 新增，合并了 v3 的 invalid_enum_value / invalid_literal）→ INVALID_VALUE（422）
+ * - invalid_type（received 非 undefined） / invalid_union → TYPE_MISMATCH（422）
+ * - invalid_type（received === 'undefined'，即缺失必填字段）→ MISSING_FIELD（400）
  * - unrecognized_keys → INVALID_FORMAT（400）
- * - custom → INVALID_VALUE（422）
+ * - invalid_value / invalid_format（v4 的 email/url/uuid/regex 等格式检查）/
+ *   invalid_key / invalid_element（v4 的 record/map 元素检查）/
+ *   too_small / too_big / invalid_intersection_types / not_multiple_of / custom
+ *   → INVALID_VALUE（422）
  *
  * path 数组转为 dot 路径（如 ['user', 'address', 'city'] → 'user.address.city'）。
  */
 function mapZodIssues(error: ZodSafeParseError['error']): ValidationIssue[] {
   return error.issues.map((issue) => {
-    const code = mapZodCode(issue.code, issue.message);
+    const code = mapZodCode(issue);
     const path = issue.path.map(String).join('.') || '';
     return {
       path,
@@ -187,30 +189,44 @@ function mapZodIssues(error: ZodSafeParseError['error']): ValidationIssue[] {
   });
 }
 
+interface ZodIssueLike {
+  code: string;
+  expected?: string;
+  received?: string;
+  message: string;
+}
+
 /**
- * 映射 zod issue code 到框架 ValidationErrorCode
+ * 映射 zod v4 issue code 到框架 ValidationErrorCode
+ *
+ * zod v4 已移除 invalid_string（v3 遗留），格式类检查（email/url/uuid/regex）
+ * 产出 invalid_format；record/map 的键/元素检查产出 invalid_key / invalid_element。
  */
-function mapZodCode(zodCode: string, message: string): ValidationErrorCode {
-  switch (zodCode) {
+function mapZodCode(issue: ZodIssueLike): ValidationErrorCode {
+  switch (issue.code) {
     case 'invalid_type':
+      // zod v4 对缺失必填字段产出 invalid_type，无独立 missing code；
+      // received 字段缺失，"received undefined" 只出现在 message 中
+      if (issue.received === 'undefined' || /received undefined/i.test(issue.message)) {
+        return 'MISSING_FIELD';
+      }
+      return 'TYPE_MISMATCH';
     case 'invalid_union':
     case 'invalid_union_discriminator':
       return 'TYPE_MISMATCH';
     case 'unrecognized_keys':
       return 'INVALID_FORMAT';
     case 'invalid_value':
-    case 'invalid_string':
+    case 'invalid_format':
+    case 'invalid_key':
+    case 'invalid_element':
     case 'too_small':
     case 'too_big':
     case 'invalid_intersection_types':
     case 'not_multiple_of':
-      return 'INVALID_VALUE';
     case 'custom':
       return 'INVALID_VALUE';
     default:
-      if (message.includes('Required') || message.includes('required')) {
-        return 'MISSING_FIELD';
-      }
       return 'INVALID_VALUE';
   }
 }

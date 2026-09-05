@@ -288,6 +288,26 @@ describe('generateZodSchema', () => {
     });
   });
 
+  describe('ref 解析失败', () => {
+    it('解析器找不到声明时抛 SchemaExtractionError（不静默降级 z.unknown）', () => {
+      const resolveType: TypeResolver = () => undefined;
+      expect(() =>
+        generateZodSchemaSource(
+          {
+            name: 'GETQuery',
+            properties: [],
+            runtimeType: {
+              kind: 'object',
+              properties: [{ name: 'a', type: { kind: 'ref', name: 'Ghost' }, optional: false }],
+            },
+          },
+          resolveType,
+          'GETQuery',
+        ),
+      ).toThrow(/Ghost/);
+    });
+  });
+
   describe('嵌套对象', () => {
     it('多层嵌套', () => {
       const schema = makeZodSchemaObject(

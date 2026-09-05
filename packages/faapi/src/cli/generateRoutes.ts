@@ -8,6 +8,7 @@ import type {
 } from '../router/routeTypes';
 import type { HttpMethod } from '../router/constants';
 import { toProdFilePath } from '../utils/prodPaths';
+import { atomicWriteFile } from '../utils/atomicWrite';
 
 /**
  * 序列化路由记录（可写入 JS 模块，无函数引用）
@@ -135,16 +136,13 @@ export async function writeRoutesModule(
   manifest: SerializedRouteManifest,
   outputPath: string,
 ): Promise<void> {
-  const dir = path.dirname(outputPath);
-  await fs.promises.mkdir(dir, { recursive: true });
-
   // 用 JSON.stringify 嵌入，保证字符串转义安全
   const content = `// 自动生成，请勿手动编辑（faapi build 产物）
 export const routes = ${JSON.stringify(manifest.routes, null, 2)};
 export const wsRoutes = ${JSON.stringify(manifest.wsRoutes, null, 2)};
 `;
 
-  await fs.promises.writeFile(outputPath, content, 'utf-8');
+  await atomicWriteFile(outputPath, content);
 }
 
 /**

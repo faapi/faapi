@@ -130,6 +130,33 @@ function setCurrentApp(app: AppBase | null): void {
   }
 }
 
+/** 默认优雅关闭信号 handler 是否已安装（写入 globalThis，跨模块实例共享） */
+const SHUTDOWN_INSTALLED_KEY = Symbol.for('faapi.defaultShutdownInstalled');
+
+/**
+ * 注册默认优雅关闭信号（SIGTERM/SIGINT，进程级仅注册一次）
+ *
+ * 收到信号时关闭当前 app 单例（app.close() 内部完成 drain + onClose 钩子 +
+ * 注册表清理）后退出。faapi 单进程单 app 设计——单例即唯一运行中的 app；
+ * 测试场景多次 listen 不会堆积 process 监听器（globalThis 标记防重装）。
+ */
+function registerDefaultShutdownHandlers(): void {
+  const g = globalThis as Record<symbol, unknown>;
+  if (g[SHUTDOWN_INSTALLED_KEY]) return;
+  g[SHUTDOWN_INSTALLED_KEY] = true;
+
+  const shutdown = (signal: string): void => {
+    console.log(`\n- Received ${signal}, shutting down...`);
+    void (async () => {
+      const app = getCurrentApp();
+      if (app) await app.close();
+      process.exit(0);
+    })();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+}
+
 /**
  * 获取当前 faapi app 单例
  *
@@ -349,8 +376,24 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       const envPort = process.env.PORT ? Number(process.env.PORT) : undefined;
       const actualPort = listenPort ?? options?.port ?? envPort ?? DEFAULT_PORT;
 
-      return new Promise<Server>((resolve) => {
+      return new Promise<Server>((resolve, reject) => {
+        // listen 阶段错误（端口占用等）转为 Promise reject，避免未监听 'error'
+        // 事件以裸堆栈崩掉进程；成功后解除，运行期错误语义不变
+        const onListenError = (err: Error): void => {
+          if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+            reject(
+              new Error(
+                `Port ${actualPort} is already in use. ` +
+                  `Is another faapi instance running? Change the port via the PORT env var.`,
+              ),
+            );
+            return;
+          }
+          reject(err);
+        };
+        server.once('error', onListenError);
         server.listen(actualPort, async () => {
+          server.off('error', onListenError);
           const address = server.address();
           const p = typeof address === 'object' && address !== null ? address.port : actualPort;
 
@@ -380,16 +423,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
             }
           }
 
-          // 注册优雅关闭信号（仅当配置了 onClose）
-          if (config?.lifecycle?.onClose) {
-            const graceful = async (signal: string): Promise<void> => {
-              console.log(`\n- Received ${signal}, shutting down...`);
-              await app.close();
-              process.exit(0);
-            };
-            process.on('SIGTERM', () => void graceful('SIGTERM'));
-            process.on('SIGINT', () => void graceful('SIGINT'));
-          }
+          // 注册默认优雅关闭信号（进程级仅注册一次，faapi 单进程单 app 设计）
+          registerDefaultShutdownHandlers();
 
           // onReady 生命周期钩子
           if (config?.lifecycle?.onReady) {
@@ -495,14 +530,14 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       if (closed) return;
       closed = true;
 
-      // 停止接受新连接（HTTP/2 server 支持，HTTP/1.1 无此方法）
-      const s = server as unknown as Record<string, unknown>;
-      if (typeof s.closeIdleConnections === 'function') {
-        (s.closeIdleConnections as () => void)();
-      }
-      if (typeof s.closeAllConnections === 'function') {
-        (s.closeAllConnections as () => void)();
-      }
+      const s = server as unknown as {
+        closeIdleConnections?: () => void;
+        closeAllConnections?: () => void;
+      };
+
+      // 停止接受新连接 + 断开空闲 keep-alive 连接；在途请求继续执行直至完成（drain）。
+      // 此前 closeAllConnections 在等待之前调用，会直接掐断在途请求（硬关，非优雅停机）
+      s.closeIdleConnections?.();
 
       if (config?.lifecycle?.onClose) {
         await config.lifecycle.onClose({ rootDir, routes: sorted, server });
@@ -522,15 +557,40 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
         return;
       }
 
-      return new Promise<void>((resolve) => {
+      const drained = new Promise<void>((resolve) => {
         server.close((err) => {
           if (err) console.error('Error closing server:', err);
-          app.server = null;
-          // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
-          if (getCurrentApp() === app) setCurrentApp(null);
           resolve();
         });
       });
+
+      // drain：等在途请求完成。SSE/WS 长连接永不主动结束，超时后强制断开
+      // （默认 10s，FAAPI_SHUTDOWN_TIMEOUT_MS 环境变量可调）
+      const drainTimeoutMs = Number(process.env.FAAPI_SHUTDOWN_TIMEOUT_MS ?? 10_000);
+      if (
+        typeof s.closeAllConnections === 'function' &&
+        Number.isFinite(drainTimeoutMs) &&
+        drainTimeoutMs >= 0
+      ) {
+        const forceClose = new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            s.closeAllConnections?.();
+            resolve();
+          }, drainTimeoutMs);
+          // 停机定时器不应阻止进程自然退出
+          timer.unref?.();
+        });
+        await Promise.race([drained, forceClose]);
+        // 强制断开后 close 回调随即触发；短兜底等待收尾完成
+        const tail = new Promise<void>((resolve) => setTimeout(resolve, 250).unref?.());
+        await Promise.race([drained, tail]);
+      } else {
+        await drained;
+      }
+
+      app.server = null;
+      // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
+      if (getCurrentApp() === app) setCurrentApp(null);
     },
   };
 

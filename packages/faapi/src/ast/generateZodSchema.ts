@@ -1,4 +1,9 @@
-import type { RuntimeType, TupleElement, TypeConstraint } from './resolveTypeNode';
+import {
+  SchemaExtractionError,
+  type RuntimeType,
+  type TupleElement,
+  type TypeConstraint,
+} from './resolveTypeNode';
 import type { HandlerTypeInfo } from './extractHandlerTypes';
 
 /**
@@ -99,8 +104,15 @@ export function collectNamedTypes(type: RuntimeType, ctx: CodeGenContext): void 
       if (resolved) {
         ctx.namedTypes.set(type.name, resolved);
         collectNamedTypes(resolved, ctx);
+        return;
       }
-      return;
+      // ref 只在 AST 提取阶段遇到真实 TS 类型引用时产生（首现内联、二次标 ref），
+      // 声明必然存在于某个源文件中；解析不到说明查找能力不足（如命名空间内声明），
+      // 按框架约定显式抛错而非静默降级为 z.unknown()（AGENTS.md §6.3）
+      throw new SchemaExtractionError(
+        type.name,
+        `无法解析命名类型引用 "${type.name}"（handler 文件与 program 源文件中均未找到同名顶层声明）`,
+      );
     }
   }
 }
@@ -547,6 +559,49 @@ export function generateZodSchemaSource(
   exportName?: string,
   coerce = false,
 ): string {
+  const { namedTypeDeclarations, entryDeclaration } = generateZodSchemaSourceParts(
+    typeInfo,
+    resolveType,
+    exportName,
+    coerce,
+  );
+
+  const lines: string[] = [];
+  lines.push("import { z } from 'zod';");
+  lines.push('');
+
+  for (const { declaration } of namedTypeDeclarations) {
+    lines.push(declaration);
+  }
+  if (namedTypeDeclarations.length > 0) lines.push('');
+
+  lines.push(entryDeclaration);
+
+  return lines.join('\n');
+}
+
+/**
+ * 生成单个类型的 zod schema 代码片段（结构化形式）
+ *
+ * 与 generateZodSchemaSource 的区别：不拼 import 头，命名类型声明与入口导出分开返回，
+ * 供文件级组装按名去重——同一 handler 文件的多个方法引用同一命名类型时，命名类型
+ * 声明只允许出现一次，否则拼接产物含重复 const 声明，import 即 SyntaxError。
+ *
+ * 语义与 generateZodSchemaSource 完全一致（含 coerce / z.lazy 循环引用处理）。
+ */
+export interface ZodSchemaSourceParts {
+  /** 命名类型声明（按首次引用顺序排列；name 为不含 Schema 后缀的类型名） */
+  namedTypeDeclarations: Array<{ name: string; declaration: string }>;
+  /** 入口 schema 导出（`export const NameSchema = ...;`） */
+  entryDeclaration: string;
+}
+
+export function generateZodSchemaSourceParts(
+  typeInfo: HandlerTypeInfo,
+  resolveType: TypeResolver,
+  exportName?: string,
+  coerce = false,
+): ZodSchemaSourceParts {
   const ctx = new CodeGenContext(resolveType);
   const name = exportName ?? typeInfo.name;
   ctx.entryTypeName = typeInfo.name;
@@ -557,24 +612,17 @@ export function generateZodSchemaSource(
   collectNamedTypes(typeInfo.runtimeType, ctx);
   ctx.namedTypes.delete(typeInfo.name);
 
-  const lines: string[] = [];
-  lines.push("import { z } from 'zod';");
-  lines.push('');
+  const namedTypeDeclarations = [...ctx.namedTypes].map(([n, type]) => ({
+    name: n,
+    declaration: generateNamedTypeDeclaration(n, type, ctx),
+  }));
 
-  // 生成命名类型声明（z.lazy 处理循环引用）
-  for (const [n, type] of ctx.namedTypes) {
-    lines.push(generateNamedTypeDeclaration(n, type, ctx));
-  }
-  if (ctx.namedTypes.size > 0) lines.push('');
-
-  // 生成入口 schema 导出（含循环引用时用 z.lazy）
+  // 入口 schema 导出（含循环引用时用 z.lazy）
   const entryExpr = runtimeTypeToZodExpression(typeInfo.runtimeType, ctx);
   const hasSelfRef = containsRef(typeInfo.runtimeType, new Set([typeInfo.name]));
-  if (hasSelfRef) {
-    lines.push(`export const ${name}Schema = z.lazy(() => ${entryExpr});`);
-  } else {
-    lines.push(`export const ${name}Schema = ${entryExpr};`);
-  }
+  const entryDeclaration = hasSelfRef
+    ? `export const ${name}Schema = z.lazy(() => ${entryExpr});`
+    : `export const ${name}Schema = ${entryExpr};`;
 
-  return lines.join('\n');
+  return { namedTypeDeclarations, entryDeclaration };
 }

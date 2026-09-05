@@ -103,6 +103,18 @@ export function POST(body: POSTBody) { return body; }\n`,
       },
     });
     expect(json.result).toBeDefined();
+    // 完成握手：MCP 规范要求 initialize 后发送 notifications/initialized，
+    // 非 initialize 请求要求 session.initialized。通知返回 202 无 body，不解析 JSON
+    const notifRequest = new Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'mcp-session-id': sessionId!,
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    });
+    await handleMcpRequest(notifRequest, mcp);
     return sessionId!;
   }
 

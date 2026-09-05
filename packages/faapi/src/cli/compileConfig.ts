@@ -1,8 +1,9 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { Plugin } from 'esbuild';
-import { buildAliasPlugins, resolveRelativeSpecifier } from './aliasPlugin';
-import { isInsideDir, toProdExtension, toRealPath } from '../utils/prodPaths';
+import { buildAliasPlugins } from './aliasPlugin';
+import { collectRelativeImports } from './collectImports';
+import { toProdExtension, toRealPath } from '../utils/prodPaths';
 
 /**
  * 基础配置文件查找顺序（与 loadConfig 保持一致）
@@ -85,86 +86,8 @@ async function isCacheFresh(entry: CompileConfigCacheEntry): Promise<boolean> {
 
 /**
  * 匹配 from '...' / from "..." / import('...') / import("...") 中的 specifier
+ * 与递归收集逻辑见 collectImports.ts（compileConfig 与 compileOnDemand 共用）
  */
-const SPEC_RE = /(\bfrom\s*|import\s*\(\s*)(['"])([^'"]+)\2/g;
-
-/**
- * 从源文件内容中提取所有相对 specifier（./xxx 或 ../xxx）
- *
- * 用于递归收集 config 引用的项目模块，确保它们被编译到 dist，
- * 使 config 产物的 import 在运行时能解析到实际文件。
- */
-function extractRelativeSpecifiers(source: string): string[] {
-  const specifiers: string[] = [];
-  let match: RegExpExecArray | null;
-  SPEC_RE.lastIndex = 0;
-  while ((match = SPEC_RE.exec(source)) !== null) {
-    const specifier = match[3]!;
-    if (specifier.startsWith('./') || specifier.startsWith('../')) {
-      specifiers.push(specifier);
-    }
-  }
-  return specifiers;
-}
-
-/**
- * 递归收集文件的所有相对 import（含传递依赖），分类为 src 内 / src 外
- *
- * 用于 compileConfig 步骤 1：编译 config 源 + 其引用的项目模块到 dist。
- * - src 内文件：用 outbase=rootDir/src 编译（打平前缀，与 compileDevRoutes 一致）
- * - src 外文件：用 outbase=rootDir 编译（保留相对 rootDir 的结构）
- *
- * @param entryFiles 起始文件（绝对路径）
- * @param rootDir 项目根目录
- * @returns 收集到的文件，分为 src 内和 src 外两组（绝对路径，去重）
- */
-async function collectRelativeImports(
-  entryFiles: string[],
-  rootDir: string,
-): Promise<{ appDirFiles: string[]; nonAppDirFiles: string[] }> {
-  // 用 realpath 规范化 src 绝对路径，兼容 macOS 符号链接（esbuild 传入的路径已是 realpath）
-  const appDirAbs = toRealPath(path.resolve(rootDir, 'src'));
-  const visited = new Set<string>();
-  const appDirFiles = new Set<string>();
-  const nonAppDirFiles = new Set<string>();
-
-  async function collect(filePath: string): Promise<void> {
-    if (visited.has(filePath)) return;
-    visited.add(filePath);
-
-    let source: string;
-    try {
-      source = await fs.promises.readFile(filePath, 'utf8');
-    } catch {
-      return;
-    }
-
-    const specifiers = extractRelativeSpecifiers(source);
-    for (const specifier of specifiers) {
-      const resolved = resolveRelativeSpecifier(filePath, specifier);
-      if (!resolved) continue;
-
-      // 已带产物后缀的 specifier（.js/.mjs/.cjs）不递归（视为已编译产物，源码不在此处）
-      if (/\.(js|mjs|cjs)$/.test(specifier)) continue;
-
-      if (isInsideDir(resolved, appDirAbs)) {
-        appDirFiles.add(resolved);
-      } else {
-        nonAppDirFiles.add(resolved);
-      }
-      await collect(resolved);
-    }
-  }
-
-  for (const entry of entryFiles) {
-    await collect(entry);
-  }
-
-  return {
-    appDirFiles: Array.from(appDirFiles),
-    nonAppDirFiles: Array.from(nonAppDirFiles),
-  };
-}
 
 /**
  * 创建 external 相对路径插件（步骤 2 用）
@@ -236,8 +159,11 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
   const configEntryPoints: string[] = [path.resolve(rootDir, baseConfigName)];
 
   // 步骤 1：逐文件编译 config 源 + 项目模块
-  // 递归收集 config 引用的项目模块
-  const { appDirFiles, nonAppDirFiles } = await collectRelativeImports(configEntryPoints, rootDir);
+  // 递归收集 config 引用的项目模块（含 tsconfig paths 别名引用）
+  const { insideFiles: appDirFiles, outsideFiles: nonAppDirFiles } = await collectRelativeImports(
+    configEntryPoints,
+    rootDir,
+  );
 
   const esbuild = await import('esbuild');
   const aliasPlugins = buildAliasPlugins(rootDir);

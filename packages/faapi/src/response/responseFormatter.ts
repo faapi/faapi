@@ -143,16 +143,21 @@ export function formatErrorResponse(
       code: error.code,
       message: error.message,
     });
-    // ValidationError 需要附加 issues 字段,在 fail body 上扩展
+    // ValidationError 需要附加 issues 字段。业务方 failFn 可能返回共享/复用对象
+    // （性能优化写法）或冻结对象——就地改写会让 issues 跨请求残留污染或静默失败，
+    // 因此浅拷贝后再扩展，不改写业务方返回的原对象
     const bodyObj =
       typeof body === 'object' && body !== null
-        ? (body as Record<string, unknown>)
+        ? ({ ...(body as Record<string, unknown>) } as Record<string, unknown>)
         : { error: body };
-    const errorObj =
-      (bodyObj.error as Record<string, unknown> | undefined) ??
-      (bodyObj as Record<string, unknown>);
-    if (errorObj) {
-      errorObj.issues = error.issues;
+    const existingError = bodyObj.error as Record<string, unknown> | undefined;
+    if (existingError && typeof existingError === 'object') {
+      bodyObj.error = { ...existingError, issues: error.issues };
+    } else if (typeof body === 'object' && body !== null) {
+      // 无 error 包装层：body 本身就是错误对象
+      bodyObj.issues = error.issues;
+    } else {
+      bodyObj.error = { issues: error.issues };
     }
     return jsonOk(bodyObj, error.statusCode);
   }

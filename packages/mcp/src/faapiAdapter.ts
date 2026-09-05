@@ -24,21 +24,27 @@
 import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { McpServer } from './mcpServer';
-import { handleMcpRequest } from './streamableHttp';
+import { handleMcpRequest, type McpHttpOptions } from './streamableHttp';
 
 /**
  * 创建 faapi handler 函数
  *
  * 返回 { POST, GET, DELETE }，可直接在 handler.ts 中导出。
  * faapi 按参数名注入 ctx，函数内通过 ctx.request 获取 Web Request。
+ *
+ * @param options 传输选项（如 `allowedOrigins`——MCP 规范建议校验 Origin 防 DNS
+ *        rebinding；把 /mcp 暴露到生产网络时建议配置）
  */
-export function createMcpHandler(mcp: McpServer): {
+export function createMcpHandler(
+  mcp: McpServer,
+  options?: McpHttpOptions,
+): {
   POST: (ctx: { request: Request }) => Promise<Response>;
   GET: (ctx: { request: Request }) => Promise<Response>;
   DELETE: (ctx: { request: Request }) => Promise<Response>;
 } {
   const handler = async (ctx: { request: Request }): Promise<Response> => {
-    return handleMcpRequest(ctx.request, mcp);
+    return handleMcpRequest(ctx.request, mcp, options);
   };
   return { POST: handler, GET: handler, DELETE: handler };
 }
@@ -51,9 +57,12 @@ export function createMcpHandler(mcp: McpServer): {
  *
  * 使用 Node.js 原生 `Readable.toWeb(req)` 转换 body,正确处理 chunked transfer
  * (多 chunk 累积)、backpressure 和 stream error。
+ *
+ * @param options 传输选项（同 createMcpHandler）
  */
 export function createMcpNodeHandler(
   mcp: McpServer,
+  options?: McpHttpOptions,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   return async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -79,7 +88,7 @@ export function createMcpNodeHandler(
       ...(body && { body, duplex: 'half' as const }),
     } as RequestInit);
 
-    const response = await handleMcpRequest(request, mcp);
+    const response = await handleMcpRequest(request, mcp, options);
 
     res.statusCode = response.status;
     response.headers.forEach((value, key) => {

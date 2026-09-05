@@ -1,11 +1,11 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { ToolManifestList } from '../tools/toolTypes';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import { extractToolMetadata } from '../ast/extractToolMetadata';
 import { createPrograms } from '../ast/createProgram';
 import { toProdFilePath } from '../utils/prodPaths';
+import { atomicWriteFile } from '../utils/atomicWrite';
 import { getSchemaOutputPath } from './generateSchemaFiles';
 import {
   extractTypeInfo,
@@ -109,13 +109,10 @@ export async function writeToolsModule(
   manifest: SerializedToolRecord[],
   outputPath: string,
 ): Promise<void> {
-  const dir = path.dirname(outputPath);
-  await fs.mkdir(dir, { recursive: true });
-
   const content = `// 自动生成,请勿手动编辑(faapi build/dev 产物)
 export const tools = ${JSON.stringify(manifest, null, 2)};
 `;
-  await fs.writeFile(outputPath, content, 'utf-8');
+  await atomicWriteFile(outputPath, content);
 }
 
 /**
@@ -278,8 +275,7 @@ async function maybeGenerateHelpers(allSourceCode: string, distDir: string): Pro
   if (!usesCoerceHelpers(allSourceCode)) return;
   const helpersPath = path.resolve(distDir, HELPERS_FILENAME);
   if (existsSync(helpersPath)) return;
-  await fs.mkdir(path.dirname(helpersPath), { recursive: true });
-  await fs.writeFile(helpersPath, generateHelpersFileSource(), 'utf-8');
+  await atomicWriteFile(helpersPath, generateHelpersFileSource());
 }
 
 /**
@@ -395,6 +391,5 @@ export async function generateToolArtifacts(
  * 写入 tool zod.js 文件(确保目录存在)
  */
 async function writeToolSchemaFile(outputPath: string, source: string): Promise<void> {
-  await fs.mkdir(path.dirname(outputPath), { recursive: true });
-  await fs.writeFile(outputPath, source, 'utf-8');
+  await atomicWriteFile(outputPath, source);
 }

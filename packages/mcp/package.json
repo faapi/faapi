@@ -34,7 +34,6 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@faapi/faapi": "workspace:^",
     "typescript": ">=5.7.0",
     "zod": "^4.4.3"
   },

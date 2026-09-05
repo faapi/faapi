@@ -170,14 +170,32 @@ export default [
     expect(existsSync(join(tempDir, 'build-output/faapi-routes.js'))).toBe(true);
     expect(existsSync(join(tempDir, OUT, 'main.js'))).toBe(false);
 
-    // main.js 包含实际产物目录参数（<dist>）
+    // main.js 包含实际产物目录参数（<dist>，JSON.stringify 生成合法字符串字面量）
     const mainContent = readFileSync(join(tempDir, 'build-output/main.js'), 'utf-8');
-    expect(mainContent).toContain("createProdApp({ dist: 'build-output' })");
+    expect(mainContent).toContain('createProdApp({ dist: "build-output" })');
     // 注入 NODE_ENV 兜底 + loadEnv 调用
     expect(mainContent).toContain("if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production'");
     expect(mainContent).toContain('loadEnv(process.cwd())');
     // listen() 无参，端口由运行时 PORT 环境变量决定
     expect(mainContent).toContain('await app.listen()');
+  }, 15000);
+
+  it('CLI 选项：--dist 含 Windows 反斜杠路径时 main.js 不被转义损坏', async () => {
+    writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
+    writeFile(
+      'tsconfig.json',
+      `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
+    );
+
+    // 模拟 Windows 用户传入反斜杠路径：裸字符串插值会把 \b 变成退格转义
+    await buildCommand({ rootDir: tempDir, dist: '.\\build' });
+
+    const mainContent = readFileSync(join(tempDir, '.\\build', 'main.js'), 'utf-8');
+    // 生成的必须是合法字符串字面量（\\ 转义），运行时取值仍为 .\build
+    expect(mainContent).toContain('createProdApp({ dist: ".\\\\build" })');
+    // 反推验证：eval 字面量还原出原始路径
+    const literal = mainContent.match(/createProdApp\(\{ dist: (".*") \}\)/)?.[1];
+    expect(literal ? JSON.parse(literal) : null).toBe('.\\build');
   }, 15000);
 
   it('tool 产物生成：faapi-tools.js + tool zod.js', async () => {

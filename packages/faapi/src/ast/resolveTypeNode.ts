@@ -815,12 +815,12 @@ function resolveImportAlias(
  * 导致外层读取时变量被收窄为初始值类型(null)。
  * 用函数返回值(带显式返回类型)绕过此限制。
  */
-type TopLevelDecl =
+export type TopLevelDecl =
   | { kind: 'interface'; node: ts.InterfaceDeclaration }
   | { kind: 'typeAlias'; node: ts.TypeAliasDeclaration }
   | { kind: 'enum'; node: ts.EnumDeclaration };
 
-function findTopLevelDecl(sourceFile: ts.SourceFile, typeName: string): TopLevelDecl | null {
+export function findTopLevelDecl(sourceFile: ts.SourceFile, typeName: string): TopLevelDecl | null {
   let found: TopLevelDecl | null = null;
   ts.forEachChild(sourceFile, (node) => {
     if (found) return;
@@ -844,7 +844,7 @@ function findTopLevelDecl(sourceFile: ts.SourceFile, typeName: string): TopLevel
  *
  * HTTP 视角：枚举值在 JSON 中是普通 string/number,按字面量联合校验即可。
  */
-function resolveEnumDeclaration(node: ts.EnumDeclaration): RuntimeType {
+export function resolveEnumDeclaration(node: ts.EnumDeclaration): RuntimeType {
   const members: RuntimeType[] = [];
   let nextNumericValue = 0;
 

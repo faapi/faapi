@@ -388,6 +388,55 @@ describe('app.inject after listen', () => {
       await app.close();
     }
   });
+
+  it('端口被占用时 listen() 以友好错误 reject（不崩进程）', async () => {
+    const filePath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
+    mkdirSync(join(filePath, '..'), { recursive: true });
+    writeFileSync(filePath, `export function GET() { return { hello: 'world' }; }\n`, 'utf-8');
+    await compileArtifacts('dist');
+
+    const port = 13777 + Math.floor(Math.random() * 1000);
+    const { app: first } = await createAppBase({ rootDir: tempDir, port });
+    await first.listen();
+
+    try {
+      const { app: second } = await createAppBase({ rootDir: tempDir, port });
+      await expect(second.listen()).rejects.toThrow(
+        new RegExp(`port ${port}.*already in use`, 'is'),
+      );
+    } finally {
+      await first.close();
+    }
+  });
+
+  it('close() 优雅 drain：在途请求完成后才结束（不被掐断）', async () => {
+    const filePath = join(tempDir, 'src', 'api', 'slow', 'handler.ts');
+    mkdirSync(join(filePath, '..'), { recursive: true });
+    // 300ms 慢 handler，模拟在途请求
+    writeFileSync(
+      filePath,
+      `export async function GET() { await new Promise((r) => setTimeout(r, 300)); return { slow: true }; }\n`,
+      'utf-8',
+    );
+    await compileArtifacts('dist');
+
+    const { app } = await createAppBase({ rootDir: tempDir, port: 13579 });
+    const server = await app.listen();
+    const port = (server.address() as { port: number }).port;
+
+    // 发起在途请求，期间触发 close（不等待）
+    const inFlight = fetch(`http://localhost:${port}/api/slow`);
+    await new Promise((r) => setTimeout(r, 50)); // 确保请求已到达服务端
+    const closing = app.close();
+
+    // 在途请求正常拿到响应（drain 生效，未被强制断开）
+    const res = await inFlight;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ data: { slow: true } });
+
+    await closing;
+    expect(app.server).toBeNull();
+  });
 });
 
 /**
@@ -566,7 +615,7 @@ export default {
     }
   });
 
-  it('POST + body + schema 校验：合法 body 通过，非法 body 返回 422', async () => {
+  it('POST + body + schema 校验：合法 body 通过，缺必填字段返回 400(MISSING_FIELD)', async () => {
     await setupApp('', [
       {
         relPath: 'src/api/user/handler.ts',
@@ -590,14 +639,19 @@ export function POST(body: CreateUserBody) {
         data: { created: true, name: 'Alice', age: 30 },
       });
 
-      // 2. 缺字段 → 422
+      // 2. 缺必填字段 → 400 MISSING_FIELD（AGENTS.md §6.2：必填字段缺失属请求语法错误）
       const badRes = await getApp().inject({
         method: 'POST',
         path: '/api/user',
         body: { name: 'Alice' }, // 缺 age
       });
-      expect(badRes.status).toBe(422);
-      expect((badRes.body as { error: unknown }).error).toBeDefined();
+      expect(badRes.status).toBe(400);
+      const badBody = badRes.body as {
+        error: { code?: string; issues: Array<{ code: string; path: string }> };
+      };
+      expect(badBody.error).toBeDefined();
+      // 具体 issue 携带 MISSING_FIELD code（顶层 code 为 VALIDATION_ERROR）
+      expect(badBody.error.issues.some((i) => i.code === 'MISSING_FIELD')).toBe(true);
     } finally {
       await app.close();
     }

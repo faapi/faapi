@@ -255,6 +255,73 @@ describe('按需编译（Vite 风格）', () => {
     }
   });
 
+  it('完整请求链路：handler 引用共享模块 + 目录中间件（依赖闭包按需编译）', async () => {
+    // 共享模块：handler 与中间件都引用（闭包需覆盖两层传递依赖）
+    mkdirSync(join(tempDir, 'src', 'lib'), { recursive: true });
+    writeFileSync(
+      join(tempDir, 'src', 'lib', 'users.ts'),
+      `import { prefix } from './prefix';\nexport function userName(id: number) { return prefix + id; }\n`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(tempDir, 'src', 'lib', 'prefix.ts'),
+      `export const prefix = 'u';\n`,
+      'utf-8',
+    );
+
+    // handler：引用共享模块（修复前：.faapi/lib/users.js 无产物，首次请求 ERR_MODULE_NOT_FOUND）
+    writeHandler(
+      'api/users/handler.ts',
+      [
+        `import { userName } from '../../lib/users';`,
+        `export interface Query { id: number; }`,
+        `export function GET(query: Query) { return { name: userName(query.id) }; }`,
+      ].join('\n'),
+    );
+
+    // 目录中间件：引用共享模块（修复前：middlewares.js 无产物，首次请求 ERR_MODULE_NOT_FOUND）
+    writeFileSync(
+      join(tempDir, 'src', 'api', 'users', 'middlewares.ts'),
+      [
+        `import type { FaapiMiddleware } from '../../index';`,
+        `import { prefix } from '../../lib/prefix';`,
+        `const tag: FaapiMiddleware = async (ctx, next) => { ctx.setHeader('x-tag', prefix); await next(); };`,
+        `export default [tag];`,
+      ].join('\n'),
+      'utf-8',
+    );
+
+    await generateManifestOnly();
+
+    // dev 启动：只编译 config + 路由清单，handler/中间件/共享模块产物都不存在
+    expect(existsSync(join(tempDir, '.faapi', 'api', 'users', 'handler.js'))).toBe(false);
+    expect(existsSync(join(tempDir, '.faapi', 'lib', 'users.js'))).toBe(false);
+    expect(existsSync(join(tempDir, '.faapi', 'api', 'users', 'middlewares.js'))).toBe(false);
+
+    const app = await createDevApp({ rootDir: tempDir });
+    const server = await app.listen(0);
+    const port = (server.address() as { port: number }).port;
+    const baseUrl = `http://localhost:${port}`;
+
+    try {
+      // 首次请求：闭包编译（handler + lib/users + lib/prefix + middlewares）→ 响应成功
+      const res = await fetch(`${baseUrl}/api/users?id=1`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body).toEqual({ data: { name: 'u1' } });
+      // 目录中间件生效（引用共享模块的中间件正常执行）
+      expect(res.headers.get('x-tag')).toBe('u');
+
+      // 闭包产物已生成
+      expect(existsSync(join(tempDir, '.faapi', 'api', 'users', 'handler.js'))).toBe(true);
+      expect(existsSync(join(tempDir, '.faapi', 'lib', 'users.js'))).toBe(true);
+      expect(existsSync(join(tempDir, '.faapi', 'lib', 'prefix.js'))).toBe(true);
+      expect(existsSync(join(tempDir, '.faapi', 'api', 'users', 'middlewares.js'))).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('完整请求链路：带类型声明的 handler 按需生成 schema → 校验通过', async () => {
     // 带 Query 类型声明的 handler（number 字段会做 coerce 校验）
     writeHandler(

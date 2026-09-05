@@ -64,18 +64,34 @@ export const PARAM_TYPE_MAP: Record<string, InjectionType> = {
 };
 
 /**
+ * 分析结果按函数引用缓存。
+ *
+ * handler 函数在路由模块加载后引用稳定，参数列表不会变化；用 WeakMap 弱键，
+ * dev 热替换后旧模块的函数不再被引用即可随 GC 回收，不需要手动失效。
+ */
+type AnyFn = (...args: unknown[]) => unknown;
+const injectionCache = new WeakMap<AnyFn, InjectionItem[]>();
+
+/**
  * 分析函数参数，决定需要注入什么内容
  *
  * 使用 TypeScript AST 解析 fn.toString() 的结果，
  * 正确处理解构参数、默认值、rest 参数等情况。
  *
  * 注意：运行时类型信息已被擦除，hasType 始终为 false。
+ *
+ * 返回的数组是缓存的共享实例，调用方不得就地修改。
  */
 export function resolveInjection(fn: (...args: unknown[]) => unknown): InjectionItem[] {
+  const cached = injectionCache.get(fn);
+  if (cached) {
+    return cached;
+  }
+
   const fnStr = fn.toString();
   const params = extractParamsWithAst(fnStr);
 
-  return params.map((param) => {
+  const items = params.map((param) => {
     const type = PARAM_TYPE_MAP[param.name] || 'unknown';
     return {
       name: param.name,
@@ -83,6 +99,9 @@ export function resolveInjection(fn: (...args: unknown[]) => unknown): Injection
       hasType: false, // 运行时类型已擦除
     };
   });
+
+  injectionCache.set(fn, items);
+  return items;
 }
 
 /**

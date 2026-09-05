@@ -26,6 +26,40 @@ import {
 const DEFAULT_SSE_HEARTBEAT_MS = 30_000;
 
 /**
+ * Streamable HTTP transport 选项
+ */
+export interface McpHttpOptions {
+  /**
+   * 允许的 Origin 列表（MCP 规范安全要求：防 DNS rebinding 攻击）
+   *
+   * 请求携带 Origin 头且不在列表内 → 403；未携带 Origin（非浏览器客户端）放行。
+   * 未配置（undefined）时不校验 Origin——本地开发保持零配置；
+   * 生产环境暴露到网络时必须配置（浏览器是最常见的 MCP 客户端载体）。
+   */
+  allowedOrigins?: string[];
+}
+
+/**
+ * 校验 Origin 头（配置了 allowedOrigins 时）
+ *
+ * 无 Origin 头（curl / 官方 SDK 等非浏览器客户端）放行；
+ * 有 Origin 且不匹配 → 403。
+ */
+function checkOrigin(request: Request, options: McpHttpOptions | undefined): Response | null {
+  const allowed = options?.allowedOrigins;
+  if (!allowed || allowed.length === 0) return null;
+
+  const origin = request.headers.get('origin');
+  if (!origin) return null;
+  if (allowed.includes(origin)) return null;
+
+  return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
+    status: 403,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/**
  * 处理 MCP HTTP 请求
  *
  * 接收 Web API Request，返回 Web API Response。
@@ -36,7 +70,14 @@ const DEFAULT_SSE_HEARTBEAT_MS = 30_000;
  * }
  * ```
  */
-export async function handleMcpRequest(request: Request, server: McpServer): Promise<Response> {
+export async function handleMcpRequest(
+  request: Request,
+  server: McpServer,
+  options?: McpHttpOptions,
+): Promise<Response> {
+  const originRejected = checkOrigin(request, options);
+  if (originRejected) return originRejected;
+
   switch (request.method) {
     case 'POST':
       return handlePost(request, server);
@@ -207,12 +248,21 @@ async function handlePost(request: Request, server: McpServer): Promise<Response
     }
     // 先创建 session，handleJsonRpc 中会填充 protocolVersion 等信息
     session = sessionManager.create();
-  } else if (requests.length > 0 && !session && sessionId) {
-    // 有 session ID 但找不到
-    return jsonResponse(
-      404,
-      createErrorResponse(null, ErrorCode.RequestTimeout, 'Session not found'),
-    );
+  } else if (requests.length > 0) {
+    // 非 initialize 请求必须有有效 session（MCP 规范：防止匿名客户端跳过握手直接调 tool）
+    if (!sessionId) {
+      return jsonResponse(
+        400,
+        createErrorResponse(null, ErrorCode.InvalidRequest, 'Missing Mcp-Session-Id header'),
+      );
+    }
+    if (!session) {
+      // 有 session ID 但找不到
+      return jsonResponse(
+        404,
+        createErrorResponse(null, ErrorCode.RequestTimeout, 'Session not found'),
+      );
+    }
   }
 
   // 处理通知（无响应）

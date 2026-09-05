@@ -87,7 +87,10 @@ export function createRebuildScheduler(options: RebuildSchedulerOptions): Rebuil
 
   return {
     addFiles(files) {
-      pendingFiles.push(...files);
+      // 去重：编辑器保存常连续触发多次 change，同一文件在同一轮里只编译一次
+      for (const file of files) {
+        if (!pendingFiles.includes(file)) pendingFiles.push(file);
+      }
       requestRun();
     },
     schedule() {

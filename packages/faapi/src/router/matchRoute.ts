@@ -84,14 +84,32 @@ function getWsIndex(routes: WsRouteManifest): WsRoutesIndex {
 
 /**
  * 根据请求路径和方法匹配路由
+ *
+ * HEAD 回退：无显式 HEAD 路由时复用 GET handler（Node ServerResponse 对 HEAD
+ * 自动丢弃 body）。探活、CDN 健康检查、HTTP 客户端预检常用 HEAD——没有回退时
+ * 只定义 GET 的路由对 HEAD 返回 405，监控大面积误报。
+ *
  * @param routes 已排序的路由清单
  * @param method HTTP 方法
  * @param path 请求路径
- * @returns 匹配结果，包含路由记录和参数
+ * @returns 匹配结果，包含路由记录和参数；无匹配返回 null
  */
 export function matchRoute(routes: RouteManifest, method: string, path: string): RouteMatch | null {
   const index = getHttpIndex(routes);
+  const upper = method.toUpperCase();
 
+  const hit = matchByMethod(index, upper, path);
+  if (hit) return hit;
+
+  if (upper === 'HEAD') {
+    return matchByMethod(index, 'GET', path);
+  }
+
+  return null;
+}
+
+/** 按方法匹配（静态 O(1) → 动态线性），matchRoute 内部复用（HEAD 回退 GET） */
+function matchByMethod(index: HttpRoutesIndex, method: string, path: string): RouteMatch | null {
   // 静态路由 O(1) 命中（sortRoutes 保证静态优先,等价于原遍历的首个命中）
   const staticHit = index.static.get(`${method}|${path}`);
   if (staticHit) {
@@ -161,6 +179,12 @@ export function findAllowedMethods(routes: RouteManifest, path: string): string[
     if (params !== null) {
       methods.add(route.method);
     }
+  }
+
+  // RFC 9110：GET 允许时 HEAD 必然允许（matchRoute 有 HEAD→GET 回退），
+  // 405 的 Allow 头如实反映，避免客户端误判 HEAD 不可用
+  if (methods.has('GET')) {
+    methods.add('HEAD');
   }
 
   return Array.from(methods);

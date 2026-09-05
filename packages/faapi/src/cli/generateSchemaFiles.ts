@@ -1,11 +1,11 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
+import { atomicWriteFile } from '../utils/atomicWrite';
 import type { RouteManifest } from '../router/routeTypes';
 import type { RouteSchemaSource } from './collectRouteSchemaSources';
 import type { RuntimeType } from '../ast/resolveTypeNode';
 import { collectRouteSchemaSources } from './collectRouteSchemaSources';
 import {
-  generateZodSchemaSource,
+  generateZodSchemaSourceParts,
   generateHelpersFileSource,
   usesCoerceHelpers,
   HELPERS_FILENAME,
@@ -103,6 +103,9 @@ export function getHelpersImportPath(relDir: string): string {
  * 但 `RouteSchemaSource.coerce=true` 显式覆盖（form 值均为 string，需 coerce）。
  * Map/Set 字段在两种场景下都生成 z.preprocess 包裹（JSON.parse 出来的是数组/对象，需还原为 Map/Set 实例）。
  *
+ * 命名类型声明文件级去重：同一文件的多个方法引用同一命名类型时，`const XSchema` 只在
+ * 文件头声明一次（按首次引用顺序），避免重复 const 声明导致 zod.js import 即 SyntaxError。
+ *
  * 公用函数复用：schema 引用 coerceNumber / coerceBoolean / coerceMap / coerceSet 变量时，
  * 这些变量从 dist 根部的 faapi-helpers.js import（跨文件复用，仅一份声明）。
  *
@@ -120,7 +123,13 @@ export function generateSchemaFileSource(
 ): string {
   const lines: string[] = ["import { z } from 'zod';"];
 
-  // 先生成所有 schema 代码，暂存到 schemaBlocks
+  // 文件级命名类型声明去重：同一文件的多个方法引用同一命名类型（如 GETQuery 与
+  // POSTBody 都引用 Item）时，const 声明只提升到文件头生成一次——否则拼接产物含
+  // 重复 const 声明，zod.js import 即 SyntaxError，该文件所有路由 500。
+  const namedTypeDeclarations: string[] = [];
+  const seenNamedTypes = new Set<string>();
+
+  // 先生成所有 schema 入口导出，暂存到 schemaBlocks
   const schemaBlocks: string[] = [];
   for (const source of sources) {
     const { schemaName, typeInfo } = source;
@@ -134,22 +143,31 @@ export function generateSchemaFileSource(
     // - 否则回退到 schemaName 后缀正则：query/params 需要 coerce（URL 来源均为 string），body 不需要
     const coerce = source.coerce ?? /(?:Query|Params)$/.test(schemaName);
 
-    const block = [`// ${schemaName}`];
-    // generateZodSchemaSource 自带 import 语句，剥离后由本函数统一管理 import
-    // 传入 schemaName 作为 exportName，确保导出名与 validateInput 查找的一致
-    const schemaCode = generateZodSchemaSource(typeInfo, resolveType, schemaName, coerce).replace(
-      /^import \{ z \} from 'zod';\s*\n\s*\n/,
-      '',
+    // 生成结构化片段：命名类型声明按名去重后提升到文件头，入口导出留在方法 block 内
+    const { namedTypeDeclarations: decls, entryDeclaration } = generateZodSchemaSourceParts(
+      typeInfo,
+      resolveType,
+      schemaName,
+      coerce,
     );
-    block.push(schemaCode);
-    block.push('');
-    schemaBlocks.push(block.join('\n'));
+    for (const { name, declaration } of decls) {
+      if (seenNamedTypes.has(name)) continue;
+      seenNamedTypes.add(name);
+      namedTypeDeclarations.push(declaration);
+    }
+
+    schemaBlocks.push([`// ${schemaName}`, entryDeclaration, ''].join('\n'));
+  }
+
+  if (namedTypeDeclarations.length > 0) {
+    lines.push(...namedTypeDeclarations);
+    lines.push('');
   }
 
   // 检测是否有 schema 引用了 coerce 公用函数，若有则注入 import 语句
   // 公用函数包含 coerceNumber / coerceBoolean（query/params 的 string 转换）和
   // coerceMap / coerceSet（Map/Set 的 JSON 还原，body 场景也会引用）
-  const allSchemaCode = schemaBlocks.join('\n');
+  const allSchemaCode = [...namedTypeDeclarations, ...schemaBlocks].join('\n');
   if (helpersImportPath && usesCoerceHelpers(allSchemaCode)) {
     lines.push(
       `import { coerceNumber, coerceBoolean, coerceMap, coerceSet } from '${helpersImportPath}';`,
@@ -246,6 +264,6 @@ export async function generateSchemaFiles(
  * 写入 zod.js 文件（确保目录存在）
  */
 async function writeSchemaFile(outputPath: string, source: string): Promise<void> {
-  await fs.mkdir(path.dirname(outputPath), { recursive: true });
-  await fs.writeFile(outputPath, source, 'utf-8');
+  // 原子写：dev watch 重建与在途请求并发时，请求 import zod.js 不能读到半成品
+  await atomicWriteFile(outputPath, source);
 }

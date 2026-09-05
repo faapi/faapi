@@ -183,7 +183,7 @@ get handler 接收 `Record<string, string>` 参数(来自客户端 prompts/get �
 | `notifications/initialized` | 标记 session 为已初始化,返回 null |
 | `notifications/cancelled` | 请求取消通知(本实现不处理取消,仅接收) |
 | `tools/list` | 返回已注册 tool 列表(含 JSON Schema),支持 cursor 分页 |
-| `tools/call` | 校验参数(zod safeParse),调用 handler(传 `sendLogging` / `sendProgress` extra),返回结果 |
+| `tools/call` | 校验参数(zod safeParse),调用 handler(传 `sendLogging` / `sendProgress` extra),返回结果。校验通过后 handler 收到 `parsed.data`（未知字段按 zod strip 语义丢弃,不透传原始 arguments）;校验失败返回 `isError: true` 的 tool result（含 issue 摘要,LLM 可据此自纠）,而非协议层 -32602。此外,`initialize` 之外的请求要求 session 已完成握手（收到 `notifications/initialized`）,否则返回 -32600 |
 | `resources/list` | 返回已注册资源列表(uri/name/description/mimeType),支持 cursor 分页 |
 | `resources/read` | 调用资源 read handler(传 `sendLogging` / `sendProgress` extra),返回 contents |
 | `prompts/list` | 返回已注册 prompt 列表(name/description/arguments),支持 cursor 分页 |

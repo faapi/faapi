@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { resolveInjection } from './resolveInjection';
 
 describe('resolveInjection', () => {
@@ -176,6 +176,35 @@ describe('resolveInjection', () => {
       const fnWithParam = function (_query: unknown) {};
       const resultWithParam = resolveInjection(fnWithParam);
       expect(resultWithParam).toEqual([{ name: '_query', type: 'unknown', hasType: false }]);
+    });
+  });
+
+  describe('按函数引用缓存', () => {
+    it('同一函数引用多次调用返回同一数组实例（不重复解析）', () => {
+      const fn = eval('(query, headers) => {}');
+      const first = resolveInjection(fn);
+      const second = resolveInjection(fn);
+      expect(second).toBe(first);
+    });
+
+    it('不同函数引用即使源码相同也独立分析', () => {
+      const fnA = eval('(query) => {}');
+      const fnB = eval('(query) => {}');
+      const resultA = resolveInjection(fnA);
+      const resultB = resolveInjection(fnB);
+      expect(resultA).not.toBe(resultB);
+      expect(resultA).toEqual(resultB);
+    });
+
+    it('缓存命中时不再调用 fn.toString()', () => {
+      const fn = eval('(body) => {}');
+      const spy = vi.spyOn(fn, 'toString');
+      resolveInjection(fn);
+      expect(spy).toHaveBeenCalledTimes(1);
+      resolveInjection(fn);
+      resolveInjection(fn);
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
     });
   });
 });

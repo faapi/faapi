@@ -93,6 +93,7 @@ type WsHandler = (ctx: WsContext) => WsEventHandlers | void;
 
 interface WsEventHandlers {
   onOpen?: (ws: WsSocket) => void;
+  // 文本帧传 string，二进制帧透传 Buffer（utf8 解码不可逆，protobuf/msgpack 等二进制协议必须拿原始字节）
   onMessage?: (ws: WsSocket, message: string | Buffer) => void;
   onClose?: (ws: WsSocket, code: number, reason: string) => void;
   onError?: (ws: WsSocket, error: Error) => void;

@@ -34,11 +34,15 @@ dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`（热�
 
 | 方法 | 说明 |
 |------|------|
-| `listen(port?)` | 启动 HTTP server，打印路由表，执行 `onReady` 钩子，注册优雅关闭信号（仅当配置了 `onClose`） |
-| `close()` | 幂等关闭 server，执行 `onClose` 钩子，`app.server` 置 null；若单例仍指向当前 app 则置 null |
+| `listen(port?)` | 启动 HTTP server，打印路由表，执行 `onReady` 钩子，注册默认优雅关闭信号（SIGTERM/SIGINT，进程级仅一次） |
+| `close()` | 幂等优雅关闭：断开空闲 keep-alive 连接 → 执行 `onClose` 钩子 → 等**在途请求完成**（drain，SSE/WS 长连接超时 `FAAPI_SHUTDOWN_TIMEOUT_MS`（默认 10000ms）后强制断开）→ `app.server` 置 null；若单例仍指向当前 app 则置 null |
 | `inject(options?)` | 无服务器测试注入——构造模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body }`。`listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景（配合 `getApp()` 拿到 app 实例） |
 
 端口优先级：`listen()` 参数 > `options.port` > `PORT` 环境变量 > 默认 `3000`。
+
+`listen()` 监听 server 的 `error` 事件并 reject 返回的 Promise：端口被占用
+（`EADDRINUSE`）时错误信息包含端口号与排查提示（是否有另一个实例在运行），其余
+listen 错误原样 reject；listen 成功后解除该监听器，运行期错误语义不变。
 
 ### getApp()
 
@@ -91,7 +95,7 @@ async function Page() {
 - 路由清单缺失（`<dist>/faapi-routes.js` 不存在）→ 抛错（含 build/dev 提示）
 - tool 清单缺失（`<dist>/faapi-tools.js` 不存在）→ 跳过水合，toolRegistry 保持空（tool 是可选能力，纯 API 项目无 tool）
 - 路由冲突 → 仅 `console.warn`，不阻断启动
-- `listen` 打印路由表 + tool 清单（有 tool 时），仅当配置了 `lifecycle.onClose` 时注册 SIGTERM/SIGINT 优雅关闭
+- `listen` 打印路由表 + tool 清单（有 tool 时），注册默认优雅关闭信号：SIGTERM/SIGINT → `app.close()`（drain 在途请求 + `onClose` 钩子 + 注册表清理）→ `process.exit(0)`。进程级仅注册一次（faapi 单进程单 app 设计），测试多次 listen 不堆积监听器
 - `close` 幂等（`closed` 标志）；`close` 时清理 toolRegistry 单例（与 app 单例清理对称）；HTTP/2 连接清理方法 feature-detect
 - `inject` 无 handler 时 reject；`JSON.parse` 失败回退为字符串
 

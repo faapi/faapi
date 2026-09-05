@@ -82,17 +82,19 @@ export function startWatcher(options: WatchOptions): void {
   // 监听整个 src 比 glob 更合理：handler.ts 引用的 util.ts 变化也能触发重建
   // 同时监听根目录的 faapi.config.{ts,js}（配置变化时重生成 faapi-config.js）
   const CONFIG_FILES = ['faapi.config.ts', 'faapi.config.js'];
+  const configAbsPaths = new Set(CONFIG_FILES.map((f) => path.resolve(rootDir, f)));
   const watchPaths = ['src', ...CONFIG_FILES];
   const watcher = chokidar.watch(watchPaths, {
     cwd: rootDir,
     ignoreInitial: true,
     ignored: (filePath, stats) => {
-      // 忽略非源码目录（.faapi 为默认产物根目录，devDist 为 dev 产物目录）
+      // 按路径段判断，避免子串误伤（如 src/lib/node_modules-helper.ts、src/api/x.faapi.ts）
+      const parts = filePath.split(/[\\/]/);
       if (
-        filePath.includes('node_modules') ||
-        filePath.includes('.faapi') ||
-        filePath.includes(devDist) ||
-        filePath.includes('.git')
+        parts.includes('node_modules') ||
+        parts.includes('.git') ||
+        parts.includes('.faapi') ||
+        (devDist && parts.includes(devDist))
       ) {
         return true;
       }
@@ -105,11 +107,24 @@ export function startWatcher(options: WatchOptions): void {
     },
   });
 
+  // config 文件事件只触发重生成（compileConfig mtime 短路：无变化时跳过），
+  // 不进增量编译——config 在 src/outbase 之外，喂给 compileDevRoutes 会让 esbuild
+  // 把 `..` 段转义成 `_.._` 目录，在 .faapi 下堆积垃圾产物
   watcher.on('add', (file) => {
-    scheduler.addFiles([path.resolve(rootDir, file)]);
+    const abs = path.resolve(rootDir, file);
+    if (configAbsPaths.has(abs)) {
+      scheduler.schedule();
+      return;
+    }
+    scheduler.addFiles([abs]);
   });
   watcher.on('change', (file) => {
-    scheduler.addFiles([path.resolve(rootDir, file)]);
+    const abs = path.resolve(rootDir, file);
+    if (configAbsPaths.has(abs)) {
+      scheduler.schedule();
+      return;
+    }
+    scheduler.addFiles([abs]);
   });
   watcher.on('unlink', () => {
     // 文件删除：不增量编译（无文件可编译），但触发重生成产物 + reloadRoutes（路由结构变化）

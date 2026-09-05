@@ -125,6 +125,10 @@ export function GET(query: GETQuery) { return query; }
     });
     expect(result.valid).toBe(false);
     expect(result.issues.some((i) => i.path === 'pageSize')).toBe(true);
+    // zod v4 缺失必填字段产出 invalid_type + received=undefined → MISSING_FIELD
+    const missing = result.issues.find((i) => i.path === 'pageSize');
+    expect(missing?.code).toBe('MISSING_FIELD');
+    expect(missing?.received).toBe('undefined');
   });
 
   it('无类型声明时跳过校验', async () => {

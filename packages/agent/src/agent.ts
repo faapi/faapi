@@ -513,6 +513,23 @@ export class Agent {
       if ('args' in guard) args = guard.args;
     }
 
+    // 执行白名单：只允许 agent 声明的 tools / sub-agents。`tools`/`agents` 声明不只是
+    // LLM 可见性过滤——LLM 幻觉或被提示注入时可能请求未声明的任意已注册 tool
+    // （如管理类 tool）,执行前按声明集合强制校验,未声明一律拒绝（错误回传 LLM,
+    // 与参数校验失败语义一致）。sub-agent 递归时每个 depth 层按自己的声明集合校验。
+    const declared = new Set<string>();
+    for (const tool of this.deps.resolveAgentTools(this.deps.agentName)) {
+      declared.add(tool.name);
+    }
+    for (const sub of this.deps.resolveSubAgents(this.deps.agentName)) {
+      declared.add(`agent.${sub.name}`);
+    }
+    if (!declared.has(name)) {
+      return {
+        error: `Tool "${name}" is not declared by agent "${this.deps.agentName}" (add it to the agent's tools/agents declaration)`,
+      };
+    }
+
     // sub-agent 递归（携带 enableTracing,使其能包装 TracingToolResult）
     if (name.startsWith('agent.')) {
       return await this.executeSubAgent(name.slice(6), args, enableTracing);

@@ -15,7 +15,8 @@ describe('scanRoutes', () => {
     // + cookie/read(GET) + cookie/set(GET) + cookie/delete(GET)
     // + error/throw(GET) + error/validate(GET+POST)
     // + sse(GET) + inject(GET)
-    expect(routes).toHaveLength(18);
+    // + item(DELETE——DELETE body 语义验证 fixture)
+    expect(routes).toHaveLength(19);
     // chat + room/[id] + ws-auth + ws-chain/inner
     expect(wsRoutes).toHaveLength(4);
 
@@ -179,8 +180,8 @@ describe('scanRoutes', () => {
   it('WS 路由：扫描 fixtures 目录返回 WS 路由清单', async () => {
     const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
 
-    // HTTP 路由数量与原 scanRoutes 一致（18 条）
-    expect(routes).toHaveLength(18);
+    // HTTP 路由数量与原 scanRoutes 一致（19 条，含 DELETE body 语义验证 fixture）
+    expect(routes).toHaveLength(19);
 
     // WS 路由：chat + room/[id] + ws-auth + ws-chain/inner = 4 条
     expect(wsRoutes).toHaveLength(4);

@@ -77,7 +77,9 @@ async function ensureCompiled(
 1. **mutex 命中**：`inFlightCompilations.has(sourceAbsPath)` → await 后返回 `false`（别的请求正在编译）
 2. **内存 Set 命中**：`compiledFiles.has(sourceAbsPath)` → 跳过（最快路径）
 3. **mtime 复用**：产物存在且 `mtimeMs ≥ 源码 mtimeMs` → 加入 Set 跳过（复用 watcher 已编译的产物）
-4. **产物不存在或 stale**：调 `compileDevRoutes({ files: [sourceAbsPath] })` 单文件编译 → 加入 Set
+4. **产物不存在或 stale**：收集依赖闭包后批量编译 → 加入 Set
+
+**依赖闭包**：`bundle: false` 逐文件编译不分析 import 关系，只编译 handler 单文件时，handler 引用的共享模块（如 `import { db } from '../../lib/db'`）没有产物，首次请求 import 即 `ERR_MODULE_NOT_FOUND`。因此第 4 步先用 `collectRelativeImports`（见 [collectImports.md](./collectImports.md)，覆盖相对 import 与 tsconfig paths 别名）收集 src 内传递依赖，跳过产物已新鲜的文件后与入口一起批量传入 `compileDevRoutes`。src 外依赖不收集（outbase=src 语义限制，与 watcher 增量编译一致）。
 
 返回 `true` 表示实际触发了编译（调用方据此决定是否重试 import），`false` 表示跳过（已编译过 / 产物已最新 / 源文件不存在 / 别的请求正在编译）。**编译失败时抛错**（带原始 cause），由调用方错误处理链接管，不静默吞错。
 
@@ -95,6 +97,19 @@ async function ensureCompiled(
 | `clearCompiledFiles()` | `reloadRoutes` 调用 | 清空「已编译」标记 + in-flight mutex Map |
 
 `reloadRoutes` 统一调 `clearCompiledFiles()`，全量清空缓存（watcher 文件变化后所有路由都可能受影响，单文件失效意义不大）+ 同步清 mutex 避免旧 Promise 永久阻塞。
+
+### ensureMiddlewaresCompiled
+
+```ts
+async function ensureMiddlewaresCompiled(
+  middlewarePaths: string[],  // 中间件产物绝对路径（scanRoutes 收集）
+  rootDir: string,
+): Promise<void>
+```
+
+调用方：`createServer`（HTTP 首次请求）+ `handleWsUpgrade`（WS 握手），在 `loadMergedMiddlewares` import 产物之前调用。
+
+dev 按需模式下中间件产物在首次请求前不存在——若不先编译，import 即 `ERR_MODULE_NOT_FOUND`。通过 `prodPathToSourcePath` 反推源码路径后走 `ensureCompiled`（含依赖闭包，覆盖 middlewares.ts 引用的共享模块）。编译失败不阻断请求，`console.error` 后交由 `loadMiddlewaresFile` 既有的空 bundle 降级语义处理（鉴权失效由 onError 感知）。prod 模式（按需开关关闭）直接返回——产物由 build 固化。
 
 ## zod.js 按需生成
 

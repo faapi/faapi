@@ -67,6 +67,72 @@ describe('matchRoute', () => {
     expect(result).toBeNull();
   });
 
+  describe('HEAD 回退 GET', () => {
+    it('无显式 HEAD 路由时回退到同路径 GET 静态路由', () => {
+      const result = matchRoute(routes, 'HEAD', '/api/auth/login');
+      expect(result).not.toBeNull();
+      expect(result!.route.method).toBe('GET');
+      expect(result!.route.urlPath).toBe('/api/auth/login');
+    });
+
+    it('回退覆盖动态 GET 路由', () => {
+      const result = matchRoute(routes, 'HEAD', '/api/user/123');
+      expect(result).not.toBeNull();
+      expect(result!.route.method).toBe('GET');
+      expect(result!.params).toEqual({ id: '123' });
+    });
+
+    it('显式 HEAD 路由优先（不回退）', () => {
+      const withHead: RouteManifest = [
+        ...routes,
+        {
+          method: 'HEAD',
+          urlPath: '/api/auth/login',
+          filePath: 'api/auth/login/head-handler.ts',
+          paramNames: [],
+          isDynamic: false,
+        },
+      ];
+      const result = matchRoute(withHead, 'HEAD', '/api/auth/login');
+      expect(result).not.toBeNull();
+      expect(result!.route.filePath).toBe('api/auth/login/head-handler.ts');
+    });
+
+    it('GET 不存在时 HEAD 返回 null', () => {
+      const postOnly: RouteManifest = [
+        {
+          method: 'POST',
+          urlPath: '/api/submit',
+          filePath: 'api/submit/handler.ts',
+          paramNames: [],
+          isDynamic: false,
+        },
+      ];
+      expect(matchRoute(postOnly, 'HEAD', '/api/submit')).toBeNull();
+    });
+
+    it('findAllowedMethods：GET 存在时 Allow 包含 HEAD', () => {
+      const allowed = findAllowedMethods(routes, '/api/auth/login');
+      expect(allowed).toContain('GET');
+      expect(allowed).toContain('POST');
+      expect(allowed).toContain('HEAD');
+    });
+
+    it('findAllowedMethods：仅 POST 时不含 HEAD', () => {
+      const postOnly: RouteManifest = [
+        {
+          method: 'POST',
+          urlPath: '/api/submit',
+          filePath: 'api/submit/handler.ts',
+          paramNames: [],
+          isDynamic: false,
+        },
+      ];
+      const allowed = findAllowedMethods(postOnly, '/api/submit');
+      expect(allowed).toEqual(['POST']);
+    });
+  });
+
   it('静态路由优先于动态路由', () => {
     // 构造一个同时有静态和动态路由的场景
     const mixedRoutes: RouteManifest = [
@@ -282,13 +348,13 @@ describe('路由索引（WeakMap 按清单身份缓存）', () => {
     expect(matchRoute(reloaded, 'DELETE', '/api/novel/list')?.route.method).toBe('DELETE');
   });
 
-  it('findAllowedMethods：静态段多方法全量返回', () => {
-    expect(findAllowedMethods(routes, '/api/auth/login').sort()).toEqual(['GET', 'POST']);
-    expect(findAllowedMethods(routes, '/api/novel/list')).toEqual(['GET']);
+  it('findAllowedMethods：静态段多方法全量返回（GET 存在时含 HEAD）', () => {
+    expect(findAllowedMethods(routes, '/api/auth/login').sort()).toEqual(['GET', 'HEAD', 'POST']);
+    expect(findAllowedMethods(routes, '/api/novel/list')).toEqual(['GET', 'HEAD']);
   });
 
-  it('findAllowedMethods：动态段命中时返回其方法', () => {
-    expect(findAllowedMethods(routes, '/api/user/123')).toEqual(['GET']);
+  it('findAllowedMethods：动态段命中时返回其方法（GET 存在时含 HEAD）', () => {
+    expect(findAllowedMethods(routes, '/api/user/123')).toEqual(['GET', 'HEAD']);
   });
 
   it('findAllowedMethods：完全未命中返回空数组（404 判定）', () => {

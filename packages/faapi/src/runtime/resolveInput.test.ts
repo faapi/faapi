@@ -1,6 +1,39 @@
 import { describe, it, expect } from 'vitest';
-import { resolveInput } from './resolveInput';
+import { resolveInput, resolveBodyForQueryMethod } from './resolveInput';
 import { ValidationError } from '../errors/httpErrors';
+
+describe('resolveBodyForQueryMethod', () => {
+  it('JSON 请求体解析为对象', async () => {
+    const request = new Request('http://localhost/api/item?id=99', {
+      method: 'DELETE',
+      body: JSON.stringify({ id: 7 }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    expect(await resolveBodyForQueryMethod(request)).toEqual({ id: 7 });
+  });
+
+  it('空请求体返回 undefined', async () => {
+    const request = new Request('http://localhost/api/item', { method: 'DELETE' });
+    expect(await resolveBodyForQueryMethod(request)).toBeUndefined();
+  });
+
+  it('纯空白请求体返回 undefined', async () => {
+    const request = new Request('http://localhost/api/item', {
+      method: 'DELETE',
+      body: '   ',
+    });
+    expect(await resolveBodyForQueryMethod(request)).toBeUndefined();
+  });
+
+  it('非空非法 JSON 抛 ValidationError(INVALID_FORMAT)', async () => {
+    const request = new Request('http://localhost/api/item', {
+      method: 'DELETE',
+      body: 'not-json',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await expect(resolveBodyForQueryMethod(request)).rejects.toThrow(ValidationError);
+  });
+});
 
 describe('resolveInput', () => {
   it('GET 请求返回 query 对象', async () => {

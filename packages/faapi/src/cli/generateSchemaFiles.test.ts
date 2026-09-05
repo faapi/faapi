@@ -181,6 +181,60 @@ export function POST(body: POSTBody) { return body; }
       expect(source).not.toContain('export const GETQueryProperties');
     });
 
+    it('同一命名类型被多个方法引用时 const 声明只生成一次', () => {
+      const file = join(tempDir, 'order.ts');
+      writeFileSync(
+        file,
+        `export interface Item {
+  id: number;
+  name: string;
+}
+export interface GETQuery {
+  a: Item;
+  b: Item;
+  c: Item;
+}
+export interface POSTBody {
+  d: Item;
+  e: Item;
+}
+export function GET(query: GETQuery) { return query; }
+export function POST(body: POSTBody) { return body; }
+`,
+      );
+
+      const program = createProgram(file);
+      const allTypes = extractAllTypes(program, file);
+      const sources: RouteSchemaSource[] = [
+        {
+          urlPath: '/api/test',
+          filePath: file,
+          schemaName: 'GETQuery',
+          typeInfo: allTypes.get('GETQuery') ?? null,
+        },
+        {
+          urlPath: '/api/test',
+          filePath: file,
+          schemaName: 'POSTBody',
+          typeInfo: allTypes.get('POSTBody') ?? null,
+        },
+      ];
+
+      const source = generateSchemaFileSource(
+        sources,
+        (name) => allTypes.get(name)?.runtimeType,
+        '../../faapi-helpers.js',
+      );
+
+      // 两个方法都引用 Item，const ItemSchema 只允许声明一次
+      const declCount = (source.match(/^const ItemSchema = /gm) || []).length;
+      expect(declCount).toBe(1);
+      // 两个入口导出都存在，且都引用 ItemSchema
+      expect(source).toContain('export const GETQuerySchema');
+      expect(source).toContain('export const POSTBodySchema');
+      expect(source).toContain('ItemSchema');
+    });
+
     it('循环引用用 z.lazy', () => {
       const file = join(tempDir, 'tree.ts');
       writeFileSync(
@@ -537,6 +591,60 @@ export function GET(query: GETQuery) { return query; }
       // 类型错误（query schema coerce=true："1" 会被转为 1，需用无法 coerce 的值）
       const wrong = mod.GETQuerySchema.safeParse({ tree: { value: 'abc' } });
       expect(wrong.success).toBe(false);
+    });
+
+    it('多方法引用同一命名类型的 zod.js 可正常 import（无重复声明）', async () => {
+      const filePath = join(tempDir, 'src', 'api', 'order', 'handler.ts');
+      mkdirSync(join(tempDir, 'src', 'api', 'order'), { recursive: true });
+      writeFileSync(
+        filePath,
+        `export interface Item {
+  id: number;
+  name: string;
+}
+export interface GETQuery {
+  a: Item;
+  b: Item;
+  c: Item;
+}
+export interface POSTBody {
+  d: Item;
+  e: Item;
+}
+export function GET(query: GETQuery) { return query; }
+export function POST(body: POSTBody) { return body; }
+`,
+      );
+
+      const routes = singleFileRoutes('src/api/order/handler.ts', ['GET', 'POST'], '/api/order');
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
+
+      const schemaPath = join(dist, 'api', 'order', 'zod.js');
+      const source = readFileSync(schemaPath, 'utf-8');
+      expect((source.match(/^const ItemSchema = /gm) || []).length).toBe(1);
+
+      const mod = (await importWithCacheBust(schemaPath)) as {
+        GETQuerySchema: { safeParse: (v: unknown) => { success: boolean } };
+        POSTBodySchema: { safeParse: (v: unknown) => { success: boolean } };
+      };
+
+      // GET 是 query schema（coerce=true）
+      expect(
+        mod.GETQuerySchema.safeParse({
+          a: { id: '1', name: 'x' },
+          b: { id: 2, name: 'y' },
+          c: { id: 3, name: 'z' },
+        }).success,
+      ).toBe(true);
+      // POST 是 body schema（coerce=false）
+      expect(
+        mod.POSTBodySchema.safeParse({ d: { id: 1, name: 'x' }, e: { id: 2, name: 'y' } }).success,
+      ).toBe(true);
+      expect(
+        mod.POSTBodySchema.safeParse({ d: { id: '1', name: 'x' }, e: { id: 2, name: 'y' } })
+          .success,
+      ).toBe(false);
     });
 
     it('无路由时不报错', async () => {

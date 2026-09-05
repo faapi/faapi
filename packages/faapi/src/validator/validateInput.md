@@ -55,7 +55,7 @@ query/params 来自 URL，值均为 string。类型转换（string→number/bool
 - `form` 注入的 schema 名仍为 `POSTBody`（与 `body` 共享 schema key，运行时无需感知 form/body 差异），但 `RouteSchemaSource.coerce=true` 显式覆盖（form 值均为 string，需 coerce）
 - body schema 不含 preprocess
 
-zod v4 issue code → 框架 `ValidationErrorCode` 映射：`invalid_type`/`invalid_union` → `TYPE_MISMATCH`；`unrecognized_keys` → `INVALID_FORMAT`；`invalid_value`/`invalid_string`/`too_small`/`too_big`/`custom` → `INVALID_VALUE`。
+zod v4 issue code → 框架 `ValidationErrorCode` 映射：`invalid_type`（received 为 undefined，即缺失必填字段）→ `MISSING_FIELD`（400）；`invalid_type`（类型不匹配）/`invalid_union` → `TYPE_MISMATCH`（422）；`unrecognized_keys` → `INVALID_FORMAT`（400）；`invalid_value`/`invalid_format`（v4 的 email/url/uuid/regex 格式检查）/`invalid_key`/`invalid_element`（record/map 元素）/`too_small`/`too_big`/`custom` → `INVALID_VALUE`（422）。zod v4 已移除 `invalid_string`（v3 遗留），不再映射。
 
 ## 相关模块
 

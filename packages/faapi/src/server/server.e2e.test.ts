@@ -147,6 +147,25 @@ describe('HTTP Server E2E', () => {
     expect(allow).toContain('POST');
   });
 
+  it('DELETE 携带 JSON body：body 参数收到请求体而非 query', async () => {
+    const res = await fetchFromServer('/api/item?id=99', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 7 }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // body 注入的是请求体 { id: 7 }，不是 query { id: '99' }
+    expect(body).toEqual({ data: { deleted: 7 } });
+  });
+
+  it('DELETE 无请求体：body 注入 undefined，返回兜底结构', async () => {
+    const res = await fetchFromServer('/api/item?id=1', { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ data: { deleted: null } });
+  });
+
   it('handler 返回 object 时 Content-Type 为 application/json', async () => {
     const res = await fetchFromServer('/api/auth/login');
     expect(res.status).toBe(200);
@@ -189,6 +208,16 @@ describe('HTTP Server E2E', () => {
     const res = await fetchFromServer('/api/redirect', { redirect: 'manual' });
     expect(res.status).toBe(302);
     expect(res.headers.get('Location')).toBe('/auth/login');
+  });
+
+  it('HEAD 请求回退 GET handler：200 + 自定义头 + 无 body（探活场景）', async () => {
+    const res = await fetchFromServer('/api/novel/list', { method: 'HEAD' });
+    expect(res.status).toBe(200);
+    // GET handler 的自定义头对 HEAD 生效
+    expect(res.headers.get('Cache-Control')).toBe('max-age=3600');
+    // HEAD 无响应 body
+    const text = await res.text();
+    expect(text).toBe('');
   });
 
   // 中间件 E2E 测试

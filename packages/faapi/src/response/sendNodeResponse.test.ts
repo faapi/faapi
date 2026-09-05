@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Writable } from 'node:stream';
 import { sendNodeResponse } from './sendNodeResponse';
-
 /** 构造一个可被 pipe 的 mock ServerResponse，用闭包变量收集结果避免 getter/setter 冲突 */
 function createMockRes() {
   const chunks: Buffer[] = [];
@@ -89,5 +88,70 @@ describe('sendNodeResponse', () => {
     });
     await sendNodeResponse(response, res as never);
     expect(headers['content-type']).toBe('application/json');
+  });
+
+  describe('客户端断连', () => {
+    /** 构造带 cancel 探针的流式 Response */
+    function streamingResponse(onCancel: () => void): Response {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('chunk-1'));
+          controller.enqueue(new TextEncoder().encode('chunk-2'));
+        },
+        cancel() {
+          onCancel();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }
+
+    it('res 提前 close 时销毁源流（触发 cancel）并正常 resolve，不 reject', async () => {
+      let cancelled = false;
+      const mock = createMockRes();
+      // 模拟半双工 mock：首个 chunk 后断开连接（close 且 writableEnded=false）
+      const stream = mock.res as unknown as Writable;
+      stream.on('pipe', () => {
+        process.nextTick(() => stream.destroy());
+      });
+
+      await expect(
+        sendNodeResponse(
+          streamingResponse(() => (cancelled = true)),
+          mock.res as never,
+        ),
+      ).resolves.toBeUndefined();
+      // 源流被销毁 → 底层 web ReadableStream 的 cancel 被触发（SseWriter.aborted 置位的路径）
+      expect(cancelled).toBe(true);
+    });
+
+    it("res 'error'（ECONNRESET）时同样按断连处理，不 reject", async () => {
+      let cancelled = false;
+      const mock = createMockRes();
+      const stream = mock.res as unknown as Writable;
+      stream.on('pipe', () => {
+        process.nextTick(() => stream.destroy(new Error('ECONNRESET')));
+      });
+
+      await expect(
+        sendNodeResponse(
+          streamingResponse(() => (cancelled = true)),
+          mock.res as never,
+        ),
+      ).resolves.toBeUndefined();
+      expect(cancelled).toBe(true);
+    });
+
+    it('源流自身错误仍 reject（走错误响应路径）', async () => {
+      const { res } = createMockRes();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('partial'));
+          controller.error(new Error('handler stream boom'));
+        },
+      });
+      await expect(sendNodeResponse(new Response(stream), res as never)).rejects.toThrow(
+        'handler stream boom',
+      );
+    });
   });
 });

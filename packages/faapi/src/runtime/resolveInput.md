@@ -27,6 +27,14 @@ GET/DELETE 从 URL 提取 query，POST/PUT/PATCH 从请求体提取数据，需�
 - 非空请求体且 JSON 解析失败：抛 `ValidationError(code=INVALID_FORMAT)`，
   不再静默返回 `null` 导致后续报"字段缺失"
 
+### DELETE body（resolveBodyForQueryMethod）
+
+DELETE 主输入（校验用）是 query，但请求体流必须被消费（keep-alive 连接上有未读
+body 时 Node 只能断开连接），且 handler 声明 `body` 参数时应注入真正的请求体。
+`createServer` 调 `resolveBodyForQueryMethod(request)` 单独解析：空请求体返回
+`undefined`；非法 JSON 抛 `ValidationError(INVALID_FORMAT)`；解析结果不做 schema
+校验（DELETE 只有 DELETEQuery schema），原样注入。
+
 ## 相关模块
 
 - `queryToObject.ts` - 提取 query

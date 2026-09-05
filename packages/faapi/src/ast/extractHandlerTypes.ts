@@ -2,6 +2,8 @@ import ts from 'typescript';
 import {
   resolveTypeNode,
   resolveInterfaceDeclaration,
+  resolveEnumDeclaration,
+  findTopLevelDecl,
   setProgramContext,
   type PropertyType,
   type RuntimeType,
@@ -21,6 +23,14 @@ export interface HandlerTypeInfo {
  * 支持的类型声明：
  * - interface 声明（含继承）
  * - type 别名（type Query = { ... }）
+ * - enum 声明（跨文件回退路径支持）
+ *
+ * 自身文件找不到目标声明时，回退到 program 的其他源文件查找同名顶层声明
+ * （跳过 node_modules / TypeScript lib，首个匹配生效，与 resolveImportAlias
+ * 兜底路径语义一致）。该回退服务于入口类型中第二次出现的跨文件引用：首次引用
+ * 已由 checker 内联，二次引用被标记为 ref，代码生成阶段经
+ * createLazyTypeResolver → extractTypeInfo 解析，若无回退会静默生成
+ * z.unknown()，违背「不降级放行」约定。
  *
  * 遇到不支持的类型时抛 `SchemaExtractionError`，错误信息包含文件路径和类型名。
  *
@@ -78,7 +88,37 @@ export function extractTypeInfo(
       }
     });
 
-    return result;
+    if (result) return result;
+
+    // 3. 跨文件回退：自身文件无该声明时，在 program 的其他源文件中查找同名顶层声明
+    for (const sf of program.getSourceFiles()) {
+      if (sf === sourceFile) continue;
+      // 与 resolveImportAlias 兜底路径使用相同的过滤规则
+      if (sf.fileName.includes('/node_modules/') || sf.fileName.includes('typescript/lib/')) {
+        continue;
+      }
+      const found = findTopLevelDecl(sf, typeName);
+      if (!found) continue;
+
+      const visited = new Set<string>();
+      visited.add(typeName);
+      const runtimeType = withFileContext(filePath, typeName, () => {
+        if (found.kind === 'interface') {
+          return resolveInterfaceDeclaration(found.node, checker, visited);
+        }
+        if (found.kind === 'typeAlias') {
+          return resolveTypeNode(found.node.type, checker, visited);
+        }
+        return resolveEnumDeclaration(found.node);
+      });
+      return {
+        name: typeName,
+        properties: runtimeType.kind === 'object' ? runtimeType.properties : [],
+        runtimeType,
+      };
+    }
+
+    return null;
   } finally {
     setProgramContext(null);
   }

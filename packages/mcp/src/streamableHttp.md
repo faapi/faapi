@@ -27,6 +27,12 @@ export function POST(ctx) {
 | GET | 打开 SSE 流(200 + text/event-stream),定期发心跳保持连接并续期 session;携带的 session id 无效/已过期时返回 404;客户端断开时清理资源 |
 | DELETE | 按 Mcp-Session-Id 销毁会话 |
 
+## 会话强制与 Origin 校验
+
+- **会话强制**：非 initialize 的 POST 请求必须携带有效的 `Mcp-Session-Id`——缺失返回 400，未知/过期返回 404。防止匿名客户端跳过握手直接调用 tool。
+- **握手完成校验**：`initialize` 之外的 JSON-RPC 请求要求 session 已收到 `notifications/initialized`（`session.initialized`），否则返回 -32600 InvalidRequest（与官方 SDK 行为一致，防跳过能力协商）。
+- **Origin 校验**（`McpHttpOptions.allowedOrigins`，可选）：请求携带 Origin 头且不在允许列表内返回 403；未携带 Origin（非浏览器客户端）放行；未配置时不校验。MCP 规范建议服务端校验 Origin 防 DNS rebinding——本地开发可不配置，暴露到生产网络时建议配置（通过 `createMcpHandler(mcp, { allowedOrigins: [...] })` 或 `createMcpNodeHandler` 传入）。
+
 ## 协议头校验
 
 ### Accept 头(POST)

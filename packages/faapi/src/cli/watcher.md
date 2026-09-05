@@ -39,10 +39,12 @@ chokidar v4 移除了 glob 模式支持，改为监听整个 `src` 目录 + `ign
 
 `ignored` 函数逻辑：
 
-- 忽略 `node_modules`、`.faapi`、`dist`、`.git` 路径
+- 忽略 `node_modules`、`.faapi`、`dist`、`.git` 路径（按路径段判断，不误伤 `src/lib/node_modules-helper.ts` 这类合法文件名）
 - 无 stats 时不忽略（chokidar 会再次调用并传入 stats）
 - 目录不忽略（chokidar 需要递归进入子目录）
 - 文件仅监听 `.ts` 和 `.js` 后缀（`.js` 用于 `faapi.config.js`）
+
+config 文件事件分流：`faapi.config.{ts,js}` 的 add/change 事件只调 `scheduler.schedule()`（重生成 `faapi-config.js`，mtime 短路），不进 `addFiles` 增量编译——config 位于 src/outbase 之外，喂给 `compileDevRoutes` 会让 esbuild 把 `..` 段转义成 `_.._` 目录，在 `.faapi` 下堆积垃圾产物且编译白跑。
 
 ## 重建流程
 

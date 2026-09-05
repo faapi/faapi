@@ -3,6 +3,18 @@ import { z } from 'zod';
 import { createMcpServer, PROTOCOL_VERSION } from './mcpServer';
 import { isResultResponse, isErrorResponse, type JsonRpcRequest } from './jsonRpc';
 
+/**
+ * 创建已通过握手（notifications/initialized）的 session
+ *
+ * 非 initialize 请求要求 session.initialized（与官方 SDK 行为一致），
+ * 大多数测试不关心握手细节，用此 helper 跳过。
+ */
+function makeInitializedSession(mcp: ReturnType<typeof createMcpServer>) {
+  const session = mcp.getSessionManager().create();
+  session.initialized = true;
+  return session;
+}
+
 function makeRequest(id: string | number, method: string, params?: unknown): JsonRpcRequest {
   return { jsonrpc: '2.0', id, method, ...(params !== undefined && { params }) };
 }
@@ -81,7 +93,7 @@ describe('McpServer', () => {
 
     it('填充 clientInfo 到 session', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       await mcp.handleJsonRpc(
         makeRequest(1, 'initialize', {
           protocolVersion: '2025-06-18',
@@ -113,7 +125,7 @@ describe('McpServer', () => {
 
     it('sessionTtl 配置透传到 SessionManager', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0', sessionTtl: 50 });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       expect(mcp.getSessionManager().get(session.id)).toBeDefined();
 
       // 等待 100ms 超过 50ms TTL
@@ -126,7 +138,7 @@ describe('McpServer', () => {
 
     it('sessionTtl: 0 表示永不过期', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0', sessionTtl: 0 });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       // 等待 50ms,不应过期
       const start = Date.now();
       while (Date.now() - start < 50) {
@@ -137,7 +149,7 @@ describe('McpServer', () => {
 
     it('未配置 sessionTtl 时使用默认 30 分钟', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       // 等待 50ms,不应过期(默认 30 分钟)
       const start = Date.now();
       while (Date.now() - start < 50) {
@@ -222,7 +234,7 @@ describe('McpServer', () => {
       expect(error.message).toContain('Unknown tool');
     });
 
-    it('参数校验失败返回 InvalidParams 错误', async () => {
+    it('参数校验失败返回 isError: true 的 tool result（非协议错误，LLM 可自纠）', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
       mcp.tool('echo', {
         input: { message: z.string() },
@@ -232,9 +244,34 @@ describe('McpServer', () => {
         makeRequest(1, 'tools/call', { name: 'echo', arguments: { message: 123 } }),
         undefined,
       );
-      expect(isErrorResponse(res!)).toBe(true);
-      const error = (res as { error: { code: number } }).error;
-      expect(error.code).toBe(-32602);
+      // MCP 规范：源自 tool 的错误放 result.isError，让客户端把错误喂回模型重试；
+      // 协议层 -32602 会让部分客户端终止调用
+      expect(isErrorResponse(res!)).toBe(false);
+      const result = (res as { result: { isError: boolean; content: [{ text: string }] } }).result;
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('Invalid tool arguments');
+    });
+
+    it('校验通过后 handler 收到 parsed.data（未知字段被 strip）', async () => {
+      const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
+      let received: unknown;
+      mcp.tool('strict', {
+        input: { name: z.string() },
+        handler: async (args) => {
+          received = args;
+          return { content: [] };
+        },
+      });
+      // 注入 schema 未声明的字段（模拟原型污染/隐藏开关类攻击面）
+      await mcp.handleJsonRpc(
+        makeRequest(1, 'tools/call', {
+          name: 'strict',
+          arguments: { name: 'ok', __proto_arg__: { evil: true } },
+        }),
+        undefined,
+      );
+      expect(received).toEqual({ name: 'ok' });
+      expect(Object.keys(received as Record<string, unknown>)).toEqual(['name']);
     });
 
     it('handler 抛错返回 isError: true', async () => {
@@ -277,7 +314,7 @@ describe('McpServer', () => {
           return { content: [] };
         },
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       await mcp.handleJsonRpc(makeRequest(1, 'tools/call', { name: 'test' }), session);
       expect(extraSessionId).toBe(session.id);
     });
@@ -302,6 +339,20 @@ describe('McpServer', () => {
     expect(session.initialized).toBe(false);
     await mcp.handleJsonRpc({ jsonrpc: '2.0', method: 'notifications/initialized' }, session);
     expect(session.initialized).toBe(true);
+  });
+
+  it('未完成握手的 session 调用非 initialize 请求被拒绝（防跳过能力协商）', async () => {
+    const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
+    mcp.tool('hello', {
+      handler: async () => ({ content: [{ type: 'text', text: 'hi' }] }),
+    });
+    // 刚创建、尚未收到 notifications/initialized 的 session
+    const session = mcp.getSessionManager().create();
+    const res = await mcp.handleJsonRpc(makeRequest(1, 'tools/call', { name: 'hello' }), session);
+    expect(isErrorResponse(res!)).toBe(true);
+    const error = (res as { error: { code: number; message: string } }).error;
+    expect(error.code).toBe(-32600); // InvalidRequest：握手未完成
+    expect(error.message).toContain('not initialized');
   });
 
   // ─── capability 自动协商 ─────────────────────────────
@@ -794,7 +845,7 @@ describe('McpServer', () => {
   describe('Logging', () => {
     it('logging/setLevel 设置 session 日志级别,返回空结果', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       expect(session.loggingLevel).toBe('info'); // 默认 info
 
       const res = await mcp.handleJsonRpc(
@@ -808,7 +859,7 @@ describe('McpServer', () => {
 
     it('logging/setLevel 支持全部 8 个级别', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       const levels = [
         'debug',
         'info',
@@ -828,7 +879,7 @@ describe('McpServer', () => {
 
     it('logging/setLevel 无效级别返回 InvalidParams', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       const res = await mcp.handleJsonRpc(
         makeRequest(1, 'logging/setLevel', { level: 'verbose' }),
         session,
@@ -841,7 +892,7 @@ describe('McpServer', () => {
 
     it('logging/setLevel 缺少 level 参数返回 InvalidParams', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       const res = await mcp.handleJsonRpc(makeRequest(1, 'logging/setLevel', {}), session);
       expect(isErrorResponse(res!)).toBe(true);
       expect((res as { error: { code: number } }).error.code).toBe(-32602);
@@ -849,7 +900,7 @@ describe('McpServer', () => {
 
     it('handler extra.sendLogging 推送 notifications/message 到 SSE 订阅者', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       // 模拟 SSE 订阅者:用 ReadableStream + controller 注册
       const stream = new ReadableStream<Uint8Array>({
@@ -891,7 +942,7 @@ describe('McpServer', () => {
 
     it('sendLogging 按 session.loggingLevel 过滤——低于级别的日志被丢弃', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       // 设置为 warning,debug 应被丢弃
       session.loggingLevel = 'warning';
 
@@ -936,7 +987,7 @@ describe('McpServer', () => {
 
     it('sendLogging 无 SSE 订阅者时静默丢弃(不抛错)', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       // 不注册订阅者
 
       mcp.tool('no-sub-test', {
@@ -959,7 +1010,7 @@ describe('McpServer', () => {
 
     it('sendLogging 不带 logger 字段时 notification 不含 logger', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -993,7 +1044,7 @@ describe('McpServer', () => {
 
     it('sendLogging 通过 resource read handler extra 也可调用', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1023,7 +1074,7 @@ describe('McpServer', () => {
 
     it('sendLogging 通过 prompt get handler extra 也可调用', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1055,7 +1106,7 @@ describe('McpServer', () => {
 
     it('server.sendLogging 应用级 API 也可推送日志', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1086,7 +1137,7 @@ describe('McpServer', () => {
 
     it('server.sendLogging 按 session.loggingLevel 过滤', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       session.loggingLevel = 'error';
 
       const pushed: string[] = [];
@@ -1123,7 +1174,7 @@ describe('McpServer', () => {
         name: 'readme',
         read: async () => ({ contents: [] }),
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const res = await mcp.handleJsonRpc(
         makeRequest(1, 'resources/subscribe', { uri: 'file://docs/readme' }),
@@ -1140,7 +1191,7 @@ describe('McpServer', () => {
         name: 'readme',
         read: async () => ({ contents: [] }),
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       await mcp.handleJsonRpc(
         makeRequest(1, 'resources/subscribe', { uri: 'file://docs/readme' }),
@@ -1159,7 +1210,7 @@ describe('McpServer', () => {
         name: 'readme',
         read: async () => ({ contents: [] }),
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const res = await mcp.handleJsonRpc(makeRequest(1, 'resources/subscribe', {}), session);
       expect(isErrorResponse(res!)).toBe(true);
@@ -1172,7 +1223,7 @@ describe('McpServer', () => {
         name: 'readme',
         read: async () => ({ contents: [] }),
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       await mcp.handleJsonRpc(
         makeRequest(1, 'resources/subscribe', { uri: 'file://docs/readme' }),
@@ -1194,7 +1245,7 @@ describe('McpServer', () => {
         name: 'readme',
         read: async () => ({ contents: [] }),
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const res = await mcp.handleJsonRpc(
         makeRequest(1, 'resources/unsubscribe', { uri: 'file://never-subscribed' }),
@@ -1210,7 +1261,7 @@ describe('McpServer', () => {
         name: 'readme',
         read: async () => ({ contents: [] }),
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const res = await mcp.handleJsonRpc(makeRequest(1, 'resources/unsubscribe', {}), session);
       expect(isErrorResponse(res!)).toBe(true);
@@ -1237,7 +1288,7 @@ describe('McpServer', () => {
         name: 'readme',
         read: async () => ({ contents: [] }),
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1279,8 +1330,8 @@ describe('McpServer', () => {
       mcp.resource('file://a', { name: 'a', read: async () => ({ contents: [] }) });
       mcp.resource('file://b', { name: 'b', read: async () => ({ contents: [] }) });
 
-      const sessionA = mcp.getSessionManager().create();
-      const sessionB = mcp.getSessionManager().create();
+      const sessionA = makeInitializedSession(mcp);
+      const sessionB = makeInitializedSession(mcp);
 
       // sessionA 订阅 file://a,sessionB 订阅 file://b
       await mcp.handleJsonRpc(makeRequest(1, 'resources/subscribe', { uri: 'file://a' }), sessionA);
@@ -1531,7 +1582,7 @@ describe('McpServer', () => {
 
     it('resource template read handler 接收 sendLogging extra', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1580,7 +1631,7 @@ describe('McpServer', () => {
   describe('Progress Notifications', () => {
     it('handler extra.sendProgress 推送 notifications/progress 到 SSE 订阅者', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1620,7 +1671,7 @@ describe('McpServer', () => {
 
     it('progressToken 为数字时正常推送', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1658,7 +1709,7 @@ describe('McpServer', () => {
 
     it('请求未携带 _meta.progressToken 时 sendProgress 静默丢弃', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1695,7 +1746,7 @@ describe('McpServer', () => {
 
     it('sendProgress 无 SSE 订阅者时静默丢弃(不抛错)', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       // 不注册订阅者
 
       mcp.tool('no-sub', {
@@ -1722,7 +1773,7 @@ describe('McpServer', () => {
 
     it('sendProgress 通过 resource read handler extra 也可调用', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1759,7 +1810,7 @@ describe('McpServer', () => {
 
     it('sendProgress 通过 prompt get handler extra 也可调用', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1795,7 +1846,7 @@ describe('McpServer', () => {
 
     it('sendProgress 通过 resource template read handler extra 也可调用', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1831,7 +1882,7 @@ describe('McpServer', () => {
 
     it('server.sendProgress 应用级 API 也可推送进度', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -1862,7 +1913,7 @@ describe('McpServer', () => {
 
     it('server.sendProgress progressToken 为 null/undefined 静默丢弃', () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -2185,14 +2236,14 @@ describe('McpServer', () => {
         return { id: session?.id ?? 'anonymous' };
       });
 
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       await mcp.handleJsonRpc(makeRequest(1, 'myapp/whoami'), session);
       expect(receivedSession).toBe(session);
     });
 
     it('自定义方法 extra 含 sessionId/sendLogging/sendProgress', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -2392,7 +2443,7 @@ describe('McpServer', () => {
         version: '1.0.0',
         toolsListChanged: true,
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -2414,7 +2465,7 @@ describe('McpServer', () => {
 
     it('toolsListChanged: false 时 removeTool 不推送通知', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' }); // 默认 false
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -2443,7 +2494,7 @@ describe('McpServer', () => {
         version: '1.0.0',
         resourcesListChanged: true,
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -2469,7 +2520,7 @@ describe('McpServer', () => {
         version: '1.0.0',
         resourcesListChanged: true,
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       // 假 subscriber 直接注册（计数收到的广播,避免对"期待无数据"的流 await read 挂起）
       const sent: Uint8Array[] = [];
@@ -2500,7 +2551,7 @@ describe('McpServer', () => {
         version: '1.0.0',
         promptsListChanged: true,
       });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -2522,8 +2573,8 @@ describe('McpServer', () => {
 
     it('notifyToolsListChanged 广播到所有 session', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session1 = mcp.getSessionManager().create();
-      const session2 = mcp.getSessionManager().create();
+      const session1 = makeInitializedSession(mcp);
+      const session2 = makeInitializedSession(mcp);
 
       let pushed1 = false;
       let pushed2 = false;
@@ -2569,7 +2620,7 @@ describe('McpServer', () => {
   describe('sendNotification (generic)', () => {
     it('推送自定义通知到 session 的 SSE 订阅者', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -2591,7 +2642,7 @@ describe('McpServer', () => {
 
     it('sendNotification 不传 params 时 notification 不含 params', async () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -2619,7 +2670,7 @@ describe('McpServer', () => {
 
     it('sendNotification 无订阅者时静默丢弃(不抛错)', () => {
       const mcp = createMcpServer({ name: 'test', version: '1.0.0' });
-      const session = mcp.getSessionManager().create();
+      const session = makeInitializedSession(mcp);
       // session 存在但无订阅者
       expect(() => mcp.sendNotification(session.id, 'notifications/x')).not.toThrow();
     });

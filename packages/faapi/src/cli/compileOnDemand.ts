@@ -3,19 +3,27 @@ import fs from 'node:fs';
 import { compileDevRoutes } from './compileDevRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { getRuntimeSchemaPath } from './generateSchemaFiles';
+import { collectRelativeImports } from './collectImports';
 import type { RouteManifest } from '../router/routeTypes';
 
 /**
- * 按需编译（Vite 风格）：仅在请求时编译被访问的 handler.ts + 生成 zod.js
+ * 按需编译（Vite 风格）：仅在请求时编译被访问的 handler.ts 及其依赖闭包 + 生成 zod.js
  *
  * 设计目标：dev 启动时零编译、零 schema 生成，handler.js / zod.js 首次被需要时才触发。
  * 与阶段 1（scanRoutes 去 import）配合，dev 冷启动近乎瞬开。
+ *
+ * 依赖闭包：`bundle: false` 逐文件编译不分析 import 关系，只编译 handler 单文件时，
+ * handler 引用的共享模块（如 `../../lib/db`）没有产物，首次请求 import 即
+ * ERR_MODULE_NOT_FOUND。因此 ensureCompiled 先收集依赖闭包
+ * （collectRelativeImports，相对 + tsconfig paths 别名），跳过产物已新鲜的文件后
+ * 批量编译。src 外依赖不收集（outbase=src 语义限制，与 watcher 增量编译一致）。
  *
  * 四种触发路径：
  * 1. `loadRouteModule` 先调 `ensureCompiled` 编译源码 → 再 import handler.js
  * 2. `loadWsHandler` 同上（WS handler.js）
  * 3. `createServer` 调 `ensureSchemaGenerated` 检查 zod.js 是否存在/最新 → 不存在则生成
  * 4. watcher 文件变化 → 增量编译该文件（保留现有逻辑）+ 删除 stale zod.js
+ * 5. `createServer` / `handleWsUpgrade` 首次加载目录中间件前调 `ensureMiddlewaresCompiled`
  *
  * mtime 缓存（阶段 4）：
  * - `ensureCompiled`：handler.js 存在且 mtime ≥ 源码 mtime → 跳过编译
@@ -113,14 +121,17 @@ export function clearCompiledFiles(): void {
 }
 
 /**
- * 确保源文件已编译为产物，未编译则触发单文件编译
+ * 确保源文件及其依赖闭包已编译为产物，未编译则触发批量编译
  *
  * 调用方（`loadRouteModule` / `loadWsHandler`）在 import 产物之前调用此函数，确保产物已生成。
+ *
+ * 依赖闭包：handler 引用的项目内共享模块（相对 import + tsconfig paths 别名）一并编译，
+ * 跳过产物已新鲜的文件（watcher 已编译或此前请求已编译），只补缺口。
  *
  * mtime 缓存（阶段 4）：
  * 1. 内存 Set 命中 → 跳过（最快路径）
  * 2. 产物存在且 mtime ≥ 源码 mtime → 跳过（复用已有产物，如 watcher 已编译）
- * 3. 产物不存在或 stale → 编译 → 加入内存 Set
+ * 3. 产物不存在或 stale → 编译（含 stale 的依赖闭包文件） → 加入内存 Set
  *
  * 并发去重（mutex）：
  * - 同一 sourceAbsPath 的并发请求共享同一 in-flight Promise
@@ -165,13 +176,25 @@ export async function ensureCompiled(
 
   // 触发编译：注册 in-flight Promise 防止并发重复编译
   const compilePromise = (async () => {
-    // 编译失败时抛错（不吞错误），让调用方拿到原始 cause
+    // 依赖闭包：入口本身 + src 内全部传递依赖；产物已新鲜的文件跳过（只补缺口）
+    const { insideFiles } = await collectRelativeImports([sourceAbsPath], rootDir);
+    const files = [sourceAbsPath];
+    for (const dep of insideFiles) {
+      if (state.compiledFiles.has(dep)) continue;
+      const depProduct = prodSourcePathToProductPath(dep, rootDir, dist);
+      if (depProduct && isProductFresh(dep, depProduct)) continue;
+      files.push(dep);
+    }
+
     await compileDevRoutes({
       rootDir,
       dist,
-      files: [sourceAbsPath],
+      files,
       logLevel: 'silent',
     });
+    for (const file of files) {
+      state.compiledFiles.add(file);
+    }
     state.compiledFiles.add(sourceAbsPath);
   })();
 
@@ -181,6 +204,37 @@ export async function ensureCompiled(
     return true;
   } finally {
     state.inFlightCompilations.delete(sourceAbsPath);
+  }
+}
+
+/**
+ * 确保目录中间件文件已编译（dev 按需模式）
+ *
+ * middlewarePaths 是产物绝对路径（`.faapi/api/users/middlewares.js`），dev 按需模式下
+ * 产物在首次请求前不存在——若不先编译，`loadMergedMiddlewares` import 即
+ * ERR_MODULE_NOT_FOUND。通过 `prodPathToSourcePath` 反推源码路径后走 `ensureCompiled`
+ * （含依赖闭包）。prod 模式（按需开关关闭）直接返回——产物由 build 固化。
+ *
+ * @param middlewarePaths 中间件产物绝对路径列表（scanRoutes 收集）
+ * @param rootDir 项目根目录
+ */
+export async function ensureMiddlewaresCompiled(
+  middlewarePaths: string[],
+  rootDir: string,
+): Promise<void> {
+  if (!isDevOnDemandEnabled() || middlewarePaths.length === 0) return;
+  const dist = getDevDist();
+  if (!dist) return;
+
+  for (const mwPath of middlewarePaths) {
+    const sourcePath = prodPathToSourcePath(mwPath, rootDir, dist);
+    try {
+      await ensureCompiled(sourcePath, rootDir, dist);
+    } catch (err) {
+      // 中间件编译失败不阻断请求——loadMiddlewaresFile 对 import 失败已有
+      // console.error + 空 bundle 降级语义（鉴权失效由 onError 感知），此处保持一致
+      console.error(`[faapi] Failed to compile middleware source ${sourcePath}:`, err);
+    }
   }
 }
 

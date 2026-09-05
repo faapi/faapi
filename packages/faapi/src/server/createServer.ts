@@ -12,7 +12,7 @@ import type { RouteManifest, RouteMatch, WsRouteManifest, RoutesRef } from '../r
 import { matchRoute, findAllowedMethods } from '../router/matchRoute';
 import { loadRouteModule } from '../loader/loadRouteModule';
 import { createContextFromUrl } from '../runtime/createContext';
-import { resolveInputFromUrl } from '../runtime/resolveInput';
+import { resolveInputFromUrl, resolveBodyForQueryMethod } from '../runtime/resolveInput';
 import { invokeHandler, compose, mergeMeta } from '../runtime/invokeHandler';
 import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
 import { sendNodeResponse } from '../response/sendNodeResponse';
@@ -33,7 +33,12 @@ import type { InjectorMap } from '../middleware/injectorTypes';
 import { attachWebSocket } from './handleWsUpgrade';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 import { getRuntimeSchemaPath } from '../cli/generateSchemaFiles';
-import { ensureSchemaGenerated, isDevOnDemandEnabled, getDevDist } from '../cli/compileOnDemand';
+import {
+  ensureSchemaGenerated,
+  ensureMiddlewaresCompiled,
+  isDevOnDemandEnabled,
+  getDevDist,
+} from '../cli/compileOnDemand';
 import { loadMergedMiddlewares } from '../middleware/loadMiddlewares';
 
 /**
@@ -315,10 +320,10 @@ export function createServer(options: CreateServerOptions): {
     });
   });
 
-  // 挂载 WebSocket 升级处理（仅当提供了 WS 路由）
-  if (routesRef.wsCurrent.length > 0) {
-    attachWebSocket({ server, routesRef, rootDir, config, globalMiddlewares, trustedProxy });
-  }
+  // 挂载 WebSocket 升级处理（无条件挂载：upgrade 处理器内部对无匹配路由返回 404，
+  // 空清单成本一次函数调用。若按初始清单条件挂载，dev watch 中新增第一个 WS 路由后
+  // upgrade 监听器不会补挂，WS 路由永远 404）
+  attachWebSocket({ server, routesRef, rootDir, config, globalMiddlewares, trustedProxy });
 
   return { server, routesRef };
 }
@@ -421,11 +426,24 @@ function createRoutePipeline(opts: {
     if (!result.valid) {
       throw new ValidationError('参数校验失败', result.issues);
     }
-    const body = hasBody(route.method) ? result.data : undefined;
+    // body 计算与主输入分流：
+    // - POST/PUT/PATCH：主输入就是 body，用校验后的值
+    // - DELETE：主输入是 query（校验 DELETEQuery），body 单独解析注入——
+    //   若把校验后的 query 当 body 传入，handler 声明 body 会静默拿到 query；
+    //   同时请求体流不被消费，keep-alive 连接无法复用
+    // - GET/HEAD：无 body
+    const body =
+      inputType === 'query' && hasBody(route.method)
+        ? await resolveBodyForQueryMethod(request)
+        : hasBody(route.method)
+          ? result.data
+          : undefined;
 
     // 5. 中间件按需加载（Vite 风格）：route.middlewares 为 undefined 时从 middlewarePaths 加载
     //    首次请求加载后缓存到 route 上，后续请求直接复用
     if (route.middlewares === undefined && route.injectors === undefined && route.middlewarePaths) {
+      // dev 按需模式：先编译中间件源码（含依赖闭包）再 import
+      await ensureMiddlewaresCompiled(route.middlewarePaths, rootDir);
       const bundle = await loadMergedMiddlewares(route.middlewarePaths);
       if (bundle) {
         route.middlewares = bundle.middlewares;
@@ -531,6 +549,9 @@ async function handleRequest(
     // 4. 发送响应
     await sendSuccessResponse(response, res);
   } catch (err: unknown) {
+    // 客户端已断开或响应已完成：网络中断/连接销毁不是服务端错误，
+    // 不向已销毁的连接写 500（写入无效），也不触发 onError 误报
+    if (res.destroyed || res.writableEnded) return;
     await sendErrorResponse(err, meta, res, onError, ctx);
   }
 }

@@ -155,9 +155,11 @@ export function createProgram(filePath: string): ts.Program {
  * 完全一致，但 N 个文件只创建 1 个 Program（原来每个文件都全量解析一遍项目源码，
  * 是 build 时间的最大单项开销）。
  *
- * 缓存 key 为 `shared::<tsconfigPath>::<排序后的文件列表>`：同一批次重复调用命中
- * 缓存；不同批次（rootNames 不同）各自创建。`invalidateProgramCache()` 同时清理
- * 共享缓存与单文件缓存。
+ * 缓存 key 为 `shared::<tsconfigPath>`（同一 tsconfig 一份 Program）：同一批次重复
+ * 调用命中缓存；不同批次通过 `program.getSourceFile` 校验缓存已覆盖本次全部入口文件，
+ * 未覆盖（入口在 tsconfig include 之外）时重建。若把文件列表纳入 key，dev 按需模式下
+ * 每个路由文件会各自持有一份全项目 Program（内存 O(路由数 × 项目大小)）。
+ * `invalidateProgramCache()` 同时清理共享缓存与单文件缓存。
  *
  * 向上查找不到 tsconfig.json 的文件（如 os.tmpdir() 测试场景）逐个回退到
  * {@link createProgram} 单文件行为，不参与共享。
@@ -187,9 +189,17 @@ export function createPrograms(filePaths: string[]): Map<string, ts.Program> {
   }
 
   for (const { tsconfigPath, files } of groups.values()) {
-    const cacheKey = `shared::${tsconfigPath}::${[...files].sort().join('|')}`;
+    // 缓存 key 只含 tsconfigPath：buildProgram 的 rootNames = 入口 ∪ tsconfig 全部
+    // fileNames，同一 tsconfig 下不同入口批次的 Program 内容几乎一致——若把文件列表
+    // 纳入 key，dev 按需模式下每个路由文件会各自持有一份"全项目 Program"
+    // （内存 O(路由数 × 项目大小)，无淘汰）。改为按 tsconfig 共享一份，通过
+    // getSourceFile 校验缓存里的 Program 覆盖了本次全部入口文件（入口在 tsconfig
+    // include 之外的场景重建，保证不缺文件）
+    const cacheKey = `shared::${tsconfigPath}`;
     let program = programCache.get(cacheKey);
-    if (!program) {
+    const coversAll =
+      program !== undefined && files.every((f) => program!.getSourceFile(f) !== undefined);
+    if (!program || !coversAll) {
       program = buildProgram(files, tsconfigPath);
       programCache.set(cacheKey, program);
     }

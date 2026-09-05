@@ -138,6 +138,7 @@ const mod = await loadToolModule(tool.filePath, tool.functionName);
 return await mod.handler(callArgs);
 ```
 
+- **执行白名单（安全边界）**：执行前校验 `name` 是否在当前 agent 的声明集合内（`resolveAgentTools` 的 tool 名 + `resolveSubAgents` 的 `agent.<name>`）。`tools`/`agents` 声明不只是 LLM 可见性过滤——LLM 幻觉或被提示注入时可能请求未声明的任意已注册 tool（如管理类 tool）,未声明一律拒绝,返回 `{ error: 'Tool "x" is not declared by agent "y"' }` 回传 LLM。sub-agent 递归时每个 depth 层按自己的声明集合校验
 - **常规 tool 校验失败**：不抛错,返回 `{ error }` 对象——reactLoop 把它 stringify 后作为 tool 结果回传 LLM,LLM 可据此修正参数重试（与 [reactLoop](./reactLoop.md) 的「tool 错误回传 LLM」语义一致）
 - **tool 未找到 / 加载失败**：抛错,被 reactLoop catch 后同样回传 LLM
 - **`enableTracing` 参数**：由 [buildLoopConfig](#config-组装流程) 闭包捕获传入,用于 sub-agent 调用时决定是否包装 [TracingToolResult](./trace.md) 携带 sub-trace。常规 tool 不需要 tracing 包装,直接返回结果

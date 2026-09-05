@@ -14,6 +14,7 @@ import type { Server } from 'node:http';
 import type { Socket } from 'node:net';
 import fs from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
+import type { RawData } from 'ws';
 import path from 'node:path';
 import type { WsRouteMatch, RoutesRef } from '../router/routeTypes';
 import { matchWsRoute } from '../router/matchRoute';
@@ -27,6 +28,7 @@ import { getClientIp } from '../utils/getClientIp';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 import {
   ensureCompiled,
+  ensureMiddlewaresCompiled,
   isDevOnDemandEnabled,
   getDevDist,
   prodPathToSourcePath,
@@ -104,10 +106,12 @@ function bindEvents(rawSocket: WebSocket, handlers: WsEventHandlers | void): voi
     }
   }
   if (handlers.onMessage) {
-    rawSocket.on('message', (data: Buffer) => {
-      // ws 库 message 事件传 Buffer[]，合并为单个 Buffer 后转 string
-      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as unknown as Uint8Array);
-      handlers.onMessage!(ws, buf.toString('utf8'));
+    rawSocket.on('message', (data: RawData, isBinary: boolean) => {
+      // ws 库 message 事件传 Buffer | ArrayBuffer | Buffer[]，归一化为 Buffer；
+      // 二进制帧透传 Buffer（utf8 解码不可逆，protobuf/msgpack 等二进制协议会损坏），
+      // 文本帧转 utf8 字符串——与 onMessage 类型声明 string | Buffer 一致
+      const buf = toWsBuffer(data);
+      handlers.onMessage!(ws, isBinary ? buf : buf.toString('utf8'));
     });
   }
   if (handlers.onClose) {
@@ -120,6 +124,13 @@ function bindEvents(rawSocket: WebSocket, handlers: WsEventHandlers | void): voi
       handlers.onError!(ws, err);
     });
   }
+}
+
+/** ws 库 RawData（Buffer | ArrayBuffer | Buffer[]）归一化为 Buffer */
+function toWsBuffer(data: RawData): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return Buffer.from(data as ArrayBuffer);
 }
 
 /**
@@ -184,6 +195,31 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', async (req: IncomingMessage, socket: Socket, head: Buffer) => {
+    try {
+      await handleUpgradeRequest(req, socket, head);
+    } catch (err) {
+      // 兜底 catch：upgrade 监听器是 async 函数，路由匹配 / header 构造 / 上下文创建等
+      // 抛出的未捕获错误会变成 unhandled rejection（Node 15+ 默认崩掉进程）。
+      // HTTP 路径有 catch 兜底，WS 路径保持对称——写回 500 后销毁 socket。
+      console.error('[faapi] WS upgrade 处理失败:', err);
+      if (!socket.destroyed) {
+        try {
+          if (!socket.writableEnded) {
+            socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+          }
+        } catch {
+          // socket 已不可写，忽略
+        }
+        socket.destroy();
+      }
+    }
+  });
+
+  async function handleUpgradeRequest(
+    req: IncomingMessage,
+    socket: Socket,
+    head: Buffer,
+  ): Promise<void> {
     const currentWsRoutes = routesRef.wsCurrent;
     const pathname = getPathname(req);
     const match: WsRouteMatch | null = matchWsRoute(currentWsRoutes, pathname);
@@ -245,6 +281,8 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
     try {
       // 按需加载中间件：route.middlewares 为 undefined 时从 middlewarePaths 加载（Vite 风格）
       if (route.middlewares === undefined && route.middlewarePaths) {
+        // dev 按需模式：先编译中间件源码（含依赖闭包）再 import
+        await ensureMiddlewaresCompiled(route.middlewarePaths, rootDir);
         const bundle = await loadMergedMiddlewares(route.middlewarePaths);
         if (bundle) {
           route.middlewares = bundle.middlewares;
@@ -280,7 +318,7 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
 
     // 中间件拦截或错误：把 Response 写回 socket 后销毁
     await sendResponseToSocket(socket, mergeMeta(response, meta));
-  });
+  }
 
   return wss;
 }

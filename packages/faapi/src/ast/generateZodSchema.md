@@ -57,7 +57,7 @@ TypeScript interface/type alias 在 `RuntimeType` 中表示为 `{ kind: 'ref', n
 - 因此每个 `zod.js` 自包含，无需 import 其他 `zod.js`
 - `ref` 仅用于同文件内的循环引用（如 `TreeNode.children: TreeNode[]`），通过 `z.lazy` 处理
 
-`generateZodSchemaSource` 生成自包含代码（含 `import { z } from 'zod'`）；`generateSchemaFileSource` 合并同一 handler 的多个 schema 时，剥离重复的 import 再统一添加。
+`generateZodSchemaSource` 生成自包含代码（含 `import { z } from 'zod'`）；`generateSchemaFileSource` 合并同一 handler 的多个 schema 时改用 `generateZodSchemaSourceParts` 的结构化片段：命名类型声明按名去重后提升到文件头只声明一次（同一文件多个方法引用同一命名类型时，重复 const 声明会让 zod.js import 即 SyntaxError），入口导出留在各自方法的 block 内。
 
 ## API
 
@@ -69,6 +69,18 @@ function generateZodSchemaSource(
   exportName?: string,
   coerce = false,
 ): string
+
+/** 结构化片段：命名类型声明（带类型名，供文件级去重）+ 入口导出 */
+interface ZodSchemaSourceParts {
+  namedTypeDeclarations: Array<{ name: string; declaration: string }>;
+  entryDeclaration: string;
+}
+function generateZodSchemaSourceParts(
+  typeInfo: HandlerTypeInfo,
+  resolveType: TypeResolver,
+  exportName?: string,
+  coerce = false,
+): ZodSchemaSourceParts
 
 /** RuntimeType → zod 表达式字符串（不含声明） */
 function runtimeTypeToZodExpression(

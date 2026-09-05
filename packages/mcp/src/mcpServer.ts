@@ -755,6 +755,15 @@ export class McpServer {
     request: JsonRpcRequest,
     session: McpSession | undefined,
   ): Promise<JsonRpcMessage> {
+    // initialize 之外的请求要求已完成握手（客户端必须先发 notifications/initialized）
+    // 与官方 SDK 行为一致，防止客户端跳过能力协商直接调用 tool
+    if (session && !session.initialized && request.method !== 'initialize') {
+      return createErrorResponse(
+        request.id,
+        ErrorCode.InvalidRequest,
+        'Server not initialized: send "initialize" request and "notifications/initialized" notification first',
+      );
+    }
     try {
       switch (request.method) {
         case 'initialize':
@@ -930,18 +939,30 @@ export class McpServer {
 
     // 校验输入参数
     const args = params.arguments ?? {};
+    // 无 inputSchema 的 tool：原样透传；有 inputSchema 且校验通过：替换为解析后的值
+    let argsForHandler: Record<string, unknown> = args;
     if (tool.inputSchema) {
       const parsed = tool.inputSchema.safeParse(args);
       if (!parsed.success) {
-        return createErrorResponse(
-          request.id,
-          ErrorCode.InvalidParams,
-          'Invalid tool arguments',
-          parsed.error.issues,
-        );
+        // 参数校验失败按 MCP 规范放入 result.isError=true（tool 层错误，LLM 可据此自纠），
+        // 而非协议层 -32602——协议错误会让部分客户端终止调用而非把错误喂回模型重试
+        const issueText = parsed.error.issues
+          .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+          .join('; ');
+        return createResultResponse(request.id, {
+          content: [
+            {
+              type: 'text',
+              text: `Invalid tool arguments: ${issueText}`,
+            },
+          ],
+          isError: true,
+        });
       }
-      // 使用解析后的值（含默认值、coerce 等）
-      Object.assign(args, parsed.data);
+      // 使用解析后的值（含默认值、coerce、未知字段 strip 等）——
+      // 不能 Object.assign 回原对象：那会把 schema 未声明的任意字段原样透传给
+      // handler，inputSchema 的 strip 语义失效（原型污染/隐藏开关类注入面）
+      argsForHandler = parsed.data;
     }
 
     // 从请求 _meta.progressToken 提取进度 token(任意 JSON 值)
@@ -960,7 +981,7 @@ export class McpServer {
 
     let result: McpToolResult;
     try {
-      result = await tool.definition.handler(args as Record<string, unknown>, extra);
+      result = await tool.definition.handler(argsForHandler, extra);
     } catch (err) {
       // tool 执行错误——返回 isError 而非协议错误
       result = {

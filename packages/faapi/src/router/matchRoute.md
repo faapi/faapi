@@ -17,6 +17,14 @@ HTTP 请求到达后，需要找到对应的路由处理函数。支持静态路
 
 动态路由保持清单顺序扫描（`sortRoutes` 内部的段数/字母序优先级不变）。
 
+## HEAD 回退
+
+无显式 HEAD 路由时，HEAD 请求复用 GET handler（静态 `GET|path` 优先，再动态 GET）。
+Node ServerResponse 对 HEAD 请求自动丢弃 body，路由层无需特殊处理。探活、CDN
+健康检查、HTTP 客户端预检常用 HEAD——没有回退时只定义 GET 的路由对 HEAD 返回
+405，监控大面积误报。`findAllowedMethods` 在 GET 允许时把 HEAD 一并加入 Allow
+头（RFC 9110：GET 允许则 HEAD 允许）。
+
 ## 索引失效
 
 索引按**清单数组身份**缓存（WeakMap）：`reloadRoutes` / `hydrateRoutes` 整体替换清单数组（`routesRef.current = newRoutes`），旧数组被替换后索引自动失效可被 GC——无生命周期侵入，无需手动清理。

@@ -13,6 +13,17 @@
 - 提取类型信息用于校验
 - 识别 `agent` / `agents` 参数名，交由 [injectParams](./injectParams.md) 注入 agent handle / 元数据列表
 
+## 按函数引用缓存
+
+`resolveInjection` 位于每请求热路径上（`invokeHandler` → `injectParamsAsync` → `resolveInjection`），
+而参数分析依赖 `fn.toString()` + TypeScript 完整词法/语法解析，单次成本在数百微秒量级。
+
+handler 函数在路由模块加载后引用稳定（ESM import 同一模块返回同一函数实例），参数列表在进程
+生命周期内不会变化，因此分析结果按函数引用用 `WeakMap` 缓存：同一函数只解析一次，后续请求直接
+命中。`WeakMap` 以函数为弱键，dev 热替换加载新模块后旧函数不再被引用即可被 GC，无需手动失效。
+
+调用方拿到的是缓存的同一数组引用，**不得就地修改返回值**。
+
 ## 注入类型映射
 
 | 参数名 | 注入类型 | 说明 |

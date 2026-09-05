@@ -83,8 +83,42 @@ export interface POSTBody {
 
   it('不存在的类型名返回 null', () => {
     const program = createProgram(tempFile);
-    const info = extractTypeInfo(program, tempFile, 'NonExistent');
+    const info = extractTypeInfo(program, tempFile, 'NotExists');
     expect(info).toBeNull();
+  });
+
+  describe('跨文件类型解析回退', () => {
+    it('自身文件无声明时，回退到 program 其他源文件解析同名类型', () => {
+      const libFile = join(tempDir, 'user.ts');
+      writeFileSync(
+        libFile,
+        `export interface User {
+  id: number;
+  email: string;
+}
+`,
+      );
+      writeFileSync(
+        tempFile,
+        `import type { User } from './user';
+
+export interface GETQuery {
+  a: User;
+  b: User;
+}
+`,
+      );
+
+      const program = createProgram(tempFile);
+      // handler 文件自身没有 User 声明——ref 解析靠跨文件回退
+      const info = extractTypeInfo(program, tempFile, 'User');
+
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('User');
+      expect(info!.runtimeType.kind).toBe('object');
+      const props = (info!.runtimeType as { properties: Array<{ name: string }> }).properties;
+      expect(props.map((p) => p.name)).toEqual(['id', 'email']);
+    });
   });
 
   describe('interface extends 继承', () => {

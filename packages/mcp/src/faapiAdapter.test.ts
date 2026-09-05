@@ -28,6 +28,24 @@ describe('faapiAdapter', () => {
     });
   });
 
+  /** 发送 notifications/initialized 完成握手（非 initialize 请求要求 session.initialized） */
+  async function sendInitializedNotificationWeb(
+    post: (ctx: { request: Request }) => Promise<Response>,
+    sid: string,
+  ): Promise<void> {
+    await post({
+      request: new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'Mcp-Session-Id': sid,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      }),
+    });
+  }
+
   // ─── createMcpHandler ─────────────────────────────────
 
   describe('createMcpHandler', () => {
@@ -71,6 +89,7 @@ describe('faapiAdapter', () => {
         }),
       });
       const sid = initRes.headers.get('Mcp-Session-Id');
+      await sendInitializedNotificationWeb(POST, sid!);
 
       // tools/call
       const callRes = await POST({
@@ -178,6 +197,8 @@ describe('faapiAdapter', () => {
           body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }),
         }),
       });
+      await sendInitializedNotificationWeb(a.POST, initA.headers.get('Mcp-Session-Id')!);
+      await sendInitializedNotificationWeb(b.POST, initB.headers.get('Mcp-Session-Id')!);
 
       // A 列出 tools 应只有 echo,B 应只有 only-here
       const listA = await a.POST({
@@ -356,6 +377,17 @@ describe('faapiAdapter', () => {
       await call(handler, initReq, initRes);
       const sid = initRes.headers['mcp-session-id'];
 
+      // 完成握手（notifications/initialized）
+      await call(
+        handler,
+        makeNodeReq(
+          'POST',
+          { jsonrpc: '2.0', method: 'notifications/initialized' },
+          { 'mcp-session-id': sid! },
+        ),
+        makeNodeRes(),
+      );
+
       const callReq = makeNodeReq(
         'POST',
         {
@@ -487,6 +519,17 @@ describe('faapiAdapter', () => {
       const initRes = makeNodeRes();
       await call(handler, initReq, initRes);
       const sid = initRes.headers['mcp-session-id'];
+
+      // 完成握手（notifications/initialized）
+      await call(
+        handler,
+        makeNodeReq(
+          'POST',
+          { jsonrpc: '2.0', method: 'notifications/initialized' },
+          { 'mcp-session-id': sid! },
+        ),
+        makeNodeRes(),
+      );
 
       const bigText = 'x'.repeat(100_000);
       const payload = {

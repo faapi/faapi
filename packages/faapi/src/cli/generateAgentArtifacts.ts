@@ -1,10 +1,10 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import type { AgentManifestList } from '../agents/agentTypes';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import { extractAgentMetadata } from '../ast/extractAgentMetadata';
 import { createPrograms } from '../ast/createProgram';
 import { toProdFilePath } from '../utils/prodPaths';
+import { atomicWriteFile } from '../utils/atomicWrite';
 
 /**
  * 序列化的 agent manifest 记录（可写入 JS 模块，无函数引用）
@@ -81,13 +81,10 @@ export async function writeAgentsModule(
   manifest: SerializedAgentRecord[],
   outputPath: string,
 ): Promise<void> {
-  const dir = path.dirname(outputPath);
-  await fs.mkdir(dir, { recursive: true });
-
   const content = `// 自动生成,请勿手动编辑(faapi build/dev 产物)
 export const agents = ${JSON.stringify(manifest, null, 2)};
 `;
-  await fs.writeFile(outputPath, content, 'utf-8');
+  await atomicWriteFile(outputPath, content);
 }
 
 /**

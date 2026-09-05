@@ -11,7 +11,8 @@ import { ValidationError } from '../errors/httpErrors';
  * - POST / PUT / PATCH：主输入是 body（请求体）
  *
  * 注意：DELETE 也可能有 body，但主输入（用于校验）是 query。
- * body 通过 injectParams 单独注入。
+ * body 由 createServer 调 resolveBodyForQueryMethod 单独解析后注入
+ * （同时消费请求体流，保证 keep-alive 连接可复用）。
  *
  * HTTP 传输语义：
  * - 空请求体（或纯空白）视为无 body，返回 null（handler 可不声明 body 参数）
@@ -87,4 +88,35 @@ export async function resolveInputFromUrl(
 
   // 主输入是 query 的方法（GET / DELETE / HEAD）：从 URL 提取 query
   return queryToObject(url.searchParams);
+}
+
+/**
+ * 解析"主输入是 query 但允许携带 body"的方法（DELETE）的请求体
+ *
+ * DELETE 的主输入（用于校验）是 query，但请求体流必须被消费（keep-alive 连接
+ * 上有未读 body 时 Node 只能断开连接，无法复用），且 handler 声明 `body` 参数
+ * 时应注入真正的请求体而非 query。
+ *
+ * 与主输入 body 的方法不同：DELETE body 无对应 schema（schema 提取只产出
+ * DELETEQuery），不做校验，原样注入。空请求体返回 undefined（handler 未声明
+ * body 参数时注入 undefined，行为一致）。
+ *
+ * @throws {ValidationError} 当请求体非空但 JSON 格式非法时
+ */
+export async function resolveBodyForQueryMethod(request: Request): Promise<unknown> {
+  const text = await request.text();
+  if (text.trim() === '') return undefined;
+  const result = parseJsonBody(text);
+  if (!result.success) {
+    throw new ValidationError('请求体不是合法的 JSON', [
+      {
+        path: 'body',
+        code: 'INVALID_FORMAT',
+        expected: 'JSON',
+        received: 'text',
+        message: '请求体不是合法的 JSON',
+      },
+    ]);
+  }
+  return result.data;
 }

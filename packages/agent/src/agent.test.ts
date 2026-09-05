@@ -340,6 +340,78 @@ describe('Agent', () => {
       expect(toolMsg).toBeDefined();
       expect(toolMsg!.content).toMatch(/missing\.tool|not found|Tool/i);
     });
+
+    it('未声明的已注册 tool 被白名单拒绝（防 LLM 幻觉/提示注入越权执行）', async () => {
+      const adminHandler = vi.fn(async () => ({ dropped: true }));
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          // LLM 幻觉：调用了已注册但该 agent 未声明的管理类 tool
+          toolCalls: [{ id: 'c1', name: 'admin.dropAll', arguments: {} }],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'refused', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          // agent 只声明了 weather.getWeather
+          tools: [toolMeta()],
+          // 但注册表里还存在 admin.dropAll——未声明时也应拒绝执行
+          getToolImpl: (name) =>
+            name === 'admin.dropAll'
+              ? {
+                  name: 'admin.dropAll',
+                  description: 'dangerous',
+                  filePath: 'dist/tools/admin/handler.js',
+                  functionName: 'dropAll',
+                }
+              : undefined,
+          loadToolModuleImpl: async () => ({
+            handler: adminHandler as (...args: unknown[]) => unknown,
+            functionName: 'dropAll',
+          }),
+        }),
+      );
+
+      const result = await agent.run('hi');
+      expect(result.content).toBe('refused');
+
+      // 危险 handler 绝不能被执行
+      expect(adminHandler).not.toHaveBeenCalled();
+
+      // LLM 收到的是"未声明"错误（可自纠），不是执行结果
+      const secondRequest = completeCalls.mock.calls[1][0];
+      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
+      expect(toolMsg).toBeDefined();
+      expect(String(toolMsg!.content)).toContain('not declared by agent');
+    });
+
+    it('未声明的 sub-agent 被白名单拒绝', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 'agent.hallucinated', arguments: {} }],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'refused', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [],
+          subAgents: [], // 未声明任何 sub-agent
+        }),
+      );
+
+      const result = await agent.run('hi');
+      expect(result.content).toBe('refused');
+      const secondRequest = completeCalls.mock.calls[1][0];
+      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
+      expect(String(toolMsg!.content)).toContain('not declared by agent');
+    });
   });
 
   describe('executeTool — input 校验', () => {
