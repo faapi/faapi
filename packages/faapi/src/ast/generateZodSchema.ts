@@ -297,7 +297,10 @@ export const COERCE_NUMBER_HELPER =
  * 写入 dist 根部的 faapi-helpers.js，各 zod.js 通过相对路径 import 复用。
  */
 export const COERCE_BOOLEAN_HELPER =
-  'export const coerceBoolean = (v) => v === "true" || v === "1" ? true : v === "false" || v === "0" ? false : v;';
+  'export const coerceBoolean = (v) => {\n' +
+  '  const lower = typeof v === "string" ? v.toLowerCase() : v;\n' +
+  '  return lower === "true" || lower === "1" ? true : lower === "false" || lower === "0" ? false : v;\n' +
+  '};';
 
 /**
  * coerceMap 公用函数源码（ESM export 格式）

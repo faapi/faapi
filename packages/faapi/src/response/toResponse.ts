@@ -1,5 +1,6 @@
 import { isPlainObject } from '../utils/isPlainObject';
 import type { ResponseMeta } from '../runtime/contextTypes';
+import { deferMetaHeaders, isHeadersOnlyMeta } from './pendingMeta';
 
 /**
  * 将 handler 返回值统一转换为 Response
@@ -41,6 +42,12 @@ export async function toResponse(value: unknown, meta?: ResponseMeta): Promise<R
         Object.keys(meta.headers).length > 0 ||
         meta.setCookies.length > 0)
     ) {
+      // 仅 headers 时延迟到发送层落头（避免每请求 Headers 拷贝 + Response 重建，
+      // helmet 开启后 meta.headers 恒非空）。status/cookie 需要 Response 级变更，仍重建
+      if (isHeadersOnlyMeta(meta)) {
+        deferMetaHeaders(value, meta.headers);
+        return value;
+      }
       const headers = new Headers(value.headers);
       applyMeta(headers);
       return new Response(value.body, {

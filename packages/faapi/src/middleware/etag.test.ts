@@ -21,25 +21,23 @@ async function runEtag(
 describe('etag 中间件', () => {
   it('GET 200 生成弱 ETag 写入 meta', async () => {
     const request = new Request('http://localhost/api/test');
-    const { response, meta } = await runEtag(request, Response.json({ hello: 'world' }));
+    const { response: bodyResponse, meta } = await runEtag(
+      request,
+      Response.json({ hello: 'world' }),
+    );
     const etagValue = meta.headers['etag'];
     expect(etagValue).toMatch(/^W\/".+"$/);
-    // meta 会经 mergeMeta 应用到响应，此处直接断言响应头（compose 内部已 merge）
-    expect(response.headers.get('etag')).toBe(etagValue);
     // body 保持不变
-    expect(await response.json()).toEqual({ hello: 'world' });
+    expect(await bodyResponse.json()).toEqual({ hello: 'world' });
   });
 
   it('If-None-Match 命中返回 304（无 body）', async () => {
     const request = new Request('http://localhost/api/test', {
       headers: { 'If-None-Match': 'W/"abc"' },
     });
-    const { response } = await runEtag(
-      request,
-      Response.json({ hello: 'world' }),
-      // 固定 hash 不可行，改两步：先生成一次拿到 ETag，再模拟命中
-    );
-    const etagValue = response.headers.get('etag')!;
+    // 固定 hash 不可行，改两步：先生成一次拿到 ETag（meta 通道），再模拟命中
+    const { meta } = await runEtag(request, Response.json({ hello: 'world' }));
+    const etagValue = meta.headers['etag']!;
     expect(etagValue).toBeTruthy();
 
     // 第二次请求携带上次响应的 ETag
@@ -84,12 +82,9 @@ describe('etag 中间件', () => {
     };
     ctx.setETag('"custom-etag"');
     const mw = etag();
-    const response = await compose([mw], ctx as never, () =>
-      Promise.resolve(Response.json({ a: 1 })),
-    );
-    // meta 中保留 handler 的值（框架不覆盖），并经 mergeMeta 应用到响应
+    await compose([mw], ctx as never, () => Promise.resolve(Response.json({ a: 1 })));
+    // meta 中保留 handler 的值（框架不覆盖；headers-only 走延迟落头通道）
     expect(ctx.meta.headers['etag']).toBe('"custom-etag"');
-    expect(response.headers.get('etag')).toBe('"custom-etag"');
   });
 
   it('text/event-stream 跳过', async () => {
@@ -111,8 +106,8 @@ describe('etag 中间件', () => {
 
   it('weak: false 生成强 ETag，弱比较不再适用', async () => {
     const request = new Request('http://localhost/api/test');
-    const { response } = await runEtag(request, Response.json({ a: 1 }), { weak: false });
-    const etagValue = response.headers.get('etag')!;
+    const { meta } = await runEtag(request, Response.json({ a: 1 }), { weak: false });
+    const etagValue = meta.headers['etag']!;
     // 强 ETag：无 W/ 前缀
     expect(etagValue).toMatch(/^"/);
     expect(etagValue).not.toMatch(/^W\//);

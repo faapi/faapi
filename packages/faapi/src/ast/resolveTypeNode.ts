@@ -29,14 +29,45 @@ export function setProgramContext(program: ts.Program | null): void {
  * 遇到无法解析或不支持运行时校验的类型时抛出，
  * 避免静默降级为 any 导致用户不知情。
  */
+/** 错误在源文件中的位置（file:line:column，便于在几百行类型文件中定位） */
+export interface SchemaErrorLocation {
+  file: string;
+  line: number;
+  column: number;
+}
+
 export class SchemaExtractionError extends Error {
   constructor(
     public readonly typeText: string,
     public readonly reason: string,
     options?: ErrorOptions,
+    public readonly location?: SchemaErrorLocation,
   ) {
-    super(`无法解析类型 "${typeText}": ${reason}`, options);
+    super(
+      `无法解析类型 "${typeText}": ${reason}` +
+        (location ? ` (${location.file}:${location.line}:${location.column})` : ''),
+      options,
+    );
     this.name = 'SchemaExtractionError';
+  }
+
+  /**
+   * 从 AST 节点构造错误（自动携带 file:line:column）
+   *
+   * 所有抛错点应优先使用此工厂——错误无行号时，几百行的类型文件只能靠
+   * 类型名肉眼定位；解析 lib.d.ts 类型别名时还会出现错误文本与文件上下文错位
+   */
+  static at(node: ts.Node, typeText: string, reason: string): SchemaExtractionError {
+    const sourceFile = node.getSourceFile();
+    if (!sourceFile) {
+      return new SchemaExtractionError(typeText, reason);
+    }
+    const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+    return new SchemaExtractionError(typeText, reason, undefined, {
+      file: sourceFile.fileName,
+      line: line + 1,
+      column: character + 1,
+    });
   }
 }
 
@@ -285,7 +316,8 @@ export function resolveTypeNode(
           JSON.stringify(existing.type) !== JSON.stringify(prop.type) ||
           existing.optional !== prop.optional
         ) {
-          throw new SchemaExtractionError(
+          throw SchemaExtractionError.at(
+            typeNode,
             typeNode.getText(),
             `交叉类型成员的同名字段 "${prop.name}" 类型冲突（TS 中为 never）,运行时无法校验`,
           );
@@ -336,7 +368,7 @@ export function resolveTypeNode(
   }
 
   // 其他无法识别的语法节点
-  throw new SchemaExtractionError(typeNode.getText(), '不支持的类型语法');
+  throw SchemaExtractionError.at(typeNode, typeNode.getText(), '不支持的类型语法');
 }
 
 /**
@@ -359,7 +391,8 @@ function resolveTypeLiteral(
       ts.isGetAccessorDeclaration(member) ||
       ts.isSetAccessorDeclaration(member)
     ) {
-      throw new SchemaExtractionError(
+      throw SchemaExtractionError.at(
+        member,
         member.getText(),
         '对象类型含方法签名或存取器,运行时 JSON 数据无法校验方法——请改用具体属性类型',
       );
@@ -965,7 +998,8 @@ export function resolveInterfaceDeclaration(
       ts.isGetAccessorDeclaration(member) ||
       ts.isSetAccessorDeclaration(member)
     ) {
-      throw new SchemaExtractionError(
+      throw SchemaExtractionError.at(
+        member,
         member.getText(),
         '接口含方法签名或存取器,运行时 JSON 数据无法校验方法——请改用具体属性类型',
       );

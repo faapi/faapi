@@ -2,6 +2,7 @@ import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 import type { FaapiMiddleware } from './middlewareTypes';
 import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
+import { consumePendingMetaHeaders } from '../response/pendingMeta';
 
 const gzipAsync = promisify(zlib.gzip);
 const deflateAsync = promisify(zlib.deflate);
@@ -150,18 +151,28 @@ export function compression(options: CompressionOptions = {}): FaapiMiddleware {
     }
 
     // 缓冲 body（toResponse 的 JSON body 本就是字符串）；SSE 已被 content-type 排除
+    // 延迟落头（headers-only meta）需并入重建的 Response，否则发送层取不到
+    const deferredHeaders = consumePendingMetaHeaders(response);
+
     const bodyText = await response.text();
     if (bodyText.length < threshold) {
       // 未达阈值：body 已被 text() 消费，需重建等价 Response
+      const headers = new Headers(response.headers);
+      for (const [key, value] of Object.entries(deferredHeaders ?? {})) {
+        headers.set(key, value);
+      }
       return new Response(bodyText, {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers,
+        headers,
       });
     }
 
     const compressed = await compressBody(encoding, bodyText);
     const headers = new Headers(response.headers);
+    for (const [key, value] of Object.entries(deferredHeaders ?? {})) {
+      headers.set(key, value);
+    }
     headers.set('Content-Encoding', encoding);
     // Content-Length 由 Response 构造时按压缩后字节数自动设置（先删避免重复）
     headers.delete('Content-Length');

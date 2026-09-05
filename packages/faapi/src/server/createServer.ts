@@ -427,6 +427,29 @@ function resolveRouteOrThrow(routes: RouteManifest, method: string, urlPath: str
  *
  * 错误抛出由外层 handleRequest 的 try/catch 接管，经 formatErrorResponse 转换为响应。
  */
+// 路由静态派生路径缓存（绝对路径 / schema 路径对固定 route 恒定,免每请求字符串运算）。
+// WeakMap 按 route 对象弱键——reloadRoutes 整体替换清单后旧对象可 GC,无需手动失效
+const routePathCache = new WeakMap<
+  RouteManifest[number],
+  { absFilePath: string; schemaPath: string }
+>();
+
+function getRoutePaths(
+  route: RouteManifest[number],
+  rootDir: string,
+  dist: string,
+): { absFilePath: string; schemaPath: string } {
+  let cached = routePathCache.get(route);
+  if (!cached) {
+    cached = {
+      absFilePath: path.resolve(rootDir, route.filePath),
+      schemaPath: getRuntimeSchemaPath(route.filePath, dist, rootDir),
+    };
+    routePathCache.set(route, cached);
+  }
+  return cached;
+}
+
 function createRoutePipeline(opts: {
   routes: RouteManifest;
   method: string;
@@ -444,17 +467,17 @@ function createRoutePipeline(opts: {
     const match = resolveRouteOrThrow(routes, method, urlPath);
     ctx.params = match.params;
     const { route } = match;
+    const { absFilePath, schemaPath } = getRoutePaths(route, rootDir, dist);
 
     // 2. 加载 handler.js（dev 按需编译 + import，prod 直接 import）
-    const absoluteFilePath = path.resolve(rootDir, route.filePath);
-    const routeModule = await loadRouteModule(absoluteFilePath, route.method, rootDir);
+    const routeModule = await loadRouteModule(absFilePath, route.method, rootDir);
 
     // 3. 参数解析（query / body / form / files 等）——复用已解析的 URL
     const input = await resolveInputFromUrl(route.method, request, url);
 
     // 4. schema 校验（运行时按 route.filePath 计算 zod.js 路径 + safeParse）
     const inputType = getInputTypeForMethod(route.method);
-    const schemaPath = getRuntimeSchemaPath(route.filePath, dist, rootDir);
+    // schemaPath 已在 getRoutePaths 中缓存
 
     // Dev 按需模式：zod.js 不存在或 stale 时触发按需生成
     if (isDevOnDemandEnabled()) {

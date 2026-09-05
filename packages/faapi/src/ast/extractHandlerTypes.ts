@@ -232,12 +232,13 @@ function withFileContext<T>(filePath: string, typeName: string, fn: () => T): T 
     return fn();
   } catch (err) {
     if (err instanceof SchemaExtractionError) {
-      // 补充文件路径和类型名，只包装一次
+      // 补充文件路径和类型名，只包装一次；保留行号位置（错误在类型文件中的精确定位）
       const fileName = filePath.split('/').pop() ?? filePath;
       const enriched = new SchemaExtractionError(
         err.typeText,
         `${err.reason}（文件: ${fileName}, 类型: ${typeName}）`,
         { cause: err },
+        err.location,
       );
       throw enriched;
     }

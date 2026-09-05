@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { FaapiMiddleware } from './middlewareTypes';
 import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
+import { consumePendingMetaHeaders } from '../response/pendingMeta';
 
 export interface EtagOptions {
   /**
@@ -82,10 +83,16 @@ export function etag(options: EtagOptions = {}): FaapiMiddleware {
 
     // 200 路径：body 已被 text() 消费，重建响应；ETag 经 meta 传递（mergeMeta 兜底应用）
     meta.headers['etag'] = etagValue;
+    const headers = new Headers(response.headers);
+    // 延迟落头并入重建的 Response（etag 中间件位于 compression 内层，先消费）
+    const deferredHeaders = consumePendingMetaHeaders(response);
+    for (const [key, value] of Object.entries(deferredHeaders ?? {})) {
+      headers.set(key, value);
+    }
     return new Response(bodyText, {
       status: response.status,
       statusText: response.statusText,
-      headers: response.headers,
+      headers,
     });
   };
 }

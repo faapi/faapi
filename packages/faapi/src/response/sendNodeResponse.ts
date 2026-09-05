@@ -1,5 +1,6 @@
 import type { ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
+import { consumePendingMetaHeaders } from './pendingMeta';
 
 /**
  * 将 Web Response 写入 Node.js ServerResponse
@@ -22,6 +23,14 @@ export async function sendNodeResponse(response: Response, res: ServerResponse):
       // Set-Cookie 使用 appendHeader 支持多个值
       res.appendHeader(key, value);
     } else {
+      res.setHeader(key, value);
+    }
+  }
+  // 延迟落头（headers-only meta 的零重建通道，见 pendingMeta.ts）——
+  // 后写覆盖，与 Headers.set 语义一致
+  const deferred = consumePendingMetaHeaders(response);
+  if (deferred) {
+    for (const [key, value] of Object.entries(deferred)) {
       res.setHeader(key, value);
     }
   }

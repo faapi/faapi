@@ -35,6 +35,7 @@ import {
 } from '../cli/compileOnDemand';
 import { loadMergedMiddlewares } from '../middleware/loadMiddlewares';
 import type { AppRegistries } from '../injection/registries';
+import { consumePendingMetaHeaders } from '../response/pendingMeta';
 import {
   wrapWsSocket,
   type WsContext,
@@ -144,6 +145,12 @@ async function sendResponseToSocket(socket: Socket, response: Response): Promise
   const statusLine = `HTTP/1.1 ${response.status} ${response.statusText || ''}\r\n`;
   const headerLines: string[] = [];
   let hasContentLength = false;
+  // 延迟落头（headers-only meta）并入写回的 header 行
+  const deferredHeaders = consumePendingMetaHeaders(response);
+  for (const [key, value] of Object.entries(deferredHeaders ?? {})) {
+    if (key.toLowerCase() === 'content-length') hasContentLength = true;
+    headerLines.push(`${key}: ${value}`);
+  }
   for (const [key, value] of response.headers) {
     if (key.toLowerCase() === 'content-length') {
       hasContentLength = true;

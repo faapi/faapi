@@ -4,6 +4,7 @@ import type { SseWriter } from './sse';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import { toResponse } from '../response/toResponse';
+import { deferMetaHeaders, isHeadersOnlyMeta } from '../response/pendingMeta';
 import { wrapOkResult } from '../response/responseFormatter';
 import { injectParamsAsync } from '../injection/injectParams';
 
@@ -38,6 +39,12 @@ export function mergeMeta(response: Response, meta: ResponseMeta): Response {
   const hasMeta =
     meta.status !== undefined || Object.keys(meta.headers).length > 0 || meta.setCookies.length > 0;
   if (!hasMeta) return response;
+
+  // 仅 headers 时延迟到发送层落头（零 Response 重建，见 pendingMeta.ts）
+  if (isHeadersOnlyMeta(meta)) {
+    deferMetaHeaders(response, meta.headers);
+    return response;
+  }
 
   const headers = new Headers(response.headers);
   for (const [key, value] of Object.entries(meta.headers)) {

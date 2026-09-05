@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { consumePendingMetaHeaders } from '../response/pendingMeta';
 import { invokeHandler } from './invokeHandler';
 import { createTestContext } from './createContext';
 import type { FaapiMiddleware, InjectorMap } from '../index';
@@ -665,8 +666,11 @@ describe('invokeHandler', () => {
         sse.close();
       };
       const response = await invokeHandler(handler, ctx);
-      expect(response.headers.get('X-Request-Id')).toBe('abc-123');
+      // headers-only meta（ctx.setHeader）走延迟落头通道（发送层 res.setHeader），
+      // 不再重建 Response——Content-Type 物理在响应上，自定义头经 pending 通道
       expect(response.headers.get('Content-Type')).toBe('text/event-stream');
+      const deferred = consumePendingMetaHeaders(response);
+      expect(deferred?.['X-Request-Id']).toBe('abc-123');
     });
 
     it('有中间件时，handler 调用 ctx.sse() 仍返回 SSE Response', async () => {
@@ -824,8 +828,10 @@ describe('invokeHandler', () => {
           return context.ok({ ok: true });
         };
         const response = await invokeHandler(handler, makeCtx());
-        expect(response.headers.get('X-Custom')).toBe('ok-header');
+        // headers-only meta 走延迟落头通道（发送层 res.setHeader）
         expect(response.headers.get('Content-Type')).toBe('application/json');
+        const deferred = consumePendingMetaHeaders(response);
+        expect(deferred?.['X-Custom']).toBe('ok-header');
       });
 
       it('ctx.ok 使用自定义 config.response.ok', async () => {

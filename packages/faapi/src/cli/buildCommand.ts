@@ -80,6 +80,22 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   await compileConfig({ rootDir, dist: outdir });
   const _config = await loadConfig(rootDir, outdir);
 
+  // CJS 项目告警：产物为 ESM（main.js 用 import 语句），缺 type:module 时
+  // node dist/main 报 "Cannot use import statement outside a module"，用户无法关联原因
+  const pkgPath = path.resolve(rootDir, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { type?: string };
+      if (pkg.type !== 'module') {
+        console.warn(
+          '! package.json is missing "type": "module" — build output is ESM and `node dist/main` will fail without it',
+        );
+      }
+    } catch {
+      // package.json 解析失败不阻断构建
+    }
+  }
+
   console.log('faapi build started');
   console.log(`- Root: ${rootDir}`);
   console.log(`- Source: src/`);

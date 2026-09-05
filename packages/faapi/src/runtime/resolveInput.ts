@@ -53,7 +53,7 @@ export async function resolveInputFromUrl(
     // application/x-www-form-urlencoded：表单字段
     if (contentType.includes('application/x-www-form-urlencoded')) {
       const text = await request.text();
-      if (text.trim() === '') return null;
+      if (isBlankText(text)) return null;
       const params = new URLSearchParams(text);
       const obj: Record<string, string> = {};
       for (const [key, value] of params) {
@@ -66,7 +66,7 @@ export async function resolveInputFromUrl(
     const text = await request.text();
 
     // 空请求体：视为无 body（handler 可不声明 body 参数）
-    if (text.trim() === '') {
+    if (isBlankText(text)) {
       return null;
     }
 
@@ -90,6 +90,11 @@ export async function resolveInputFromUrl(
   return queryToObject(url.searchParams);
 }
 
+/** 空白文本判断（length 短路 + 正则扫描,避免 trim 的全量字符串拷贝） */
+function isBlankText(text: string): boolean {
+  return text.length === 0 || !/\S/.test(text);
+}
+
 /**
  * 解析"主输入是 query 但允许携带 body"的方法（DELETE）的请求体
  *
@@ -105,7 +110,7 @@ export async function resolveInputFromUrl(
  */
 export async function resolveBodyForQueryMethod(request: Request): Promise<unknown> {
   const text = await request.text();
-  if (text.trim() === '') return undefined;
+  if (isBlankText(text)) return undefined;
   const result = parseJsonBody(text);
   if (!result.success) {
     throw new ValidationError('请求体不是合法的 JSON', [

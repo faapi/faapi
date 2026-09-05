@@ -25,8 +25,15 @@ interface HttpRoutesIndex {
   static: Map<string, RouteManifest[number]>;
   /** 静态路径 → 方法集合（405 findAllowedMethods 反查用,免再扫静态段） */
   methodsByStaticPath: Map<string, Set<string>>;
-  /** 动态路由（含 catch-all）,保持清单顺序 */
-  dynamics: RouteManifest;
+  /** 动态路由（含 catch-all）,保持清单顺序,pattern 已预编译 */
+  dynamics: DynamicEntry[];
+}
+
+/** 动态路由条目（pattern segments 预编译,免去每请求对固定 pattern 重复 split） */
+interface DynamicEntry {
+  route: RouteManifest[number];
+  /** 预编译的模式段（pattern.split('/').filter(Boolean),对固定 route 恒定） */
+  segments: string[];
 }
 
 /** WS 路由匹配索引（无 HTTP 方法维度） */
@@ -48,7 +55,10 @@ function getHttpIndex(routes: RouteManifest): HttpRoutesIndex {
   index = { static: new Map(), methodsByStaticPath: new Map(), dynamics: [] };
   for (const route of routes) {
     if (route.isDynamic) {
-      index.dynamics.push(route);
+      index.dynamics.push({
+        route,
+        segments: route.urlPath.split('/').filter(Boolean),
+      });
     } else {
       index.static.set(`${route.method}|${route.urlPath}`, route);
       let methods = index.methodsByStaticPath.get(route.urlPath);
@@ -116,12 +126,13 @@ function matchByMethod(index: HttpRoutesIndex, method: string, path: string): Ro
     return { route: staticHit, params: {} };
   }
 
-  // 动态路由按清单顺序匹配
-  for (const route of index.dynamics) {
+  // 动态路由按清单顺序匹配（pattern segments 已预编译）
+  for (const entry of index.dynamics) {
+    const route = entry.route;
     if (route.method !== method) {
       continue;
     }
-    const params = matchDynamicPath(route.urlPath, path, route.paramNames, route.isCatchAll);
+    const params = matchSegments(entry.segments, path, route.paramNames, route.isCatchAll);
     if (params !== null) {
       return { route, params };
     }
@@ -173,11 +184,16 @@ export function findAllowedMethods(routes: RouteManifest, path: string): string[
     }
   }
 
-  // 动态路由：线性扫描
-  for (const route of index.dynamics) {
-    const params = matchDynamicPath(route.urlPath, path, route.paramNames, route.isCatchAll);
+  // 动态路由：线性扫描（segments 已预编译）
+  for (const entry of index.dynamics) {
+    const params = matchSegments(
+      entry.segments,
+      path,
+      entry.route.paramNames,
+      entry.route.isCatchAll,
+    );
     if (params !== null) {
-      methods.add(route.method);
+      methods.add(entry.route.method);
     }
   }
 
@@ -202,7 +218,21 @@ export function matchDynamicPath(
   paramNames: string[],
   isCatchAll?: boolean,
 ): Record<string, string> | null {
-  const patternSegments = pattern.split('/').filter(Boolean);
+  return matchSegments(pattern.split('/').filter(Boolean), path, paramNames, isCatchAll);
+}
+
+/**
+ * 基于**预编译 segments** 的动态匹配（热路径内部用）
+ *
+ * 与 matchDynamicPath 语义一致，但模式段由索引构建期一次性 split，
+ * 免去每请求对固定 pattern 重复字符串分割
+ */
+function matchSegments(
+  patternSegments: string[],
+  path: string,
+  paramNames: string[],
+  isCatchAll?: boolean,
+): Record<string, string> | null {
   const pathSegments = path.split('/').filter(Boolean);
 
   // catch-all 路由：最后一个模式段为 :...slug

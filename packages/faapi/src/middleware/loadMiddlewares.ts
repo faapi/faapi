@@ -16,10 +16,17 @@ export interface LoadedMiddlewareBundle {
 const middlewareCache = new Map<string, LoadedMiddlewareBundle>();
 
 /**
+ * in-flight 加载去重：同一文件并发首载共享同一 Promise（冷启动并发首请求
+ * 不重复 import + 合并）。invalidateMiddlewareCache 时一并清空
+ */
+const inFlight = new Map<string, Promise<LoadedMiddlewareBundle>>();
+
+/**
  * 失效所有中间件缓存（watch 模式下文件变化时调用）
  */
 export function invalidateMiddlewareCache(): void {
   middlewareCache.clear();
+  inFlight.clear();
 }
 
 /**
@@ -121,8 +128,16 @@ export async function loadMergedMiddlewares(
   for (const absMwPath of middlewarePaths) {
     let bundle: LoadedMiddlewareBundle | undefined = getCachedMiddlewares(absMwPath);
     if (bundle === undefined) {
-      bundle = await loadMiddlewaresFile(absMwPath);
-      setCachedMiddlewares(absMwPath, bundle);
+      // in-flight 去重：并发首载共享同一 Promise（对照 compileOnDemand 的 mutex 模式）
+      let loading = inFlight.get(absMwPath);
+      if (!loading) {
+        loading = loadMiddlewaresFile(absMwPath).then((result) => {
+          setCachedMiddlewares(absMwPath, result);
+          return result;
+        });
+        inFlight.set(absMwPath, loading);
+      }
+      bundle = await loading;
     }
     mergedMiddlewares.push(...bundle.middlewares);
     for (const [name, injector] of Object.entries(bundle.injectors)) {

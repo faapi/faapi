@@ -14,7 +14,7 @@ async function runCompression(
   request: Request,
   handlerResponse: Response | (() => Promise<Response>),
   options?: Parameters<typeof compression>[0],
-): Promise<Response> {
+): Promise<{ res: Response; meta: Record<string, string> }> {
   const ctx = createContext(request, {}, undefined, undefined) as ReturnType<
     typeof createContext
   > & { meta: { headers: Record<string, string>; setCookies: string[] } };
@@ -26,7 +26,8 @@ async function runCompression(
       ? handlerResponse
       : () => Promise.resolve(handlerResponse),
   );
-  return res;
+  // headers-only meta 走延迟落头通道（发送层 res.setHeader）——单测断言 meta
+  return { res, meta: ctx.meta.headers };
 }
 
 const bigJson = JSON.stringify({ data: 'x'.repeat(10_000) });
@@ -65,7 +66,7 @@ describe('compression 中间件', () => {
     const request = new Request('http://localhost/api/test', {
       headers: { 'Accept-Encoding': 'gzip' },
     });
-    const res = await runCompression(
+    const { res } = await runCompression(
       request,
       new Response(bigJson, { headers: { 'Content-Type': 'application/json' } }),
     );
@@ -78,7 +79,7 @@ describe('compression 中间件', () => {
     const request = new Request('http://localhost/api/test', {
       headers: { 'Accept-Encoding': 'deflate' },
     });
-    const res = await runCompression(
+    const { res } = await runCompression(
       request,
       new Response(bigJson, { headers: { 'Content-Type': 'application/json' } }),
     );
@@ -91,7 +92,7 @@ describe('compression 中间件', () => {
     const request = new Request('http://localhost/api/test', {
       headers: { 'Accept-Encoding': 'gzip, br' },
     });
-    const res = await runCompression(
+    const { res } = await runCompression(
       request,
       new Response(bigJson, { headers: { 'Content-Type': 'application/json' } }),
     );
@@ -102,21 +103,21 @@ describe('compression 中间件', () => {
 
   it('无 Accept-Encoding 时透传（不压缩）', async () => {
     const request = new Request('http://localhost/api/test');
-    const res = await runCompression(
+    const { res, meta } = await runCompression(
       request,
       new Response(bigJson, { headers: { 'Content-Type': 'application/json' } }),
     );
     expect(res.headers.get('content-encoding')).toBeNull();
     expect(await res.text()).toBe(bigJson);
-    // Vary 仍应附加
-    expect(res.headers.get('vary')).toContain('Accept-Encoding');
+    // Vary 经 meta 传递（发送层落头）
+    expect(meta['Vary']).toContain('Accept-Encoding');
   });
 
   it('低于 threshold 的 body 不压缩', async () => {
     const request = new Request('http://localhost/api/test', {
       headers: { 'Accept-Encoding': 'gzip' },
     });
-    const res = await runCompression(
+    const { res } = await runCompression(
       request,
       new Response('{"tiny":true}', { headers: { 'Content-Type': 'application/json' } }),
       { threshold: 1024 },
@@ -129,7 +130,7 @@ describe('compression 中间件', () => {
     const request = new Request('http://localhost/api/sse', {
       headers: { 'Accept-Encoding': 'gzip' },
     });
-    const res = await runCompression(
+    const { res } = await runCompression(
       request,
       new Response('data: hello\n\n', { headers: { 'Content-Type': 'text/event-stream' } }),
     );
@@ -140,7 +141,7 @@ describe('compression 中间件', () => {
     const request = new Request('http://localhost/api/test', {
       headers: { 'Accept-Encoding': 'gzip' },
     });
-    const res = await runCompression(
+    const { res } = await runCompression(
       request,
       new Response(bigJson, {
         headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
@@ -153,7 +154,7 @@ describe('compression 中间件', () => {
     const request = new Request('http://localhost/api/test', {
       headers: { 'Accept-Encoding': 'gzip' },
     });
-    const res = await runCompression(
+    const { res } = await runCompression(
       request,
       new Response(bigJson, {
         headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-transform' },
@@ -166,7 +167,7 @@ describe('compression 中间件', () => {
     const request = new Request('http://localhost/api/test', {
       headers: { 'Accept-Encoding': 'gzip' },
     });
-    const res = await runCompression(request, new Response(null, { status: 304 }));
+    const { res } = await runCompression(request, new Response(null, { status: 304 }));
     expect(res.status).toBe(304);
   });
 
@@ -181,8 +182,9 @@ describe('compression 中间件', () => {
     ctx.setHeader('Vary', 'Origin');
 
     const mw = compression();
-    const res = await compose([mw], ctx as never, async () => Response.json({ ok: true }));
-    expect(res.headers.get('vary')).toContain('Origin');
-    expect(res.headers.get('vary')).toContain('Accept-Encoding');
+    await compose([mw], ctx as never, async () => Response.json({ ok: true }));
+    // Vary 经 meta.headers 传递（发送层落头）
+    expect(ctx.meta.headers['Vary']).toContain('Origin');
+    expect(ctx.meta.headers['Vary']).toContain('Accept-Encoding');
   });
 });
