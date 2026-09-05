@@ -147,6 +147,8 @@ function extractAgentMetadata(
 
 ## 相关模块
 
+- [jsDocMetadata.ts](./jsDocMetadata.md) - JSDoc 工具函数（hasExportModifier / getJSDocFromNode / extractDescription / @tag 覆盖名提取，统一来源）
+
 - [scanAgents](../agents/scanAgents.md) - 产出 `AgentManifest`(含 hasRun)，供本模块的 `pathMeta` 来源
 - [agentTypes](../agents/agentTypes.md) - `AgentManifest` 类型定义
 - [createProgram](./createProgram.md) - 创建 TypeScript Program

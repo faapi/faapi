@@ -137,4 +137,70 @@ describe('SessionManager', () => {
     sm.create();
     expect(sm.has(old.id)).toBe(false);
   });
+
+  it('allSessionIds 不含过期会话（惰性清扫）', () => {
+    const sm = new SessionManager(50);
+    sm.create();
+    const start = Date.now();
+    while (Date.now() - start < 100) {
+      // busy wait 等待过期
+    }
+    expect(sm.allSessionIds()).toEqual([]);
+    expect(sm.size).toBe(0);
+  });
+
+  it('findSubscribersOfUri 跳过过期会话', () => {
+    const sm = new SessionManager(50);
+    const session = sm.create();
+    sm.subscribeResource(session.id, 'file:///a');
+    const start = Date.now();
+    while (Date.now() - start < 100) {
+      // busy wait 等待过期
+    }
+    expect(sm.findSubscribersOfUri('file:///a')).toEqual([]);
+  });
+
+  it('broadcastToSession 对过期会话：清扫会话并关闭订阅者，不再投递', () => {
+    const sm = new SessionManager(50);
+    const session = sm.create();
+    // 手动注册一个假订阅者（直接操作 subscribers 集合，避免依赖 addSubscriber 的 get 续期）
+    let closed = false;
+    const fakeSubscriber = {
+      controller: {
+        enqueue: () => {},
+        close: () => {
+          closed = true;
+        },
+      } as unknown as ReadableStreamDefaultController<Uint8Array>,
+      sessionId: session.id,
+    };
+    session.subscribers.add(fakeSubscriber);
+
+    const start = Date.now();
+    while (Date.now() - start < 100) {
+      // busy wait 等待过期
+    }
+
+    sm.broadcastToSession(session.id, 'data: x\n\n');
+    // 广播后立即清扫（不依赖后续 get/has 的惰性检查）：size 归零、订阅者被关闭
+    expect(sm.size).toBe(0);
+    expect(closed).toBe(true);
+  });
+
+  it('broadcastToSession 对活跃会话正常投递', () => {
+    const sm = new SessionManager(10_000);
+    const session = sm.create();
+    const sent: Uint8Array[] = [];
+    const fakeSubscriber = {
+      controller: {
+        enqueue: (chunk: Uint8Array) => sent.push(chunk),
+        close: () => {},
+      } as unknown as ReadableStreamDefaultController<Uint8Array>,
+      sessionId: session.id,
+    };
+    session.subscribers.add(fakeSubscriber);
+
+    sm.broadcastToSession(session.id, 'data: hello\n\n');
+    expect(new TextDecoder().decode(sent[0])).toContain('hello');
+  });
 });

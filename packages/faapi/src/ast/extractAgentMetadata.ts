@@ -1,4 +1,10 @@
 import ts from 'typescript';
+import {
+  extractDescription,
+  extractJSDocTagValue,
+  getJSDocFromNode,
+  hasExportModifier,
+} from './jsDocMetadata';
 
 /**
  * Agent 的 LLM 可见核心字段
@@ -132,7 +138,7 @@ export function extractAgentMetadata(
 
   const jsDoc = jsDocOwner ? getJSDocFromNode(jsDocOwner) : undefined;
   const description = extractDescription(jsDoc);
-  const agentNameOverride = extractAgentTagValue(jsDoc);
+  const agentNameOverride = extractJSDocTagValue(jsDoc, 'agent');
 
   // config 块字段提取
   let systemPrompt: string | undefined;
@@ -277,74 +283,6 @@ function getReturnObjectLiteral(
   }
 
   return null;
-}
-
-/**
- * 判断节点是否有 `export` 修饰符
- */
-function hasExportModifier(node: ts.Node): boolean {
-  if (!ts.canHaveModifiers(node)) return false;
-  const modifiers = ts.getModifiers(node);
-  return !!modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
-}
-
-/**
- * 从节点提取第一个 JSDoc 注释块
- *
- * 1. 标准 API(`ts.getJSDocCommentsAndTags`)
- * 2. 回退：直接访问 `node.jsDoc` 数组(解析器存入，jsDocCache 未同步的情况)
- *
- * 与 [extractToolMetadata](./extractToolMetadata.md) 的 `getJSDocFromNode` 同构。
- */
-function getJSDocFromNode(node: ts.Node): ts.JSDoc | undefined {
-  const apiDocs = ts
-    .getJSDocCommentsAndTags(node)
-    .filter((entry): entry is ts.JSDoc => ts.isJSDoc(entry));
-  if (apiDocs.length > 0) return apiDocs[0];
-
-  const directDocs = (node as unknown as { jsDoc?: ts.JSDoc[] }).jsDoc;
-  if (directDocs && directDocs.length > 0) return directDocs[0];
-
-  return undefined;
-}
-
-/**
- * 提取 JSDoc 描述(注释块自由文本，`@tag` 之前的首段)
- *
- * 多行描述保留换行(TypeScript 已自动剥离每行前缀 ` * `)。
- * 无 JSDoc / JSDoc 无自由文本 / 描述仅空白 → `undefined`。
- *
- * 与 [extractToolMetadata](./extractToolMetadata.md) 的 `extractDescription` 同构。
- */
-function extractDescription(jsDoc: ts.JSDoc | undefined): string | undefined {
-  if (!jsDoc) return undefined;
-  if (typeof jsDoc.comment !== 'string') return undefined;
-  const trimmed = jsDoc.comment.trim();
-  return trimmed || undefined;
-}
-
-/**
- * 提取 `@agent` 标签的覆盖名
- *
- * - `@agent researcher` → `'researcher'`
- * - `@agent {researcher}` → `'researcher'`(去花括号)
- * - 描述 + `@agent researcher`(同一 JSDoc 块内)→ `'researcher'`
- * - 无 `@agent` 标签 / 标签无值 → `undefined`(调用方回退到 `pathMeta.name`)
- *
- * 与 [extractToolMetadata](./extractToolMetadata.md) 的 `extractToolTagValue` 同构。
- */
-function extractAgentTagValue(jsDoc: ts.JSDoc | undefined): string | undefined {
-  if (!jsDoc || !jsDoc.tags) return undefined;
-  for (const tag of jsDoc.tags) {
-    if (tag.tagName.text !== 'agent') continue;
-    if (typeof tag.comment !== 'string') return undefined;
-    const text = tag.comment.trim();
-    if (!text) return undefined;
-    // 去掉花括号包裹(如 {customName} → customName)
-    const cleaned = text.replace(/^\{|\}$/g, '').trim();
-    return cleaned || undefined;
-  }
-  return undefined;
 }
 
 /**

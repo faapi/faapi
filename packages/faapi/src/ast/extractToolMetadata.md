@@ -109,6 +109,8 @@ function extractToolMetadata(
 
 ## 相关模块
 
+- [jsDocMetadata.ts](./jsDocMetadata.md) - JSDoc 工具函数（hasExportModifier / getJSDocFromNode / extractDescription / @tag 覆盖名提取，统一来源）
+
 - [scanTools](../tools/scanTools.md) - 产出 `ToolManifest`(含 `functionName`),供本模块的 `pathMeta` 来源
 - [toolTypes](../tools/toolTypes.md) - `ToolManifest` 类型定义
 - [createProgram](./createProgram.md) - 创建 TypeScript Program

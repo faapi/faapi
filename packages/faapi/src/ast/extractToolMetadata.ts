@@ -1,4 +1,10 @@
 import ts from 'typescript';
+import {
+  extractDescription,
+  extractJSDocTagValue,
+  getJSDocFromNode,
+  hasExportModifier,
+} from './jsDocMetadata';
 
 /**
  * Tool 的 LLM 可见核心字段
@@ -104,7 +110,7 @@ export function extractToolMetadata(
   const { fn, jsDocOwner } = found;
   const jsDoc = getJSDocFromNode(jsDocOwner);
   const description = extractDescription(jsDoc);
-  const toolNameOverride = extractToolTagValue(jsDoc);
+  const toolNameOverride = extractJSDocTagValue(jsDoc, 'tool');
   const inputTypeName = getFirstParamTypeName(fn, sourceFile);
 
   return {
@@ -173,70 +179,6 @@ function findExportedFunction(
   });
 
   return result;
-}
-
-/**
- * 判断节点是否有 `export` 修饰符
- */
-function hasExportModifier(node: ts.Node): boolean {
-  if (!ts.canHaveModifiers(node)) return false;
-  const modifiers = ts.getModifiers(node);
-  return !!modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
-}
-
-/** 从节点提取第一个 JSDoc 注释块 */
-function getJSDocFromNode(node: ts.Node): ts.JSDoc | undefined {
-  // 1. 标准 API(适用于已正确缓存 jsDocCache 的节点)
-  const apiDocs = ts
-    .getJSDocCommentsAndTags(node)
-    .filter((entry): entry is ts.JSDoc => ts.isJSDoc(entry));
-  if (apiDocs.length > 0) return apiDocs[0];
-
-  // 2. 回退:直接访问 node.jsDoc 数组(解析器存入,jsDocCache 未同步的情况)
-  const directDocs = (node as unknown as { jsDoc?: ts.JSDoc[] }).jsDoc;
-  if (directDocs && directDocs.length > 0) return directDocs[0];
-
-  return undefined;
-}
-
-/**
- * 提取 JSDoc 描述(注释块自由文本,`@tag` 之前的首段)
- *
- * 多行描述保留换行(TypeScript 已自动剥离每行前缀 ` * `)。
- * 无 JSDoc / JSDoc 无自由文本 / 描述仅空白 → `undefined`。
- */
-function extractDescription(jsDoc: ts.JSDoc | undefined): string | undefined {
-  if (!jsDoc) return undefined;
-  if (typeof jsDoc.comment !== 'string') return undefined;
-  const trimmed = jsDoc.comment.trim();
-  return trimmed || undefined;
-}
-
-/**
- * 提取 `@tool` 标签的覆盖名
- *
- * - `@tool weather.current` → `'weather.current'`
- * - `@tool {weather.current}` → `'weather.current'`(去花括号)
- * - 描述 + `@tool weather.current`(同一 JSDoc 块内)→ `'weather.current'`
- * - 无 `@tool` 标签 / 标签无值 → `undefined`(调用方回退到 `pathMeta.name`)
- *
- * `@tool` 标签值缺省(只有 `@tool` 没有 comment 文本)时返回 `undefined`,
- * 不报错——调用方回退到路径推导值。
- */
-function extractToolTagValue(jsDoc: ts.JSDoc | undefined): string | undefined {
-  if (!jsDoc || !jsDoc.tags) return undefined;
-  for (const tag of jsDoc.tags) {
-    if (tag.tagName.text !== 'tool') continue;
-    // tag.comment 类型为 string | false | undefined
-    // false 表示 JSDoc 解析认为该 tag 无 comment 文本
-    if (typeof tag.comment !== 'string') return undefined;
-    const text = tag.comment.trim();
-    if (!text) return undefined;
-    // 去掉花括号包裹(如 {customName} → customName)
-    const cleaned = text.replace(/^\{|\}$/g, '').trim();
-    return cleaned || undefined;
-  }
-  return undefined;
 }
 
 /**

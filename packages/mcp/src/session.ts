@@ -171,8 +171,9 @@ export class SessionManager {
     return this.sessions.size;
   }
 
-  /** 获取所有 session ID 列表(用于全局广播通知) */
+  /** 获取所有 session ID 列表(用于全局广播通知)——先清扫过期会话 */
   allSessionIds(): string[] {
+    this.cleanupExpired();
     return [...this.sessions.keys()];
   }
 
@@ -208,6 +209,12 @@ export class SessionManager {
   broadcastToSession(sessionId: string, data: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    // 过期会话不投递：同步清扫（关闭订阅者 + 删除），幽灵会话不再常驻内存收广播
+    if (this.ttlEnabled && Date.now() - session.lastActivity > this.ttl) {
+      this.closeSubscribers(session);
+      this.sessions.delete(sessionId);
+      return;
+    }
     const encoder = new TextEncoder();
     for (const sub of session.subscribers) {
       try {
@@ -242,8 +249,9 @@ export class SessionManager {
     return true;
   }
 
-  /** 找出所有订阅了指定 URI 的 session id 列表 */
+  /** 找出所有订阅了指定 URI 的 session id 列表——先清扫过期会话 */
   findSubscribersOfUri(uri: string): string[] {
+    this.cleanupExpired();
     const result: string[] = [];
     for (const session of this.sessions.values()) {
       if (session.subscribedResources.has(uri)) {

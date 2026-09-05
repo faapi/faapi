@@ -45,6 +45,7 @@ Streamable HTTP transport 通过 Mcp-Session-Id header 维持会话。会话在 
 - `has(id)` 检查是否过期，过期则关闭订阅者、删除并返回 false（不刷新 lastActivity）
 - `touch(id)` 续期：仅刷新 `lastActivity`，不复活过期会话（SSE 心跳路径使用，见 streamableHttp.md）
 - `create()` 时惰性清理所有过期会话（无需定时器）
+- `allSessionIds()` / `findSubscribersOfUri()` 遍历前清扫过期会话；`broadcastToSession()` 对目标会话做过期检查——过期即清扫（关闭订阅者）且不投递，幽灵会话不再常驻内存收广播
 
 这防止了客户端不调 DELETE 导致的内存泄漏。多实例部署需替换为外部存储（如 Redis）实现共享会话和主动过期。
 
