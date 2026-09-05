@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+const isCI = !!process.env.CI;
+
 export default defineConfig({
   resolve: {
     alias: {
