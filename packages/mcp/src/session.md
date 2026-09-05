@@ -41,6 +41,10 @@ Streamable HTTP transport 通过 Mcp-Session-Id header 维持会话。会话在 
 
 会话有空闲超时,默认 30 分钟,可通过 `createMcpServer({ sessionTtl })` 配置(毫秒,设为 0 表示永不过期)。超过 TTL 未活动的会话自动过期：
 
+## 会话数上限（LRU 淘汰）
+
+`createMcpServer({ sessionMaxSessions })` 配置会话数上限(默认 1000,设为 0 表示不设上限)。`create` 时若已达上限,按 LRU(最久未活动的 `lastActivity`)淘汰最旧会话(关闭其订阅者),防 initialize 洪水在 TTL 窗口内无限堆内存。
+
 - `get(id)` 检查是否过期，过期则关闭订阅者、删除并返回 undefined；未过期则刷新 `lastActivity`
 - `has(id)` 检查是否过期，过期则关闭订阅者、删除并返回 false（不刷新 lastActivity）
 - `touch(id)` 续期：仅刷新 `lastActivity`，不复活过期会话（SSE 心跳路径使用，见 streamableHttp.md）

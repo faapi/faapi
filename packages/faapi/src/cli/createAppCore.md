@@ -35,7 +35,7 @@ dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`（热�
 | 方法 | 说明 |
 |------|------|
 | `listen(port?)` | 启动 HTTP server，打印路由表，执行 `onReady` 钩子，注册默认优雅关闭信号（SIGTERM/SIGINT，进程级仅一次） |
-| `close()` | 幂等优雅关闭：断开空闲 keep-alive 连接 → 执行 `onClose` 钩子 → 等**在途请求完成**（drain，SSE/WS 长连接超时 `FAAPI_SHUTDOWN_TIMEOUT_MS`（默认 10000ms）后强制断开）→ `app.server` 置 null；若单例仍指向当前 app 则置 null |
+| `close()` | 幂等优雅关闭：断开空闲 keep-alive 连接 → 执行 `onClose` 钩子 → 等**在途请求完成**（drain，SSE/WS 长连接超时 `FAAPI_SHUTDOWN_TIMEOUT_MS`（默认 10000ms）后强制断开）→ `app.server` 置 null。注册表（tool/agent/skill + agent handle 工厂）与单例仅在自身是当前 app 时清理——同进程多 app 场景下，先创建的 app close 不会清掉运行中 app 的注册表 |
 | `inject(options?)` | 无服务器测试注入——构造模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body }`。`listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景（配合 `getApp()` 拿到 app 实例） |
 
 端口优先级：`listen()` 参数 > `options.port` > `PORT` 环境变量 > 默认 `3000`。

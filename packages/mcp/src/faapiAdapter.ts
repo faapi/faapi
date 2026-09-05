@@ -107,10 +107,21 @@ export function createMcpNodeHandler(
           if (err) reject(err);
           else resolve();
         };
+        // 源流错误：真实错误 → reject（由 wrapHandler 错误处理链接管）
         nodeStream.on('error', (err) => settle(err));
-        res.on('error', (err: Error) => settle(err));
+        // 客户端断开（ECONNRESET 等）：销毁源流并按正常完成收尾。
+        // destroy 使底层 web ReadableStream 触发 cancel()——清理 SSE 心跳定时器
+        // 与订阅者；不销毁的话定时器持续 enqueue 到无消费者的流,定时器 + 队列泄漏
+        res.on('error', () => {
+          nodeStream.destroy();
+          settle();
+        });
         res.on('finish', () => settle());
-        res.on('close', () => settle());
+        res.on('close', () => {
+          // 正常完成也会触发 'close'（此时 writableEnded=true），不视为断连
+          if (!res.writableEnded) nodeStream.destroy();
+          settle();
+        });
         nodeStream.pipe(res);
       });
       return;

@@ -47,6 +47,9 @@
 ```
 llm_call(turn=1, model='gpt-4o', inputMessages=[system+user], response={tool_calls:[search]}, usage={...})
 tool_call(turn=1, name='search', args={q:'foo'}, result='...', durationMs=120)
+
+并行 tool（同轮多个 tool_call）的 `durationMs` 各自独立——结束时间在各自的
+执行闭包内采集,只含自身执行耗时,不包含等待同轮其他 tool 的时间
 llm_call(turn=2, model='gpt-4o', inputMessages=[...+assistant+tool], response={tool_calls:[agent.translator]}, usage={...})
 subagent_call(turn=2, agentName='translator', input='...', trace={AgentTrace（递归）}, durationMs=850)
 done(content='最终答案', turns=2, stopReason='stop', usage={...})

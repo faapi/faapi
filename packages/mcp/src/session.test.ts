@@ -203,4 +203,55 @@ describe('SessionManager', () => {
     sm.broadcastToSession(session.id, 'data: hello\n\n');
     expect(new TextDecoder().decode(sent[0])).toContain('hello');
   });
+
+  describe('会话数上限（LRU 淘汰）', () => {
+    it('超过 maxSessions 时淘汰最久未活动的会话', () => {
+      const sm = new SessionManager({ ttl: 0, maxSessions: 3 });
+      const s1 = sm.create();
+      const s2 = sm.create();
+      const s3 = sm.create();
+
+      // 让 s1 成为最久未活动（touch s2/s3 提升活跃度）
+      sm.get(s2.id);
+      sm.get(s3.id);
+      const s4 = sm.create();
+
+      expect(sm.size).toBe(3);
+      expect(sm.has(s1.id)).toBe(false); // s1 被淘汰
+      expect(sm.has(s2.id)).toBe(true);
+      expect(sm.has(s3.id)).toBe(true);
+      expect(sm.has(s4.id)).toBe(true);
+    });
+
+    it('淘汰的会话订阅者被关闭', () => {
+      const sm = new SessionManager({ ttl: 0, maxSessions: 1 });
+      const s1 = sm.create();
+      let closed = false;
+      const fakeSubscriber = {
+        controller: {
+          enqueue: () => {},
+          close: () => {
+            closed = true;
+          },
+        } as unknown as ReadableStreamDefaultController<Uint8Array>,
+        sessionId: s1.id,
+      };
+      s1.subscribers.add(fakeSubscriber);
+
+      sm.create(); // 触发淘汰
+      expect(closed).toBe(true);
+    });
+
+    it('maxSessions: 0 表示不设上限', () => {
+      const sm = new SessionManager({ ttl: 0, maxSessions: 0 });
+      for (let i = 0; i < 10; i++) sm.create();
+      expect(sm.size).toBe(10);
+    });
+
+    it('兼容旧签名 constructor(ttl)', () => {
+      const sm = new SessionManager(0);
+      sm.create();
+      expect(sm.size).toBe(1);
+    });
+  });
 });

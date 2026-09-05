@@ -908,6 +908,46 @@ describe('tracing — reactLoop + reactLoopStream', () => {
       }
     });
 
+    it('并行 tool 的 durationMs 各自独立（不含等待其他 tool 的时间）', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [
+            { id: 'fast', name: 'fast-tool', arguments: {} },
+            { id: 'slow', name: 'slow-tool', arguments: {} },
+          ],
+          stopReason: 'tool_calls',
+          usage,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop', usage }),
+      ]);
+
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const result = await reactLoop('hi', {
+        provider,
+        model: 'gpt-4o',
+        executeTool: async (name) => {
+          // fast 20ms / slow 200ms：并行执行下 fast 的时长不应包含等待 slow 的时间
+          await sleep(name === 'fast-tool' ? 20 : 200);
+          return `${name}-result`;
+        },
+        enableTracing: true,
+      });
+
+      const trace = result.trace!;
+      const toolEvents = trace.events.filter((e) => e.type === 'tool_call');
+      expect(toolEvents).toHaveLength(2);
+
+      const fast = toolEvents.find((e) => e.type === 'tool_call' && e.name === 'fast-tool');
+      const slow = toolEvents.find((e) => e.type === 'tool_call' && e.name === 'slow-tool');
+      expect(fast?.type).toBe('tool_call');
+      expect(slow?.type).toBe('tool_call');
+      if (fast?.type === 'tool_call' && slow?.type === 'tool_call') {
+        // 修复前:fast 的 durationMs 在 Promise.all 之后的串行循环里统一取,≈200ms
+        expect(fast.durationMs).toBeLessThan(120);
+        expect(slow.durationMs).toBeGreaterThanOrEqual(180);
+      }
+    });
+
     it('sub-agent 调用(executeTool 返回 TracingToolResult):trace 含 subagent_call 事件', async () => {
       const subTrace = makeSubTrace('translator');
       const { provider } = createMockProvider([

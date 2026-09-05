@@ -545,17 +545,26 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
         await config.lifecycle.onClose({ rootDir, routes: sorted, server });
       }
 
-      // 清理 tool / agent / skill 注册表 + agent handle 工厂（与 app 单例清理对称）
-      clearToolRegistry();
-      clearAgentRegistry();
-      clearSkillRegistry();
-      clearAgentHandleFactory();
+      // 所有权守卫：仅当关闭的是当前单例 app 时才清注册表。
+      // 注册表（tool/agent/skill + agent handle 工厂）是全局单例，hydrate 为
+      // 整体替换语义——同进程多 app 场景（测试/嵌入）下后创建的 app 已水合新清单，
+      // 先创建的 app close 时不能清掉运行中 app 的注册表。与单例清理的
+      // `getCurrentApp() === app` 守卫语义对称
+      const isCurrentApp = getCurrentApp() === app;
+      const clearRegistries = (): void => {
+        if (!isCurrentApp) return;
+        clearToolRegistry();
+        clearAgentRegistry();
+        clearSkillRegistry();
+        clearAgentHandleFactory();
+      };
 
       // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）
       if (!server.listening) {
+        clearRegistries();
         app.server = null;
         // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
-        if (getCurrentApp() === app) setCurrentApp(null);
+        if (isCurrentApp) setCurrentApp(null);
         return;
       }
 
@@ -591,8 +600,9 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       }
 
       app.server = null;
-      // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
-      if (getCurrentApp() === app) setCurrentApp(null);
+      // 清理注册表 + 单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
+      clearRegistries();
+      if (isCurrentApp) setCurrentApp(null);
     },
   };
 

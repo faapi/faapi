@@ -132,6 +132,36 @@ describe('createAppBase', () => {
     expect(getTool('weather.getWeather')).toBeUndefined();
   });
 
+  it('close() 所有权守卫：非当前单例的 app close 不清空运行中 app 的注册表', async () => {
+    writeHandler();
+    const sharedToolPath = join(tempDir, 'src/tools/weather/handler.ts');
+    mkdirSync(join(sharedToolPath, '..'), { recursive: true });
+    writeFileSync(
+      sharedToolPath,
+      `export interface WeatherInput { city: string }\n/** 获取天气 */\nexport function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
+      'utf-8',
+    );
+    await compileArtifacts('dist');
+    const tools = await scanTools(tempDir, TOOL_PATTERNS);
+    await generateToolArtifacts(tools, tempDir, 'dist');
+
+    // app1 创建后水合注册表；app2 创建后成为当前单例（hydrate 整体替换语义）
+    const { app: app1 } = await createAppBase(options());
+    expect(listTools()).toHaveLength(1);
+    const { app: app2 } = await createAppBase(options());
+    expect(listTools()).toHaveLength(1);
+
+    // app1（非单例）close：注册表必须保留——app2 还在运行
+    await app1.close();
+    expect(listTools()).toHaveLength(1);
+    expect(getTool('weather.getWeather')).toBeDefined();
+
+    // app2（当前单例）close：清理注册表
+    await app2.close();
+    expect(listTools()).toHaveLength(0);
+    expect(getTool('weather.getWeather')).toBeUndefined();
+  });
+
   it('tool 清单缺失：无 faapi-tools.js 时跳过水合，不报错', async () => {
     writeHandler();
     await compileArtifacts('dist');

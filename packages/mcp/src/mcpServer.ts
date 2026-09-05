@@ -38,6 +38,11 @@ export interface McpServerOptions {
   instructions?: string;
   /** 会话空闲超时(毫秒),默认 30 分钟;设为 0 表示永不过期 */
   sessionTtl?: number;
+  /**
+   * 会话数上限，超过时按 LRU（最久未活动）淘汰，默认 1000；0 表示不设上限。
+   * 防 initialize 洪水在 TTL 窗口内无限堆内存
+   */
+  sessionMaxSessions?: number;
   /** GET SSE 流心跳间隔(毫秒),默认 30 秒 */
   sseHeartbeatMs?: number;
   /** list 方法默认每页项数,默认 100 */
@@ -467,7 +472,10 @@ export class McpServer {
   private readonly promptsListChanged: boolean;
 
   constructor(private options: McpServerOptions) {
-    this.sessions = new SessionManager(this.options.sessionTtl);
+    this.sessions = new SessionManager({
+      ttl: this.options.sessionTtl,
+      maxSessions: this.options.sessionMaxSessions,
+    });
     this.pageSize = this.options.defaultPageSize ?? DEFAULT_PAGE_SIZE;
     this.toolsListChanged = this.options.toolsListChanged ?? false;
     this.resourcesListChanged = this.options.resourcesListChanged ?? false;

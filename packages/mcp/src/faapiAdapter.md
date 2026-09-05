@@ -28,6 +28,15 @@ export const { POST, GET, DELETE } = createMcpHandler(mcp);
 
 `createMcpNodeHandler` 使用 Node.js 原生 `Readable.toWeb(req)` 将 IncomingMessage 转为 Web ReadableStream,正确处理 chunked transfer encoding(多个 data chunk)、backpressure 和 stream error。转换后的 stream 直接作为 Web Request 的 body,由 `Request.json()` 原生消费,无需手动累积 Buffer。
 
+## 断连语义
+
+Node 适配器写 SSE 流时监听 `res` 的 `'error'` / `'close'`：
+
+- **客户端断开**（res error 或提前 close）→ 销毁源流并按正常完成收尾。销毁使底层
+  web ReadableStream 触发 `cancel()`——清理 SSE 心跳定时器与订阅者；否则定时器
+  持续 enqueue 到无消费者的流，定时器与队列持续泄漏
+- **源流自身错误** → reject，由 wrapHandler 错误处理链接管
+
 ## 相关模块
 
 - [streamableHttp](./streamableHttp.md) — 核心 HTTP 处理逻辑

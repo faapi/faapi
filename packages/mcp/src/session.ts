@@ -68,19 +68,35 @@ export interface McpSession {
 /** 默认会话空闲超时：30 分钟 */
 const DEFAULT_TTL = 30 * 60 * 1000;
 
+/** 默认会话数上限：initialize 洪水在 TTL 窗口内可无限堆内存，LRU 兜底 */
+const DEFAULT_MAX_SESSIONS = 1000;
+
+/** SessionManager 构造选项 */
+export interface SessionManagerOptions {
+  /** 会话空闲超时（毫秒）。默认 30 分钟；0 表示永不过期 */
+  ttl?: number;
+  /**
+   * 会话数上限，超过时按 LRU（最久未活动）淘汰。默认 1000；0 表示不设上限。
+   * 淘汰在 create 时惰性执行（先清过期会话，仍超限才淘汰最久未活动的）
+   */
+  maxSessions?: number;
+}
+
 /**
  * 内存会话管理器
  *
  * 生产环境如需多实例共享会话，可替换为 Redis 等外部存储实现。
- *
- * @param ttl 会话空闲超时（毫秒），超过此时间未活动的会话自动过期。默认 30 分钟。设为 0 表示永不过期。
  */
 export class SessionManager {
   private sessions = new Map<string, McpSession>();
   private readonly ttl: number;
+  private readonly maxSessions: number;
 
-  constructor(ttl: number = DEFAULT_TTL) {
-    this.ttl = ttl;
+  constructor(options: number | SessionManagerOptions = DEFAULT_TTL) {
+    // 兼容旧签名：constructor(ttl: number)
+    const opts = typeof options === 'number' ? { ttl: options } : options;
+    this.ttl = opts.ttl ?? DEFAULT_TTL;
+    this.maxSessions = opts.maxSessions ?? DEFAULT_MAX_SESSIONS;
   }
 
   /** 是否启用 TTL 过期检查(ttl > 0) */
@@ -88,10 +104,23 @@ export class SessionManager {
     return this.ttl > 0;
   }
 
+  /** 是否启用会话数上限(maxSessions > 0) */
+  private get capEnabled(): boolean {
+    return this.maxSessions > 0;
+  }
+
   /** 创建新会话，返回 session 对象 */
   create(): McpSession {
     // 惰性清理：创建新会话时顺便清理过期会话
     if (this.ttlEnabled) this.cleanupExpired();
+
+    // 会话数上限：超限时按 LRU（最久未活动）淘汰，给新会话腾位
+    if (this.capEnabled) {
+      while (this.sessions.size >= this.maxSessions) {
+        const oldest = this.evictOldest();
+        if (!oldest) break; // 理论不可达（size >= max 必有成员），防御死循环
+      }
+    }
 
     const now = Date.now();
     const session: McpSession = {
@@ -106,6 +135,23 @@ export class SessionManager {
     };
     this.sessions.set(session.id, session);
     return session;
+  }
+
+  /** 淘汰最久未活动的会话；无会话可淘汰返回 null */
+  private evictOldest(): string | null {
+    let oldestId: string | null = null;
+    let oldestActivity = Infinity;
+    for (const [id, session] of this.sessions) {
+      if (session.lastActivity < oldestActivity) {
+        oldestActivity = session.lastActivity;
+        oldestId = id;
+      }
+    }
+    if (oldestId === null) return null;
+    const victim = this.sessions.get(oldestId);
+    if (victim) this.closeSubscribers(victim);
+    this.sessions.delete(oldestId);
+    return oldestId;
   }
 
   /** 按 ID 获取会话（更新最后活动时间，过期返回 undefined） */

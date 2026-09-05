@@ -554,5 +554,47 @@ describe('faapiAdapter', () => {
       const body = JSON.parse(res.body);
       expect(body.result.content[0].text).toBe(`echo: ${bigText}`);
     });
+
+    it('客户端断开后 SSE 流被取消（心跳定时器/订阅者不泄漏）', async () => {
+      const handler = createMcpNodeHandler(mcp);
+
+      // initialize + notifications/initialized
+      const initReq = makeNodeReq('POST', { jsonrpc: '2.0', id: 1, method: 'initialize' });
+      const initRes = makeNodeRes();
+      await call(handler, initReq, initRes);
+      const sid = initRes.headers['mcp-session-id']!;
+      await call(
+        handler,
+        makeNodeReq(
+          'POST',
+          { jsonrpc: '2.0', method: 'notifications/initialized' },
+          { 'mcp-session-id': sid },
+        ),
+        makeNodeRes(),
+      );
+
+      // GET 打开 SSE 流（带 session → 注册订阅者 + 心跳定时器）
+      const sseReq = makeNodeReq('GET', null, { 'mcp-session-id': sid });
+      const sseRes = makeNodeRes();
+      const handlerDone = call(handler, sseReq, sseRes);
+      // 等流建立并注册订阅者
+      await new Promise((r) => setTimeout(r, 50));
+      expect(sseRes.headers['content-type']).toBe('text/event-stream');
+      const session = mcp.getSessionManager().get(sid);
+      expect(session?.subscribers.size).toBe(1);
+
+      // 模拟客户端断开（close 且 writableEnded=false）
+      sseRes.destroy();
+      await handlerDone; // 应正常 resolve（不悬挂、不 unhandled rejection）
+
+      // 流被 cancel → 订阅者注销 + 心跳定时器清理（轮询等 cancel 异步生效）
+      let cleared = false;
+      for (let i = 0; i < 50 && !cleared; i++) {
+        const s = mcp.getSessionManager().get(sid);
+        cleared = s ? s.subscribers.size === 0 : true;
+        if (!cleared) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(cleared).toBe(true);
+    });
   });
 });

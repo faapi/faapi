@@ -391,13 +391,32 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
           resultStr = stringifyError(err);
           rawResult = undefined;
         }
-        return { toolCall, toolStartedAt, resultStr, rawResult, toolErr, hasError };
+        // 结束时间在各自闭包内取——并行执行时若在 Promise.all 之后的串行循环里
+        // 统一取,每个 tool 的 durationMs 都会包含等待其他 tool 的时间（全部失真
+        // 为「最慢 tool」的耗时）
+        const toolEndedAt = enableTracing ? nowMs() : 0;
+        return {
+          toolCall,
+          toolStartedAt,
+          toolEndedAt,
+          resultStr,
+          rawResult,
+          toolErr,
+          hasError,
+        };
       }),
     );
 
-    for (const { toolCall, toolStartedAt, resultStr, rawResult, toolErr, hasError } of settled) {
+    for (const {
+      toolCall,
+      toolStartedAt,
+      toolEndedAt,
+      resultStr,
+      rawResult,
+      toolErr,
+      hasError,
+    } of settled) {
       if (enableTracing) {
-        const toolEndedAt = nowMs();
         if (isTracingToolResult(rawResult)) {
           // sub-agent 调用:嵌入 sub-trace
           traceEvents!.push({
