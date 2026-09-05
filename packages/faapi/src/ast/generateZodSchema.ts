@@ -1,4 +1,4 @@
-import type { RuntimeType, TupleElement, PropertyType, TypeConstraint } from './resolveTypeNode';
+import type { RuntimeType, TupleElement, TypeConstraint } from './resolveTypeNode';
 import type { HandlerTypeInfo } from './extractHandlerTypes';
 
 /**
@@ -234,7 +234,7 @@ function baseExpression(type: RuntimeType, ctx: CodeGenContext): string {
     case 'tuple':
       return generateTupleExpression(type.elements, ctx);
     case 'object':
-      return generateObjectExpression(type.properties, ctx);
+      return generateObjectExpression(type, ctx);
     case 'union':
       return generateUnionExpression(type.members, ctx);
     case 'date':
@@ -392,9 +392,14 @@ function generateTupleExpression(elements: TupleElement[], ctx: CodeGenContext):
     }
   }
 
-  // 含 rest 元素：z.tuple([fixed...]).rest(restType)
+  // 含 rest 元素：z.tuple([fixed...]).rest(restType)。
+  // 可选前缀保留（zod v4 原生支持 z.tuple([X.optional()]).rest(...)）——
+  // 此前丢弃 fixedOptional 导致 [string?, ...number[]] 的空数组被误拒
   if (restExpression) {
-    return `z.tuple([${fixedExprs.join(', ')}]).rest(${restExpression})`;
+    const fixedWithOptional = fixedExprs.map((expr, i) =>
+      fixedOptional[i] ? `${expr}.optional()` : expr,
+    );
+    return `z.tuple([${fixedWithOptional.join(', ')}]).rest(${restExpression})`;
   }
 
   // 无可选元素：z.tuple([e0, e1, ...])
@@ -430,15 +435,23 @@ function generateTupleExpression(elements: TupleElement[], ctx: CodeGenContext):
 /**
  * 生成对象 zod 表达式
  *
- * 可选字段用 .optional()，约束链在 .optional() 之前生成
+ * 可选字段用 .optional()，约束链在 .optional() 之前生成。
+ * 带索引签名的对象（catchall）生成 z.object({...}).catchall(valueSchema)——
+ * 索引签名与属性共存时属性保留（resolveTypeNode 不再丢弃）。
  */
-function generateObjectExpression(properties: PropertyType[], ctx: CodeGenContext): string {
-  const fields = properties.map((prop) => {
+function generateObjectExpression(
+  type: Extract<RuntimeType, { kind: 'object' }>,
+  ctx: CodeGenContext,
+): string {
+  const fields = type.properties.map((prop) => {
     const expr = runtimeTypeToZodExpression(prop.type, ctx, prop.constraints);
     const finalExpr = prop.optional ? `${expr}.optional()` : expr;
     return `${JSON.stringify(prop.name)}: ${finalExpr}`;
   });
-  return `z.object({ ${fields.join(', ')} })`;
+  const objectExpr = `z.object({ ${fields.join(', ')} })`;
+  return type.catchall !== undefined
+    ? `${objectExpr}.catchall(${runtimeTypeToZodExpression(type.catchall, ctx)})`
+    : objectExpr;
 }
 
 /**
