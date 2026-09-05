@@ -3,6 +3,8 @@ import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import type { PluginDeclaration } from './pluginTypes';
 import type { HelmetOptions } from '../middleware/helmet';
+import type { CompressionOptions } from '../middleware/compression';
+import type { EtagOptions } from '../middleware/etag';
 import type { LoggerOptions } from '../middleware/logger';
 import type { Http2Options } from '../server/createServer';
 
@@ -356,6 +358,16 @@ export interface FaapiConfig {
 
   /** 安全头配置，false 禁用 */
   helmet?: HelmetOptions | boolean;
+  /**
+   * 响应压缩（gzip/deflate/br 协商），默认关闭。
+   * Vary: Accept-Encoding 自动附加；SSE/流式响应跳过，详见 middleware/compression.md
+   */
+  compression?: CompressionOptions | boolean;
+  /**
+   * ETag/304 条件请求协商（GET/HEAD 2xx 弱 ETag），默认关闭。
+   * handler 显式 ctx.setETag() 时不覆盖，详见 middleware/etag.md
+   */
+  etag?: EtagOptions | boolean;
   /** 请求体大小限制（字节），默认 10MB（10 * 1024 * 1024） */
   bodyLimit?: number;
   /** 日志中间件配置 */

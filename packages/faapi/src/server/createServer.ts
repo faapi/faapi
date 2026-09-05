@@ -27,6 +27,8 @@ import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
 import { getClientIp } from '../utils/getClientIp';
 import { cors, type CorsOptions } from '../middleware/cors';
 import { helmet, type HelmetOptions } from '../middleware/helmet';
+import { compression, type CompressionOptions } from '../middleware/compression';
+import { etag, type EtagOptions } from '../middleware/etag';
 import { logger as loggerMiddleware, type LoggerOptions } from '../middleware/logger';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
@@ -202,6 +204,10 @@ export interface CreateServerOptions {
   injectors?: InjectorMap;
   /** 安全头配置 */
   helmet?: HelmetOptions | boolean;
+  /** 响应压缩（gzip/deflate/br 协商），默认关闭，详见 middleware/compression.md */
+  compression?: CompressionOptions | boolean;
+  /** ETag/304 条件请求协商，默认关闭，详见 middleware/etag.md */
+  etag?: EtagOptions | boolean;
   /** 请求日志配置,默认启用（与 cors 一致） */
   logger?: LoggerOptions | boolean;
   /** 请求体大小限制（字节） */
@@ -243,6 +249,8 @@ export function createServer(options: CreateServerOptions): {
     middlewares: globalMiddlewares,
     injectors: globalInjectors,
     helmet: helmetOption,
+    compression: compressionOption,
+    etag: etagOption,
     logger: loggerOption,
     bodyLimit = DEFAULT_BODY_LIMIT,
     http2: http2Option,
@@ -254,6 +262,12 @@ export function createServer(options: CreateServerOptions): {
 
   // Build middleware chain from config options
   const configMiddlewares: FaapiMiddleware[] = [];
+
+  // Compression — 显式启用；链最外层，包住完整链路使最终响应被压缩
+  if (compressionOption) {
+    const compOpts = typeof compressionOption === 'object' ? compressionOption : {};
+    configMiddlewares.push(compression(compOpts));
+  }
 
   // CORS
   const corsMiddleware: FaapiMiddleware | null =
@@ -278,6 +292,13 @@ export function createServer(options: CreateServerOptions): {
         ? loggerMiddleware()
         : loggerMiddleware(loggerOption);
   if (loggerMiddlewareInst) configMiddlewares.push(loggerMiddlewareInst);
+
+  // ETag — 显式启用；位于 compression 内层：先算 ETag/304 再压缩，
+  // 弱 ETag 基于未压缩表示计算（304 无 body 时压缩自动跳过）
+  if (etagOption) {
+    const etagOpts = typeof etagOption === 'object' ? etagOption : {};
+    configMiddlewares.push(etag(etagOpts));
+  }
 
   // 外层中间件链启动期组装一次（CORS → helmet → logger → 全局），
   // 每请求不再重复 spread 重组数组

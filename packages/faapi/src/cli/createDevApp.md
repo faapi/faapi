@@ -41,12 +41,13 @@ function createDevApp(options?: CreateAppOptions): Promise<DevApp>
 4. `scanRoutes(rootDir, patterns, dist)` — 重新扫描源码路由（不走 `faapi-routes.js` 重新 import，ESM 缓存难以可靠绕过；scanRoutes 仅读源码 + 正则提取方法名，零 import）
 5. `sortRoutes(routes)`
 6. **按需模式分支**（`isDevOnDemandEnabled()` 为 true）：
-   - `deleteSchemaFiles(sorted, rootDir, dist)` — 删除 stale zod.js（类型引用变化等），下次请求触发 `ensureSchemaGenerated` 重新生成
+   - `deleteSchemaFiles(sorted, rootDir, dist)` — 删除 stale zod.js（类型引用变化等）
    - `clearGeneratedSchemas()` — 清按需生成内存缓存
+   - **后台预生成全量 zod.js**（不阻塞 reload 与请求）：此前只删不生成，每次保存后所有路由的首个请求都要在请求路径上同步付全项目 Program 创建 + schema 生成的代价（p99 尖刺）。后台任务失败仅 `console.error`，请求路径的 `ensureSchemaGenerated` 兜底；与请求按需生成靠 mtime 缓存 + in-flight mutex + 原子写自然协同
 7. **非按需模式分支**（兼容旧路径）：`generateSchemaFiles(sorted, rootDir, dist)` 全量重新生成 zod.js
 8. `ctx.updateRoutes` — 更新 `app.routes`/`app.wsRoutes` 和 `routesRef.current`/`routesRef.wsCurrent`（server 使用最新路由）
 
-按需模式下 `reloadRoutes` 不全量生成 zod.js——保持「按需生成」策略，仅删 stale 文件 + 清缓存，下次请求按需重建。详见 [compileOnDemand](./compileOnDemand.md)。
+按需模式下 `reloadRoutes` 不在 reload 路径上生成 zod.js——删除 stale 文件 + 清缓存后由**后台任务批量预生成**，请求路径的按需生成仍是兜底。详见 [compileOnDemand](./compileOnDemand.md)。
 
 ## reloadTools 流程
 

@@ -716,4 +716,78 @@ describe('HTTP Server E2E', () => {
       }
     });
   });
+
+  describe('compression + etag（config 选项，完整链路）', () => {
+    it('compression: true 时 gzip 响应 + Vary: Accept-Encoding', async () => {
+      const { server: srv, baseUrl } = await setupServerWithOptions({
+        // fixture 响应体很小（~22B），调低阈值验证压缩路径
+        compression: { threshold: 10 },
+        cors: false,
+        logger: false,
+      });
+      try {
+        const res = await fetch(`${baseUrl}/api/novel/list`, {
+          headers: { 'Accept-Encoding': 'gzip' },
+        });
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-encoding')).toBe('gzip');
+        expect(res.headers.get('vary')).toContain('Accept-Encoding');
+        const body = await res.json();
+        expect(body).toEqual({ data: { cached: true } });
+      } finally {
+        await closeServer(srv);
+      }
+    });
+
+    it('etag: true 时 200 带 ETag，If-None-Match 命中返回 304', async () => {
+      const { server: srv, baseUrl } = await setupServerWithOptions({
+        etag: true,
+        cors: false,
+        logger: false,
+      });
+      try {
+        const first = await fetch(`${baseUrl}/api/novel/list`);
+        expect(first.status).toBe(200);
+        const etagValue = first.headers.get('etag');
+        expect(etagValue).toMatch(/^W\//);
+        expect(first.headers.get('vary')).toBeNull();
+
+        // 第二次请求带 If-None-Match → 304
+        const second = await fetch(`${baseUrl}/api/novel/list`, {
+          headers: { 'If-None-Match': etagValue! },
+        });
+        expect(second.status).toBe(304);
+        expect(await second.text()).toBe('');
+        expect(second.headers.get('etag')).toBe(etagValue);
+      } finally {
+        await closeServer(srv);
+      }
+    });
+
+    it('compression + etag 同时启用：ETag 基于未压缩表示，304 协商正确', async () => {
+      const { server: srv, baseUrl } = await setupServerWithOptions({
+        compression: { threshold: 10 },
+        etag: true,
+        cors: false,
+        logger: false,
+      });
+      try {
+        // 客户端接受 gzip：拿到压缩响应，ETag 为未压缩表示的弱指纹
+        const first = await fetch(`${baseUrl}/api/novel/list`, {
+          headers: { 'Accept-Encoding': 'gzip' },
+        });
+        expect(first.headers.get('content-encoding')).toBe('gzip');
+        const etagValue = first.headers.get('etag')!;
+
+        // 协商 304（不带 Accept-Encoding 也可——弱校验允许表示差异）
+        const second = await fetch(`${baseUrl}/api/novel/list`, {
+          headers: { 'If-None-Match': etagValue },
+        });
+        expect(second.status).toBe(304);
+        expect(second.headers.get('etag')).toBe(etagValue);
+      } finally {
+        await closeServer(srv);
+      }
+    });
+  });
 });

@@ -356,6 +356,12 @@ export default {
   // CORS 配置
   cors: { origin: ['https://example.com'], credentials: true },
 
+  // 响应压缩（gzip/deflate/br 协商，默认关闭；SSE/流式跳过，自动补 Vary: Accept-Encoding）
+  compression: true,
+
+  // ETag/304 条件请求协商（GET/HEAD 2xx 弱 ETag，默认关闭；handler 显式 setETag 时不覆盖）
+  etag: true,
+
   // 是否信任反向代理头（X-Forwarded-For），默认 false
   // true：ctx.ip 取 XFF 第一个 IP（nginx/CDN 场景）；false：直取 socket 地址（直连防伪造）
   trustedProxy: false,

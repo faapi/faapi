@@ -346,6 +346,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     middlewares: config?.middlewares,
     injectors: config?.injectors,
     helmet: config?.helmet,
+    compression: config?.compression,
+    etag: config?.etag,
     logger: config?.logger,
     bodyLimit: config?.bodyLimit,
     http2: config?.http2,

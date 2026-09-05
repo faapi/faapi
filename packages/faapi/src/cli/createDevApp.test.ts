@@ -3,6 +3,7 @@ import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDevApp } from './createDevApp';
+import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
 import { scanRoutes } from '../router/scanRoutes';
@@ -94,6 +95,41 @@ describe('createDevApp', () => {
     expect(server.listening).toBe(true);
     await app.close();
     expect(server.listening).toBe(false);
+  });
+
+  it('reloadRoutes 后台预生成 zod.js（不阻塞 reload，稍后产物恢复）', async () => {
+    writeHandler(
+      'api/user/handler.ts',
+      [
+        'export interface Query { page: number; }',
+        'export function GET(query: Query) { return query; }',
+      ].join('\n'),
+    );
+    await compileArtifacts('.faapi');
+
+    const app = await createDevApp({ rootDir: tempDir });
+    await app.listen(0);
+
+    try {
+      // reload 前记录 zod.js 是否存在；reloadRoutes 内部会先删除全部 zod.js
+      const zodPath = join(tempDir, '.faapi', 'api', 'user', 'zod.js');
+      await app.reloadRoutes();
+
+      // reload 本身不阻塞等待生成——但后台任务启动后 zod.js 应被恢复
+      // 轮询等待（最长 5s），验证后台预生成生效
+      let restored = false;
+      for (let i = 0; i < 50 && !restored; i++) {
+        restored = existsSync(zodPath);
+        if (!restored) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(restored).toBe(true);
+
+      // 产物可用：import 成功且导出 schema
+      const mod = (await importWithCacheBust(zodPath)) as Record<string, unknown>;
+      expect(mod.GETQuerySchema).toBeDefined();
+    } finally {
+      await app.close();
+    }
   });
 
   it('reloadRoutes 重新扫描路由（新增 handler 后生效）', async () => {

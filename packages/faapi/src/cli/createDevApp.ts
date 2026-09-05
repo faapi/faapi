@@ -68,10 +68,24 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     const sorted = sortRoutes(reScanned.routes);
 
     if (isDevOnDemandEnabled()) {
-      // 按需模式：删除 stale zod.js（类型引用变化等），下次请求触发重新生成
-      // 不全量 generateSchemaFiles——保持按需生成策略
+      // 按需模式：删除 stale zod.js（类型引用变化等），后台批量预生成 + 请求兜底
+      // 不在 reload 路径上 await 生成——保持热替换轻快
       await deleteSchemaFiles(sorted, ctx.rootDir, ctx.dist);
       clearGeneratedSchemas();
+      // 后台预生成全量 zod.js：此前只删不生成，每次保存后所有路由的首个请求都要
+      // 在请求路径上同步付全项目 Program 创建 + schema 生成的代价（p99 尖刺）。
+      // 预生成不阻塞 reload 与请求；请求路径的 ensureSchemaGenerated（mtime 缓存 +
+      // in-flight mutex + 原子写）与之自然协同——已生成命中 mtime 跳过，并发生成
+      // 各自原子落盘内容一致
+      void (async (): Promise<void> => {
+        try {
+          const { generateSchemaFiles } = await import('./generateSchemaFiles');
+          await generateSchemaFiles(sorted, ctx.rootDir, ctx.dist);
+        } catch (err) {
+          // 后台失败不崩进程——请求路径的按需生成仍会兜底
+          console.error('[faapi] Background schema regeneration failed:', err);
+        }
+      })();
     } else {
       // 非按需模式（兼容旧路径）：全量重新生成 zod.js
       const { generateSchemaFiles } = await import('./generateSchemaFiles');
