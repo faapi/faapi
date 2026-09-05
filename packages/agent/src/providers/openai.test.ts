@@ -797,11 +797,13 @@ describe('createOpenAIProvider', () => {
     });
 
     it('timeoutMs 超时 → 抛 LLMProviderError（message 含 timed out）', async () => {
+      // 真实 undici 行为：AbortSignal.timeout() 触发的 fetch 拒因是 TimeoutError
+      //（DOMException），手动 controller.abort() 才是 AbortError——两者都要归到超时分类
       fetchMock.mockImplementation(
         (_url: string, init?: RequestInit) =>
           new Promise<Response>((_resolve, reject) => {
             init?.signal?.addEventListener('abort', () =>
-              reject(new DOMException('This operation was aborted', 'AbortError')),
+              reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
             );
           }),
       );
@@ -810,6 +812,27 @@ describe('createOpenAIProvider', () => {
       await expect(
         provider.complete({ messages: [{ role: 'user', content: 'hi' }] }),
       ).rejects.toThrow(/timed out/);
+    });
+
+    it('TimeoutError 不重试后的重试路径仍能成功（超时预算刷新）', async () => {
+      // 第一次 TimeoutError（可重试）→ 第二次成功
+      fetchMock
+        .mockImplementationOnce(
+          (_url: string, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () =>
+                reject(
+                  new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+                ),
+              );
+            }),
+        )
+        .mockResolvedValueOnce(jsonResponse(openaiResponse({ content: 'ok' })));
+      const provider = createOpenAIProvider({ ...baseConfig, timeoutMs: 1000 });
+
+      const res = await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
+      expect(res.message.content).toBe('ok');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it('stream 提前 break → 底层 body 被 cancel', async () => {

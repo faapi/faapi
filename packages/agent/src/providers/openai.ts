@@ -218,7 +218,10 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
       if (externalSignal?.aborted) {
         throw new AgentAbortError();
       }
-      if ((err as { name?: string })?.name === 'AbortError') {
+      // 超时拒因有两种：AbortError（无外部 signal 时部分实现）与 TimeoutError
+      // （undici 对 AbortSignal.timeout() 的真实拒因）——都归为超时分类
+      const errName = (err as { name?: string })?.name;
+      if (errName === 'AbortError' || errName === 'TimeoutError') {
         throw new LLMProviderError(`LLM request timed out after ${config.timeoutMs}ms`);
       }
       const reason = err instanceof Error ? err.message : String(err);

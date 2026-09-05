@@ -346,6 +346,7 @@ export function list(args: ListInput, ctx?: FaapiContext) {
 - **sub-agent 递归自动覆盖**：递归不换 HTTP 请求、ctx 不变，`beforeToolCall` 收到的 name 是 `agent.<name>`，按前缀区分策略
 - **编程式直调无 ctx**：测试/自定义启动器直接 `new Agent(deps)` 时 ctx 为 `undefined`，钩子里对 `ctx?.workspace` 判空即硬闸
 - **拒绝是软失败**：`{ error }` 回传 LLM 后它会继续对话（可能换 tool 或向用户说明），不是终止执行——需要硬终止在入口中间件做
+- **filterTools 看不到 ≠ 调不到**：它只控制 LLM 可见清单，被过滤的 tool 被 LLM 幻觉调用时仍会执行——权限硬闸必须配 `beforeToolCall`，`filterTools` 只负责省一轮调用
 
 ## 多 agent 协作示例
 
