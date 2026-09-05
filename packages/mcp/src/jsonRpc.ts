@@ -111,6 +111,34 @@ export function parseJsonRpcMessage(data: unknown): JsonRpcMessage[] {
   return [parseSingleMessage(data)];
 }
 
+/**
+ * 解析 JSON-RPC 批量消息（JSON-RPC 2.0 规范：批内单条无效仅对该条生成
+ * ParseError error object（id:null）,不整批失败）
+ *
+ * @returns messages（有效消息）+ invalid（解析失败的条目,以错误响应形态给出,
+ *          transport 层并入批响应数组）
+ */
+export function parseJsonRpcBatch(data: unknown[]): {
+  messages: JsonRpcMessage[];
+  invalid: JsonRpcMessage[];
+} {
+  const messages: JsonRpcMessage[] = [];
+  const invalid: JsonRpcMessage[] = [];
+  for (const item of data) {
+    try {
+      messages.push(parseSingleMessage(item));
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      invalid.push({
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: ErrorCode.ParseError, message: reason },
+      } as JsonRpcErrorResponse);
+    }
+  }
+  return { messages, invalid };
+}
+
 class JsonRpcParseError extends Error {
   constructor(message: string) {
     super(message);

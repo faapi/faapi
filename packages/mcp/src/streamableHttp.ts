@@ -18,6 +18,7 @@ import {
   createErrorResponse,
   ErrorCode,
   parseJsonRpcMessage,
+  parseJsonRpcBatch,
   JsonRpcParseError,
 } from './jsonRpc';
 
@@ -136,13 +137,28 @@ async function handlePost(request: Request, server: McpServer): Promise<Response
     );
   }
 
-  // 解析 JSON-RPC 消息
+  // 解析 JSON-RPC 消息。批量走 parseJsonRpcBatch：批内单条无效仅对该条生成
+  // ParseError 响应（JSON-RPC 2.0 规范），不整批 400
   let messages: JsonRpcMessage[];
-  try {
-    messages = parseJsonRpcMessage(body);
-  } catch (err) {
-    const message = err instanceof JsonRpcParseError ? err.message : 'Invalid JSON-RPC message';
-    return jsonResponse(400, createErrorResponse(null, ErrorCode.ParseError, message));
+  let invalidResponses: JsonRpcMessage[] = [];
+  if (Array.isArray(body)) {
+    // 空批：JSON-RPC 2.0 规范要求返回单个 Invalid Request 响应（延续 400 语义）
+    if (body.length === 0) {
+      return jsonResponse(
+        400,
+        createErrorResponse(null, ErrorCode.ParseError, 'Invalid Request: empty batch'),
+      );
+    }
+    const batch = parseJsonRpcBatch(body);
+    messages = batch.messages;
+    invalidResponses = batch.invalid;
+  } else {
+    try {
+      messages = parseJsonRpcMessage(body);
+    } catch (err) {
+      const message = err instanceof JsonRpcParseError ? err.message : 'Invalid JSON-RPC message';
+      return jsonResponse(400, createErrorResponse(null, ErrorCode.ParseError, message));
+    }
   }
 
   // 分离请求和通知
@@ -204,18 +220,17 @@ async function handlePost(request: Request, server: McpServer): Promise<Response
     await server.handleJsonRpc(notification, session);
   }
 
-  // 处理请求
-  const responses: JsonRpcMessage[] = [];
-  for (const req of requests) {
-    const response = await server.handleJsonRpc(req, session);
-    if (response !== null) {
-      responses.push(response);
-    }
-  }
+  // 处理请求——批量场景并行执行（单个请求的错误由 handleJsonRpc 内部转为
+  // error response,不互相影响）；响应按请求声明顺序回传（与完成顺序无关）
+  const handled = await Promise.all(requests.map((req) => server.handleJsonRpc(req, session)));
+  const responses: JsonRpcMessage[] = [
+    ...invalidResponses, // 解析期产生的 error response（解析阶段语义,置于响应数组最前）
+    ...handled.filter((r): r is JsonRpcMessage => r !== null),
+  ];
 
   // 构建响应
-  if (requests.length === 0) {
-    // 全是通知 → 202 Accepted
+  if (requests.length === 0 && invalidResponses.length === 0) {
+    // 全是通知且无解析失败 → 202 Accepted
     return new Response(null, { status: 202 });
   }
 

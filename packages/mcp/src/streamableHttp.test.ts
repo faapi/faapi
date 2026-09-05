@@ -99,6 +99,95 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
 
   // ─── POST: tools/call ─────────────────────────────────
 
+  describe('POST 批量消息（JSON-RPC batch）', () => {
+    function initAndGetSid(server: McpServer): Promise<string> {
+      return (async () => {
+        const initReq = new Request('http://localhost/mcp', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'initialize' }),
+        });
+        const res = await handleMcpRequest(initReq, server);
+        return res.headers.get('Mcp-Session-Id')!;
+      })();
+    }
+
+    function batchReq(sid: string, payload: unknown): Request {
+      return new Request('http://localhost/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'Mcp-Session-Id': sid,
+        },
+        body: JSON.stringify(payload),
+      });
+    }
+
+    it('批内单条无效 → 200,仅该条返回 ParseError（id:null）,其余正常响应', async () => {
+      const sid = await initAndGetSid(mcp);
+      const res = await handleMcpRequest(
+        batchReq(sid, [{ jsonrpc: '2.0', id: 1, method: 'tools/list' }, 'garbage-not-an-object']),
+        mcp,
+      );
+      // JSON-RPC 2.0 规范：批内单条无效只对该条生成 error response,不整批 400
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Array<{
+        id: unknown;
+        error?: { code: number };
+        result?: unknown;
+      }>;
+      expect(body).toHaveLength(2);
+      const invalid = body.find((r) => r.id === null);
+      expect(invalid?.error?.code).toBe(-32700);
+      expect(body.some((r) => r.id === 1 && r.result)).toBe(true);
+    });
+
+    it('批量全部无效 → 200,每条都是 error response（非 400/非 202）', async () => {
+      const sid = await initAndGetSid(mcp);
+      const res = await handleMcpRequest(batchReq(sid, ['x', 42]), mcp);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Array<{ id: null; error: { code: number } }>;
+      expect(body).toHaveLength(2);
+      expect(body.every((r) => r.id === null && r.error.code === -32700)).toBe(true);
+    });
+
+    it('空批 → 400', async () => {
+      const sid = await initAndGetSid(mcp);
+      const res = await handleMcpRequest(batchReq(sid, []), mcp);
+      expect(res.status).toBe(400);
+    });
+
+    it('批量请求并行执行（并发峰值 > 1）', async () => {
+      let running = 0;
+      let peak = 0;
+      mcp.tool('slow', {
+        description: 'slow tool',
+        input: {},
+        handler: async () => {
+          running++;
+          peak = Math.max(peak, running);
+          await new Promise((r) => setTimeout(r, 50));
+          running--;
+          return { content: [{ type: 'text', text: 'ok' }] };
+        },
+      });
+      const sid = await initAndGetSid(mcp);
+      const res = await handleMcpRequest(
+        batchReq(sid, [
+          { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'slow' } },
+          { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'slow' } },
+        ]),
+        mcp,
+      );
+      expect(res.status).toBe(200);
+      expect(peak).toBe(2);
+    });
+  });
+
   describe('POST tools/call', () => {
     it('调用 tool 返回结果', async () => {
       // 先 initialize 获取 session

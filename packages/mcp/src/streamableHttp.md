@@ -21,7 +21,9 @@ export function POST(ctx) {
 
 | 方法 | 行为 |
 |------|------|
-| POST | 解析 JSON-RPC，分发到 mcpServer，返回 JSON 响应或 202（通知） |
+| POST | 解析 JSON-RPC（单条/批量），分发到 mcpServer，返回 JSON 响应或 202（通知） |
+
+**批量语义（JSON-RPC 2.0）**：批内单条无效仅对该条生成 `id:null` 的 ParseError 响应（不整批 400）；空批返回 400 Invalid Request；批内请求**并行执行**，响应按请求声明顺序回传（与完成顺序无关）；纯通知批返回 202。
 | GET | 打开 SSE 流(200 + text/event-stream),定期发心跳保持连接并续期 session;携带的 session id 无效/已过期时返回 404;客户端断开时清理资源 |
 | DELETE | 按 Mcp-Session-Id 销毁会话 |
 
