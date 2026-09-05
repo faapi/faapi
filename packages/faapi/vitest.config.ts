@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const isCI = !!process.env.CI;
 
 // E2E 测试访问的是本机 127.0.0.1 / localhost，需绕过 HTTP 代理
 // （开发机常驻 Clash 等代理，Node 24+ 默认 NODE_USE_ENV_PROXY=1 会让 fetch 走代理，
@@ -34,16 +33,16 @@ export default defineConfig({
     // V8 注入让 setup 变慢，默认 10s 不够。提升到 30s 让 e2e 在 coverage 模式下不超时
     hookTimeout: 30000,
     teardownTimeout: 30000,
-    // CI（2 核）资源紧张，E2E 服务器启动 + AST 提取并行易导致 fork 子进程崩溃
-    // （ERR_IPC_CHANNEL_CLOSED）；本地（多核）保持并行加速
-    fileParallelism: !isCI,
-    maxWorkers: isCI ? 1 : '50%',
+    // 文件级并行 + fork 池上限 2。
+    // 历史：CI 曾因资源紧张串行化（fileParallelism:false + maxWorkers:1，见 a3f7014/dcb7827，
+    // 症状含 OOM 与 fork 子进程 ERR_IPC_CHANNEL_CLOSED——后者是内存压力下子进程被杀的表现）。
+    // 已解除的条件：CI 按包拆 matrix（每 job 独占 runner，public repo 标准规格 4 vCPU / 16 GB，
+    // 包间内存竞争消除）；execArgv 8GB 是每个 fork 进程各自的上限，2 workers 理论上限 16GB
+    // 但实际 RSS 远低于上限（仅 AST 测试真正吃堆）。本地 CI=true 全量含 e2e 实测通过后放开。
+    maxWorkers: 2,
     pool: 'forks',
     poolOptions: {
       forks: {
-        singleFork: isCI,
-        minForks: isCI ? 1 : undefined,
-        maxForks: isCI ? 1 : undefined,
         // AST 提取测试加载 TypeScript compiler + lib.d.ts，默认 4GB 堆内存不够。
         // 在这里给 fork 子进程设堆上限（而非依赖 package.json test 脚本的 NODE_OPTIONS），
         // 使 `pnpm test` / 直接 `pnpm vitest run` 两条路径行为一致
