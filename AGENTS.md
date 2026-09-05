@@ -776,7 +776,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 - TypeScript Compiler API AST 分析
 - `zod` 运行时参数校验（AST → RuntimeType → zod schema 代码生成）—— peerDependency，业务方需自行安装 `zod@^4`（框架生成的 `zod.js` 在业务方项目目录执行，需项目根 `node_modules` 可解析到 zod）
 - `ws` WebSocket 协议
-- `vitest` 测试
+- `vitest` 测试（faapi 包提供 `test:unit` / `test:e2e` / `test` 三档：本地快速反馈用 unit，CI 与发布门禁跑全量）
 - 代码质量：`eslint`（flat config）+ `prettier` + `husky` + `lint-staged` + `commitlint`
 - 版本与发布：`@changesets/cli` + `@changesets/changelog-github`，CI 由 GitHub Actions 驱动
 

@@ -2,6 +2,15 @@
 
 何时使用：用户要测试 faapi handler / 中间件 / 注入器 / E2E 完整链路 / WebSocket 路由时。
 
+
+### 快速反馈命令
+
+改业务代码后无需每次全量跑（e2e 含服务器启动级用例，较慢）：
+
+- `pnpm --filter @faapi/faapi run test:unit` — 只跑单元测试（排除 `*.e2e.test.ts`），秒级到十秒级
+- `pnpm --filter @faapi/faapi run test:e2e` — 只跑端到端测试
+- `pnpm --filter @faapi/faapi run test` — 全量（CI 与发布门禁跑的）
+
 ## 核心思路
 
 faapi 的 handler 是"函数即接口"——按参数名自动注入 `query`/`body`/`ctx` 等依赖。框架分四层公开测试 API：
