@@ -12,7 +12,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+  typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -23,11 +35,39 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
-  # 覆盖率观测：与 ci 并行，只收集 faapi 包（唯一配置了 coverage 的包），
+  # 按包拆分并行：每个 job 独占 runner（public repo 标准 runner 为 4 vCPU / 16 GB），
+  # 包间不再串行（根 test 的 --workspace-concurrency=1 是历史 OOM 的包级串行妥协，
+  # 见提交 a3f7014）——内存天然隔离，等价于消除了包间 OOM 竞争
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [faapi, agent, mcp, schema, next]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @faapi/${{ matrix.pkg }} run test
+
+  # 覆盖率观测：与 test 并行，只收集 faapi 包（唯一配置了 coverage 的包），
   # 报告作为 artifact 上传供查看。不上传第三方服务；阈值等数据稳定后再设
   # （packages/faapi/vitest.config.ts thresholds 当前为 undefined，不会因此失败）
   coverage:
