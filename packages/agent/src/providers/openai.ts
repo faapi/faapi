@@ -131,7 +131,8 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
   const baseURL = (config.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, '');
   const apiKey = config.apiKey;
   /** 429/5xx/网络错误的最大重试次数（默认 2,设 0 关闭重试） */
-  const maxRetries = typeof config.maxRetries === 'number' ? config.maxRetries : 2;
+  // 负数归一为 0（关闭重试），避免重试循环不执行导致 throw undefined
+  const maxRetries = Math.max(0, typeof config.maxRetries === 'number' ? config.maxRetries : 2);
 
   /**
    * 构造 OpenAI chat completions 请求体
@@ -207,6 +208,32 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
    * 是外部取消还是超时触发）：externalSignal.aborted → AgentAbortError（用户取消）；
    * 否则 AbortError → LLMProviderError（timeoutMs 超时）。
    */
+  /**
+   * abort 类错误分类（authHooks 之外的请求生命周期共用）
+   *
+   * - 外部 signal 已 aborted → AgentAbortError（用户取消）
+   * - TimeoutError（undici 对 AbortSignal.timeout() 的真实拒因）/
+   *   AbortError（无外部 signal 时部分实现的超时拒因）→ 超时分类
+   * - 其余 → Network error
+   */
+  function classifyAbortError(err: unknown, externalSignal: AbortSignal | undefined): Error {
+    if (externalSignal?.aborted) {
+      return new AgentAbortError();
+    }
+    const errName = (err as { name?: string })?.name;
+    if (errName === 'AbortError' || errName === 'TimeoutError') {
+      return new LLMProviderError(`LLM request timed out after ${config.timeoutMs}ms`);
+    }
+    const reason = err instanceof Error ? err.message : String(err);
+    return new LLMProviderError(`Network error: ${reason}`, { cause: err });
+  }
+
+  /** 是否为 abort 类拒因（TimeoutError / AbortError）——body 阶段窄分类用 */
+  function isAbortLike(err: unknown): boolean {
+    const name = (err as { name?: string })?.name;
+    return name === 'AbortError' || name === 'TimeoutError';
+  }
+
   async function safeFetch(
     url: string,
     init: RequestInit,
@@ -215,17 +242,7 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
     try {
       return await fetch(url, init);
     } catch (err) {
-      if (externalSignal?.aborted) {
-        throw new AgentAbortError();
-      }
-      // 超时拒因有两种：AbortError（无外部 signal 时部分实现）与 TimeoutError
-      // （undici 对 AbortSignal.timeout() 的真实拒因）——都归为超时分类
-      const errName = (err as { name?: string })?.name;
-      if (errName === 'AbortError' || errName === 'TimeoutError') {
-        throw new LLMProviderError(`LLM request timed out after ${config.timeoutMs}ms`);
-      }
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new LLMProviderError(`Network error: ${reason}`, { cause: err });
+      throw classifyAbortError(err, externalSignal);
     }
   }
 
@@ -325,7 +342,14 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
 
     const response = await fetchOkWithRetry(url, baseInit, request, maxRetries);
 
-    const bodyText = await response.text();
+    // body 读取阶段的超时/取消同样归入既有错误分类（而非裸 TimeoutError 冒泡）
+    let bodyText: string;
+    try {
+      bodyText = await response.text();
+    } catch (err) {
+      if (!isAbortLike(err)) throw err;
+      throw classifyAbortError(err, request.signal);
+    }
     let json: OpenAIResponseJson;
     try {
       json = JSON.parse(bodyText) as OpenAIResponseJson;
@@ -447,6 +471,11 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
 
       // 流自然结束（无 [DONE]）,emit 最终 chunk
       yield finalizeStreamChunk(accumulators, finishReason, usage);
+    } catch (err) {
+      // body 读取阶段的超时/取消归入既有分类（而非裸 TimeoutError 冒泡）；
+      // 其余错误（如 chunk JSON 解析的 LLMProviderError）原样冒泡
+      if (!isAbortLike(err)) throw err;
+      throw classifyAbortError(err, request.signal);
     } finally {
       // 提前 break/异常时主动 cancel 底层流,释放 HTTP 连接（仅 releaseLock 会让
       // undici 连接等到 body 缓冲耗尽或超时才归还）

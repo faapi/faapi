@@ -297,10 +297,18 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
     logLevel: 'silent',
   });
 
-  // 编译成功：记录全部输入文件的 mtime（config 源 + src 内/外依赖模块），
+  // 编译成功：记录全部输入文件的 mtime（config 源 + src 内/外依赖模块 + tsconfig——
+  // alias 重写依赖 tsconfig paths，tsconfig 变化必须触发重编译），
   // 供下次调用的 mtime 短路判断。编译抛错时不走此处（下次可重试）。
   const inputs = new Map<string, number>();
-  for (const filePath of [...configEntryPoints, ...appDirFiles, ...nonAppDirFiles]) {
+  const tsconfigPath = path.resolve(rootDir, 'tsconfig.json');
+  const inputCandidates = [
+    ...configEntryPoints,
+    ...appDirFiles,
+    ...nonAppDirFiles,
+    ...(fs.existsSync(tsconfigPath) ? [tsconfigPath] : []),
+  ];
+  for (const filePath of inputCandidates) {
     try {
       const stat = await fs.promises.stat(filePath);
       inputs.set(filePath, stat.mtimeMs);

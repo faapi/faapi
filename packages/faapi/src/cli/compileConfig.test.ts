@@ -386,4 +386,36 @@ export default {
       expect(existsSync(join(tempDir, 'dist', 'faapi-config.js'))).toBe(true);
     });
   });
+
+  it('tsconfig.json 变化后重新编译（alias 重写依赖 tsconfig paths）', async () => {
+    writeFileSync(join(tempDir, 'tsconfig.json'), JSON.stringify({ compilerOptions: {} }));
+    writeFile('faapi.config.ts', `export default { port: 3000 };\n`);
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
+
+    // 改 tsconfig（mtime 推进）
+    writeFileSync(
+      join(tempDir, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } }),
+    );
+    const future = new Date(Date.now() + 5000);
+    await fs.promises.utimes(join(tempDir, 'tsconfig.json'), future, future);
+
+    const result = await compileConfig({ rootDir: tempDir, dist: 'dist' });
+    expect(result.skipped).toBe(false);
+  });
+
+  it('配置源从 .ts 切换为 .js 后重新编译', async () => {
+    writeFile('faapi.config.ts', `export default { port: 3000 };\n`);
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
+
+    // 删 .ts 配置，加同名 .js 配置（旧 inputs 的 .ts mtime 未变）
+    rmSync(join(tempDir, 'faapi.config.ts'));
+    writeFile('faapi.config.js', `export default { port: 8080 };\n`);
+
+    const result = await compileConfig({ rootDir: tempDir, dist: 'dist' });
+    expect(result.skipped).toBe(false);
+
+    const config = await importProduct<{ port: number }>();
+    expect(config.port).toBe(8080);
+  });
 });

@@ -862,4 +862,46 @@ describe('createOpenAIProvider', () => {
       expect(cancelCalled).toBe(true);
     });
   });
+
+  it('响应体阶段超时 → 仍归为 timed out 分类（非裸 TimeoutError）', async () => {
+    // 响应头已到、body 读取阶段信号触发——read() 拒因 TimeoutError（真实 undici 行为）
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"A"}}]}\n\n'));
+          // body 悬挂不 close；组合超时信号触发时以 TimeoutError error 流
+          init?.signal?.addEventListener('abort', () => {
+            controller.error(
+              new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+            );
+          });
+        },
+      });
+      return Promise.resolve(
+        new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      );
+    });
+    const provider = createOpenAIProvider({ ...baseConfig, timeoutMs: 50 });
+
+    const chunks: unknown[] = [];
+    await expect(async () => {
+      for await (const chunk of provider.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+        chunks.push(chunk);
+        await new Promise((r) => setTimeout(r, 30)); // 慢消费，让 timeout 触发
+      }
+    }).rejects.toThrow(/timed out/);
+  });
+
+  it('maxRetries 负数归一为 0（不重试,不抛 undefined）', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+    );
+    const provider = createOpenAIProvider({ ...baseConfig, maxRetries: -3 });
+
+    await expect(
+      provider.complete({ messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({ name: 'LLMProviderError', status: 429 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

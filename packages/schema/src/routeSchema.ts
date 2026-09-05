@@ -11,7 +11,7 @@
 import ts from 'typescript';
 import {
   collectRouteSchemaSources,
-  createProgram,
+  createPrograms,
   invalidateProgramCache,
   extractTypeInfo,
   resolveTypeNode,
@@ -41,15 +41,24 @@ export function buildRouteSchemas(routes: RouteManifest, rootDir: string): Route
     sourceMap.set(`${source.urlPath}#${source.schemaName}`, source);
   }
 
-  // 按 urlPath 索引源文件绝对路径（用于响应类型提取创建 program）
+  // 按 urlPath 索引源文件绝对路径（用于响应类型提取）
   const filePathMap = new Map<string, string>();
   for (const source of sources) {
     filePathMap.set(source.urlPath, source.filePath);
   }
 
+  // 响应类型提取与输入提取共享同一批 Program（createPrograms 内部按 tsconfig 分组缓存）——
+  // 此前逐路由单文件 createProgram，每个 Program 都加载全项目源码，与输入提取形成双份解析
+  const programByFile = createPrograms([...new Set(filePathMap.values())]);
+
   return routes.map((route) => {
     const inputs = extractInputSchemas(route, sourceMap);
-    const output = extractOutputSchema(route, filePathMap.get(route.urlPath));
+    const filePath = filePathMap.get(route.urlPath);
+    const output = extractOutputSchema(
+      route,
+      filePath,
+      filePath ? programByFile.get(filePath) : undefined,
+    );
     return {
       method: route.method,
       path: route.urlPath,
@@ -125,11 +134,11 @@ function extractInputSchemas(
 function extractOutputSchema(
   route: { method: string; urlPath: string },
   filePath: string | undefined,
+  program: import('typescript').Program | undefined,
 ): RouteOutputSchema | null {
-  if (!filePath) return null;
+  if (!filePath || !program) return null;
 
   try {
-    const program = createProgram(filePath);
     const sourceFile = program.getSourceFile(filePath);
     if (!sourceFile) return null;
 
