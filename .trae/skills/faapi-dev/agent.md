@@ -279,6 +279,74 @@ await agent.run(input, { model: 'anthropic' });
 
 工厂未注册时（`@faapi/agent` 插件未加载或 `config.agent.llms` 未配置）注入 `undefined`，handler 需自行处理。`defaultAgent` 未设置时工厂正常注册，但 `agent.run(input)` 不传 `{ agent }` 会抛 `AgentError`。
 
+## agent / tools 鉴权（工作区）
+
+agent 链的鉴权分三层：**入口鉴权**（调 agent 的 handler 本就在 HTTP 中间件链里，与普通路由完全一样）、**可见性过滤**（`filterTools`，无权 tool 不进 LLM 视野）、**执行守卫**（`beforeToolCall`，所有 tool + sub-agent 调用的必经单点）。**不引入洋葱中间件**——拒绝语义是 `{ error }` 回传 LLM 调整策略，不是 403 短路。
+
+关键前提：中间件塞进 ctx 的身份信息（`ctx.user` / `ctx.workspace` 等）会随 ctx 传递链流到 tool handler 与钩子——tool handler 签名为 `(args, ctx)`。
+
+### 典型场景：多租户工作区隔离
+
+```ts
+// faapi.config.ts
+import type { FaapiConfig } from '@faapi/faapi';
+
+export default {
+  middlewares: [
+    async (ctx, next) => {
+      // 1. 入口解析（既有中间件模式）：token → 工作区
+      ctx.workspace = await resolveWorkspace(ctx.headers.get('x-workspace-id'));
+      await next();
+    },
+  ],
+  agent: {
+    llms: { /* ... */ },
+    // 2. 执行守卫：所有 tool + sub-agent（name 以 agent. 开头）调用的必经单点
+    beforeToolCall(name, args, ctx) {
+      // 硬闸：无工作区上下文一律拒绝（error 回传 LLM,LLM 会调整策略）
+      if (!ctx?.workspace) return { error: 'workspace context required' };
+      // 3. 强制改写（关键!）：不信 LLM 传的 workspaceId——prompt 注入可诱导越权。
+      //    服务端强制注入可信值,LLM 传什么都被覆盖
+      if ('workspaceId' in args) args.workspaceId = ctx.workspace.id;
+      // void = 放行
+    },
+    // 4. 可见性过滤（可选）：无权 tool 根本不进 LLM 的 tools 清单,省一轮调用
+    filterTools(tools, ctx) {
+      return tools.filter((t) => t.name.startsWith('agent.') || isAllowed(ctx?.workspace, t.name));
+    },
+    // 5. 审计（可选）：成功执行后调用（异常路径不调用）
+    afterToolCall(name, args, result, ctx) {
+      console.log(`[tool] ${ctx?.workspace?.id} ${name}`, args);
+    },
+  },
+} satisfies FaapiConfig;
+```
+
+```ts
+// src/tools/order/list/handler.ts — tool handler 第二参数拿到 ctx,可自查
+export interface ListInput { workspaceId?: string; page: number }
+export function list(args: ListInput, ctx?: FaapiContext) {
+  // ctx.workspace 由中间件塞入、经 beforeToolCall 强制对齐——直接信任
+  const wsId = args.workspaceId ?? ctx?.workspace?.id;
+  return db.orders.listByWorkspace(wsId);
+}
+```
+
+### 语义速查
+
+| 钩子 | 时机 | 返回 |
+|------|------|------|
+| `beforeToolCall(name, args, ctx)` | 每次 tool / sub-agent 执行前（`agent.x` 为 sub-agent） | `void` 放行 / `{ error }` 拒绝 / `{ args }` 改写后放行 |
+| `afterToolCall(name, args, result, ctx)` | 成功返回后 | 返回值忽略（审计用） |
+| `filterTools(tools, ctx)` | 每次 run/stream 组装 tools 清单后 | 返回过滤后的数组 |
+
+### 常见坑点
+
+- **只校验不改写不够安全**：LLM 参数是不可信输入，`args.workspaceId` 必须服务端强制注入
+- **sub-agent 递归自动覆盖**：递归不换 HTTP 请求、ctx 不变，`beforeToolCall` 收到的 name 是 `agent.<name>`，按前缀区分策略
+- **编程式直调无 ctx**：测试/自定义启动器直接 `new Agent(deps)` 时 ctx 为 `undefined`，钩子里对 `ctx?.workspace` 判空即硬闸
+- **拒绝是软失败**：`{ error }` 回传 LLM 后它会继续对话（可能换 tool 或向用户说明），不是终止执行——需要硬终止在入口中间件做
+
 ## 多 agent 协作示例
 
 ### Researcher 调 tool + sub-agent

@@ -406,6 +406,18 @@ export default {
     // enableTracing: true,                      // 开启 tracing（默认 false——opt-in，不开启零开销）。
                                                  //   开启时 agent.run()/stream() 返回 result.trace / chunk.traceEvent,
                                                  //   详见 @faapi/agent 的 trace.md
+    // 鉴权钩子（authHooks，详见 @faapi/agent 的 authHooks.md）：
+    //   beforeToolCall——所有 tool + sub-agent 执行前的守卫（agent. 前缀为 sub-agent）。
+    //   void 放行 / { error } 拒绝（回传 LLM）/ { args } 改写后放行（强制注入可信值）
+    //   afterToolCall——成功执行后审计；filterTools——LLM 可见 tools 清单过滤。
+    //   ctx（含中间件塞入的 user/workspace）全链路传递到钩子与 tool handler (args, ctx)
+    beforeToolCall(name, args, ctx) {
+      if (!ctx?.workspace) return { error: 'workspace context required' };
+      if ('workspaceId' in args) args.workspaceId = ctx.workspace.id;
+    },
+    filterTools(tools, ctx) {
+      return tools.filter((t) => t.name.startsWith('agent.') || isAllowed(ctx?.workspace, t.name));
+    },
   },
 
   // 自定义业务配置（任意 key，通过 ctx.config 访问）

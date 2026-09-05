@@ -4,6 +4,7 @@ import type { AgentDeps, AgentRuntimeConfig, ToolSchemaResolution } from './agen
 import type {
   AgentCore,
   AgentMetadata,
+  FaapiContext,
   LlmConfig,
   ToolMetadata,
   ToolModule,
@@ -164,6 +165,7 @@ function createDeps(opts: {
   subAgents?: AgentCore[];
   subAgentEntries?: AgentMetadata[];
   config?: AgentRuntimeConfig;
+  ctx?: FaapiContext;
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
   loadAgentModuleImpl?: (filePath: string, hasRun: boolean) => Promise<AgentModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
@@ -189,6 +191,7 @@ function createDeps(opts: {
     agentName: opts.agentName ?? opts.agent.name,
     rootDir: '/project',
     config: opts.config,
+    ctx: opts.ctx,
     getAgent: (name) =>
       name === opts.agent.name ? opts.agent : opts.subAgents?.find((a) => a.name === name),
     getAgentEntry: (name) =>
@@ -306,7 +309,8 @@ describe('Agent', () => {
 
       const result = await agent.run('weather?');
       expect(result.content).toBe('done');
-      expect(handler).toHaveBeenCalledWith({ city: '北京' });
+      // handler 签名 (args, ctx)：编程式直调无 ctx 时第二参数为 undefined
+      expect(handler).toHaveBeenCalledWith({ city: '北京' }, undefined);
     });
 
     it('tool 未找到时抛错,被 reactLoop catch 后回传 LLM', async () => {
@@ -413,7 +417,7 @@ describe('Agent', () => {
       );
 
       await agent.run('weather?');
-      expect(handler).toHaveBeenCalledWith({ city: '北京' });
+      expect(handler).toHaveBeenCalledWith({ city: '北京' }, undefined);
     });
 
     it('resolveToolSchema 对同一 tool 只调用一次（schema 缓存）', async () => {
@@ -1118,5 +1122,258 @@ describe('Agent', () => {
 
     const request = completeCalls.mock.calls[0][0];
     expect(request.signal).toBe(controller.signal);
+  });
+
+  describe('鉴权钩子（authHooks）', () => {
+    const ctx = {
+      method: 'POST',
+      path: '/api/agent',
+      user: { id: 1 },
+      workspace: { id: 'ws-1' },
+    } as unknown as FaapiContext;
+
+    function toolCallProvider() {
+      return createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+    }
+
+    it('beforeToolCall 放行（void）: handler 正常执行且收到 ctx', async () => {
+      const handler = vi.fn(async () => ({ ok: true }));
+      const { provider } = toolCallProvider();
+      const beforeToolCall = vi.fn(() => undefined);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async () => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName: 'getWeather',
+          }),
+          config: { beforeToolCall },
+          ctx,
+        }),
+      );
+
+      await agent.run('weather?');
+      expect(beforeToolCall).toHaveBeenCalledWith('weather.getWeather', { city: '北京' }, ctx);
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('beforeToolCall 拒绝: handler 不执行,{ error } 回传 LLM', async () => {
+      const handler = vi.fn(async () => ({ ok: true }));
+      const { provider, completeCalls } = toolCallProvider();
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async () => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName: 'getWeather',
+          }),
+          config: {
+            beforeToolCall: () => ({ error: 'workspace context required' }),
+          },
+          ctx,
+        }),
+      );
+
+      await agent.run('weather?');
+      expect(handler).not.toHaveBeenCalled();
+      const secondRequest = completeCalls.mock.calls[1][0];
+      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
+      expect(JSON.stringify(toolMsg?.content)).toContain('workspace context required');
+    });
+
+    it('beforeToolCall 改写: handler 收到改写后的 args + ctx 第二参数', async () => {
+      const handler = vi.fn(async () => ({ ok: true }));
+      const { provider } = toolCallProvider();
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async () => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName: 'getWeather',
+          }),
+          config: {
+            beforeToolCall: (_name, args) => ({ args: { ...args, workspaceId: 'ws-1' } }),
+          },
+          ctx,
+        }),
+      );
+
+      await agent.run('weather?');
+      expect(handler).toHaveBeenCalledWith({ city: '北京', workspaceId: 'ws-1' }, ctx);
+    });
+
+    it('beforeToolCall 对 sub-agent 递归（agent.x）同样拦截,拒绝时 mod.run 不执行', async () => {
+      const subRun = vi.fn(async () => 'sub result');
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 'agent.analyst', arguments: { q: 'x' } }],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['analyst'] }),
+          subAgents: [agentMeta({ name: 'analyst' })],
+          subAgentEntries: [
+            {
+              ...agentMeta({ name: 'analyst' }),
+              filePath: 'dist/agents/analyst/handler.js',
+              hasRun: true,
+            } as AgentMetadata,
+          ],
+          loadAgentModuleImpl: async () => ({ run: subRun }) as unknown as AgentModule,
+          config: {
+            beforeToolCall: (name) =>
+              name.startsWith('agent.') ? { error: 'sub-agent not allowed' } : undefined,
+          },
+          ctx,
+        }),
+      );
+
+      await agent.run('go');
+      expect(subRun).not.toHaveBeenCalled();
+      const secondRequest = completeCalls.mock.calls[1][0];
+      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
+      expect(JSON.stringify(toolMsg?.content)).toContain('sub-agent not allowed');
+    });
+
+    it('ctx 传递: sub-agent 自定义 run 收到 ctx 第二参数', async () => {
+      const subRun = vi.fn(async () => 'sub result');
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 'agent.analyst', arguments: { q: 'x' } }],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+      void completeCalls;
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['analyst'] }),
+          subAgents: [agentMeta({ name: 'analyst' })],
+          subAgentEntries: [
+            {
+              ...agentMeta({ name: 'analyst' }),
+              filePath: 'dist/agents/analyst/handler.js',
+              hasRun: true,
+            } as AgentMetadata,
+          ],
+          loadAgentModuleImpl: async () => ({ run: subRun }) as unknown as AgentModule,
+          ctx,
+        }),
+      );
+
+      await agent.run('go');
+      expect(subRun).toHaveBeenCalledWith({ q: 'x' }, ctx);
+    });
+
+    it('afterToolCall 成功后调用（name, args, result, ctx),拒绝时不调用', async () => {
+      const handler = vi.fn(async () => ({ ok: true, temp: 25 }));
+      const afterToolCall = vi.fn();
+
+      // 拒绝场景：afterToolCall 不调用
+      const { provider: deniedProvider } = toolCallProvider();
+      const denied = new Agent(
+        createDeps({
+          provider: deniedProvider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async () => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName: 'getWeather',
+          }),
+          config: {
+            beforeToolCall: () => ({ error: 'denied' }),
+            afterToolCall,
+          },
+          ctx,
+        }),
+      );
+      await denied.run('weather?');
+      expect(afterToolCall).not.toHaveBeenCalled();
+
+      // 放行场景：成功后调用
+      const { provider } = toolCallProvider();
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async () => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName: 'getWeather',
+          }),
+          config: { afterToolCall },
+          ctx,
+        }),
+      );
+      await agent.run('weather?');
+      expect(afterToolCall).toHaveBeenCalledWith(
+        'weather.getWeather',
+        { city: '北京' },
+        { ok: true, temp: 25 },
+        ctx,
+      );
+    });
+
+    it('filterTools 过滤 LLM 可见 tools 清单（含 agent-as-tool）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['analyst'] }),
+          tools: [toolMeta(), toolMeta({ name: 'admin.deleteUser', functionName: 'deleteUser' })],
+          subAgents: [agentMeta({ name: 'analyst' })],
+          config: {
+            filterTools: (tools) => tools.filter((t) => !t.name.startsWith('admin.')),
+          },
+          ctx,
+        }),
+      );
+
+      await agent.run('hi');
+      const request = completeCalls.mock.calls[0][0];
+      const names = request.tools.map((t: { name: string }) => t.name);
+      expect(names).toContain('weather.getWeather');
+      expect(names).toContain('agent.analyst');
+      expect(names).not.toContain('admin.deleteUser');
+    });
+
+    it('钩子未配置时行为不变: tool 正常执行,ctx 仍传给 handler', async () => {
+      const handler = vi.fn(async () => ({ ok: true }));
+      const { provider } = toolCallProvider();
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async () => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName: 'getWeather',
+          }),
+          ctx,
+        }),
+      );
+
+      await agent.run('weather?');
+      expect(handler).toHaveBeenCalledWith({ city: '北京' }, ctx);
+    });
   });
 });

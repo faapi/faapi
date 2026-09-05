@@ -275,6 +275,39 @@ export interface AgentConfig {
    * 详见 `@faapi/agent` 的 [trace](../../agent/src/trace.md) 文档。
    */
   enableTracing?: boolean;
+  /**
+   * 执行守卫（authHooks，见 @faapi/agent 的 authHooks 文档）
+   *
+   * 每次 tool / sub-agent 执行前调用（`agent.x` 名称为 sub-agent 递归）。
+   * 三种返回：`void` 放行；`{ error }` 拒绝（不执行，error 回传 LLM 调整策略）；
+   * `{ args }` 改写后放行（多租户场景强制注入可信值，不信 LLM 传入的标识参数）。
+   *
+   * 典型用法：中间件解析 `ctx.workspace` 后在此校验/强制改写 `args.workspaceId`。
+   */
+  beforeToolCall?: (
+    name: string,
+    args: Record<string, unknown>,
+    ctx: FaapiContext | undefined,
+  ) => void | { error: string } | { args: Record<string, unknown> };
+  /**
+   * 审计钩子（authHooks）：tool / sub-agent 成功返回后调用，返回值忽略。
+   * 用于日志/审计/计量；异常路径不调用。
+   */
+  afterToolCall?: (
+    name: string,
+    args: Record<string, unknown>,
+    result: unknown,
+    ctx: FaapiContext | undefined,
+  ) => void;
+  /**
+   * 可见性过滤（authHooks）：LLM 可见 tools 清单组装完成后调用，
+   * 返回过滤后的数组（含 agent-as-tool 项）。每次 agent.run / stream 生效——
+   * 无权 tool 不进 LLM 视野，比执行时拒绝省一轮 LLM 调用。
+   */
+  filterTools?: (
+    tools: Array<{ name: string; description?: string; input: Record<string, unknown> }>,
+    ctx: FaapiContext | undefined,
+  ) => Array<{ name: string; description?: string; input: Record<string, unknown> }>;
 }
 
 /**

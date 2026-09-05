@@ -28,6 +28,7 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 | 多环境配置 | [multi-env.md](./multi-env.md) | `.env` / `.env.production` |
 | 写 WebSocket / SSE / 流式响应 | [realtime.md](./realtime.md) | `WS` 导出 / `ctx.sse()` |
 | 写 agent / tool / 多 agent 协作 / LLM 驱动业务 | [agent.md](./agent.md) | `src/agents/<name>/handler.ts` / `src/tools/<name>/handler.ts` / `agent` 参数注入 |
+| agent / tools 鉴权 / 工作区隔离 / 多租户 tool 权限 | [agent.md](./agent.md) 的「agent / tools 鉴权（工作区）」章节 | `beforeToolCall` / `filterTools` / ctx 传递 |
 | ETag / compression / rateLimit / cluster 等自实现功能 | [recipes.md](./recipes.md) | 业务方自行实现中间件示例 |
 | dev 启动失败 / 路由不生效 / 400/500 错误 排查 | [debug.md](./debug.md) | 排查问题 |
 | 测试 handler / 中间件 / 注入器 / E2E / WebSocket 路由 | [testing.md](./testing.md) | `createContext` + `invokeHandler` 无服务器测试 / `createTestServer` + `fetch` E2E / `connectWs` WS 路由 |

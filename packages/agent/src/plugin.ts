@@ -149,6 +149,10 @@ const agentPlugin: FaapiPlugin = {
     const runtimeConfig: AgentRuntimeConfig = {
       maxTurns: agentConfig.maxTurns,
       maxAgentDepth: agentConfig.maxAgentDepth,
+      // 鉴权钩子（authHooks,见 ./authHooks.md）——业务方在 config.agent 声明
+      beforeToolCall: agentConfig.beforeToolCall,
+      afterToolCall: agentConfig.afterToolCall,
+      filterTools: agentConfig.filterTools,
     };
 
     const rootDir = ctx.rootDir;
@@ -185,7 +189,7 @@ const agentPlugin: FaapiPlugin = {
 
     // 注册 agent handle 工厂——每次请求时构造 Agent 实例
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生
-    registerAgentHandleFactory(() => {
+    registerAgentHandleFactory((ctx) => {
       return new Agent({
         providers,
         defaultProvider,
@@ -194,6 +198,9 @@ const agentPlugin: FaapiPlugin = {
         agentName: defaultAgent,
         rootDir,
         config: runtimeConfig,
+        // ctx 传递链（authHooks）：捕获请求上下文,tool handler / sub-agent /
+        // 鉴权钩子均可读取中间件塞入的身份信息（ctx.user / ctx.workspace 等）
+        ctx,
         // 注册表/加载器访问器——从 @faapi/faapi import 的单例模块
         // createAppBase 启动时已水合 agentRegistry / toolRegistry
         // getAgent 返回 AgentCore(LLM-facing);getAgentEntry 返回 AgentMetadata(含 filePath/hasRun,供加载 handler.js)
