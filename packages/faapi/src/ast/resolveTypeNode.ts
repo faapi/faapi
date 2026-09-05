@@ -497,18 +497,20 @@ function resolveTypeReference(
     (typeName === 'Array' || typeName === 'ReadonlyArray') &&
     typeNode.typeArguments?.length === 1
   ) {
+    const [arg] = typeNode.typeArguments;
     return {
       kind: 'array',
-      element: resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings),
+      element: resolveTypeNode(arg!, checker, visited, bindings),
     };
   }
 
   // Record<K, V>
   if (typeName === 'Record' && typeNode.typeArguments?.length === 2) {
+    const [keyArg, valueArg] = typeNode.typeArguments;
     return {
       kind: 'record',
-      key: resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings),
-      value: resolveTypeNode(typeNode.typeArguments[1], checker, visited, bindings),
+      key: resolveTypeNode(keyArg!, checker, visited, bindings),
+      value: resolveTypeNode(valueArg!, checker, visited, bindings),
     };
   }
 
@@ -517,7 +519,7 @@ function resolveTypeReference(
     (typeName === 'Partial' || typeName === 'Required' || typeName === 'Readonly') &&
     typeNode.typeArguments?.length === 1
   ) {
-    const inner = resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings);
+    const inner = resolveTypeNode(typeNode.typeArguments[0]!, checker, visited, bindings);
     if (inner.kind === 'object' && typeName === 'Partial') {
       // Partial 所有字段变可选
       return {
@@ -530,7 +532,7 @@ function resolveTypeReference(
 
   // Pick<T, K> / Omit<T, K> — 解析 T 的字段，按 K 筛选/排除
   if ((typeName === 'Pick' || typeName === 'Omit') && typeNode.typeArguments?.length === 2) {
-    const innerType = resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings);
+    const innerType = resolveTypeNode(typeNode.typeArguments[0]!, checker, visited, bindings);
     if (innerType.kind !== 'object') {
       throw new SchemaExtractionError(
         typeNode.getText(),
@@ -539,7 +541,7 @@ function resolveTypeReference(
     }
 
     // K 解析顺序：AST 字面量联合 → checker 解析（覆盖类型别名 / keyof T）
-    const keyTypeNode = typeNode.typeArguments[1];
+    const keyTypeNode = typeNode.typeArguments[1]!;
     let keys = extractLiteralKeys(resolveTypeNode(keyTypeNode, checker, visited, bindings));
     if (keys === null) {
       keys = extractKeysFromChecker(keyTypeNode, checker);
@@ -565,10 +567,11 @@ function resolveTypeReference(
         'Map 必须带 2 个类型参数，如 Map<K, V>，裸 Map 不支持',
       );
     }
+    const [mapKey, mapValue] = typeNode.typeArguments;
     return {
       kind: 'map',
-      key: resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings),
-      value: resolveTypeNode(typeNode.typeArguments[1], checker, visited, bindings),
+      key: resolveTypeNode(mapKey!, checker, visited, bindings),
+      value: resolveTypeNode(mapValue!, checker, visited, bindings),
     };
   }
 
@@ -580,9 +583,10 @@ function resolveTypeReference(
         'Set 必须带 1 个类型参数，如 Set<T>，裸 Set 不支持',
       );
     }
+    const [setArg] = typeNode.typeArguments;
     return {
       kind: 'set',
-      element: resolveTypeNode(typeNode.typeArguments[0], checker, visited, bindings),
+      element: resolveTypeNode(setArg!, checker, visited, bindings),
     };
   }
 
@@ -739,7 +743,7 @@ function resolveImportAlias(
   try {
     const aliased = checker.getAliasedSymbol(symbol);
     if (aliased && aliased.declarations && aliased.declarations.length > 0) {
-      const decl = aliased.declarations[0];
+      const decl = aliased.declarations[0]!;
       if (ts.isInterfaceDeclaration(decl)) {
         return resolveInterfaceDeclaration(decl, checker, visited, bindings, typeArguments);
       }

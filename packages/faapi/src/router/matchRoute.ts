@@ -193,8 +193,9 @@ export function matchDynamicPath(
     const params: Record<string, string> = {};
 
     for (let i = 0; i < nonCatchAllCount; i++) {
-      const patternSeg = patternSegments[i];
-      const pathSeg = pathSegments[i];
+      // i < nonCatchAllCount ≤ 两数组长度，索引必然存在
+      const patternSeg = patternSegments[i]!;
+      const pathSeg = pathSegments[i]!;
 
       if (patternSeg.startsWith(':')) {
         const paramName = patternSeg.slice(1);
@@ -206,7 +207,8 @@ export function matchDynamicPath(
 
     // catch-all 段：剩余所有路径段用 / 连接
     const catchAllValue = pathSegments.slice(nonCatchAllCount).join('/');
-    const catchAllParamName = patternSegments[nonCatchAllCount].slice(4); // 去掉 ':...'
+    // 前置检查 pathSegments.length > nonCatchAllCount 保证 catch-all 段存在
+    const catchAllParamName = patternSegments[nonCatchAllCount]!.slice(4); // 去掉 ':...'
     params[catchAllParamName] = catchAllValue;
 
     if (Object.keys(params).length !== paramNames.length) {
@@ -224,8 +226,9 @@ export function matchDynamicPath(
   const params: Record<string, string> = {};
 
   for (let i = 0; i < patternSegments.length; i++) {
-    const patternSeg = patternSegments[i];
-    const pathSeg = pathSegments[i];
+    // 段数一致性检查后索引必然存在
+    const patternSeg = patternSegments[i]!;
+    const pathSeg = pathSegments[i]!;
 
     if (patternSeg.startsWith(':')) {
       // 动态段，提取参数值

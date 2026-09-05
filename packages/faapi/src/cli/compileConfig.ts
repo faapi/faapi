@@ -99,7 +99,7 @@ function extractRelativeSpecifiers(source: string): string[] {
   let match: RegExpExecArray | null;
   SPEC_RE.lastIndex = 0;
   while ((match = SPEC_RE.exec(source)) !== null) {
-    const specifier = match[3];
+    const specifier = match[3]!;
     if (specifier.startsWith('./') || specifier.startsWith('../')) {
       specifiers.push(specifier);
     }

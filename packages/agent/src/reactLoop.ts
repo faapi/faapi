@@ -217,7 +217,7 @@ function estimateMessageTokens(message: LLMMessage): number {
 export function trimHistory(messages: LLMMessage[], maxTokens: number): LLMMessage[] {
   // 头部：system + 初始 user（第一个 assistant 之前的连续前缀）
   let headEnd = 0;
-  while (headEnd < messages.length && messages[headEnd].role !== 'assistant') {
+  while (headEnd < messages.length && messages[headEnd]!.role !== 'assistant') {
     headEnd++;
   }
   const head = messages.slice(0, headEnd);

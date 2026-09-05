@@ -85,7 +85,8 @@ export async function injectParamsAsync(
       }
       // 注入器按参数名匹配
       if (injectors && injection.name in injectors) {
-        return await injectors[injection.name](ctx);
+        // in 检查已证明存在
+        return await injectors[injection.name]!(ctx);
       }
       return undefined;
     }),

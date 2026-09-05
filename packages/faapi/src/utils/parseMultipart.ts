@@ -46,7 +46,8 @@ export async function parseMultipart(request: Request): Promise<MultipartResult>
         if (Array.isArray(existing)) {
           existing.push(value);
         } else {
-          fields[key] = [existing, value];
+          // in 检查已证明存在
+          fields[key] = [existing!, value];
         }
       } else {
         fields[key] = value;

@@ -30,7 +30,8 @@
     "test:unit": "vitest run --passWithNoTests --exclude='**/*.e2e.test.ts'",
     "test:e2e": "vitest run --passWithNoTests src/**/*.e2e.test.ts",
     "test:cov": "vitest run --coverage --passWithNoTests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "esbuild": "^0.25.0",

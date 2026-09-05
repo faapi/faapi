@@ -52,7 +52,9 @@ function parseEnvFile(content: string, fileVars: Record<string, string>): Record
     const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(trimmed);
     if (!match) continue;
 
-    const [, key, rawValue] = match;
+    // 正则有两个捕获组，匹配成功则必非空
+    const key = match[1]!;
+    const rawValue = match[2]!;
     const value = parseValue(rawValue, { ...fileVars, ...result });
     result[key] = value;
   }
@@ -70,7 +72,7 @@ function parseEnvFile(content: string, fileVars: Record<string, string>): Record
 function parseValue(raw: string, env: Record<string, string>): string {
   if (raw === '') return '';
 
-  // 单引号：字面量
+  // 单引号：字面量（raw 非空已由调用方保证）
   if (raw[0] === "'") {
     const end = raw.indexOf("'", 1);
     return end === -1 ? raw.slice(1) : raw.slice(1, end);
@@ -79,14 +81,15 @@ function parseValue(raw: string, env: Record<string, string>): string {
   // 双引号：转义 + 展开变量（支持 \" 转义引号，不作为结束符）
   if (raw[0] === '"') {
     const match = /^"((?:\\.|[^"\\])*)"/.exec(raw);
-    const inner = match ? match[1] : raw.slice(1);
+    // 匹配失败时 slice(1) 兜底（无闭合引号）
+    const inner = match ? match[1]! : raw.slice(1);
     return expandEscapesAndVars(inner, env);
   }
 
   // 无引号：字面量，处理行内注释
   // ` #` 前必须有空白才算注释；# 紧贴值（如 url#anchor）不算注释
   const commentMatch = /^(.*?)(\s+#.*)$/.exec(raw);
-  const value = commentMatch ? commentMatch[1] : raw;
+  const value = commentMatch ? commentMatch[1]! : raw;
   return value.trim();
 }
 

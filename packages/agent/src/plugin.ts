@@ -136,7 +136,8 @@ const agentPlugin: FaapiPlugin = {
     }
 
     // 默认 provider：config.agent.defaultLlm 优先,否则取 llms 第一个 key
-    const defaultLlm = agentConfig.defaultLlm ?? Object.keys(llms)[0];
+    // llms 非空已由上方守卫保证（空时提前 return），keys[0] 必然存在
+    const defaultLlm = agentConfig.defaultLlm ?? Object.keys(llms)[0]!;
     const defaultProvider = providers.get(defaultLlm);
     if (!defaultProvider) {
       console.warn(
@@ -196,7 +197,7 @@ const agentPlugin: FaapiPlugin = {
         defaultProvider,
         llms,
         defaultLlm,
-        agentName: defaultAgent,
+        agentName: defaultAgent ?? '',
         rootDir,
         config: runtimeConfig,
         // ctx 传递链（authHooks）：捕获请求上下文,tool handler / sub-agent /

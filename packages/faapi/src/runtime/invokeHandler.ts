@@ -88,7 +88,8 @@ export async function compose(
       return await finalHandler();
     }
 
-    const mw = middlewares[i];
+    // i >= middlewares.length 已早退，此处索引必然存在
+    const mw = middlewares[i]!;
     // next() 返回内层 Response，中间件可选择使用或替换
     let innerResponse: Response | undefined;
     const next = async (): Promise<Response> => {

@@ -427,7 +427,7 @@ export class Agent {
       }
     }
     if (matches.length === 1) {
-      return { provider: matches[0].provider, model: key };
+      return { provider: matches[0]!.provider, model: key };
     }
     if (matches.length > 1) {
       throw new AgentError(
