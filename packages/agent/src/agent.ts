@@ -3,6 +3,7 @@ import type {
   AgentMetadata,
   AgentModule,
   AgentToolDescriptor,
+  FaapiContext,
   LlmConfig,
   ToolMetadata,
   ToolModule,
@@ -55,7 +56,55 @@ export interface AgentRuntimeConfig {
    * 单次调用可通过 `AgentRunOptions.enableTracing` 覆盖。
    */
   enableTracing?: boolean;
+  /**
+   * 执行守卫（authHooks,见 [authHooks.md](./authHooks.md)）
+   *
+   * `executeTool` 最开头调用（`agent.` 分流之前）——同时覆盖常规 tool 与
+   * sub-agent 递归。三种返回：`void` 放行；`{ error }` 拒绝（不执行 handler,
+   * error 回传 LLM）；`{ args }` 改写后放行（多租户场景强制注入可信值,
+   * 不信 LLM 传入的标识参数）。
+   */
+  beforeToolCall?: ToolCallGuardHook;
+  /**
+   * 审计钩子（authHooks）：tool / sub-agent 成功返回后调用,返回值忽略。
+   * 异常路径不调用。
+   */
+  afterToolCall?: AfterToolCallHook;
+  /**
+   * 可见性过滤（authHooks）：`buildToolDefinitions` 组装完 LLM 可见 tools 后
+   * 调用,返回过滤后的数组。每次 `run` / `stream` 生效,含 agent-as-tool 项。
+   */
+  filterTools?: FilterToolsHook;
 }
+
+/**
+ * beforeToolCall 的返回守卫
+ *
+ * - `{ error }`：拒绝执行,error 字符串回传 LLM
+ * - `{ args }`：以改写后的参数继续执行
+ */
+export type ToolCallGuard = { error: string } | { args: Record<string, unknown> };
+
+/** 执行守卫钩子签名（ctx 为请求上下文,编程式直调可能为 undefined） */
+export type ToolCallGuardHook = (
+  name: string,
+  args: Record<string, unknown>,
+  ctx: FaapiContext | undefined,
+) => void | ToolCallGuard;
+
+/** 审计钩子签名（仅成功路径调用） */
+export type AfterToolCallHook = (
+  name: string,
+  args: Record<string, unknown>,
+  result: unknown,
+  ctx: FaapiContext | undefined,
+) => void;
+
+/** 可见性过滤钩子签名 */
+export type FilterToolsHook = (
+  tools: LLMToolDefinition[],
+  ctx: FaapiContext | undefined,
+) => LLMToolDefinition[];
 
 /**
  * tool schema 解析结果
@@ -99,6 +148,14 @@ export interface AgentDeps {
   rootDir: string;
   /** 全局 agent 配置覆盖 */
   config?: AgentRuntimeConfig;
+  /**
+   * 请求上下文（authHooks ctx 传递链,见 [authHooks.md](./authHooks.md)）
+   *
+   * 由 @faapi/agent 工厂捕获（AgentHandleFactory 签名本就接收 ctx）。
+   * 编程式直调（测试/自定义启动器）不传,钩子收到 undefined。
+   * sub-agent 递归经 subDeps 展开自动传导（同一 HTTP 请求内 ctx 不变）。
+   */
+  ctx?: FaapiContext;
   /** 查 agent LLM 可见元数据（对应 agentRegistry.getAgent,返回 AgentCore） */
   getAgent: (name: string) => AgentCore | undefined;
   /** 查 agent 完整元数据（对应 agentRegistry.getAgentEntry,返回 AgentMetadata 含 filePath/hasRun） */
@@ -418,7 +475,10 @@ export class Agent {
       });
     }
 
-    return Array.from(definitions.values());
+    // 可见性过滤（authHooks）：无权 tool 不进 LLM 的 tools 清单（每次 run/stream 生效）
+    const defs = Array.from(definitions.values());
+    const filtered = this.deps.config?.filterTools?.(defs, this.deps.ctx);
+    return filtered ?? defs;
   }
 
   /**
@@ -436,13 +496,24 @@ export class Agent {
    * **tool 未找到 / 加载失败**：抛错，被 reactLoop catch 后同样回传 LLM。
    */
   private async executeTool(
-    name: string,
-    args: Record<string, unknown>,
+    rawName: string,
+    rawArgs: Record<string, unknown>,
     enableTracing: boolean,
   ): Promise<unknown | TracingToolResult> {
+    // 执行守卫（authHooks）：在 agent. 分流之前——一个钩子同时覆盖常规 tool
+    // 与 sub-agent 递归。拒绝时不执行目标,守卫的 error 回传 LLM;
+    // 改写时以守卫返回的 args 继续（多租户场景强制注入可信值）
+    const name = rawName;
+    let args = rawArgs;
+    const guard = this.deps.config?.beforeToolCall?.(name, args, this.deps.ctx);
+    if (guard) {
+      if ('error' in guard) return { error: guard.error };
+      if ('args' in guard) args = guard.args;
+    }
+
     // sub-agent 递归（携带 enableTracing,使其能包装 TracingToolResult）
     if (name.startsWith('agent.')) {
-      return this.executeSubAgent(name.slice(6), args, enableTracing);
+      return await this.executeSubAgent(name.slice(6), args, enableTracing);
     }
 
     // 常规 tool
@@ -464,7 +535,9 @@ export class Agent {
     }
 
     const mod = await this.deps.loadToolModule(tool.filePath, tool.functionName);
-    return await mod.handler(callArgs);
+    const result = await mod.handler(callArgs, this.deps.ctx);
+    this.deps.config?.afterToolCall?.(name, args, result, this.deps.ctx);
+    return result;
   }
 
   /**
@@ -511,7 +584,9 @@ export class Agent {
     if (entry?.hasRun) {
       const mod = await this.deps.loadAgentModule(entry.filePath, entry.hasRun);
       if (mod.run) {
-        return await mod.run(args);
+        const result = await mod.run(args, this.deps.ctx);
+        this.deps.config?.afterToolCall?.(`agent.${subName}`, args, result, this.deps.ctx);
+        return result;
       }
     }
 
@@ -522,6 +597,7 @@ export class Agent {
 
     // enableTracing=true:包装 TracingToolResult,reactLoop 据此发出 subagent_call 事件
     // enableTracing=false:直接返回 content（unknown,与常规 tool 一致,零开销）
+    this.deps.config?.afterToolCall?.(`agent.${subName}`, args, result.content, this.deps.ctx);
     if (enableTracing && result.trace) {
       return {
         __trace: true,
