@@ -606,10 +606,12 @@ export class McpServer {
    * 删除已注册 resource
    *
    * - `resourcesListChanged: true` 时自动推送 `notifications/resources/list_changed`
+   * - `{ silent: true }` 跳过推送——批量重建场景（如 schemaServer 先清后建）在
+   *   末尾统一广播一次,避免 N 次删除产生 N 次广播风暴
    */
-  removeResource(uri: string): boolean {
+  removeResource(uri: string, options?: { silent?: boolean }): boolean {
     const deleted = this.resources.delete(uri);
-    if (deleted && this.resourcesListChanged) {
+    if (deleted && this.resourcesListChanged && !options?.silent) {
       this.notifyResourcesListChanged();
     }
     return deleted;
@@ -619,10 +621,11 @@ export class McpServer {
    * 删除已注册 resource template
    *
    * - `resourcesListChanged: true` 时自动推送 `notifications/resources/list_changed`
+   * - `{ silent: true }` 跳过推送（批量重建场景,同 removeResource）
    */
-  removeResourceTemplate(uriTemplate: string): boolean {
+  removeResourceTemplate(uriTemplate: string, options?: { silent?: boolean }): boolean {
     const deleted = this.resourceTemplates.delete(uriTemplate);
-    if (deleted && this.resourcesListChanged) {
+    if (deleted && this.resourcesListChanged && !options?.silent) {
       this.notifyResourcesListChanged();
     }
     return deleted;

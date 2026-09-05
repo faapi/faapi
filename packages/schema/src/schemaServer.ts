@@ -85,9 +85,9 @@ export function createSchemaServer(getRoutes: () => RouteManifest, rootDir: stri
 
   /** 重新注册所有静态 resource(先清空旧的,再注册新的) */
   function registerResources(schemas: RouteInfo[]): void {
-    // 清空旧 resource
+    // 清空旧 resource——silent 跳过逐次广播,由 getSchemas 末尾统一 list_changed 一次
     for (const uri of registeredUris) {
-      mcp.removeResource(uri);
+      mcp.removeResource(uri, { silent: true });
     }
     registeredUris.clear();
 

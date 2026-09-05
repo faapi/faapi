@@ -2463,6 +2463,37 @@ describe('McpServer', () => {
       await reader.cancel();
     });
 
+    it('removeResource({ silent: true }) 不推送 list_changed,默认仍推送（对照）', async () => {
+      const mcp = createMcpServer({
+        name: 'test',
+        version: '1.0.0',
+        resourcesListChanged: true,
+      });
+      const session = mcp.getSessionManager().create();
+
+      // 假 subscriber 直接注册（计数收到的广播,避免对"期待无数据"的流 await read 挂起）
+      const sent: Uint8Array[] = [];
+      const fakeSubscriber = {
+        controller: {
+          enqueue: (chunk: Uint8Array) => sent.push(chunk),
+          close: () => {},
+        } as unknown as ReadableStreamDefaultController<Uint8Array>,
+        sessionId: session.id,
+      };
+      session.subscribers.add(fakeSubscriber);
+
+      mcp.resource('file://temp', { name: 'temp', read: async () => ({ contents: [] }) });
+      mcp.removeResource('file://temp', { silent: true });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(sent).toHaveLength(0); // silent：无任何广播
+
+      // 对照：默认删除推送一次
+      mcp.resource('file://temp2', { name: 'temp2', read: async () => ({ contents: [] }) });
+      mcp.removeResource('file://temp2');
+      expect(sent).toHaveLength(1);
+      expect(new TextDecoder().decode(sent[0])).toContain('notifications/resources/list_changed');
+    });
+
     it('promptsListChanged: true 时 removePrompt 推送 notifications/prompts/list_changed', async () => {
       const mcp = createMcpServer({
         name: 'test',

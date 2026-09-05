@@ -21,7 +21,7 @@
 - `handleJsonRpc(message, session)` — 分发 JSON-RPC 消息，返回响应或 null（通知）
 - `getSessionManager()` — 获取会话管理器
 - `listTools()` / `listResources()` / `listPrompts()` / `listMethods()` — 列出已注册项名称
-- `removeTool(name)` / `removeResource(uri)` / `removeResourceTemplate(uriTemplate)` / `removePrompt(name)` / `removeCompletion(ref, argumentName)` / `removeMethod(name)` — 删除注册项
+- `removeTool(name)` / `removeResource(uri, options?: { silent?: boolean })`——silent 跳过 list_changed 广播（批量重建场景先清后建、末尾统一广播一次，避免 N+1 广播风暴）；removeResourceTemplate 同 / `removeResourceTemplate(uriTemplate)` / `removePrompt(name)` / `removeCompletion(ref, argumentName)` / `removeMethod(name)` — 删除注册项
 - `notifyToolsListChanged()` / `notifyResourcesListChanged()` / `notifyPromptsListChanged()` — 推送 list_changed 通知
 - `sendLogging(sessionId, level, data, logger?)` — 向 session 推送 `notifications/message` 日志(SSE 流)
 - `sendResourceUpdated(uri)` — 向所有订阅了该 URI 的 session 推送 `notifications/resources/updated`
