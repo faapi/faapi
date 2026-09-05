@@ -58,7 +58,7 @@ export type RuntimeType =
   | { kind: 'literal'; value: string | number | boolean } // 字面量
   | { kind: 'array'; element: RuntimeType }
   | { kind: 'tuple'; elements: TupleElement[] }
-  | { kind: 'object'; properties: PropertyType[] }
+  | { kind: 'object'; properties: PropertyType[]; catchall?: RuntimeType }
   | { kind: 'union'; members: RuntimeType[] }
   | { kind: 'date' }
   | { kind: 'record'; key: RuntimeType; value: RuntimeType }
@@ -260,14 +260,20 @@ export function resolveTypeNode(
     return { kind: 'union', members };
   }
 
-  // 交叉类型：A & B → 合并对象属性
+  // 交叉类型：A & B → 合并对象属性（全部成员均为 object 时）
   if (ts.isIntersectionTypeNode(typeNode)) {
     const properties: PropertyType[] = [];
     for (const t of typeNode.types) {
       const resolved = resolveTypeNode(t, checker, visited, bindings);
-      if (resolved.kind === 'object') {
-        properties.push(...resolved.properties);
+      if (resolved.kind !== 'object') {
+        // branded 类型（string & {...}）等混合交叉在运行时无对应校验物——
+        // 静默丢弃非 object 成员会放宽校验,按约定显式抛错（见 AGENTS.md §6.3）
+        throw new SchemaExtractionError(
+          typeNode.getText(),
+          `交叉类型包含非 object 成员（${resolved.kind}）,运行时无法校验——branded 类型建议改用具体类型或 unknown`,
+        );
       }
+      properties.push(...resolved.properties);
     }
     return { kind: 'object', properties };
   }
@@ -323,6 +329,8 @@ function resolveTypeLiteral(
   bindings: Map<string, RuntimeType> = new Map(),
 ): RuntimeType {
   const properties: PropertyType[] = [];
+  // 索引签名（[k: string]: T）与属性共存合法：属性保留，索引签名转为 catchall
+  let catchall: RuntimeType | undefined;
 
   for (const member of typeNode.members) {
     // 属性签名：name: string
@@ -338,19 +346,17 @@ function resolveTypeLiteral(
         constraints.length > 0 ? { name, type, optional, constraints } : { name, type, optional },
       );
     }
-    // 索引签名：[key: string]: T → 转为 record
+    // 索引签名：[key: string]: T → catchall（与属性共存时不丢弃属性）
     if (ts.isIndexSignatureDeclaration(member)) {
-      const keyType = member.parameters[0]?.type
-        ? resolveTypeNode(member.parameters[0].type, checker, visited, bindings)
-        : { kind: 'any' as const };
-      const valueType = member.type
+      catchall = member.type
         ? resolveTypeNode(member.type, checker, visited, bindings)
         : { kind: 'any' as const };
-      return { kind: 'record', key: keyType, value: valueType };
     }
   }
 
-  return { kind: 'object', properties };
+  return catchall !== undefined
+    ? { kind: 'object', properties, catchall }
+    : { kind: 'object', properties };
 }
 
 /**
@@ -610,7 +616,7 @@ function resolveTypeReference(
   // 使用 checker 解析引用类型（interface / type 别名）
   if (checker) {
     const symbol =
-      typeNode.typeName.kind === ts.SyntaxKind.Identifier
+      ts.isIdentifier(typeNode.typeName) || ts.isQualifiedName(typeNode.typeName)
         ? checker.getSymbolAtLocation(typeNode.typeName)
         : undefined;
 
@@ -881,6 +887,8 @@ export function resolveInterfaceDeclaration(
 ): RuntimeType {
   const properties: PropertyType[] = [];
   const propMap = new Map<string, PropertyType>();
+  // 索引签名（[k: string]: T）与属性共存合法：属性保留，索引签名转为 catchall
+  let catchall: RuntimeType | undefined;
 
   // 绑定本声明的泛型形参（声明体与 heritage 均在该作用域下解析）
   const bindings = bindTypeParameters(
@@ -921,15 +929,11 @@ export function resolveInterfaceDeclaration(
         constraints.length > 0 ? { name, type, optional, constraints } : { name, type, optional },
       );
     }
-    // 索引签名 → record
+    // 索引签名 → catchall（与属性/继承属性共存时不丢弃）
     if (ts.isIndexSignatureDeclaration(member)) {
-      const keyType = member.parameters[0]?.type
-        ? resolveTypeNode(member.parameters[0].type, checker, visited, bindings)
-        : { kind: 'any' as const };
-      const valueType = member.type
+      catchall = member.type
         ? resolveTypeNode(member.type, checker, visited, bindings)
         : { kind: 'any' as const };
-      return { kind: 'record', key: keyType, value: valueType };
     }
   }
 
@@ -937,7 +941,9 @@ export function resolveInterfaceDeclaration(
     properties.push(prop);
   }
 
-  return { kind: 'object', properties };
+  return catchall !== undefined
+    ? { kind: 'object', properties, catchall }
+    : { kind: 'object', properties };
 }
 
 /**

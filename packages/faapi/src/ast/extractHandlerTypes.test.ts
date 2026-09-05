@@ -1099,4 +1099,67 @@ export type GETQuery = Pick<User, number>;`,
       expect(tags!.optional).toBe(true);
     });
   });
+
+  describe('AST 边界组', () => {
+    it('QualifiedName（NS.Type）引用可解析', () => {
+      writeFileSync(
+        tempFile,
+        `namespace Api {
+  export interface User { id: number; name: string }
+}
+
+export interface GETQuery {
+  user: Api.User;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      const user = info!.properties.find((p) => p.name === 'user');
+      expect(user?.type).toEqual({
+        kind: 'object',
+        properties: [
+          { name: 'id', type: { kind: 'number' }, optional: false },
+          { name: 'name', type: { kind: 'string' }, optional: false },
+        ],
+      });
+    });
+
+    it('索引签名与属性共存：属性保留，索引签名转为 catchall', () => {
+      writeFileSync(
+        tempFile,
+        `export interface GETQuery {
+  a: string;
+  [k: string]: unknown;
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractTypeInfo(program, tempFile, 'GETQuery');
+
+      expect(info).not.toBeNull();
+      expect(info!.runtimeType.kind).toBe('object');
+      const rt = info!.runtimeType as {
+        kind: 'object';
+        properties: Array<{ name: string; type: unknown; optional: boolean }>;
+        catchall?: unknown;
+      };
+      expect(rt.properties).toEqual([{ name: 'a', type: { kind: 'string' }, optional: false }]);
+      expect(rt.catchall).toEqual({ kind: 'any' }); // unknown → any（不校验）
+    });
+
+    it('交叉类型含非 object 成员：显式抛 SchemaExtractionError（不静默放宽校验）', () => {
+      writeFileSync(
+        tempFile,
+        `export interface GETQuery {
+  branded: string & { __brand: 'UserId' };
+}
+`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractTypeInfo(program, tempFile, 'GETQuery')).toThrow(SchemaExtractionError);
+    });
+  });
 });
