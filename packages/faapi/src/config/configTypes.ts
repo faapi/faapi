@@ -42,6 +42,8 @@ export interface LifecycleContext {
   routes: import('../router/routeTypes.js').RouteManifest;
   /** 服务器实例 */
   server: import('node:http').Server;
+  /** app 级注册表——skill 等运行时动态注册路径（`registries.skill.upsert(...)`） */
+  registries: import('../injection/registries.js').AppRegistries;
 }
 
 /**

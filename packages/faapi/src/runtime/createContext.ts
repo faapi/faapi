@@ -48,8 +48,9 @@ export function createContext(
   params: Record<string, string>,
   config: Record<string, unknown> = {},
   ip: string = '',
+  registries?: FaapiContext['registries'],
 ): FaapiContext {
-  return createContextFromUrl(request, new URL(request.url), params, config, ip);
+  return createContextFromUrl(request, new URL(request.url), params, config, ip, registries);
 }
 
 /**
@@ -65,6 +66,7 @@ export function createContextFromUrl(
   params: Record<string, string>,
   config: Record<string, unknown> = {},
   ip: string = '',
+  registries?: FaapiContext['registries'],
 ): FaapiContext {
   const meta: ResponseMeta = { headers: {}, setCookies: [] };
   const parsedCookies = parseCookies(request.headers.get('cookie') ?? '');
@@ -181,6 +183,11 @@ export function createContextFromUrl(
     },
   } as FaapiContext & { meta: ResponseMeta; __sseResponse?: Response; __sseWriter?: SseWriter };
 
+  // app 级注册表（方案 A 实例化）——框架请求链路的 tool/agent/agentHandle 读取来源
+  if (registries) {
+    ctx.registries = registries;
+  }
+
   // 执行用户自定义的 ctx 扩展钩子（config.extendContext）
   const extend = config?.extendContext;
   if (typeof extend === 'function') {
@@ -207,7 +214,16 @@ export function createContextFromUrl(
  * @returns FaapiContext
  */
 export function createTestContext(options: CreateTestContextOptions): FaapiContext {
-  const { method = 'GET', path, query, headers, params = {}, config = {}, ip = '' } = options;
+  const {
+    method = 'GET',
+    path,
+    query,
+    headers,
+    params = {},
+    config = {},
+    ip = '',
+    registries,
+  } = options;
 
   // 用 URL 解析 + 拼 query，避免手动拼接字符串的转义问题
   const url = new URL(`http://localhost${path}`);
@@ -228,13 +244,15 @@ export function createTestContext(options: CreateTestContextOptions): FaapiConte
     headers: headers as HeadersInit | undefined,
   });
 
-  return createContext(request, params, config, ip);
+  return createContext(request, params, config, ip, registries);
 }
 
 /**
  * createTestContext 的选项
  */
 export interface CreateTestContextOptions {
+  /** app 级注册表（测试 handler 声明 agent/agents 参数时注入用，可选） */
+  registries?: FaapiContext['registries'];
   /** 请求方法，默认 'GET' */
   method?: string;
   /** 请求路径，必填，如 '/api/user'（无需写 host） */

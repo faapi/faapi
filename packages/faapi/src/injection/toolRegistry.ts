@@ -1,64 +1,55 @@
 import type { ToolMetadata } from '../ast/extractToolMetadata';
+import { defaultRegistries } from './registries';
 
 /**
- * tool 注册表（单例）
+ * tool 注册表全局访问器（默认实例便捷入口）
  *
- * 由 [createAppBase](../cli/createAppCore.md) 水合 `faapi-tools.js` 后填充，
- * 供 agent 注入器和 reactLoop 按名查找 tool。
+ * 框架自身链路（`createAppBase` 水合 / 请求注入 / `@faapi/agent` 插件）已改为
+ * 读写 **app 实例级注册表**（见 [registries.md](./registries.md)）——每个 app
+ * 持有独立实例，随 app 创建/销毁，多 app 同进程互不串台。
  *
- * 单例设计：agent 运行时（`@faapi/agent` 子包）和 faapi 核心的 agent 注入器
- * 都能直接 import 此模块访问，无需传递引用。与路由的 `routesRef`（可变引用容器）
- * 对称，但 tool 无 URL 匹配维度，仅按名查找。
+ * 本模块的同名函数保留为**默认实例**的便捷访问器，供编程式直调 / 单元测试 /
+ * 无 app 上下文的场景使用；多 app 场景下默认实例无隔离语义（等同旧全局行为），
+ * 框架路径不再读写它。
  *
  * 详见 [toolRegistry.md](./toolRegistry.md)。
  */
 
-/** 内部存储：tool 名 → ToolMetadata */
-let registry: Map<string, ToolMetadata> = new Map();
-
 /**
- * 水合 tool 注册表（全量替换）
+ * 水合默认实例的 tool 注册表（全量替换）
  *
- * 由 `createAppBase` 启动时调用（读 `faapi-tools.js` → `hydrateTools` → 此函数），
- * `createDevApp.reloadTools` 热替换时重新调用。
- *
- * 全量替换而非增量注册：tool 清单来自编译期产物，reload 时整体重新生成，
- * 增量追踪反而复杂。
+ * 框架路径请使用 app 实例：`ctx.registries.tool.hydrate(tools)`。
  *
  * @param tools 从 `faapi-tools.js` 水合还原的 `ToolMetadata[]`
  */
 export function hydrateToolRegistry(tools: ToolMetadata[]): void {
-  const next = new Map<string, ToolMetadata>();
-  for (const tool of tools) {
-    next.set(tool.name, tool);
-  }
-  registry = next;
+  defaultRegistries.tool.hydrate(tools);
 }
 
 /**
- * 清空注册表（app close 时调用）
+ * 清空默认实例的 tool 注册表
  *
- * 与 `setCurrentApp(null)` 对称，避免测试间状态泄漏。
+ * app close 清理的是 app 自己的实例，不经过此函数。
  */
 export function clearToolRegistry(): void {
-  registry = new Map();
+  defaultRegistries.tool.clear();
 }
 
 /**
- * 按全名查找单个 tool
+ * 按全名查找单个 tool（默认实例）
+ *
+ * 框架路径（`@faapi/agent` 插件 / 请求注入）从 app 实例查找。
  *
  * @param tool 全名（如 `weather.getWeather`）
  * @returns `ToolMetadata` 或 `undefined`（未注册）
  */
 export function getTool(name: string): ToolMetadata | undefined {
-  return registry.get(name);
+  return defaultRegistries.tool.get(name);
 }
 
 /**
- * 返回所有已注册 tool
- *
- * 返回副本，调用方修改不影响内部状态。
+ * 返回默认实例所有已注册 tool（副本）
  */
 export function listTools(): ToolMetadata[] {
-  return Array.from(registry.values());
+  return defaultRegistries.tool.list();
 }

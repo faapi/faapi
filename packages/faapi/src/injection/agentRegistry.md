@@ -1,6 +1,6 @@
 # agentRegistry
 
-一句话概括：agent 注册表单例，由 `createAppBase` 水合 `faapi-agents.js` 后填充，供 agent 注入器和 `@faapi/agent` 子包按名查找 agent 元数据、解析 agent 可用 tool 集合、把 agent 包装为 tool 供其他 agent 调用。
+一句话概括：agent 注册表——app 实例级实现见 [registries.md](./registries.md)；本模块保留全局函数作为默认实例的便捷访问器（框架链路已改走 app 实例）。原描述：：agent 注册表单例，由 `createAppBase` 水合 `faapi-agents.js` 后填充，供 agent 注入器和 `@faapi/agent` 子包按名查找 agent 元数据、解析 agent 可用 tool 集合、把 agent 包装为 tool 供其他 agent 调用。
 
 ## 为什么需要
 

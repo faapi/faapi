@@ -42,12 +42,6 @@
  */
 
 import {
-  registerAgentHandleFactory,
-  getAgent,
-  getAgentEntry,
-  getTool,
-  resolveAgentTools,
-  resolveSubAgents,
   loadAgentModule,
   loadToolModule,
   loadToolSchema,
@@ -115,6 +109,8 @@ function readAgentConfig(ctx: PluginContext): AgentConfig | undefined {
 const agentPlugin: FaapiPlugin = {
   name: '@faapi/agent',
   setup(ctx: PluginContext): void {
+    // app 级注册表实例（每个 app 独立，随 app 生命周期）
+    const registries = ctx.registries;
     const agentConfig = readAgentConfig(ctx);
     // 必要配置检查——llms 缺失时跳过工厂注册,agent 参数注入 undefined
     if (!agentConfig?.llms) {
@@ -191,7 +187,9 @@ const agentPlugin: FaapiPlugin = {
 
     // 注册 agent handle 工厂——每次请求时构造 Agent 实例
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生
-    registerAgentHandleFactory((ctx) => {
+    // 方案 A：注册到 **app 实例**的 agentHandle store（ctx.registries），
+    // 多 app 同进程互不覆盖；deps 读同套实例注册表（createAppBase 已水合）
+    ctx.registries.agentHandle.register((ctx) => {
       return new Agent({
         providers,
         defaultProvider,
@@ -203,14 +201,13 @@ const agentPlugin: FaapiPlugin = {
         // ctx 传递链（authHooks）：捕获请求上下文,tool handler / sub-agent /
         // 鉴权钩子均可读取中间件塞入的身份信息（ctx.user / ctx.workspace 等）
         ctx,
-        // 注册表/加载器访问器——从 @faapi/faapi import 的单例模块
-        // createAppBase 启动时已水合 agentRegistry / toolRegistry
+        // 注册表访问器——app 实例（PluginContext.registries），非全局单例
         // getAgent 返回 AgentCore(LLM-facing);getAgentEntry 返回 AgentMetadata(含 filePath/hasRun,供加载 handler.js)
-        getAgent,
-        getAgentEntry,
-        getTool,
-        resolveAgentTools,
-        resolveSubAgents,
+        getAgent: registries.agent.getAgent,
+        getAgentEntry: registries.agent.getAgentEntry,
+        getTool: registries.tool.get,
+        resolveAgentTools: registries.agent.resolveAgentTools,
+        resolveSubAgents: registries.agent.resolveSubAgents,
         // 加载器包装：注入 rootDir 用于 dev 按需编译模式
         loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, rootDir),
         loadAgentModule: (filePath, hasRun) => loadAgentModule(filePath, hasRun, rootDir),

@@ -114,25 +114,25 @@ describe('createAppBase', () => {
 
     expect(existsSync(join(tempDir, 'dist', 'faapi-tools.js'))).toBe(true);
 
-    const { app } = await createAppBase(options());
+    const { app, ctx } = await createAppBase(options());
 
-    // toolRegistry 已水合
-    expect(listTools()).toHaveLength(2);
-    const weather = getTool('weather.getWeather');
+    // app 实例的 tool 注册表已水合（方案 A：框架路径读写 app 实例，非全局单例）
+    expect(ctx.registries.tool.list()).toHaveLength(2);
+    const weather = ctx.registries.tool.get('weather.getWeather');
     expect(weather).toBeDefined();
     expect(weather!.description).toBe('获取天气');
     expect(weather!.filePath).toBe('dist/tools/weather/handler.js');
-    const search = getTool('web-search.search');
+    const search = ctx.registries.tool.get('web-search.search');
     expect(search).toBeDefined();
 
     await app.close();
 
-    // close 后 toolRegistry 清空
-    expect(listTools()).toHaveLength(0);
-    expect(getTool('weather.getWeather')).toBeUndefined();
+    // close 后 app 自己的注册表实例清空
+    expect(ctx.registries.tool.list()).toHaveLength(0);
+    expect(ctx.registries.tool.get('weather.getWeather')).toBeUndefined();
   });
 
-  it('close() 所有权守卫：非当前单例的 app close 不清空运行中 app 的注册表', async () => {
+  it('多 app 隔离：各自持有独立注册表实例，close 互不影响', async () => {
     writeHandler();
     const sharedToolPath = join(tempDir, 'src/tools/weather/handler.ts');
     mkdirSync(join(sharedToolPath, '..'), { recursive: true });
@@ -145,21 +145,22 @@ describe('createAppBase', () => {
     const tools = await scanTools(tempDir, TOOL_PATTERNS);
     await generateToolArtifacts(tools, tempDir, 'dist');
 
-    // app1 创建后水合注册表；app2 创建后成为当前单例（hydrate 整体替换语义）
+    // 同进程两个 app：各自持有独立的注册表实例（方案 A 实例化）
     const { app: app1 } = await createAppBase(options());
-    expect(listTools()).toHaveLength(1);
     const { app: app2 } = await createAppBase(options());
-    expect(listTools()).toHaveLength(1);
+    expect(app1.registries.tool.list()).toHaveLength(1);
+    expect(app2.registries.tool.list()).toHaveLength(1);
+    // 实例互不相同
+    expect(app1.registries.tool).not.toBe(app2.registries.tool);
 
-    // app1（非单例）close：注册表必须保留——app2 还在运行
+    // app1 close：只清自己的实例，app2 的注册表不受影响
     await app1.close();
-    expect(listTools()).toHaveLength(1);
-    expect(getTool('weather.getWeather')).toBeDefined();
+    expect(app1.registries.tool.list()).toHaveLength(0);
+    expect(app2.registries.tool.list()).toHaveLength(1);
+    expect(app2.registries.tool.get('weather.getWeather')).toBeDefined();
 
-    // app2（当前单例）close：清理注册表
     await app2.close();
-    expect(listTools()).toHaveLength(0);
-    expect(getTool('weather.getWeather')).toBeUndefined();
+    expect(app2.registries.tool.list()).toHaveLength(0);
   });
 
   it('tool 清单缺失：无 faapi-tools.js 时跳过水合，不报错', async () => {

@@ -13,7 +13,7 @@ import { generateSchemaFiles } from './generateSchemaFiles';
 import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
 import { invalidateSchemaCache } from '../validator/validateInput';
-import { getTool, listTools, clearToolRegistry } from '../injection/toolRegistry';
+import { listTools, clearToolRegistry } from '../injection/toolRegistry';
 
 /**
  * createDevApp 测试：dev 模式启动 API（含 reloadRoutes 热替换）
@@ -178,16 +178,16 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
     expect(toolsContent).toContain('weather.getWeather');
     expect(toolsContent).toContain('获取天气');
 
-    // toolRegistry 已重新水合（reloadTools 调 loadAndHydrateTools）
-    expect(listTools()).toHaveLength(1);
-    const tool = getTool('weather.getWeather');
+    // app 实例的 tool 注册表已重新水合（reloadTools 调 loadAndHydrateTools）
+    expect(app.registries.tool.list()).toHaveLength(1);
+    const tool = app.registries.tool.get('weather.getWeather');
     expect(tool).toBeDefined();
     expect(tool!.description).toBe('获取天气');
 
     await app.close();
 
-    // close 后 toolRegistry 清空
-    expect(listTools()).toHaveLength(0);
+    // close 后 app 自己的注册表实例清空
+    expect(app.registries.tool.list()).toHaveLength(0);
   });
 
   it('reloadTools 无 tool 文件时生成空清单', async () => {

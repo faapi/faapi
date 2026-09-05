@@ -63,7 +63,15 @@ export interface FailOptions {
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- 保留 interface 以支持 declare module 声明合并增强 ctx.config 类型
 export interface FaapiContextConfig extends Record<string, unknown> {}
 
+import type { AppRegistries } from '../injection/registries';
+
 export interface FaapiContext {
+  /**
+   * app 级注册表（tool/agent/skill/agentHandle，方案 A 实例化）。
+   * 经 createContext 进入请求链路时由框架注入；编程式构造的 ctx 可不传
+   * （injectParams 等消费方回退到默认全局实例）
+   */
+  registries?: AppRegistries;
   request: Request;
   params: Record<string, string>;
   query: URLSearchParams;

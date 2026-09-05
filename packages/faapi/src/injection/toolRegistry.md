@@ -1,6 +1,6 @@
 # toolRegistry
 
-一句话概括：tool 注册表单例，由 `createAppBase` 水合 `faapi-tools.js` 后填充，供 agent 注入器和 reactLoop 按名查找 tool。
+一句话概括：tool 注册表——app 实例级实现见 [registries.md](./registries.md)；本模块保留全局函数作为默认实例的便捷访问器（框架链路已改走 app 实例）。原描述：：tool 注册表单例，由 `createAppBase` 水合 `faapi-tools.js` 后填充，供 agent 注入器和 reactLoop 按名查找 tool。
 
 ## 为什么需要
 

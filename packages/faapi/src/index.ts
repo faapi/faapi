@@ -43,7 +43,17 @@ export { collectRouteSchemaSources, type RouteSchemaSource } from './cli/collect
 // 运行时访问器——@faapi/agent 插件 setup 时导入,构造 AgentDeps 注入到 Agent 类
 export type { AgentCore, AgentMetadata, AgentPathMeta } from './ast/extractAgentMetadata';
 export type { ToolCore, ToolMetadata, ToolPathMeta } from './ast/extractToolMetadata';
-export type { AgentToolDescriptor } from './injection/agentRegistry';
+export type { AgentToolDescriptor } from './injection/registries';
+// app 级注册表（方案 A：实例化——每个 app 持有独立实例，全局函数为默认实例便捷访问器）
+export type {
+  AppRegistries,
+  ToolRegistry,
+  AgentRegistry,
+  SkillRegistry,
+  AgentHandleStore,
+  AgentHandleFactory,
+} from './injection/registries';
+export { createAppRegistries } from './injection/registries';
 export type { AgentModule } from './loader/loadAgentModule';
 export type { ToolModule } from './loader/loadToolModule';
 export type { ToolSchemaModule } from './loader/loadToolSchema';
@@ -74,11 +84,7 @@ export { loadToolSchema, getToolSchemaPath } from './loader/loadToolSchema';
 
 // agent handle 工厂注册（Phase 3.5）——@faapi/agent 插件 setup 时注册,
 // injectParams 在 agent 参数注入时调工厂获取 AgentHandle
-export {
-  registerAgentHandleFactory,
-  clearAgentHandleFactory,
-  type AgentHandleFactory,
-} from './injection/agentHandle';
+export { registerAgentHandleFactory, clearAgentHandleFactory } from './injection/agentHandle';
 
 export { cors } from './middleware/cors';
 export { logger } from './middleware/logger';

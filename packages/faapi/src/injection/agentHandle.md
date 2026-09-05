@@ -1,6 +1,6 @@
 # agentHandle
 
-一句话概括：agent handle 工厂注册表——让 `@faapi/agent` 插件在启动时注册「请求级 agent handle 工厂」，`injectParams` 在 `agent` 参数注入时调工厂拿到 `AgentHandle` 实例。
+一句话概括：agent handle 工厂注册点——app 实例级实现见 [registries.md](./registries.md)；`@faapi/agent` 插件经 `PluginContext.registries.agentHandle` 注册（多 app 互不覆盖）。本模块保留全局函数作为默认实例的便捷访问器。原描述：：agent handle 工厂注册表——让 `@faapi/agent` 插件在启动时注册「请求级 agent handle 工厂」，`injectParams` 在 `agent` 参数注入时调工厂拿到 `AgentHandle` 实例。
 
 ## 为什么需要
 

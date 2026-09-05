@@ -3,10 +3,12 @@ import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { loadPlugins } from './loadPlugins';
+import { createAppRegistries } from '../injection/registries';
 import type { PluginContext } from '../config/pluginTypes';
 
 const mockCtx: PluginContext = {
   rootDir: '/tmp/test',
+  registries: createAppRegistries(),
   routes: [],
   getRoutes: () => [],
   server: {} as any,

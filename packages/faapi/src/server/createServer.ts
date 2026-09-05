@@ -29,6 +29,7 @@ import { cors, type CorsOptions } from '../middleware/cors';
 import { helmet, type HelmetOptions } from '../middleware/helmet';
 import { compression, type CompressionOptions } from '../middleware/compression';
 import { etag, type EtagOptions } from '../middleware/etag';
+import type { AppRegistries } from '../injection/registries';
 import { logger as loggerMiddleware, type LoggerOptions } from '../middleware/logger';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
@@ -208,6 +209,8 @@ export interface CreateServerOptions {
   compression?: CompressionOptions | boolean;
   /** ETag/304 条件请求协商，默认关闭，详见 middleware/etag.md */
   etag?: EtagOptions | boolean;
+  /** app 级注册表（tool/agent/skill/agentHandle）——经 FaapiContext 进入请求链路 */
+  registries?: AppRegistries;
   /** 请求日志配置,默认启用（与 cors 一致） */
   logger?: LoggerOptions | boolean;
   /** 请求体大小限制（字节） */
@@ -251,6 +254,7 @@ export function createServer(options: CreateServerOptions): {
     helmet: helmetOption,
     compression: compressionOption,
     etag: etagOption,
+    registries,
     logger: loggerOption,
     bodyLimit = DEFAULT_BODY_LIMIT,
     http2: http2Option,
@@ -335,6 +339,7 @@ export function createServer(options: CreateServerOptions): {
       globalInjectors,
       bodyLimit,
       trustedProxy,
+      registries,
     ).catch(() => {
       res.statusCode = 500;
       res.end();
@@ -344,7 +349,15 @@ export function createServer(options: CreateServerOptions): {
   // 挂载 WebSocket 升级处理（无条件挂载：upgrade 处理器内部对无匹配路由返回 404，
   // 空清单成本一次函数调用。若按初始清单条件挂载，dev watch 中新增第一个 WS 路由后
   // upgrade 监听器不会补挂，WS 路由永远 404）
-  attachWebSocket({ server, routesRef, rootDir, config, globalMiddlewares, trustedProxy });
+  attachWebSocket({
+    server,
+    routesRef,
+    rootDir,
+    config,
+    globalMiddlewares,
+    trustedProxy,
+    registries,
+  });
 
   return { server, routesRef };
 }
@@ -363,6 +376,7 @@ function prepareRequest(
   config: Record<string, unknown> | undefined,
   bodyLimit: number,
   trustedProxy: boolean,
+  registries?: AppRegistries,
 ): {
   request: Request;
   url: URL;
@@ -374,7 +388,14 @@ function prepareRequest(
   const { request, url } = toWebRequest(req, bodyLimit);
   const method = request.method.toUpperCase();
   const urlPath = url.pathname;
-  const ctx = createContextFromUrl(request, url, {}, config, getClientIp(req, trustedProxy));
+  const ctx = createContextFromUrl(
+    request,
+    url,
+    {},
+    config,
+    getClientIp(req, trustedProxy),
+    registries,
+  );
   const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
   return { request, url, ctx, meta, method, urlPath };
 }
@@ -537,13 +558,14 @@ async function handleRequest(
   globalInjectors: InjectorMap | undefined,
   bodyLimit: number,
   trustedProxy: boolean,
+  registries?: AppRegistries,
 ): Promise<void> {
   // meta/ctx 兜底：请求准备阶段抛错（如 content-length 超限的 413）时尚无 ctx
   let meta: ResponseMeta = { headers: {}, setCookies: [] };
   let ctx: FaapiContext | undefined;
   try {
     // 1. 准备请求上下文（toWebRequest + createContext）——URL 全请求只解析一次
-    const prepared = prepareRequest(req, config, bodyLimit, trustedProxy);
+    const prepared = prepareRequest(req, config, bodyLimit, trustedProxy, registries);
     ctx = prepared.ctx;
     meta = prepared.meta;
     const { request, url, method, urlPath } = prepared;

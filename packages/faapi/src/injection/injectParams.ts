@@ -49,11 +49,12 @@ function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?:
       }
       return {};
     // Phase 2.3：注入所有已注册 agent 元数据列表
+    // 方案 A：优先读 app 实例注册表，无实例（编程式直调 ctx）回退默认全局实例
     case 'agents':
-      return listAgents();
+      return ctx.registries ? ctx.registries.agent.listAgents() : listAgents();
     // Phase 3.5：调 @faapi/agent 插件注册的工厂获取 AgentHandle
     case 'agent':
-      return getAgentHandle(ctx);
+      return ctx.registries ? ctx.registries.agentHandle.get(ctx) : getAgentHandle(ctx);
     default:
       return undefined;
   }

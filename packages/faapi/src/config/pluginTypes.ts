@@ -18,6 +18,8 @@ export type UpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer
 export interface PluginContext {
   /** 项目根目录 */
   rootDir: string;
+  /** app 级注册表（tool/agent/skill/agentHandle 实例，随 app 生命周期） */
+  registries: import('../injection/registries.js').AppRegistries;
   /** 当前路由清单（setup 时的快照，reloadRoutes 后不会更新；需最新路由用 getRoutes()） */
   routes: RouteManifest;
   /** 获取最新路由清单（reloadRoutes 后返回更新后的数组） */

@@ -22,13 +22,7 @@ import { fileURLToPath } from 'node:url';
 // @faapi/faapi 公开 API
 import {
   createProdApp,
-  registerAgentHandleFactory,
   clearAgentHandleFactory,
-  getAgent,
-  getAgentEntry,
-  getTool,
-  resolveAgentTools,
-  resolveSubAgents,
   loadAgentModule,
   loadToolModule,
   loadToolSchema,
@@ -174,7 +168,7 @@ describe('multi-agent demo e2e', () => {
    *
    * providers Map + llms 配置与 fixture 的 faapi.config.ts 对称（openai 单 provider + 'gpt-4o' model）。
    */
-  function makeAgentDeps(provider: LLMProvider): AgentDeps {
+  function makeAgentDeps(provider: LLMProvider, app: import('@faapi/faapi').AppBase): AgentDeps {
     const toAbs = (filePath: string): string =>
       path.isAbsolute(filePath) ? filePath : path.resolve(tempDir, filePath);
     const llms: Record<string, LlmConfig> = {
@@ -192,11 +186,11 @@ describe('multi-agent demo e2e', () => {
         maxTurns: 10,
         maxAgentDepth: 3,
       },
-      getAgent,
-      getAgentEntry,
-      getTool,
-      resolveAgentTools,
-      resolveSubAgents,
+      getAgent: app.registries.agent.getAgent,
+      getAgentEntry: app.registries.agent.getAgentEntry,
+      getTool: app.registries.tool.get,
+      resolveAgentTools: app.registries.agent.resolveAgentTools,
+      resolveSubAgents: app.registries.agent.resolveSubAgents,
       loadToolModule: (filePath, functionName) =>
         loadToolModule(toAbs(filePath), functionName, tempDir),
       loadAgentModule: (filePath, hasRun) => loadAgentModule(toAbs(filePath), hasRun, tempDir),
@@ -237,42 +231,42 @@ describe('multi-agent demo e2e', () => {
 
       const app = await createProdApp({ rootDir: tempDir });
 
-      // 验证 agentRegistry 水合（researcher + writer）
-      // getAgent 返回 AgentCore（LLM-facing 字段,不含 filePath/hasRun）
-      const researcher = getAgent('researcher');
+      // 验证 app 实例的 agent 注册表水合（researcher + writer）——方案 A 实例化：
+      // 框架路径读写 app.registries，不再填充全局单例
+      const { agent: agentRegistry, tool: toolRegistry } = app.registries;
+      const researcher = agentRegistry.getAgent('researcher');
       expect(researcher).toBeDefined();
       expect(researcher!.name).toBe('researcher');
       expect(researcher!.systemPrompt).toContain('研究助手');
       expect(researcher!.agents).toEqual(['writer']);
       expect(researcher!.tools).toEqual(['weather.getWeather', 'calculator.calc']);
 
-      // getAgent 返回 AgentCore;hasRun 在 AgentMetadata 上,用 getAgentEntry 查询
-      const writer = getAgent('writer');
+      const writer = agentRegistry.getAgent('writer');
       expect(writer).toBeDefined();
       expect(writer!.name).toBe('writer');
 
-      const writerEntry = getAgentEntry('writer');
+      const writerEntry = agentRegistry.getAgentEntry('writer');
       expect(writerEntry).toBeDefined();
       expect(writerEntry!.hasRun).toBe(true);
 
-      // 验证 toolRegistry 水合（weather + calculator）
-      const weather = getTool('weather.getWeather');
+      // 验证 tool 注册表水合（weather + calculator）
+      const weather = toolRegistry.get('weather.getWeather');
       expect(weather).toBeDefined();
       expect(weather!.functionName).toBe('getWeather');
       expect(weather!.inputTypeName).toBe('WeatherInput');
 
-      const calculator = getTool('calculator.calc');
+      const calculator = toolRegistry.get('calculator.calc');
       expect(calculator).toBeDefined();
       expect(calculator!.functionName).toBe('calc');
 
       // 验证 resolveAgentTools（researcher 的可用 tool）
-      const researcherTools = resolveAgentTools('researcher');
+      const researcherTools = agentRegistry.resolveAgentTools('researcher');
       const toolNames = researcherTools.map((t) => t.name);
       expect(toolNames).toContain('weather.getWeather');
       expect(toolNames).toContain('calculator.calc');
 
       // 验证 resolveSubAgents（researcher 可调用 writer）
-      const subAgents = resolveSubAgents('researcher');
+      const subAgents = agentRegistry.resolveSubAgents('researcher');
       expect(subAgents.map((a) => a.name)).toEqual(['writer']);
 
       await app.close();
@@ -299,7 +293,7 @@ describe('multi-agent demo e2e', () => {
       ]);
 
       // 构造 Agent 实例（用真实 registries deps + mock provider）
-      const deps = makeAgentDeps(provider);
+      const deps = makeAgentDeps(provider, app);
       const agent = new Agent(deps);
 
       const result = await agent.run('查询北京天气并撰写关于 AI 的报告');
@@ -349,9 +343,10 @@ describe('multi-agent demo e2e', () => {
         llmResponse({ content: 'inject 模式完成', stopReason: 'stop' }),
       ]);
 
-      // 手动注册 agentHandleFactory（模拟 @faapi/agent 插件的 setup 行为）
-      const deps = makeAgentDeps(provider);
-      registerAgentHandleFactory(() => new Agent(deps));
+      // 手动注册 agentHandleFactory 到 app 实例（模拟 @faapi/agent 插件的 setup 行为——
+      // 方案 A：插件经 ctx.registries.agentHandle 注册，app 请求链路读同一实例）
+      const deps = makeAgentDeps(provider, app);
+      app.registries.agentHandle.register(() => new Agent(deps));
 
       // 通过 app.inject() 调用 /api/chat
       const res = await app.inject({
@@ -387,7 +382,7 @@ describe('multi-agent demo e2e', () => {
         llmResponse({ content: '校验失败已处理', stopReason: 'stop' }),
       ]);
 
-      const deps = makeAgentDeps(provider);
+      const deps = makeAgentDeps(provider, app);
       const agent = new Agent(deps);
       const result = await agent.run('查询天气');
 

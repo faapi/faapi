@@ -326,9 +326,11 @@ import type { FaapiConfig } from '@faapi/faapi';
 export default {
   // 生命周期钩子
   lifecycle: {
-    async onReady({ rootDir, routes, server }) {
+    async onReady({ rootDir, routes, server, registries }) {
       // 初始化数据库连接、Redis 等
       console.log(`Server ready with ${routes.length} routes`);
+      // DB-driven skill 经 app 实例注册表灌入（与 app 生命周期绑定）
+      // await loadSkillsFromDB().then((skills) => registries.skill.hydrate(skills));
     },
     async onClose({ rootDir, server }) {
       // 清理资源、优雅关闭
@@ -568,6 +570,8 @@ agent 与 skill 物理隔离，职责正交不耦合：
 - **职责正交不耦合**——**agent 负责核心流程**（含 `run` 函数的多步 prompt 串联、文件型入口、sub-agent 递归）；**skill 用于拓展**（运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用）。两者不构成覆盖关系
 - **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 清单来自编译期产物，reload 时整体重新生成，**dev 模式 watcher 每次改文件都触发 reload**，业务方 DB skill 若混在同一 registry 会被清空，需要业务方手动重新塞，不可接受
 - **DB skill 是运行时增量**——业务方监听 DB change stream 单条增删改，与"整体替换"语义天然冲突
+
+**注册表实例化（多 app 隔离）**：三张注册表 + agent handle 工厂为 **app 实例级状态**——`createAppBase` 为每个 app 创建独立实例（`AppRegistries`），水合、请求链路（`FaapiContext.registries`）、插件（`PluginContext.registries`）、lifecycle 钩子（`LifecycleContext.registries`）均读写 app 自己的实例，`app.close()` 随实例销毁。多 app 同进程互不串台。四个模块保留的全局函数（`getTool` / `listAgents` / `hydrateSkillRegistry` 等）是**默认实例**的便捷访问器（编程式直调 / 测试用），与 app 实例相互独立——经全局函数水合的数据不会进入任何 app 的请求链路。
 
 **agentRegistry 的查询函数不 fallback 到 skillRegistry**——`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 只查文件 registry。skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归（skill 不再被 agent 的 `agents` 列表自动引用）。skillRegistry 仅供业务方 plugin 内部使用，需要让 handler 看到 skill 时业务方自行通过注入器或中间件机制注入。
 

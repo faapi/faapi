@@ -32,78 +32,65 @@ import type { AgentCore } from '../ast/extractAgentMetadata';
  * 详见 [skillRegistry.md](./skillRegistry.md)。
  */
 
-/** 内部存储:skill 名 → AgentCore */
-let registry: Map<string, AgentCore> = new Map();
+import { defaultRegistries } from './registries';
 
 /**
- * 水合 skill 注册表(全量替换)
+ * skill 注册表全局访问器（默认实例便捷入口）
  *
- * 业务方 plugin `lifecycle.onReady` 启动期调用:全量查 DB → 转 `AgentCore[]`
- * → 调本函数灌入。与 `hydrateAgentRegistry` 同构,全量替换而非增量。
+ * 框架推荐路径已改为 **app 实例级注册表**：业务方 plugin 在
+ * `lifecycle.onReady(ctx)` 中通过 `ctx.registries.skill` 灌入 DB skill——
+ * 这样 skill 与该 app 的生命周期绑定，多 app 同进程互不串台，且 app close
+ * 时随实例销毁。
  *
- * 运行时增量更新场景(DB change stream)用 [upsertSkill](#upsertSkill) /
- * [removeSkill](#removeSkill),不走本函数。
+ * 本模块的同名函数保留为**默认实例**的便捷访问器（向后兼容），但注意：
+ * 默认实例与 app 实例相互独立——经全局函数灌入的 skill 不会出现在
+ * 该 app 的请求链路中。
  *
- * @param skills 从 DB / 外部源加载并转好的 `AgentCore[]`
+ * 详见 [skillRegistry.md](./skillRegistry.md) 与 [registries.md](./registries.md)。
+ */
+
+/**
+ * 水合默认实例的 skill 注册表（全量替换）
+ *
+ * 框架推荐路径：`lifecycle.onReady(ctx)` 中 `ctx.registries.skill.hydrate(skills)`。
  */
 export function hydrateSkillRegistry(skills: AgentCore[]): void {
-  const next = new Map<string, AgentCore>();
-  for (const skill of skills) {
-    next.set(skill.name, skill);
-  }
-  registry = next;
+  defaultRegistries.skill.hydrate(skills);
 }
 
 /**
- * 清空 skill 注册表(app close 时调用)
- *
- * 与 `clearAgentRegistry` 对称,避免测试间状态泄漏。
+ * 清空默认实例的 skill 注册表
  */
 export function clearSkillRegistry(): void {
-  registry = new Map();
+  defaultRegistries.skill.clear();
 }
 
 /**
- * 单条增改 skill(运行时增量)
+ * 单条增改默认实例的 skill（运行时增量）
  *
- * 监听 DB change stream 的 `insert` / `update` 事件时调用。
- * `Map.set` 原子操作,并发安全(多请求同时 upsert 最后一次 wins)。
- *
- * 同名 skill 覆盖(更新),不重复累积。
- *
- * @param core skill 的 LLM 可见元数据
+ * 框架推荐路径：`ctx.registries.skill.upsert(skill)`。
  */
 export function upsertSkill(core: AgentCore): void {
-  registry.set(core.name, core);
+  defaultRegistries.skill.upsert(core);
 }
 
 /**
- * 单条删除 skill(运行时增量)
- *
- * 监听 DB change stream 的 `delete` 事件时调用。
- * 幂等:删除不存在的 name 静默无操作,不抛错。
- *
- * @param name skill 名
+ * 单条删除默认实例的 skill（幂等）
  */
 export function removeSkill(name: string): void {
-  registry.delete(name);
+  defaultRegistries.skill.remove(name);
 }
 
 /**
- * 按名查单个 skill
- *
- * @param name skill 名
- * @returns `AgentCore` 或 `undefined`(未注册)
+ * 按名查默认实例的单个 skill
  */
 export function getSkill(name: string): AgentCore | undefined {
-  return registry.get(name);
+  return defaultRegistries.skill.get(name);
 }
 
 /**
- * 返回所有已注册 skill
- *
- * 返回副本,调用方修改不影响内部状态(与 `listAgents` / `listTools` 同构)。
+ * 返回默认实例所有已注册 skill（副本）
  */
 export function listSkills(): AgentCore[] {
-  return Array.from(registry.values());
+  return defaultRegistries.skill.list();
 }

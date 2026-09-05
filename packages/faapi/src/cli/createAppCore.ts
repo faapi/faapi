@@ -13,10 +13,11 @@ import { hydrateTools, type SerializedToolRecord } from './generateToolArtifacts
 import { hydrateAgents, type SerializedAgentRecord } from './generateAgentArtifacts';
 import { loadPlugins } from './loadPlugins';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
-import { hydrateToolRegistry, clearToolRegistry } from '../injection/toolRegistry';
-import { hydrateAgentRegistry, clearAgentRegistry } from '../injection/agentRegistry';
-import { clearSkillRegistry } from '../injection/skillRegistry';
-import { clearAgentHandleFactory } from '../injection/agentHandle';
+import {
+  createAppRegistries,
+  defaultRegistries,
+  type AppRegistries,
+} from '../injection/registries';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { FaapiConfig } from '../config/configTypes';
@@ -58,7 +59,11 @@ const AGENTS_FILE = 'faapi-agents.js';
  *
  * @returns 水合后的 ToolMetadata[]（供调用方日志/调试）
  */
-export async function loadAndHydrateTools(rootDir: string, dist: string): Promise<ToolMetadata[]> {
+export async function loadAndHydrateTools(
+  rootDir: string,
+  dist: string,
+  registries: AppRegistries = defaultRegistries,
+): Promise<ToolMetadata[]> {
   const toolsPath = path.resolve(rootDir, dist, TOOLS_FILE);
   if (!fs.existsSync(toolsPath)) {
     return [];
@@ -67,7 +72,7 @@ export async function loadAndHydrateTools(rootDir: string, dist: string): Promis
     tools: SerializedToolRecord[];
   };
   const hydrated = hydrateTools(serialized.tools ?? []);
-  hydrateToolRegistry(hydrated);
+  registries.tool.hydrate(hydrated);
   return hydrated;
 }
 
@@ -84,6 +89,7 @@ export async function loadAndHydrateTools(rootDir: string, dist: string): Promis
 export async function loadAndHydrateAgents(
   rootDir: string,
   dist: string,
+  registries: AppRegistries = defaultRegistries,
 ): Promise<AgentMetadata[]> {
   const agentsPath = path.resolve(rootDir, dist, AGENTS_FILE);
   if (!fs.existsSync(agentsPath)) {
@@ -93,7 +99,7 @@ export async function loadAndHydrateAgents(
     agents: SerializedAgentRecord[];
   };
   const hydrated = hydrateAgents(serialized.agents ?? []);
-  hydrateAgentRegistry(hydrated);
+  registries.agent.hydrate(hydrated);
   return hydrated;
 }
 
@@ -203,6 +209,8 @@ const FAAPI_CONFIG_KEYS = new Set([
   'extendContext',
   'plugins',
   'helmet',
+  'compression',
+  'etag',
   'bodyLimit',
   'logger',
   'http2',
@@ -227,6 +235,8 @@ export interface CreateAppOptions {
 export interface AppBase {
   /** Node.js Server 实例（listen 后可用，close 后置 null） */
   server: Server | null;
+  /** app 级注册表（tool/agent/skill/agentHandle 实例，close 时清理） */
+  registries: AppRegistries;
   /** 排序后的路由清单 */
   routes: RouteManifest;
   /** WebSocket 路由清单 */
@@ -257,6 +267,8 @@ export interface AppBase {
 export interface AppContext {
   /** 项目根目录 */
   rootDir: string;
+  /** app 级注册表（tool/agent/skill/agentHandle 实例，随 app 生命周期） */
+  registries: AppRegistries;
   /** 产物目录 */
   dist: string;
   /** 扫描 patterns（scanRoutes 用） */
@@ -323,11 +335,15 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     }
   }
 
-  // 水合 tool 清单（可选产物——无 tool 的项目跳过，toolRegistry 保持空）
-  const tools = await loadAndHydrateTools(rootDir, dist);
+  // app 级注册表（方案 A 实例化）：每个 app 持有独立实例，随 app 创建/销毁，
+  // 多 app 同进程互不串台。框架链路（请求注入 / 插件 / lifecycle）只读写此实例
+  const registries = createAppRegistries();
 
-  // 水合 agent 清单（可选产物——无 agent 的项目跳过，agentRegistry 保持空）
-  const agents = await loadAndHydrateAgents(rootDir, dist);
+  // 水合 tool 清单（可选产物——无 tool 的项目跳过，tool 注册表保持空）
+  const tools = await loadAndHydrateTools(rootDir, dist, registries);
+
+  // 水合 agent 清单（可选产物——无 agent 的项目跳过，agent 注册表保持空）
+  const agents = await loadAndHydrateAgents(rootDir, dist, registries);
 
   // 自定义业务配置（排除内置 key）
   const pluginConfig: Record<string, unknown> = config
@@ -352,6 +368,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     bodyLimit: config?.bodyLimit,
     http2: config?.http2,
     trustedProxy: config?.trustedProxy,
+    registries,
   });
 
   // 加载插件 + 应用 handler/upgrade 包装器
@@ -359,6 +376,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     config?.plugins,
     {
       rootDir,
+      registries,
       routes: sorted,
       getRoutes: () => sorted,
       server,
@@ -373,6 +391,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
 
   const app: AppBase = {
     server: null,
+    registries,
     routes: sorted,
     wsRoutes,
     rootDir,
@@ -434,7 +453,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
 
           // onReady 生命周期钩子
           if (config?.lifecycle?.onReady) {
-            await config.lifecycle.onReady({ rootDir, routes: sorted, server });
+            await config.lifecycle.onReady({ rootDir, routes: sorted, server, registries });
             console.log('- onReady hook executed');
           }
 
@@ -546,29 +565,21 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       s.closeIdleConnections?.();
 
       if (config?.lifecycle?.onClose) {
-        await config.lifecycle.onClose({ rootDir, routes: sorted, server });
+        await config.lifecycle.onClose({ rootDir, routes: sorted, server, registries });
       }
 
-      // 所有权守卫：仅当关闭的是当前单例 app 时才清注册表。
-      // 注册表（tool/agent/skill + agent handle 工厂）是全局单例，hydrate 为
-      // 整体替换语义——同进程多 app 场景（测试/嵌入）下后创建的 app 已水合新清单，
-      // 先创建的 app close 时不能清掉运行中 app 的注册表。与单例清理的
-      // `getCurrentApp() === app` 守卫语义对称
-      const isCurrentApp = getCurrentApp() === app;
-      const clearRegistries = (): void => {
-        if (!isCurrentApp) return;
-        clearToolRegistry();
-        clearAgentRegistry();
-        clearSkillRegistry();
-        clearAgentHandleFactory();
-      };
+      // 注册表（方案 A 实例化）：清理的是 app 自己的实例——多 app 同进程
+      // 天然隔离，无需所有权守卫；全局默认实例不被 app 生命周期触碰
+      registries.tool.clear();
+      registries.agent.clear();
+      registries.skill.clear();
+      registries.agentHandle.clear();
 
       // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）
       if (!server.listening) {
-        clearRegistries();
         app.server = null;
         // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
-        if (isCurrentApp) setCurrentApp(null);
+        if (getCurrentApp() === app) setCurrentApp(null);
         return;
       }
 
@@ -604,9 +615,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       }
 
       app.server = null;
-      // 清理注册表 + 单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
-      clearRegistries();
-      if (isCurrentApp) setCurrentApp(null);
+      // 清理单例（仅当单例仍指向当前 app 时，避免被后续 app 误清）
+      if (getCurrentApp() === app) setCurrentApp(null);
     },
   };
 
@@ -617,6 +627,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   /** 更新路由引用（app + routesRef + 闭包变量） */
   const ctx: AppContext = {
     rootDir,
+    registries,
     dist,
     patterns: ROUTE_PATTERNS,
     server,

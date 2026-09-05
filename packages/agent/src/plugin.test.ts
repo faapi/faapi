@@ -5,18 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // ─── Mock @faapi/faapi ───────────────────────────────
-// 捕获 registerAgentHandleFactory 调用 + 控制注册表/加载器访问器返回值
-// 避免深度路径导入（@faapi/faapi/src/...），tsc 仅依赖公开 API 类型
+// 只 mock 无状态加载器（loadAgentModule / loadToolModule / loadToolSchema）。
+// 注册表不再走全局单例——插件读写 ctx.registries（app 实例，测试用
+// createAppRegistries() 构造真实实例并直接种数据）
 vi.mock('@faapi/faapi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@faapi/faapi')>();
   return {
     ...actual,
-    registerAgentHandleFactory: vi.fn(),
-    getAgent: vi.fn(),
-    getAgentEntry: vi.fn(),
-    getTool: vi.fn(),
-    resolveAgentTools: vi.fn(() => []),
-    resolveSubAgents: vi.fn(() => []),
     loadAgentModule: vi.fn(),
     loadToolModule: vi.fn(),
     loadToolSchema: vi.fn(),
@@ -46,16 +41,13 @@ vi.mock('./provider', async (importOriginal) => {
 });
 
 // ─── 导入（mock 后）─────────────────────────────────
+import { createAppRegistries } from '@faapi/faapi';
 import plugin from './plugin';
 import { createProvider } from './provider';
 import { Agent } from './agent';
 import type { AgentHandle } from './agentHandle';
 import { z } from 'zod';
 import {
-  registerAgentHandleFactory,
-  getAgent,
-  getAgentEntry,
-  resolveAgentTools,
   loadToolSchema,
   getToolSchemaPath,
   type AgentConfig,
@@ -90,16 +82,31 @@ const fullAgentConfig: AgentConfig = {
   maxAgentDepth: 3,
 };
 
-/** 构造 mock PluginContext */
+/** 构造 mock PluginContext（真实 app 级注册表实例，预置测试 agent） */
 function makeCtx(agentConfig?: AgentConfig): PluginContext {
-  return {
+  const ctx: PluginContext = {
     rootDir: '/project',
+    registries: createAppRegistries(),
     routes: [],
     getRoutes: () => [],
     server: {} as Server,
     config: agentConfig ? { agent: agentConfig } : {},
     options: undefined,
   };
+  ctx.registries.agent.hydrate([testAgentEntry]);
+  return ctx;
+}
+
+/**
+ * setup 插件并捕获注册到 agentHandle store 的工厂函数
+ *
+ * 方案 A：插件经 ctx.registries.agentHandle.register 注册到 app 实例，
+ * 测试用 spy 捕获（替代旧全局 registerAgentHandleFactory mock）
+ */
+function setupAndCaptureFactory(ctx: PluginContext): ((reqCtx: unknown) => unknown) | undefined {
+  const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
+  plugin.setup(ctx);
+  return spy.mock.calls[0]?.[0] as ((reqCtx: unknown) => unknown) | undefined;
 }
 
 /** 构造 mock FaapiContext（工厂参数） */
@@ -110,17 +117,15 @@ function makeReqCtx() {
 describe('@faapi/agent plugin', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // 默认 getAgent 返回测试 agent 的 AgentCore（LLM-facing 字段）
-    vi.mocked(getAgent).mockReturnValue(testAgentCore);
-    // getAgentEntry 返回 AgentMetadata（含 filePath/hasRun,供加载 handler.js）
-    vi.mocked(getAgentEntry).mockReturnValue(testAgentEntry);
   });
 
   describe('setup() — 完整配置', () => {
-    it('调 registerAgentHandleFactory 注册工厂', () => {
-      plugin.setup(makeCtx(fullAgentConfig));
-      expect(registerAgentHandleFactory).toHaveBeenCalledTimes(1);
-      expect(typeof registerAgentHandleFactory).toBe('function');
+    it('调 ctx.registries.agentHandle.register 注册工厂（app 实例，非全局）', () => {
+      const ctx = makeCtx(fullAgentConfig);
+      const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
+      plugin.setup(ctx);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(typeof spy.mock.calls[0]?.[0]).toBe('function');
     });
 
     it('调 createProvider 传入 agent.llms 每项配置', () => {
@@ -130,11 +135,7 @@ describe('@faapi/agent plugin', () => {
     });
 
     it('工厂返回 Agent 实例（满足 AgentHandle）', () => {
-      plugin.setup(makeCtx(fullAgentConfig));
-
-      const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-        | ((ctx: unknown) => unknown)
-        | undefined;
+      const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       expect(factory).toBeDefined();
 
       const handle = factory!(makeReqCtx()) as AgentHandle;
@@ -145,11 +146,7 @@ describe('@faapi/agent plugin', () => {
     });
 
     it('工厂返回的 Agent 绑定 defaultAgent 名', () => {
-      plugin.setup(makeCtx(fullAgentConfig));
-
-      const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-        | ((ctx: unknown) => unknown)
-        | undefined;
+      const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as Agent;
 
       const tool = agent.asTool();
@@ -159,11 +156,7 @@ describe('@faapi/agent plugin', () => {
     });
 
     it('每次调工厂构造新 Agent 实例', () => {
-      plugin.setup(makeCtx(fullAgentConfig));
-
-      const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-        | ((ctx: unknown) => unknown)
-        | undefined;
+      const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       const h1 = factory!(makeReqCtx());
       const h2 = factory!(makeReqCtx());
       expect(h1).not.toBe(h2);
@@ -173,18 +166,22 @@ describe('@faapi/agent plugin', () => {
   describe('setup() — 配置缺失', () => {
     it('config.agent 整块未设置时不注册工厂', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      plugin.setup(makeCtx(undefined));
+      const ctx = makeCtx(undefined);
+      const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
+      plugin.setup(ctx);
 
-      expect(registerAgentHandleFactory).not.toHaveBeenCalled();
+      expect(spy).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
 
     it('config.agent.llms 未设置时不注册工厂', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      plugin.setup(makeCtx({ defaultAgent: 'researcher' }));
+      const ctx = makeCtx({ defaultAgent: 'researcher' });
+      const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
+      plugin.setup(ctx);
 
-      expect(registerAgentHandleFactory).not.toHaveBeenCalled();
+      expect(spy).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('config.agent.llms not configured'),
       );
@@ -193,13 +190,13 @@ describe('@faapi/agent plugin', () => {
 
     it('config.agent.defaultAgent 未设置时正常注册工厂（agentName 为空字符串）', () => {
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      plugin.setup(
-        makeCtx({
-          llms: { openai: { provider: 'openai', apiKey: 'k', models: { 'gpt-4o': {} } } },
-        }),
-      );
+      const ctx = makeCtx({
+        llms: { openai: { provider: 'openai', apiKey: 'k', models: { 'gpt-4o': {} } } },
+      });
+      const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
+      plugin.setup(ctx);
 
-      expect(registerAgentHandleFactory).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledTimes(1);
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('no defaultAgent set'));
       logSpy.mockRestore();
     });
@@ -217,11 +214,7 @@ describe('@faapi/agent plugin', () => {
 
   describe('工厂输出 — run / stream', () => {
     it('agent.run 返回 ReactLoopResult', async () => {
-      plugin.setup(makeCtx(fullAgentConfig));
-
-      const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-        | ((ctx: unknown) => unknown)
-        | undefined;
+      const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as AgentHandle;
       const result = await agent.run('hello');
       expect(result.content).toBe('ok');
@@ -230,11 +223,7 @@ describe('@faapi/agent plugin', () => {
     });
 
     it('agent.stream yield 流式 chunk', async () => {
-      plugin.setup(makeCtx(fullAgentConfig));
-
-      const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-        | ((ctx: unknown) => unknown)
-        | undefined;
+      const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as AgentHandle;
       const chunks: { deltaContent?: string; done?: { content: string } }[] = [];
       for await (const chunk of agent.stream('hello')) {
@@ -254,18 +243,23 @@ describe('@faapi/agent plugin', () => {
       filePath: 'dist/tools/test/handler.js',
     };
 
+    /** makeCtx + 种入声明了 test.tool 的 agent 与 tool 注册表 */
+    function makeCtxWithTool(agentConfig?: AgentConfig): PluginContext {
+      const ctx = makeCtx(agentConfig);
+      // agent 声明使用 test.tool（resolveAgentTools 按声明过滤 tool 注册表）
+      ctx.registries.agent.hydrate([{ ...testAgentEntry, tools: ['test.tool'] } as AgentMetadata]);
+      ctx.registries.tool.hydrate([testTool]);
+      return ctx;
+    }
+
     it('buildToolDefinitions 调 loadToolSchema 加载 tool schema', async () => {
       const mockSchema = z.object({ city: z.string() });
       vi.mocked(loadToolSchema).mockResolvedValue({
         schema: mockSchema,
         schemaName: 'TestInputSchema',
       });
-      vi.mocked(resolveAgentTools).mockReturnValue([testTool]);
 
-      plugin.setup(makeCtx(fullAgentConfig));
-      const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-        | ((ctx: unknown) => unknown)
-        | undefined;
+      const factory = setupAndCaptureFactory(makeCtxWithTool(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as AgentHandle;
       await agent.run('hello');
 
@@ -274,12 +268,8 @@ describe('@faapi/agent plugin', () => {
 
     it('loadToolSchema 返回 undefined 时不报错（用自由 schema）', async () => {
       vi.mocked(loadToolSchema).mockResolvedValue(undefined);
-      vi.mocked(resolveAgentTools).mockReturnValue([testTool]);
 
-      plugin.setup(makeCtx(fullAgentConfig));
-      const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-        | ((ctx: unknown) => unknown)
-        | undefined;
+      const factory = setupAndCaptureFactory(makeCtxWithTool(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as AgentHandle;
       const result = await agent.run('hello');
 
@@ -302,11 +292,10 @@ describe('@faapi/agent plugin', () => {
         schema: z.object({ city: z.string() }),
         schemaName: 'CacheInputSchema',
       });
-      vi.mocked(resolveAgentTools).mockReturnValue([cacheTool]);
-      plugin.setup(makeCtx(fullAgentConfig));
-      return vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-        | ((ctx: unknown) => unknown)
-        | undefined;
+      const ctx = makeCtx(fullAgentConfig);
+      ctx.registries.agent.hydrate([{ ...testAgentEntry, tools: ['cache.tool'] } as AgentMetadata]);
+      ctx.registries.tool.hydrate([cacheTool]);
+      return setupAndCaptureFactory(ctx);
     }
 
     it('两个请求（两个 Agent 实例）只解析一次 schema', async () => {
@@ -343,18 +332,18 @@ describe('@faapi/agent plugin', () => {
         schema: z.object({ city: z.string() }),
         schemaName: 'CacheInputSchema',
       });
-      vi.mocked(resolveAgentTools).mockReturnValue([tool]);
       const zodPath = getToolSchemaPath(tool, rootDir);
       mkdirSync(join(zodPath, '..'), { recursive: true });
       writeFileSync(zodPath, 'export const CacheInputSchema = {};');
 
       try {
         const ctx = makeCtx(fullAgentConfig);
-        (ctx as { rootDir: string }).rootDir = rootDir;
-        plugin.setup(ctx);
-        const factory = vi.mocked(registerAgentHandleFactory).mock.calls[0]?.[0] as
-          | ((ctx: unknown) => unknown)
-          | undefined;
+        ctx.rootDir = rootDir;
+        ctx.registries.agent.hydrate([
+          { ...testAgentEntry, tools: ['cache.tool'] } as AgentMetadata,
+        ]);
+        ctx.registries.tool.hydrate([tool]);
+        const factory = setupAndCaptureFactory(ctx);
 
         const a1 = factory!(makeReqCtx()) as AgentHandle;
         await a1.run('hi');

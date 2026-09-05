@@ -49,6 +49,7 @@ describe('configTypes', () => {
       rootDir: '/app',
       routes: [] as RouteManifest,
       server: {} as Server,
+      registries: {} as import('../injection/registries').AppRegistries,
     };
     expect(ctx.rootDir).toBe('/app');
     expect(ctx.routes).toEqual([]);

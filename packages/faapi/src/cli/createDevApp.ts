@@ -109,7 +109,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
       skipSchema: isDevOnDemandEnabled(),
     });
     // 重新水合 faapi-tools.js 到 toolRegistry（reload 后需更新注册表）
-    await loadAndHydrateTools(ctx.rootDir, ctx.dist);
+    await loadAndHydrateTools(ctx.rootDir, ctx.dist, ctx.registries);
   };
 
   devApp.reloadAgents = async (): Promise<void> => {
@@ -123,7 +123,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     // agent 不生成 zod.js（无输入参数），无 skipSchema 选项
     await generateAgentArtifacts(agents, ctx.rootDir, ctx.dist);
     // 重新水合 faapi-agents.js 到 agentRegistry（reload 后需更新注册表）
-    await loadAndHydrateAgents(ctx.rootDir, ctx.dist);
+    await loadAndHydrateAgents(ctx.rootDir, ctx.dist, ctx.registries);
   };
 
   return devApp;

@@ -1,6 +1,6 @@
 # skillRegistry
 
-一句话概括：运行时动态 skill 注册表单例，与 [agentRegistry](./agentRegistry.md) 物理隔离，承载 DB-driven skills（业务方在 plugin 里从数据库 / 外部源加载的 skill 元数据），**仅供业务方 plugin 内部使用**——不参与 agent 查询链路、不覆盖文件型 agent、不被 agent 自动引用。
+一句话概括：skill 注册表——app 实例级实现见 [registries.md](./registries.md)；推荐路径为 `lifecycle.onReady(ctx)` 中 `ctx.registries.skill` 灌入 DB skill。本模块保留全局函数作为默认实例的便捷访问器（与 app 实例相互独立）。原描述：：运行时动态 skill 注册表单例，与 [agentRegistry](./agentRegistry.md) 物理隔离，承载 DB-driven skills（业务方在 plugin 里从数据库 / 外部源加载的 skill 元数据），**仅供业务方 plugin 内部使用**——不参与 agent 查询链路、不覆盖文件型 agent、不被 agent 自动引用。
 
 ## 为什么需要
 
