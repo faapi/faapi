@@ -9,6 +9,7 @@ dist/
 # IDE
 .idea/
 .vscode/
+.zcode/
 *.swp
 *.swo
 
