@@ -82,7 +82,7 @@ src/
 
 - **agent 位置**：`src/agents/<name>/handler.ts`，`<name>` 是目录名（如 `researcher`），可被 JSDoc `@agent` 覆盖
 - **tool 位置**：`src/tools/<name>/handler.ts`（所有 tool 统一放 `src/tools/`，无 agent 专属 tool 概念）
-- **tool 名**：`<目录名>.<函数名>`（如 `weather.getWeather`、`calculator.calc`）
+- **tool 名**：默认 `<子目录路径>.<函数名>`（如 `weather.getWeather`、`calculator.calc`；多级子目录用 `.` 连接，handler 直接放 `src/tools/handler.ts` 时为纯函数名）；JSDoc `@tool <name>` 可覆盖默认名（如 `@tool weather` → tool 名 `weather`），详见「写 tool handler」
 
 ## 写 agent handler
 
@@ -157,7 +157,7 @@ export async function run(args: { topic?: string }): Promise<string> {
 
 ## 写 tool handler
 
-tool handler 导出一个**具名函数**（函数名即 tool 名的后缀），第一个参数 interface 声明 input 类型（AST 提取生成 zod schema，LLM 调用时校验参数）。
+tool handler 导出**具名函数**（一个文件可导出多个，每个函数各是一个 tool），第一个参数 interface 声明 input 类型（AST 提取生成 zod schema，LLM 调用时校验参数）。
 
 ```ts
 // src/tools/weather/handler.ts
@@ -180,7 +180,8 @@ export async function getWeather(input: WeatherInput) {
 }
 ```
 
-- **函数名**：`getWeather` → tool 名为 `weather.getWeather`（`<目录名>.<函数名>`）
+- **tool 名（默认推导）**：`<子目录路径>.<函数名>`——`getWeather` 在 `src/tools/weather/handler.ts` → `weather.getWeather`；多级子目录 `src/tools/a/b/handler.ts` → `a.b.<函数名>`；handler 直接放 `src/tools/handler.ts` → 纯函数名
+- **`@tool` 覆盖名**：函数 JSDoc 写 `@tool <name>` 覆盖默认名，适合单函数目录想要短名字的场景（如 `@tool weather` → tool 名 `weather`）。覆盖后 agent 的 `tools` 引用、`beforeToolCall` 收到的 name 均为覆盖名
 - **input 类型**：第一个参数的 interface 声明，AST 提取为 `WeatherInput` → 生成 `WeatherInputSchema`（`zod.js`）
 - **JSDoc**：函数的 JSDoc 自由文本作为 tool description，参数 interface 字段的 JSDoc 作为参数描述
 - **校验**：`@faapi/agent` 调 `loadToolSchema` 加载 `zod.js` → `z.toJSONSchema` 生成 JSON Schema 发给 LLM → LLM 返回参数后 `safeParse` 校验；失败返回 `{ error }`（不调 handler），回传 LLM 重试
@@ -523,7 +524,7 @@ export const config = {
 
 ### 2. tool 名格式
 
-tool 名是 `<目录名>.<函数名>`，不是文件名。目录名 `weather` + 函数名 `getWeather` → `weather.getWeather`。引用时（agent 的 `tools` 字段）必须完全匹配。
+默认名是 `<子目录路径>.<函数名>`，不是文件名：目录 `weather` + 函数 `getWeather` → `weather.getWeather`；JSDoc `@tool <name>` 可覆盖默认名（如 `@tool weather` → tool 名 `weather`，`@tool` 后只写名字本身，不要跟行内注释）。agent 的 `tools` 引用必须与**最终生效名**完全匹配——拿不准时看构建产物 `faapi-tools.js`（dev 在 `.faapi/`，build 在 `dist/`）里每条记录的 `name` 字段。
 
 ### 3. agent 参数可能为 undefined
 

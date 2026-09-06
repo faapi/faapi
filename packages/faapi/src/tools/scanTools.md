@@ -87,6 +87,8 @@ tool 名 = `子目录.函数名`，子目录作为命名空间前缀，用 `.` �
 3. 剩余路径段（非空时）用 `.` 连接，作为命名空间
 4. tool 名 = 命名空间 + `.` + 函数名；无子目录时纯函数名
 
+> 此处为 scanTools 的**路径推导默认名**。函数 JSDoc 的 `@tool` 标签可在 AST 增强阶段覆盖最终名（如 `@tool weather` 把 `weather.getWeather` 覆盖为 `weather`），见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「JSDoc 描述 + `@tool` 覆盖名」。
+
 ### 重名检测
 
 - 全局同名 tool → `scanTools` 抛 `ToolConflictError`
