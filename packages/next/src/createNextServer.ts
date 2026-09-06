@@ -162,35 +162,40 @@ const nextPlugin: FaapiPlugin = {
  * 加载用户 next.config.{js,ts,mjs}，合并 experimental.trustHostHeader=true，
  * 返回可传给 next() conf 选项的配置对象。
  *
- * 用 Next.js 内部的 loadConfig（next/dist/server/config）加载完整配置（已 normalize
- * + 填充默认值），展开后覆盖 experimental.trustHostHeader。这样用户在 next.config.ts
- * 中的其他配置（images/rewrites/redirects 等）都会被保留。
+ * 用 Next.js 内部的 loadConfig 加载完整配置（已 normalize + 填充默认值），展开后
+ * 覆盖 experimental.trustHostHeader。这样用户在 next.config.ts 中的其他配置
+ * （images/rewrites/redirects 等）都会被保留。
+ *
+ * next() 收到 conf 后走 loadConfig 的 customConfig 分支（不读文件、不做 schema
+ * 校验——校验只发生在从文件加载的分支），因此注入 trustHostHeader 不会触发
+ * "Unrecognized key(s)" 告警；而从文件加载（用户手写该字段）会被 Next 16+ 的
+ * config schema 拒绝。
  *
  * 失败时返回 undefined（退回不传 conf，Next.js 自己加载 next.config.ts，
- * trustHostHeader 不自动开启），并打印警告提示用户手动配置。
+ * trustHostHeader 不自动开启），并打印警告。警告不引导手写该字段（Next 16+
+ * schema 校验会告警，形成死循环）。
  */
 async function loadUserConfigAndMergeTrustHostHeader(
   dir: string,
   dev: boolean,
 ): Promise<Record<string, unknown> | undefined> {
   try {
-    const { PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_SERVER } = await import('next/constants');
-    const configModule = (await import('next/dist/server/config')) as {
-      default?: (phase: string, dir: string, opts?: unknown) => Promise<Record<string, unknown>>;
-    } & Record<string, unknown>;
-    // 优先取 default 导出，否则取模块本身（兼容 CJS/ESM 互操作差异）
-    const loadConfig =
-      configModule.default ??
-      (configModule as unknown as (
-        phase: string,
-        dir: string,
-        opts?: unknown,
-      ) => Promise<Record<string, unknown>>) ??
-      undefined;
-    if (typeof loadConfig !== 'function') {
+    // 插件是 ESM：Node 的 ESM 解析器不补全扩展名，specifier 必须带 .js；
+    // Next 各版本 dist 布局不同（部分环境仅有 esm 布局），按候选顺序回退
+    const constantsModule = await importNextInternalModule(['next/constants.js', 'next/constants']);
+    const configModule = await importNextInternalModule([
+      'next/dist/server/config.js',
+      'next/dist/esm/server/config.js',
+    ]);
+    const loadConfig = resolveLoadConfigFunction(configModule);
+    if (!loadConfig) {
       throw new Error('loadConfig is not a function');
     }
-    const phase = dev ? PHASE_DEVELOPMENT_SERVER : PHASE_PRODUCTION_SERVER;
+    const phase = dev
+      ? (resolvePhaseConstant(constantsModule, 'PHASE_DEVELOPMENT_SERVER') ??
+        'phase-development-server')
+      : (resolvePhaseConstant(constantsModule, 'PHASE_PRODUCTION_SERVER') ??
+        'phase-production-server');
     const userConfig = await loadConfig(phase, dir, { silent: true });
     if (!userConfig || typeof userConfig !== 'object') {
       return undefined;
@@ -210,12 +215,78 @@ async function loadUserConfigAndMergeTrustHostHeader(
     };
   } catch {
     console.warn(
-      '[faapi-next] 自动开启 experimental.trustHostHeader 失败（无法加载 next.config.ts）。\n' +
-        '  若处于反向代理（Nginx/Caddy 等）场景，请手动在 next.config.ts 中配置：\n' +
-        '  experimental: { trustHostHeader: true }',
+      '[faapi-next] 自动开启 experimental.trustHostHeader 失败（无法加载 Next.js 内部 config 模块，conf 未注入）。\n' +
+        '  请勿在 next.config.ts 手写 experimental.trustHostHeader 替代——Next 16+ 的 config\n' +
+        '  schema 不接受该字段，手写会触发 "Unrecognized key(s)" 告警。\n' +
+        '  非反向代理场景可忽略本提示；如需关闭本提示，设插件选项 trustHostHeader: false。',
     );
     return undefined;
   }
+}
+
+/**
+ * 按候选顺序依次 import，返回第一个成功的模块。
+ *
+ * 为什么不用单个 specifier：Next 内部模块路径属于非公开实现，各版本 dist 布局
+ * 存在差异；全部失败返回 undefined，由调用方决定降级行为。
+ */
+async function importNextInternalModule(
+  specifiers: string[],
+): Promise<Record<string, unknown> | undefined> {
+  for (const specifier of specifiers) {
+    try {
+      return (await import(specifier)) as Record<string, unknown>;
+    } catch {
+      // 该布局在当前 next 版本不存在，尝试下一个候选
+    }
+  }
+  return undefined;
+}
+
+/** loadConfig 函数签名（Next.js 内部 API：phase + dir + options） */
+type LoadConfigFn = (
+  phase: string,
+  dir: string,
+  opts?: unknown,
+) => Promise<Record<string, unknown>>;
+
+/**
+ * 从 config 模块命名空间解析 loadConfig 函数。
+ *
+ * Next 16 的 config.js 是 CJS 但带 __esModule 编译标记（module.exports.default =
+ * loadConfig），ESM 互操作后 namespace.default 是对象，函数在 namespace.default.default；
+ * 常规 CJS（module.exports = fn）互操作后 namespace.default 即函数；ESM 原生同理。
+ */
+function resolveLoadConfigFunction(
+  configModule: Record<string, unknown> | undefined,
+): LoadConfigFn | undefined {
+  const direct = configModule?.default;
+  if (typeof direct === 'function') {
+    return direct as LoadConfigFn;
+  }
+  const nested = (direct as Record<string, unknown> | undefined)?.default;
+  if (typeof nested === 'function') {
+    return nested as LoadConfigFn;
+  }
+  if (typeof configModule === 'function') {
+    return configModule as unknown as LoadConfigFn;
+  }
+  return undefined;
+}
+
+/**
+ * 从 constants 模块命名空间解析 phase 常量（顶层命名导出或 module.exports 内）。
+ */
+function resolvePhaseConstant(
+  constantsModule: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const topLevel = constantsModule?.[key];
+  if (typeof topLevel === 'string') {
+    return topLevel;
+  }
+  const fromDefault = (constantsModule?.default as Record<string, unknown> | undefined)?.[key];
+  return typeof fromDefault === 'string' ? fromDefault : undefined;
 }
 
 export default nextPlugin;

@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs/promises';
 import type { Server } from 'node:http';
 import type { Socket } from 'node:net';
 import type { RequestHandler, UpgradeHandler } from '@faapi/faapi';
@@ -18,15 +20,15 @@ vi.mock('next', () => ({
   default: mockNextFactory,
 }));
 
-// Mock next/constants（phase 常量，loadConfig 用）
-vi.mock('next/constants', () => ({
+// Mock next/constants（phase 常量，loadConfig 用；specifier 与源码一致，带 .js 扩展名）
+vi.mock('next/constants.js', () => ({
   PHASE_DEVELOPMENT_SERVER: 'phase-development-server',
   PHASE_PRODUCTION_SERVER: 'phase-production-server',
 }));
 
-// Mock next/dist/server/config（loadConfig）
+// Mock next/dist/server/config（loadConfig；specifier 与源码一致，带 .js 扩展名）
 const mockLoadConfig = vi.fn();
-vi.mock('next/dist/server/config', () => ({
+vi.mock('next/dist/server/config.js', () => ({
   default: mockLoadConfig,
 }));
 
@@ -469,6 +471,126 @@ describe('@faapi/next 插件 - trustHostHeader 自动开启', () => {
     expect(mockNextFactory).toHaveBeenCalledWith(
       expect.objectContaining({ dir: path.resolve('/tmp/test', 'web') }),
     );
+  });
+});
+
+describe('@faapi/next 插件 - 内部模块加载回退链', () => {
+  it('CJS 布局 import 失败时回退 esm 布局（Next 16 部分环境）', async () => {
+    vi.resetModules();
+    const mockEsmLoadConfig = vi.fn().mockResolvedValue({
+      images: { remotePatterns: [] },
+      experimental: {},
+    });
+    // 主路径（CJS 布局）不可用，模拟 esm-only 环境
+    vi.doMock('next/dist/server/config.js', () => {
+      throw new Error("Cannot find module 'next/dist/server/config.js'");
+    });
+    vi.doMock('next/dist/esm/server/config.js', () => ({
+      default: mockEsmLoadConfig,
+    }));
+
+    try {
+      const { default: plugin } = await import('./createNextServer');
+      const { ctx } = createMockContext();
+      await plugin.setup(ctx);
+
+      expect(mockEsmLoadConfig).toHaveBeenCalledWith(
+        expect.any(String),
+        '/tmp/test',
+        expect.objectContaining({ silent: true }),
+      );
+      expect(mockNextFactory).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conf: expect.objectContaining({
+            experimental: expect.objectContaining({ trustHostHeader: true }),
+          }),
+        }),
+      );
+    } finally {
+      vi.doUnmock('next/dist/server/config.js');
+      vi.doUnmock('next/dist/esm/server/config.js');
+      vi.resetModules();
+    }
+  });
+
+  it('所有布局 import 均失败时降级不传 conf，警告不引导手写字段', async () => {
+    vi.resetModules();
+    vi.doMock('next/dist/server/config.js', () => {
+      throw new Error('not found');
+    });
+    vi.doMock('next/dist/esm/server/config.js', () => {
+      throw new Error('not found');
+    });
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const { default: plugin } = await import('./createNextServer');
+      const { ctx } = createMockContext();
+      await plugin.setup(ctx);
+
+      expect(mockNextFactory).toHaveBeenCalledWith(
+        expect.not.objectContaining({ conf: expect.anything() }),
+      );
+      // 警告必须包含字段名（可检索），且不得引导手写（Next 16 schema 校验会告警）
+      const warnArg = consoleWarnSpy.mock.calls[0]?.[0] as string;
+      expect(warnArg).toContain('experimental.trustHostHeader');
+      expect(warnArg).toContain('请勿在 next.config.ts 手写');
+      consoleWarnSpy.mockRestore();
+    } finally {
+      consoleWarnSpy.mockRestore();
+      vi.doUnmock('next/dist/server/config.js');
+      vi.doUnmock('next/dist/esm/server/config.js');
+      vi.resetModules();
+    }
+  });
+});
+
+describe('@faapi/next 插件 - 真实 Next 布局回归（不 mock 内部模块）', () => {
+  /** optional peer 未安装时跳过（CI 与本地 devDependencies 均安装 next） */
+  async function isNextInstalled(): Promise<boolean> {
+    return vi.importActual('next').then(
+      () => true,
+      () => false,
+    );
+  }
+
+  it('import 候选链在真实 next 包上可解析，loadConfig 为两层 default 形态', async () => {
+    if (!(await isNextInstalled())) {
+      return;
+    }
+    // 复现插件的完整取值链路：import（带 .js 扩展名）→ 解析 CJS __esModule 两层 default
+    const configMod = await vi.importActual<Record<string, unknown>>('next/dist/server/config.js');
+    const direct = configMod.default;
+    const loadConfig =
+      typeof direct === 'function'
+        ? direct
+        : ((direct as Record<string, unknown> | undefined)?.default as unknown);
+    expect(typeof loadConfig).toBe('function');
+
+    const constantsMod = await vi.importActual<Record<string, unknown>>('next/constants.js');
+    expect(typeof constantsMod.PHASE_PRODUCTION_SERVER).toBe('string');
+  });
+
+  it('真实 loadConfig 在临时空目录上可调用（返回默认配置，不抛错）', async () => {
+    if (!(await isNextInstalled())) {
+      return;
+    }
+    const configMod = await vi.importActual<Record<string, unknown>>('next/dist/server/config.js');
+    const constantsMod = await vi.importActual<Record<string, unknown>>('next/constants.js');
+    const direct = configMod.default;
+    const loadConfig =
+      typeof direct === 'function'
+        ? direct
+        : ((direct as Record<string, unknown> | undefined)?.default as unknown as (
+            phase: string,
+            dir: string,
+            opts?: unknown,
+          ) => Promise<Record<string, unknown>>);
+    const phase = constantsMod.PHASE_PRODUCTION_SERVER as string;
+
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-next-config-'));
+    const conf = await loadConfig(phase, dir, { silent: true });
+    expect(conf === undefined || typeof conf === 'object').toBe(true);
   });
 });
 

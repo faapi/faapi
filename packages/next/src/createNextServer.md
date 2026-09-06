@@ -71,11 +71,12 @@ export default {
 
 当应用部署在 Nginx/Caddy 等反向代理后时，Next.js 默认用固定的 `localhost:3000` 构造 `initURL`（仅从 `X-Forwarded-Proto` 取协议，但忽略代理透传的 `Host` 头），导致 SSR 阶段构造的 URL 指向错误域名（如 `https://localhost:3000/path` 而非 `https://llm.tulun.top/path`），引发重定向循环、链接错误等问题。
 
-**默认行为**：插件默认 `trustHostHeader: true`，通过 Next.js 内部 `loadConfig`（`next/dist/server/config`）加载用户 `next.config.ts`，合并 `experimental.trustHostHeader = true` 后通过 `next()` 的 `conf` 选项传入。
+**默认行为**：插件默认 `trustHostHeader: true`，通过 Next.js 内部 `loadConfig` 加载用户 `next.config.ts`，合并 `experimental.trustHostHeader = true` 后通过 `next()` 的 `conf` 选项传入。
 
 - 用户在 `next.config.ts` 中的其他配置（`images`/`rewrites`/`redirects` 等）都会被保留。
 - 若用户已显式开启 `trustHostHeader: true`，插件不会重复设置。
-- `loadConfig` 失败时退回不传 `conf`（Next.js 自行加载 `next.config.ts`），并打印警告提示手动配置。
+- `loadConfig` 失败时退回不传 `conf`（Next.js 自行加载 `next.config.ts`），并打印警告。警告**不引导手写** `experimental.trustHostHeader`——Next 16+ 的 config schema 已移除该字段，手写会被 schema 校验告警（`Unrecognized key(s)`），插件经 `conf` 注入不走该校验路径，是唯一无告警的开启方式。
+- 传 `conf` 后 `next()` 内部走 `loadConfig` 的 customConfig 分支，**不做 schema 校验**（只有从文件加载的分支才校验），因此注入 `trustHostHeader` 不会触发告警。
 
 **关闭自动开启**：非反向代理场景或需手动控制时设为 `false`，插件不会读取 `next.config.ts`，直接用 `next({ dev, dir })` 启动。
 
@@ -103,6 +104,7 @@ export default {
 - **dev 模式自动推断**：`NODE_ENV !== 'production'` 即 dev 模式
 - **配置分离**：faapi 配置在 `faapi.config.ts`，Next.js 配置在 `next.config.ts`
 - **trustHostHeader 自动开启**：默认用 Next.js `loadConfig` 加载 `next.config.ts` 并合并 `experimental.trustHostHeader=true`，解决反向代理下 `initURL` 构造错误。传 `conf` 后 Next.js 跳过自身配置加载，所以必须先加载用户配置以保留其他字段（`images`/`rewrites` 等）。`loadConfig` 失败时降级为不传 `conf`，由 Next.js 自行加载
+- **Next 内部模块加载走候选列表回退**：插件是 ESM，Node 的 ESM 解析器不补全扩展名，`import('next/dist/server/config')`（无 `.js`）恒 `ERR_MODULE_NOT_FOUND`；且 Next 各版本的 dist 布局不同（Next 16 起部分环境仅有 `dist/esm/` 布局）。因此内部模块（`next/constants`、`loadConfig`）按候选列表依次尝试 import，全部失败才降级。specifier 一律带 `.js` 扩展名
 
 ## 请求分流规则
 

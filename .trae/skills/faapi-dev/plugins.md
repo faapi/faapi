@@ -100,7 +100,7 @@ export default {
 **不要单独跑 `next dev`**,集成 Next.js 的项目统一用 `faapi` / `faapi dev` 启动:
 
 - **API 不通**:`next dev` 起的进程里没有 faapi handler,`/api/*` 请求全部 404。集成形态是单进程架构,不存在"前端 next dev + 后端 faapi 分开启动"的用法
-- **刷 Invalid config 警告**:`next dev` 启动时对 `next.config.ts` 做 schema 校验,schema 外字段(如 `experimental.trustHostHeader`)每次启动告警;faapi dev 经插件注入配置,不走该校验路径
+- **Invalid config 警告与启动方式无关**:Next 对 `next.config.ts` 做 schema 校验的触发条件是**从文件加载配置**——`next dev` 与 `faapi dev`(Next dev server 内部自己从文件加载)都会校验,文件里出现 schema 外字段(如 `experimental.trustHostHeader`)就告警。插件经 `next({ conf })` 注入的配置不走文件校验路径,不告警——所以**不要手写该字段进 `next.config.ts`**(Next 16+ 的 schema 已移除该字段),已有的手写行删除后告警即消失
 - **HMR 不受影响**:faapi dev 下 Next.js 热更新正常(浏览器到 dev server 的 HMR websocket upgrade 由插件透传给 Next.js 处理)
 
 ### 目录结构

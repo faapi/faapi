@@ -375,11 +375,11 @@ Next.js 集成项目启动时刷 `Invalid next.config.ts options detected` + `Un
 
 ### 原因
 
-警告来自**单独跑 `next dev`**:Next.js CLI 启动时对 `next.config.ts` 做全量 schema 校验,而 `experimental.trustHostHeader` 是 Next 内部字段、不在公开 schema 里,每次启动告警。`faapi dev` 下 @faapi/next 插件经 Next 内部 `loadConfig` 注入该配置再传给 `next({ conf })`,不走这条校验路径,无警告。
+警告来自 Next 对 `next.config.ts` 的 schema 校验,触发条件是**从文件加载配置**——与启动方式无关:`next dev` 和 `faapi dev`(Next dev server 内部自己从文件加载 next.config.ts,插件拦截不到)都会校验,文件里出现 schema 外字段就告警。`experimental.trustHostHeader` 在 Next 16+ 的 config schema 中已被移除,手写必告警;而 @faapi/next 插件经 Next 内部 `loadConfig` 注入该配置再传给 `next({ conf })`,走 customConfig 分支、不经文件校验,无警告。
 
 ### 解决
 
-集成 Next.js 的项目统一用 `faapi` / `faapi dev` 启动,不要单独跑 `next dev`——除了警告,`next dev` 进程里没有 faapi handler,`/api/*` 请求会全部 404。`next.config.ts` 无需手写 `experimental.trustHostHeader`(插件默认注入),已有的手写行可删除。详见 [plugins.md](./plugins.md) 的「集成 Next.js」。
+删除 `next.config.ts` 中手写的 `experimental.trustHostHeader`(插件默认注入,无需也不应该手写),告警即消失。集成 Next.js 的项目统一用 `faapi` / `faapi dev` 启动,不要单独跑 `next dev`——`next dev` 进程里没有 faapi handler,`/api/*` 请求会全部 404。详见 [plugins.md](./plugins.md) 的「集成 Next.js」。
 
 ## 类型校验不生效
 
