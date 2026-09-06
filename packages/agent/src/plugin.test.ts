@@ -202,6 +202,76 @@ describe('@faapi/agent plugin', () => {
     });
   });
 
+  describe('setup() — llms.apiKey 校验', () => {
+    it('apiKey 为空字符串时 warn 提示对应 provider,工厂照常注册', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = makeCtx({
+        llms: { openai: { provider: 'openai', apiKey: '', models: { 'gpt-4o': {} } } },
+        defaultLlm: 'openai',
+      });
+      const factory = setupAndCaptureFactory(ctx);
+
+      expect(factory).toBeDefined();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('llms.openai.apiKey'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Authorization'));
+      warnSpy.mockRestore();
+    });
+
+    it('apiKey 未设置（undefined）时同样 warn', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = makeCtx({
+        llms: { openai: { provider: 'openai', models: { 'gpt-4o': {} } } },
+        defaultLlm: 'openai',
+      });
+      const factory = setupAndCaptureFactory(ctx);
+
+      expect(factory).toBeDefined();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('llms.openai.apiKey'));
+      warnSpy.mockRestore();
+    });
+
+    it('apiKey 为纯空白字符时视为空,warn', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = makeCtx({
+        llms: { openai: { provider: 'openai', apiKey: '   ', models: { 'gpt-4o': {} } } },
+        defaultLlm: 'openai',
+      });
+      const factory = setupAndCaptureFactory(ctx);
+
+      expect(factory).toBeDefined();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('llms.openai.apiKey'));
+      warnSpy.mockRestore();
+    });
+
+    it('多 provider 混合时只 warn 空 key 的那个,所有 provider 均注册', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = makeCtx({
+        llms: {
+          openai: { provider: 'openai', apiKey: '', models: { 'gpt-4o': {} } },
+          gateway: { provider: 'openai', apiKey: 'real-key', models: { 'gpt-4o': {} } },
+        },
+        defaultLlm: 'gateway',
+      });
+      const factory = setupAndCaptureFactory(ctx);
+
+      expect(factory).toBeDefined();
+      expect(createProvider).toHaveBeenCalledTimes(2);
+      const warnMessages = warnSpy.mock.calls.map((call) => String(call[0]));
+      expect(warnMessages.some((msg) => msg.includes('llms.openai.apiKey'))).toBe(true);
+      expect(warnMessages.some((msg) => msg.includes('llms.gateway.apiKey'))).toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it('apiKey 已配置时无 apiKey 相关 warn', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      plugin.setup(makeCtx(fullAgentConfig));
+
+      const warnMessages = warnSpy.mock.calls.map((call) => String(call[0]));
+      expect(warnMessages.some((msg) => msg.includes('apiKey'))).toBe(false);
+      warnSpy.mockRestore();
+    });
+  });
+
   describe('插件元信息', () => {
     it('name 为 @faapi/agent', () => {
       expect(plugin.name).toBe('@faapi/agent');

@@ -128,6 +128,13 @@ const agentPlugin: FaapiPlugin = {
     const llms = agentConfig.llms;
     const providers = new Map<string, LLMProvider>();
     for (const [name, llmConfig] of Object.entries(llms)) {
+      // 空 apiKey 照常注册（部分网关/本地模型场景无需 key），但启动日志显性提示——
+      // 否则「key 未配置」延迟到首次 LLM 调用才暴露为上游 401，且错误文案来自上游，难排查
+      if (!llmConfig.apiKey || llmConfig.apiKey.trim() === '') {
+        console.warn(
+          `! @faapi/agent: config.agent.llms.${name}.apiKey is empty, requests to this provider will omit Authorization header (upstream likely returns 401)`,
+        );
+      }
       providers.set(name, createProvider(llmConfig));
     }
 

@@ -504,6 +504,8 @@ export function GET(ctx) {
 
 `ctx.sse()` 返回 `SseWriter`，handler 通过 `sse.send({ data, event?, id?, retry? })` 推送事件，`sse.close()` 关闭流。框架自动构造 `text/event-stream` Response，与 `ctx.json`/`ctx.html` 互斥。`SseWriter` 提供 `aborted` 属性检测客户端断开；handler 返回或抛错时框架自动 close 兜底，避免连接泄漏。详见 `src/runtime/sse.md`。
 
+**客户端断连信号**：`ctx.request.signal`（标准 Web AbortSignal）已接线到连接生命周期——客户端提前断开（响应未写完连接即 close）时触发，响应正常完成不误触发。非流式 handler 的长耗时上游调用可携带该信号（`fetch(url, { signal: ctx.request.signal })`），客户端取消即中止上游（LLM 网关转发、批量任务等）。SSE 路径用 `ctx.sse().aborted`，两者并存。详见 `src/server/createServer.md` 的「客户端断连信号」章节。
+
 handler 抛错时由内置 `formatErrorResponse` 兜底（参考 `src/response/responseFormatter.ts`）；建议业务方在全局中间件中用 `try/catch` 捕获并通过 `ctx.fail()` 返回业务化错误响应。
 
 **错误响应的三条路径**（共享 `config.response.fail` 同一包装函数，格式一致）：

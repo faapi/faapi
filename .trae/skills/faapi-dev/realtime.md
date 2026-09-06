@@ -121,6 +121,8 @@ export async function POST(ctx, body: ChatBody) {
 - handler 返回或抛错时框架自动 `close` 兜底,避免连接泄漏
 - SSE 与 `ctx.json`/`ctx.html` 互斥(handler 只能返回一个)
 
+> **非流式 handler 的断连感知**：SSE 之外的路径用 `ctx.request.signal`（已接线客户端断连）,长耗时上游调用传 `fetch(url, { signal: ctx.request.signal })` 即可在客户端取消时中止上游。详见 [route.md](./route.md) 的「客户端断连信号」。
+
 ### handler 返回 `Response(ReadableStream)` — 流式透传(不缓冲)
 
 除 `ctx.sse()` 外,handler 也可以直接返回一个 body 为 `ReadableStream` 的 `Response`,框架会**流式透传,不缓冲**(源码:`toResponse` 对 `Response` 对象原样返回或用 `value.body` 重建,对裸 `ReadableStream` 直接作 body)。

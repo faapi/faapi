@@ -31,6 +31,34 @@ request → toWebRequest → createContext → matchRoute
 
 dev 按需模式下，handler.js 由 `loadRouteModule` 先 `ensureCompiled` 编译再 import，zod.js 由 `ensureSchemaGenerated` 触发生成，均在首次请求时完成（详见 [compileOnDemand](../cli/compileOnDemand.md)）。prod 模式跳过 `ensureSchemaGenerated`——build 阶段已固化全部 zod.js。
 
+## 客户端断连信号（ctx.request.signal）
+
+每个请求创建一个 `AbortController`，其 signal 传入 `toWebRequest` 构造的 Web Request——即 `ctx.request.signal` 是**已接线客户端断连**的标准 Web AbortSignal：
+
+```
+handleRequest
+  → new AbortController()
+  → toWebRequest(req, bodyLimit, controller.signal)   // signal 进入 Request
+  → res.on('close', () => { if (!res.writableEnded) controller.abort() })
+```
+
+- **触发时机**：`res` 的 `close` 事件且 `writableEnded === false`（响应未写完连接就断开 = 客户端提前断连）时 abort；响应正常完成后 `close` 也触发（keep-alive 场景），但此时 `writableEnded === true`，不会误触发
+- **典型用法**：非流式 handler 的长耗时上游调用携带该信号，客户端取消即中止上游（LLM 网关转发、批量任务等）：
+
+```ts
+export async function POST(ctx, body) {
+  const upstream = await fetch('https://api.example.com/slow', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal: ctx.request.signal,  // 客户端断开 → 上游 fetch 立即中止
+  });
+  return upstream.json();
+}
+```
+
+- **与 SSE 的关系**：SSE 路径的 `ctx.sse().aborted`（stream cancel 检测）保持独立并存——SSE handler 用 `writer.aborted` 轮询，非流式 handler 用 `ctx.request.signal`，互不影响
+- 信号触发后框架不自动中断 handler 执行，由业务代码通过 signal 自行决定中止点（fetch 传参 / `signal.addEventListener` / `throw signal.reason`）
+
 ## 相关模块
 
 - `matchRoute.ts` - 路由匹配

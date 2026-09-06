@@ -221,6 +221,25 @@ export function GET(ctx) {
 
 详见 [realtime.md](./realtime.md)。
 
+### 客户端断连信号（长耗时上游调用）
+
+`ctx.request.signal` 已接线客户端断连——客户端提前断开时触发（响应正常完成不误触发）。非流式 handler 的长耗时上游调用（LLM 转发、批量任务）携带该信号，客户端取消即中止上游、不再白跑计费：
+
+```ts
+// src/api/relay/handler.ts
+export async function POST(ctx, body) {
+  const upstream = await fetch('https://api.example.com/slow-task', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: ctx.request.signal,  // 客户端断开 → 上游 fetch 立即中止
+  });
+  return upstream.json();
+}
+```
+
+上游 fetch 被中止时抛 `AbortError`，由全局错误中间件兜底（socket 已断，响应写入无效，无需特殊处理）。SSE 流式路径用 `ctx.sse().aborted` 轮询（见 [realtime.md](./realtime.md)），两者并存。
+
 ## 文件上传
 
 ```ts

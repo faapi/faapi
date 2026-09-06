@@ -41,6 +41,10 @@ return ctx.fail({ status: 404, code: 'USER_NOT_FOUND', message: '用户不存在
 
 `FailOptions` 为本模块导出的 interface（`{ status?: number; code?: string; message: string }`），用户可直接引用做参数类型约束。
 
+## ctx.request.signal（客户端断连信号）
+
+`ctx.request` 是框架从 Node IncomingMessage 构造的 Web Request，其 `signal` 已接线到连接生命周期：客户端提前断开（响应未写完连接即 close）时信号触发，响应正常完成不误触发。非流式 handler 可把 `ctx.request.signal` 透传给上游 `fetch(url, { signal })`，客户端取消即中止上游调用（LLM 网关转发等场景）。接线实现与语义详见 [createServer](../server/createServer.md) 的「客户端断连信号」章节；SSE 路径用 `ctx.sse().aborted`（[sse](./sse.md)），两者并存。
+
 ## 相关模块
 
 - `createContext.ts` - 创建 FaapiContext 实例

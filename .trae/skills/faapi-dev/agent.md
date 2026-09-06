@@ -64,6 +64,8 @@ export default {
 
 `llms.<provider>.apiKey` 等通过 `process.env.XXX` 读取，配合 `.env` 文件管理敏感值，详见 [multi-env.md](./multi-env.md)。
 
+**apiKey 未配置可见性**：某 provider 的 `apiKey` 空/缺失（如 `process.env.XXX ?? ''` 且 env 未设置）时，启动日志会 warn 提示 `llms.<provider>.apiKey is empty`（该 provider 请求将省略 Authorization 头，首次调用大概率上游 401）——照常注册不跳过（部分网关无需 key）。想保持「key 未配置 → agent 参数 undefined → 接口 503」的语义，业务侧按 env 条件整体省略 `agent` 配置块。
+
 ## 目录结构
 
 ```

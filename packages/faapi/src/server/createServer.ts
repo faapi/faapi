@@ -56,6 +56,7 @@ const DEFAULT_BODY_LIMIT = 10 * 1024 * 1024; // 10MB
 function toWebRequest(
   req: IncomingMessage,
   bodyLimit: number = DEFAULT_BODY_LIMIT,
+  requestSignal?: AbortSignal,
 ): {
   request: Request;
   /** 已解析的 URL（pathname/searchParams 由调用方复用,免重复 new URL） */
@@ -76,7 +77,10 @@ function toWebRequest(
 
   // GET/HEAD 不应该有 body
   if (method === 'GET' || method === 'HEAD') {
-    return { request: new Request(url.toString(), { method, headers }), url };
+    return {
+      request: new Request(url.toString(), { method, headers, signal: requestSignal }),
+      url,
+    };
   }
 
   // content-length 快速判定：声明长度超限直接抛 PayloadTooLargeError,
@@ -99,6 +103,7 @@ function toWebRequest(
       headers,
       body: limitedStream,
       duplex: 'half',
+      signal: requestSignal,
     } as RequestInit),
     url,
   };
@@ -377,6 +382,7 @@ function prepareRequest(
   bodyLimit: number,
   trustedProxy: boolean,
   registries?: AppRegistries,
+  requestSignal?: AbortSignal,
 ): {
   request: Request;
   url: URL;
@@ -385,7 +391,7 @@ function prepareRequest(
   method: string;
   urlPath: string;
 } {
-  const { request, url } = toWebRequest(req, bodyLimit);
+  const { request, url } = toWebRequest(req, bodyLimit, requestSignal);
   const method = request.method.toUpperCase();
   const urlPath = url.pathname;
   const ctx = createContextFromUrl(
@@ -586,9 +592,23 @@ async function handleRequest(
   // meta/ctx 兜底：请求准备阶段抛错（如 content-length 超限的 413）时尚无 ctx
   let meta: ResponseMeta = { headers: {}, setCookies: [] };
   let ctx: FaapiContext | undefined;
+  // 客户端断连信号：每请求一个 AbortController，signal 进入 Request（ctx.request.signal）
+  // res 'close' 在响应正常完成（keep-alive）时也会触发，用 writableEnded 区分——
+  // 响应未写完连接就断开（客户端提前断连）才 abort，正常完成不误触发
+  const abortController = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) abortController.abort();
+  });
   try {
     // 1. 准备请求上下文（toWebRequest + createContext）——URL 全请求只解析一次
-    const prepared = prepareRequest(req, config, bodyLimit, trustedProxy, registries);
+    const prepared = prepareRequest(
+      req,
+      config,
+      bodyLimit,
+      trustedProxy,
+      registries,
+      abortController.signal,
+    );
     ctx = prepared.ctx;
     meta = prepared.meta;
     const { request, url, method, urlPath } = prepared;

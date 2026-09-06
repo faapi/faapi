@@ -120,6 +120,7 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 | --- | --- |
 | `config.agent` 整块未设置 | warn + return,不注册工厂 |
 | `config.agent.llms` 未设置 | warn + return,不注册工厂 |
+| `config.agent.llms.<key>.apiKey` 空/缺失（含空白字符） | **warn + 照常注册**——启动日志提示该 provider 的请求将省略 Authorization 头（上游大概率 401）,把「key 未配置」从首次 LLM 调用的上游 401 提前到启动日志;不跳过注册（部分网关/本地模型场景无需 key） |
 | `config.agent.defaultAgent` 未设置 | 正常注册,`deps.agentName` 为空字符串,handler 需 `agent.run(input, { agent: 'name' })` 显式指定 |
 | `config.agent.defaultLlm` 未设置 | 正常注册,用 `llms` 第一个 key 作默认 |
 | `config.agent.defaultLlm` 指向不存在的 key | warn + return,不注册工厂 |
