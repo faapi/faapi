@@ -557,14 +557,7 @@ faapi 提供独立 [skillRegistry](https://github.com/faapi/faapi/blob/main/pack
 ```ts
 // plugins/db-skills.ts(业务方自定义插件)
 import { MongoClient } from 'mongodb';
-import {
-  hydrateSkillRegistry,
-  upsertSkill,
-  removeSkill,
-  getSkill,
-  listSkills,
-  type AgentCore,
-} from '@faapi/faapi';
+import type { AgentCore } from '@faapi/faapi';
 import type { FaapiPlugin } from '@faapi/faapi';
 
 interface DbSkill {
@@ -597,16 +590,20 @@ export default {
     // onReady 启动时全量加载
     config.lifecycle = config.lifecycle ?? {};
     const prevOnReady = config.lifecycle.onReady;
-    config.lifecycle.onReady = async (ctx) => {
+    config.lifecycle.onReady = async (hookCtx) => {
       await client.connect();
-      await prevOnReady?.(ctx);
+      await prevOnReady?.(hookCtx);
+
+      // v4:经 LifecycleContext.registries 读写 **app 实例**的 skill 注册表
+      // (与 app 生命周期绑定;全局函数 hydrateSkillRegistry 等不再进入 app 请求链路)
+      const skillRegistry = hookCtx.registries.skill;
 
       const skills = await client
         .db('faapi')
         .collection<DbSkill>('skills')
         .find()
         .toArray();
-      hydrateSkillRegistry(skills.map(skillToCore));
+      skillRegistry.hydrate(skills.map(skillToCore));
 
       // 监听 DB 变更增量更新(热更新)
       client
@@ -618,9 +615,9 @@ export default {
             change.operationType === 'insert' ||
             change.operationType === 'update'
           ) {
-            upsertSkill(skillToCore(change.fullDocument!));
+            skillRegistry.upsert(skillToCore(change.fullDocument!));
           } else if (change.operationType === 'delete') {
-            removeSkill(change.documentKey.name as string);
+            skillRegistry.remove(change.documentKey.name as string);
           }
         });
     };
@@ -753,4 +750,4 @@ DB skill 只实现 `AgentCore` 接口（LLM 可见字段），无需 `filePath` 
 - [ ] sub-agent handler 导出 `run` 函数时无 trace——需 trace 时让 sub-agent 走默认 reactLoop（不导出 `run`）
 - [ ] `pnpm typecheck` 通过
 - [ ] `faapi dev` 启动后首次 agent 调用能触发按需编译
-- [ ] 若用 DB-driven skill:plugin 在 `lifecycle.onReady` 调 `hydrateSkillRegistry` 全量灌入 + 监听 DB change stream 调 `upsertSkill` / `removeSkill` 增量更新;DB skill 实现的是 `AgentCore`（不含 `filePath` / `hasRun`）;skill 与 agent 物理隔离——不被 `agents` 参数注入、不被 `@faapi/agent` 子包自动消费、不参与 sub-agent 递归,业务方需自行通过注入器或中间件机制注入 skill 给 handler
+- [ ] 若用 DB-driven skill:plugin 在 `lifecycle.onReady(ctx)` 调 `ctx.registries.skill.hydrate()` 全量灌入 + 监听 DB change stream 调 `ctx.registries.skill.upsert() / remove()` 增量更新(v4 经 app 实例注册表,全局函数不再进入 app 链路);DB skill 实现的是 `AgentCore`（不含 `filePath` / `hasRun`）;skill 与 agent 物理隔离——不被 `agents` 参数注入、不被 `@faapi/agent` 子包自动消费、不参与 sub-agent 递归,业务方需自行通过注入器或中间件机制注入 skill 给 handler

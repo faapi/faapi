@@ -68,7 +68,7 @@ ctx.wrapHandler((original) => (req, res) => {
 - `enable: false` 的插件会被跳过（`loadPlugins.ts`）。
 - 同名插件（按 specifier 去重）仅加载一次，重复声明会 warn。
 - 插件 `setup` 不是函数时跳过并 warn。
-- 插件加载失败（包不存在/import 失败）时 warn 但不抛错，不影响其他插件和主流程。
+- 插件加载失败（包不存在 / import 失败 / 缺 setup）时收集进 `loadPlugins` 返回的 `failures` 清单，加载完成后 `console.error` 汇总（含每个失败的原因），不中断其他插件和主流程。`PluginContext.registries` 提供 app 级注册表（tool/agent/skill/agentHandle），供插件读写当前 app 的注册表实例。
 
 ## 内置插件
 

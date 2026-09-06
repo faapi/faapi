@@ -199,9 +199,14 @@ export default {
 } satisfies FaapiConfig;
 ```
 
-## ETag / 中间件实例
+## ETag / compression（v4 内建）
 
-faapi 不内置 rateLimit / timeout / cluster 等。详见 [recipes.md](./recipes.md)。响应压缩建议通过反向代理（nginx/Caddy）处理。
+| 配置 | 说明 |
+|------|------|
+| `etag: true` | GET/HEAD 2xx 响应自动生成弱 ETag，`If-None-Match` 命中返回 304。handler 显式 `ctx.setETag()` 时优先于内建生成 |
+| `compression: true` 或 `{ threshold: 2048 }` | 响应压缩，按 `Accept-Encoding` 协商 br > gzip > deflate；SSE/流式自动跳过，自动补 `Vary: Accept-Encoding`；threshold 默认 1024 字节 |
+
+仍不内置 rateLimit / timeout / cluster 等——自行实现见 [recipes.md](./recipes.md)。
 
 ## 常见坑点
 

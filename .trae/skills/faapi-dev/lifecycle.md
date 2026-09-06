@@ -9,13 +9,15 @@
 ```ts
 export default {
   lifecycle: {
-    async onReady({ rootDir, routes, server }) {
+    async onReady({ rootDir, routes, server, registries }) {
       // server 启动后调用
       // 初始化数据库连接、Redis 等
       console.log(`Server ready with ${routes.length} routes`);
+      // DB-driven skill 经 app 实例注册表灌入(与 app 生命周期绑定):
+      // registries.skill.hydrate(skills)
     },
     async onClose({ rootDir, server }) {
-      // 优雅关闭时调用(SIGTERM/SIGINT)
+      // 优雅关闭时调用(SIGTERM/SIGINT,默认注册;drain 在途请求后执行)
       // 清理资源
       console.log('Server shutting down');
     },
@@ -34,7 +36,7 @@ export default {
 | 钩子 | 时机 | 用途 |
 |------|------|------|
 | `onReady` | server.listen 后 | 初始化资源（DB 连接、缓存预热） |
-| `onClose` | SIGTERM/SIGINT 时 | 优雅关闭（断开连接、释放资源） |
+| `onClose` | SIGTERM/SIGINT 时 | 优雅关闭（断开连接、释放资源）。信号默认注册：收到信号 → drain 在途请求 → 执行 onClose → 退出 |
 | `onError` | 错误响应已发出后 | 副作用（日志上报、告警、链路追踪） |
 
 ## LifecycleContext
@@ -44,6 +46,7 @@ interface LifecycleContext {
   rootDir: string;
   routes: RouteManifest;
   server: Server;
+  registries: AppRegistries; // app 级注册表(tool/agent/skill/agentHandle)
 }
 ```
 

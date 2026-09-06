@@ -29,7 +29,7 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 | 写 WebSocket / SSE / 流式响应 | [realtime.md](./realtime.md) | `WS` 导出 / `ctx.sse()` |
 | 写 agent / tool / 多 agent 协作 / LLM 驱动业务 | [agent.md](./agent.md) | `src/agents/<name>/handler.ts` / `src/tools/<name>/handler.ts` / `agent` 参数注入 |
 | agent / tools 鉴权 / 工作区隔离 / 多租户 tool 权限 | [agent.md](./agent.md) 的「agent / tools 鉴权（工作区）」章节 | `beforeToolCall` / `filterTools` / ctx 传递 |
-| ETag / compression / rateLimit / cluster 等自实现功能 | [recipes.md](./recipes.md) | 业务方自行实现中间件示例 |
+| rateLimit / 请求超时 / cluster 等自实现功能 | [recipes.md](./recipes.md) | 业务方自行实现中间件示例（ETag / compression 已内建为 `config.etag` / `config.compression`，见 [config.md](./config.md)） |
 | dev 启动失败 / 路由不生效 / 400/500 错误 排查 | [debug.md](./debug.md) | 排查问题 |
 | 测试 handler / 中间件 / 注入器 / E2E / WebSocket 路由 | [testing.md](./testing.md) | `createContext` + `invokeHandler` 无服务器测试 / `createTestServer` + `fetch` E2E / `connectWs` WS 路由 |
 
@@ -48,7 +48,8 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 - **包管理器**:pnpm
 - **模块系统**:ESM,`moduleResolution: Bundler`,本地相对导入路径不写后缀
 - **dev 启动**:`faapi` / `faapi dev`(Vite 风格按需编译,近乎瞬开)
-- **prod 构建**:`faapi build` → `node dist/main`
+- **prod 构建**:`faapi build` → `node dist/main`(构建时清空产物目录;CJS 项目缺 `type: module` 会告警)
+- **内建能力**:`config.compression`(gzip/deflate/br 响应压缩)、`config.etag`(GET/HEAD 弱 ETag + 304 协商)、HEAD 请求自动复用 GET handler、SIGTERM/SIGINT 默认优雅停机(drain 在途请求)
 - **类型校验**:dev 和 build 都不做类型检查（esbuild 只编译不检查类型），用户需自己跑 `pnpm typecheck`
 - **按需编译(dev 模式)**:dev 启动时只编译 config + 生成路由清单(零 import handler.js / 中间件),handler.js / zod.js / 中间件模块在**首次请求**时才触发编译/生成/加载(配合 mtime 缓存复用未变更产物)。watcher 文件变化时清缓存,下次请求按需重建。首次请求有约 50ms 单文件延迟,后续请求复用缓存。prod 模式(`faapi build`)预编译全部产物,启动时直接读取
 - **zod 依赖**:`zod@^4` 是 faapi 的 `peerDependencies`,业务方必须自行安装。框架生成的 `zod.js`(每个 handler 一个,运行时按需 import 做 `safeParse`)位于业务方项目目录,顶部固定为 `import { z } from 'zod'`,需项目根 `node_modules` 可解析到 zod。未安装时首次请求会报 `Cannot find package 'zod'`

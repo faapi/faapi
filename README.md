@@ -13,6 +13,9 @@ faapi 是一个 Node.js 框架，核心理念是"函数即接口"。编写普通
 - **WebSocket 路由**：导出 `WS` 函数即声明 WS 路由，握手阶段复用洋葱中间件鉴权
 - **SSE 流式响应**：`ctx.sse()` 返回 `SseWriter`，适用于 LLM 流式输出、通知推送
 - **动态路由**：`[id]` 动态参数、`[...slug]` catch-all、`(group)` 分组
+- **响应压缩**：`compression: true`，按 `Accept-Encoding` 协商 br/gzip/deflate，SSE 自动跳过
+- **ETag/304 协商**：`etag: true`，GET/HEAD 自动生成弱 ETag，条件请求命中返回 304
+- **优雅停机**：SIGTERM/SIGINT 默认注册，drain 在途请求后再退出
 - **MCP 集成**：LLM 可查询路由 schema
 - **配置文件**：`faapi.config.ts` 支持统一响应格式、全局错误处理、生命周期钩子、全局中间件/注入器
 - **ESM only**：原生 ES Modules，Node.js >= 24。faapi 仅支持 ESM（`type: "module"`），不提供 CJS 产物——AST 分析与 esbuild 编译链路依赖 ESM 的确定性模块解析，支持 CJS 会增加维护成本而不带来额外能力

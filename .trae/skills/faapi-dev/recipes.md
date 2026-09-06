@@ -2,9 +2,18 @@
 
 以下功能 faapi **不内置**——它们要么在框架层面实现"看上去有但不实用"（handler 已跑完才生效），要么与框架设计自相矛盾。这里提供中间件示例，业务方按需在 `middlewares` 中自行注册。
 
-## ETag 协商缓存
+## ETag 协商缓存（内建 + 手动早退出）
 
-faapi 提供 `ctx.setETag(value)` 方法设置 ETag 响应头，但**不自动做 304 协商缓存**——业务方根据自身数据特征在 handler 中自行判断。
+**内建**（v4 起）：`config.etag: true` 即自动为 GET/HEAD 2xx 响应生成弱 ETag 并协商 `If-None-Match`（命中返回 304）:
+
+```ts
+// faapi.config.ts
+export default {
+  etag: true,
+} satisfies FaapiConfig;
+```
+
+适用场景是省**带宽**。若要省**计算**（版本没变就跳过重量级查询），用 `ctx.setETag` 手动早退出——handler 显式设置的 ETag 优先于内建生成:
 
 ```ts
 // api/items/[id]/handler.ts
@@ -25,7 +34,7 @@ export async function GET(ctx) {
 }
 ```
 
-> **为什么不自动做 304？** 框架在 handler 执行前不知道内容是否变化——必须 handler 自己告知（如上面先查 version）。框架级自动 ETag（读 body 算 hash）在动态 API 场景下 handler 已经全跑完了，304 只省带宽不省计算，收益有限。
+> **两种策略如何选**：内建 etag 零配置省带宽（handler 总会执行）；手动 `ctx.setETag` 早退出省计算（先查版本号再决定是否跑重量查询）。两者可共存，handler 设置优先。
 
 ## 限流
 
@@ -113,62 +122,15 @@ faapi build        # 先构建产物
 node cluster.ts    # 再启动 cluster
 ```
 
-## 响应压缩
+## 响应压缩（已内建）
 
-faapi 不内置响应压缩中间件——动态 API 的响应多为小 JSON，压缩收益有限且增加 CPU 开销。生产环境**推荐在反向代理（nginx/Caddy）层处理压缩**，faapi 仅返回未压缩响应。
-
-如需在应用层压缩（如自托管无反向代理场景），用 `node:zlib` 自行实现中间件：
+`config.compression: true` 即启用（v4 起内建）：按 `Accept-Encoding` 协商 br > gzip > deflate，SSE/流式响应自动跳过，自动补 `Vary: Accept-Encoding`。`threshold` 选项控制最小压缩字节数（默认 1024，小 payload 压缩反而变大）:
 
 ```ts
-// middlewares/compression.ts
-import type { FaapiMiddleware } from '@faapi/faapi';
-import { gzip, deflate } from 'node:zlib';
-import { promisify } from 'node:util';
-
-const gzipAsync = promisify(gzip);
-const deflateAsync = promisify(deflate);
-
-export function compression(): FaapiMiddleware {
-  return async (ctx, next) => {
-    // next() 返回内层 Response（faapi 洋葱模型，中间件可替换内层响应）
-    const response = await next();
-
-    // 已压缩 / 非 2xx / 无 body → 透传
-    if (response.headers.get('content-encoding')) return response;
-    if (response.status < 200 || response.status >= 300) return response;
-
-    const acceptEncoding = ctx.headers.get('accept-encoding') ?? '';
-    if (!acceptEncoding.includes('gzip') && !acceptEncoding.includes('deflate')) {
-      return response;
-    }
-
-    const body = await response.text();
-    if (!body) return response;
-
-    try {
-      let buf: Buffer;
-      let encoding: string;
-      if (acceptEncoding.includes('gzip')) {
-        buf = await gzipAsync(Buffer.from(body));
-        encoding = 'gzip';
-      } else {
-        buf = await deflateAsync(Buffer.from(body));
-        encoding = 'deflate';
-      }
-      const headers = new Headers(response.headers);
-      headers.set('Content-Encoding', encoding);
-      headers.set('Content-Length', String(buf.byteLength));
-      return new Response(buf, { status: response.status, headers });
-    } catch {
-      return response; // 压缩失败透传原响应
-    }
-  };
-}
-
 // faapi.config.ts
 export default {
-  middlewares: [compression()],
+  compression: true,                    // 或 { threshold: 2048 }
 } satisfies FaapiConfig;
 ```
 
-> **注意**：中间件在 `await next()` 之后返回新 Response 会替换内层响应。流式响应（SSE）的 handler 返回后由框架自动 close writer，压缩中间件拿到的是已 finalize 的 Response；WebSocket 事件回调阶段不走洋葱中间件，无需特殊处理。
+> 生产环境仍可选在反向代理（nginx/Caddy）层压缩——若反代已开启压缩，faapi 侧无需再启用，避免双重压缩。

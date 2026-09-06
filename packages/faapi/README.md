@@ -48,6 +48,11 @@ node dist/main             # 启动生产服务器
 - 洋葱模型中间件：`(ctx, next) => {}`
 - 依赖注入：注入器按参数名匹配 handler 参数
 - WebSocket 路由：导出 `WS` 函数声明
+- SSE 流式响应：`ctx.sse()` 流式推送（LLM 输出、通知推送）
+- 响应压缩：`compression: true`，gzip/deflate/br 协商，SSE 自动跳过
+- ETag/304 协商：`etag: true`，GET/HEAD 弱 ETag 自动生成与协商
+- 优雅停机：SIGTERM/SIGINT 默认注册，drain 在途请求（`FAAPI_SHUTDOWN_TIMEOUT_MS` 可调）
+- app 级注册表：tool/agent/skill 注册表随 app 实例创建与销毁，多 app 同进程隔离
 - SSE 流式响应：`ctx.sse()` 推送
 - 动态路由：`[id]` / `[...slug]` / `(group)`
 - MCP 集成：LLM 可查询路由 schema

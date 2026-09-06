@@ -59,6 +59,8 @@ export function GET(query: Query) {
 
 **URL 参数都是 string**,但 faapi 通过 AST 类型校验自动转换:
 - 声明 `page: number`,传入 `?page=1` → `query.page === 1`(number)
+- HEAD 请求自动复用同路径 GET handler（无显式 HEAD 路由时），探活/健康检查直接可用
+- DELETE 可携带 JSON body：handler 声明 `body` 参数即收到请求体（不做 schema 校验）；主输入仍是 query
 - 声明 `page: number`,传入 `?page=abc` → 返回 422（TYPE_MISMATCH）
 - 缺少必填字段 `?pageSize=10`(没有 page) → 返回 400（MISSING_FIELD）
 
