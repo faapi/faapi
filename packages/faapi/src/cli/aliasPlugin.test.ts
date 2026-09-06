@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { toProdExtension, createAliasPlugin, buildAliasPlugins } from './aliasPlugin';
@@ -224,5 +224,40 @@ describe('createAliasPlugin onLoad', () => {
     const result = applyOnLoad(createAliasPlugin(config), importer);
     expect(result).toBeDefined();
     expect(result!.contents).toContain('./mod/sub.js');
+  });
+
+  it('src 外 importer（rootDir 根，config 场景）引用 src 内模块时剥离 src/ 前缀', () => {
+    mkdirSync(join(tempDir, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(tempDir, 'src', 'lib', 'errors.ts'), 'export class E {}\n');
+    writeFileSync(
+      join(tempDir, 'faapi.config.ts'),
+      `import { E } from './src/lib/errors';\n`,
+      'utf-8',
+    );
+    // esbuild onLoad 传入的 args.path 是 realpath（macOS /var → /private/var）
+    const importer = realpathSync(join(tempDir, 'faapi.config.ts'));
+
+    const result = applyOnLoad(buildAliasPlugins(tempDir)[0]!, importer);
+    expect(result).toBeDefined();
+    // 产物在 dist 根（faapi.config.js），相对 import 不带回退前缀
+    expect(result!.contents).toContain('./lib/errors.js');
+  });
+
+  it('src 外子目录 importer（本地插件场景）引用 src 内模块时剥离前缀并回退 ../', () => {
+    mkdirSync(join(tempDir, 'plugins'), { recursive: true });
+    mkdirSync(join(tempDir, 'src', 'lib'), { recursive: true });
+    writeFileSync(join(tempDir, 'src', 'lib', 'errors.ts'), 'export class E {}\n');
+    writeFileSync(
+      join(tempDir, 'plugins', 'db-skills.ts'),
+      `import { E } from '../src/lib/errors';\n`,
+      'utf-8',
+    );
+    // esbuild onLoad 传入的 args.path 是 realpath（macOS /var → /private/var）
+    const importer = realpathSync(join(tempDir, 'plugins', 'db-skills.ts'));
+
+    const result = applyOnLoad(buildAliasPlugins(tempDir)[0]!, importer);
+    expect(result).toBeDefined();
+    // 产物在 dist 子目录（plugins/db-skills.js），相对 dist 根的剥离路径需回退一级
+    expect(result!.contents).toContain("from '../lib/errors.js'");
   });
 });

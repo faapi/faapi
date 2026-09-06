@@ -10,8 +10,23 @@ import type { Http2Options } from '../server/createServer';
 
 /**
  * 生命周期钩子
+ *
+ * 执行时序:onBoot(.listen 调用前)→ server.listen → listen 回调内 onReady → 运行期 onError → 关闭时 onClose
  */
 export interface LifecycleHooks {
+  /**
+   * 服务器 listen 之前调用(启动校验钩子)
+   *
+   * 时机:`app.listen()` 内、`server.listen` 调用之前——server 已创建但未监听
+   * (`server.listening === false`),路由/tool/agent 清单已水合、插件已加载。
+   *
+   * 适合启动校验(环境变量、下游依赖可达性)、DB 迁移等**失败即不该暴露端口**的逻辑:
+   * 钩子抛错 → `listen()` 以原始错误 reject,`server.listen` 不会被调用,端口不暴露。
+   *
+   * 与 onReady 的差异:onReady 在 listen 回调内执行,失败时端口已开,
+   * 存在"接受连接但不服务"的窗口——启动校验请用 onBoot,资源初始化用 onReady。
+   */
+  onBoot?: (ctx: LifecycleContext) => Promise<void> | void;
   /** 服务器启动后调用（适合初始化数据库连接等） */
   onReady?: (ctx: LifecycleContext) => Promise<void> | void;
   /** 服务器关闭时调用（适合清理资源、优雅关闭） */
@@ -40,7 +55,7 @@ export interface LifecycleContext {
   rootDir: string;
   /** 当前路由清单 */
   routes: import('../router/routeTypes.js').RouteManifest;
-  /** 服务器实例 */
+  /** 服务器实例（onBoot 钩子触发时已创建但未监听，`listening === false`） */
   server: import('node:http').Server;
   /** app 级注册表——skill 等运行时动态注册路径（`registries.skill.upsert(...)`） */
   registries: import('../injection/registries.js').AppRegistries;

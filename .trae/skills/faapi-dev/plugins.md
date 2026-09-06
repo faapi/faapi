@@ -228,4 +228,13 @@ export default {
 } satisfies FaapiConfig;
 ```
 
+### 本地 TS 插件加载规则
+
+`{ path: './plugins/xxx' }` 指向项目内 TS/JS 文件时的加载路径：
+
+- **探测**：path 无扩展名时按 `xxx.ts` → `xxx.js` → `xxx/index.ts` → `xxx/index.js` 探测（Node ESM 不补全扩展名，框架负责解析）
+- **dev**：`.ts` 插件按需编译到 `.faapi/plugins/` 后加载（首次启动即编译，无需预热）；插件内部 `import '../src/xxx'` 无扩展名可用（esbuild 编译时重写）
+- **prod**：`faapi build` 把 `.ts` 插件编译到 `dist/plugins/`（构建日志 `[2.5/8] Compiling local plugins`），`node dist/main` 直接加载产物；改了插件源码后必须重新 build（产物 stale 时启动报错指引，不静默用旧产物）
+- **失败可见**：插件加载失败进 `failures` 汇总 `console.error`（带修复指引），不静默缺失
+
 **与中间件的区别**:中间件拦截每个请求(洋葱模型),插件在启动时 setup 一次(如启动后台服务、注册协议、包装 handler 集成其他框架)。

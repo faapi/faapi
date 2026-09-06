@@ -17,7 +17,7 @@ import type { FaapiConfig } from '@faapi/faapi';
 
 export default {
   // 生命周期钩子 → [lifecycle.md]
-  lifecycle: { onReady, onClose, onError },
+  lifecycle: { onBoot, onReady, onClose, onError },
   // 扩展 ctx → [extend-context.md]
   extendContext(ctx) { ... },
   // CORS → [cors.md]

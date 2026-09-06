@@ -10,7 +10,7 @@ CLI 和 server 启动时需要统一的配置结构，包含根目录、app 目�
 
 - CLI 参数解析后生成 FaapiConfig
 - server 启动时读取 FaapiConfig
-- 扩展点：lifecycle（onReady/onClose/onError）、extendContext（扩展 ctx 方法）、cors（跨域配置）、helmet（安全头）、compression（响应压缩，gzip/deflate/br 协商，默认关闭）、etag（ETag/304 条件请求协商，默认关闭）、bodyLimit（请求体限制）、logger（结构化日志）、http2（HTTP/2 支持）、trustedProxy（是否信任反向代理的 X-Forwarded-For，默认 false）、middlewares（全局中间件）、injectors（全局注入器）、plugins（应用级插件）、agent（Phase 2.4，agent 子系统全局配置）
+- 扩展点：lifecycle（onBoot/onReady/onClose/onError）、extendContext（扩展 ctx 方法）、cors（跨域配置）、helmet（安全头）、compression（响应压缩，gzip/deflate/br 协商，默认关闭）、etag（ETag/304 条件请求协商，默认关闭）、bodyLimit（请求体限制）、logger（结构化日志）、http2（HTTP/2 支持）、trustedProxy（是否信任反向代理的 X-Forwarded-For，默认 false）、middlewares（全局中间件）、injectors（全局注入器）、plugins（应用级插件）、agent（Phase 2.4，agent 子系统全局配置）
 
 ## agent 配置块（Phase 2.4）
 
@@ -71,6 +71,8 @@ export default {
 
 - **统一响应格式**:框架内置 `config.response` 配置(`ok`/`fail` 可选),handler 直接 `return data` 时由 `invokeHandler.wrapResult` 自动用 `ok` 函数包裹(默认 `{ data }`),错误用 `ctx.fail({ status?, code?, message })` 返回(默认 `{ error: { message, ...code? } }`)。详见"统一响应格式"章节。
 - **错误处理**:handler 抛错 → 框架内置 `formatErrorResponse(err)` 兜底 → 仍失败则最简 500 JSON 响应 → 响应发出后触发 `onError` 副作用。业务方如需自定义错误响应,在全局中间件中 try/catch `next()` 即可。
+- `lifecycle.onBoot(ctx)`:**listen 前**触发的启动钩子,在 `server.listen` 调用之前执行(此时 server 已创建但未监听,`server.listening === false`;路由/tool/agent 清单已水合,插件已加载)。适合启动校验(环境变量、下游依赖)、DB 迁移等**失败即不该暴露端口**的逻辑。钩子抛错 → `listen()` 以原始错误 reject,`server.listen` 不会被调用,端口不暴露(与 onReady 的差异:onReady 在 listen 回调内执行,失败时端口已开,存在"接受连接但不服务"的窗口)。
+- `lifecycle.onReady(ctx)`:服务器启动后(listen 回调内)调用,适合初始化数据库连接、缓存预热等。失败时端口已暴露,启动校验请用 onBoot。
 - `lifecycle.onError(error, ctx)`:错误已被处理为响应、响应发出后触发的副作用钩子(参考 Fastify onError 语义)。用于日志/告警/链路追踪,**不修改已生成的响应**。自身抛错被捕获并忽略。
 - `extendContext(ctx)`:创建上下文后调用,用户可挂载自定义方法/属性到 ctx;配合 `declare module '@faapi/faapi'` 增强 FaapiContext 类型。
 - `FaapiContextConfig`:空 interface,用户可通过声明合并增强 `ctx.config` 的类型。

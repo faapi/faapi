@@ -20,12 +20,10 @@ function toProdImportPath(sourceFile: string, importer: string): string {
 }
 
 /**
- * 把 src 下的源文件路径转为剥离 src/ 前缀的产物 import 路径（POSIX 风格，带 .js 后缀）
+ * 把 src 下的源文件路径转为剥离 src/ 前缀的产物路径（相对 dist 根，POSIX 风格，带 .js 后缀）
  *
- * 用于 config 文件（位于 rootDir，不在 src 下）引用 src 内模块的场景：
- * - 源文件 `<rootDir>/src/lib/errors.ts` → 产物 `dist/lib/errors.js`
- * - config 产物位于 `dist/faapi.config.js`（dist 根）
- * - import 路径相对 dist 根：`./lib/errors.js`
+ * 用于 src 外 importer（config 文件、本地插件等，位于 rootDir）引用 src 内模块的场景：
+ * - 源文件 `<rootDir>/src/lib/errors.ts` → 产物 `dist/lib/errors.js` → 相对 dist 根 `./lib/errors.js`
  *
  * 与 `toProdImportPath` 的区别：后者相对 importer 目录（适用于 importer 也在 src 内的场景，
  * outbase 打平后相对结构不变）；本函数相对 src 根（适用于 importer 在 src 外的场景，
@@ -41,6 +39,33 @@ function toStrippedProdImportPath(sourceFile: string, rootDir: string): string {
   rel = rel.split(path.sep).join('/');
   if (!rel.startsWith('.')) rel = './' + rel;
   return toProdExtension(rel);
+}
+
+/**
+ * 把「相对 dist 根」的产物路径改写为「相对 importer 产物位置」的 import 路径
+ *
+ * src 外 importer 的产物位置 = importer 源文件相对 rootDir 的路径（.js 后缀），
+ * 因为 src 外编译（compileConfig 步骤 1a / compileProjectModules）以 rootDir 为
+ * outbase，产物在 `<dist>/` 下保留相对结构。
+ *
+ * - config `faapi.config.ts` → 产物 `faapi.config.js`（dist 根）→ `./lib/errors.js` 保持不变
+ * - 插件 `plugins/db-skills.ts` → 产物 `plugins/db-skills.js`（dist 子目录）
+ *   → 引用 `./lib/errors.js` 需改写为 `../lib/errors.js`（相对 dist 根的路径在
+ *     子目录模块里会解析到 `plugins/lib/errors.js`，错位）
+ */
+function toProdImportFromImporter(importer: string, rootDir: string, relFromDist: string): string {
+  // 两侧 realpath 归一化，兼容 macOS 符号链接（esbuild onLoad 传入的 importer 已是
+  // realpath，rootDir 可能仍是 /var 形式——不归一化则 relative 产生绕行路径）
+  const importerRel = path
+    .relative(toRealPath(path.resolve(rootDir)), toRealPath(importer))
+    .split(path.sep)
+    .join('/');
+  const importerProdDir = path.posix.dirname(toProdExtension(importerRel));
+  if (importerProdDir === '.') return relFromDist;
+  const target = relFromDist.replace(/^\.\//, '');
+  let rel = path.posix.relative(importerProdDir, target);
+  if (!rel.startsWith('.')) rel = './' + rel;
+  return rel;
 }
 
 /**
@@ -191,12 +216,13 @@ export function createAliasPlugin(
                 return full;
               }
               // src 前缀剥离：importer 在 src 外、resolved 在 src 内
-              // → 重写为剥离前缀的产物路径（相对 dist 根）
+              // → 重写为剥离前缀的产物路径（相对 importer 产物位置）
               if (appDirAbs && importerOutsideAppDir && isInsideDir(resolved, appDirAbs)) {
                 modified = true;
-                return `${prefix}${quote}${toStrippedProdImportPath(
-                  resolved,
+                return `${prefix}${quote}${toProdImportFromImporter(
+                  importer,
                   options!.rootDir!,
+                  toStrippedProdImportPath(resolved, options!.rootDir!),
                 )}${quote}`;
               }
               modified = true;
@@ -214,9 +240,10 @@ export function createAliasPlugin(
                 modified = true;
                 // 别名解析到的文件如果在 src 内且 importer 在 src 外，同样剥离前缀
                 if (appDirAbs && importerOutsideAppDir && isInsideDir(file, appDirAbs)) {
-                  return `${prefix}${quote}${toStrippedProdImportPath(
-                    file,
+                  return `${prefix}${quote}${toProdImportFromImporter(
+                    importer,
                     options!.rootDir!,
+                    toStrippedProdImportPath(file, options!.rootDir!),
                   )}${quote}`;
                 }
                 return `${prefix}${quote}${toProdImportPath(file, importer)}${quote}`;
@@ -227,9 +254,10 @@ export function createAliasPlugin(
               if (fs.existsSync(file)) {
                 modified = true;
                 if (appDirAbs && importerOutsideAppDir && isInsideDir(file, appDirAbs)) {
-                  return `${prefix}${quote}${toStrippedProdImportPath(
-                    file,
+                  return `${prefix}${quote}${toProdImportFromImporter(
+                    importer,
                     options!.rootDir!,
+                    toStrippedProdImportPath(file, options!.rootDir!),
                   )}${quote}`;
                 }
                 return `${prefix}${quote}${toProdImportPath(file, importer)}${quote}`;

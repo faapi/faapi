@@ -113,6 +113,66 @@ function createExternalRelativePlugin(): Plugin {
 }
 
 /**
+ * 编译 src 外入口文件及其项目内依赖闭包（compileConfig / 本地 TS 插件编译共用）
+ *
+ * - 入口 + src 外依赖：outbase=rootDir，产物在 `<dist>/` 下保留相对结构
+ *   （如 `plugins/db-skills.ts` → `dist/plugins/db-skills.js`）
+ * - src 内依赖：outbase=rootDir/src（打平前缀，与 compileDevRoutes 一致），
+ *   使入口产物 import 的 src 内模块与 routes/config 共享同一份产物（instanceof 生效）
+ * - aliasPlugin 重写 specifier：相对路径加 .js 后缀；src 外 importer 引用 src 内
+ *   模块时剥离前缀（import 路径相对 importer 产物位置计算，见 aliasPlugin 的
+ *   toProdImportFromImporter）
+ *
+ * @param entryPoints src 外入口文件（绝对路径）；src 内入口请走 compileDevRoutes /
+ *                    compileBuildRoutes / ensureCompiled（打平产物 + 同一运行时对象）
+ * @returns 收集到的 src 内/外依赖文件（供调用方记录 mtime 缓存）
+ */
+export async function compileProjectModules(
+  entryPoints: string[],
+  rootDir: string,
+  dist: string,
+): Promise<{ insideFiles: string[]; outsideFiles: string[] }> {
+  const { insideFiles, outsideFiles } = await collectRelativeImports(entryPoints, rootDir);
+
+  const esbuild = await import('esbuild');
+  const aliasPlugins = buildAliasPlugins(rootDir);
+  const absDist = path.resolve(rootDir, dist);
+
+  // src 外文件（outbase=rootDir）：入口 + src 外依赖，产物保留相对结构
+  await esbuild.build({
+    entryPoints: [...entryPoints, ...outsideFiles],
+    outdir: absDist,
+    outbase: rootDir,
+    bundle: false,
+    platform: 'node',
+    format: 'esm',
+    sourcemap: true,
+    packages: 'external',
+    plugins: aliasPlugins,
+    logLevel: 'silent',
+  });
+
+  // src 内依赖（outbase=rootDir/src，打平前缀，与 compileDevRoutes 一致）
+  if (insideFiles.length > 0) {
+    const appOutbase = path.resolve(rootDir, 'src');
+    await esbuild.build({
+      entryPoints: insideFiles,
+      outdir: absDist,
+      outbase: appOutbase,
+      bundle: false,
+      platform: 'node',
+      format: 'esm',
+      sourcemap: true,
+      packages: 'external',
+      plugins: aliasPlugins,
+      logLevel: 'silent',
+    });
+  }
+
+  return { insideFiles, outsideFiles };
+}
+
+/**
  * build 时编译配置文件，生成 `dist/faapi-config.js`
  *
  * 采用两步编译，使 config 引用的项目模块与 routes 共享同一份运行时对象（instanceof 跨边界生效）：
@@ -158,50 +218,12 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
   // 收集 config 入口文件（绝对路径）
   const configEntryPoints: string[] = [path.resolve(rootDir, baseConfigName)];
 
-  // 步骤 1：逐文件编译 config 源 + 项目模块
-  // 递归收集 config 引用的项目模块（含 tsconfig paths 别名引用）
-  const { insideFiles: appDirFiles, outsideFiles: nonAppDirFiles } = await collectRelativeImports(
+  // 步骤 1：逐文件编译 config 源 + 项目模块（共享实现见 compileProjectModules）
+  const { insideFiles: appDirFiles, outsideFiles: nonAppDirFiles } = await compileProjectModules(
     configEntryPoints,
     rootDir,
+    dist,
   );
-
-  const esbuild = await import('esbuild');
-  const aliasPlugins = buildAliasPlugins(rootDir);
-
-  // 步骤 1a：编译 config 源 + src 外文件（outbase=rootDir）
-  // config 文件位于 rootDir，产物位于 dist 根（如 dist/faapi.config.js）
-  // src 外文件（如 rootDir/base.ts）产物位于 dist/base.js
-  const step1aEntries = [...configEntryPoints, ...nonAppDirFiles];
-  await esbuild.build({
-    entryPoints: step1aEntries,
-    outdir: absDist,
-    outbase: rootDir,
-    bundle: false,
-    platform: 'node',
-    format: 'esm',
-    sourcemap: true,
-    packages: 'external',
-    plugins: aliasPlugins,
-    logLevel: 'silent',
-  });
-
-  // 步骤 1b：编译 src 内文件（outbase=rootDir/src，打平前缀）
-  // 与 compileDevRoutes 一致的 outbase，确保产物路径相同（如 dist/lib/errors.js）
-  if (appDirFiles.length > 0) {
-    const appOutbase = path.resolve(rootDir, 'src');
-    await esbuild.build({
-      entryPoints: appDirFiles,
-      outdir: absDist,
-      outbase: appOutbase,
-      bundle: false,
-      platform: 'node',
-      format: 'esm',
-      sourcemap: true,
-      packages: 'external',
-      plugins: aliasPlugins,
-      logLevel: 'silent',
-    });
-  }
 
   // 步骤 2：编译入口（bundle:true + external 相对路径）
   // 入口源码 import 已编译的 config 产物（带 .js 后缀）+ export base
@@ -210,6 +232,7 @@ export async function compileConfig(options: CompileConfigOptions): Promise<Comp
 
   const entryCode = [baseImport, exportDefault].join('\n');
 
+  const esbuild = await import('esbuild');
   await esbuild.build({
     stdin: { contents: entryCode, resolveDir: absDist, loader: 'ts' },
     outfile: outputFile,

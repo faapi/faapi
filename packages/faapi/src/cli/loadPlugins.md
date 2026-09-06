@@ -28,11 +28,27 @@ plugins: [
 1. 遍历 declarations，解析为统一格式 { specifier, options, enable }（非法声明进 `failures`，不崩启动）
 2. `enable: false` 跳过（唯一运行时开关——插件不应引入环境变量做冗余控制，详见 [pluginTypes.md](../config/pluginTypes.md#开关约定)）
 3. name 去重（已加载的跳过）
-4. await import(resolveSpecifier(specifier, rootDir)) 加载——相对路径声明（`./x.js`）相对**项目根目录**解析为 file URL（此前相对 faapi 包自身产物解析，几乎必然失败）；绝对路径转 file URL；包名原样
+4. `importPluginModule(specifier, rootDir, dist)` 加载：
+   - **包名**（非相对/绝对路径）：原样 import，Node 按包解析
+   - **本地路径**（`./x`、`../x`、绝对路径）：
+     a. 探测源文件——原样（已带扩展名）→ `.ts`/`.js` → `/index.ts`/`/index.js`（Node ESM 对 file URL 不补全扩展名，无扩展名声明由框架探测）
+     b. 产物存在且不比源码旧 → import 产物（build 固化 / dev 已编译产物复用）
+     c. `.ts` 源码 + dev 按需模式（`isDevOnDemandEnabled()`）→ 编译后 import 产物：
+        src 内插件走 `ensureCompiled`（打平产物与 routes 同一运行时对象）；src 外插件走
+        `compileProjectModules`（入口 + src 外依赖 outbase=rootDir 保留结构，src 内依赖
+        打平编译；aliasPlugin 重写 specifier——插件内部 `import '../src/xxx'` 无扩展名由此生效，
+        剥离前缀的 import 路径相对插件产物位置计算，子目录产物正确回退 `../`）
+     d. `.ts` 源码 + 非按需模式（prod / 编程式）且产物 stale → 报错指引 `faapi build`，
+        不静默使用旧产物（与 handler 的 prod 语义一致）
+     e. `.js` 源码：Node 可直接加载，import 源文件
+     f. 找不到任何文件 → 报错带候选文件清单与修复指引（此前仅 `Cannot find module`，无法定位原因）
 5. 取 mod.default ?? mod 作为插件对象
 6. 注入 wrapHandler / wrapUpgradeHandler 收集器到 ctx
 7. 调用 plugin.setup(ctx)
 8. 返回收集到的 handlerWrappers / upgradeWrappers + `failures` 清单
+
+**build 端配合**（[buildCommand](./buildCommand.md) 步骤 2.5）：build 时读 config.plugins 的本地路径
+声明，`compileProjectModules` 编译到 `<dist>/plugins/`（保留相对结构），prod 运行时直接加载产物。
 
 ## 错误口径（单一语义）
 

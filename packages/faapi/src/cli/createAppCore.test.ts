@@ -725,3 +725,92 @@ export function POST(body: CreateUserBody) {
     }
   });
 });
+
+/**
+ * lifecycle.onBoot：listen 前生命周期钩子
+ *
+ * 背景：onReady 在 listen 回调内执行，启动校验失败时端口已开，
+ * 存在"接受连接但不服务"的窗口。onBoot 在 server.listen 调用之前执行，
+ * 适合环境变量校验、下游依赖检查等"失败即不该暴露端口"的逻辑。
+ */
+describe('lifecycle onBoot（listen 前钩子）', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `faapi-onboot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tempDir, { recursive: true });
+    invalidateMiddlewareCache();
+    invalidateProgramCache();
+  });
+
+  afterEach(async () => {
+    invalidateSchemaCache();
+    invalidateMiddlewareCache();
+    invalidateProgramCache();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  /** 写 faapi.config.ts + handler + 编译产物（同进程 globalThis 传递钩子事件） */
+  async function setupApp(configContent: string) {
+    writeFileSync(join(tempDir, 'faapi.config.ts'), configContent, 'utf-8');
+    const handlerPath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
+    mkdirSync(join(handlerPath, '..'), { recursive: true });
+    writeFileSync(handlerPath, `export function GET() { return { hello: 'world' }; }\n`, 'utf-8');
+
+    await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], 'dist');
+    const sorted = sortRoutes(routes);
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'dist');
+    await writeRoutesModule(serialized, join(tempDir, 'dist', 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, 'dist');
+  }
+
+  it('onBoot 在 server.listen 之前触发（listening === false），先于 onReady', async () => {
+    await setupApp(`const g = globalThis;
+g.__onbootEvents = [];
+export default {
+  lifecycle: {
+    onBoot(ctx) {
+      g.__onbootEvents.push(['onBoot', ctx.server.listening]);
+    },
+    onReady(ctx) {
+      g.__onbootEvents.push(['onReady', ctx.server.listening]);
+    },
+  },
+};
+`);
+
+    const { app } = await createAppBase({ rootDir: tempDir, port: 0 });
+    try {
+      await app.listen();
+
+      const events = (globalThis as { __onbootEvents?: unknown[][] }).__onbootEvents ?? [];
+      // onBoot 先于 onReady；onBoot 时 server 未监听，onReady 时已监听
+      expect(events[0]).toEqual(['onBoot', false]);
+      expect(events[1]).toEqual(['onReady', true]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('onBoot 抛错时 listen() reject 且端口未暴露', async () => {
+    await setupApp(`export default {
+  lifecycle: {
+    async onBoot() {
+      throw new Error('DB_HOST is required');
+    },
+  },
+};
+`);
+
+    const port = 20000 + Math.floor(Math.random() * 10000);
+    const { app } = await createAppBase({ rootDir: tempDir, port });
+    // listen() 以 onBoot 的原始错误 reject
+    await expect(app.listen()).rejects.toThrow('DB_HOST is required');
+    // 端口未暴露：连接被拒（ECONNREFUSED）
+    await expect(fetch(`http://localhost:${port}/api/hello`)).rejects.toThrow();
+    // listen 失败，app.server 未绑定
+    expect(app.server).toBeNull();
+  });
+});

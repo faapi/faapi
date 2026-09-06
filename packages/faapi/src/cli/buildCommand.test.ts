@@ -176,6 +176,35 @@ export default [
     expect((ctx.t as (k: string) => string)('hello')).toBe('hello');
   }, 15000);
 
+  it('本地 TS 插件：config.plugins 的 path 声明编译到 dist（prod 可加载）', async () => {
+    writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
+    // src 内依赖：插件 import 无扩展名
+    writeFile('src/lib/helper.ts', `export function greet() { return 'hi'; }\n`);
+    writeFile(
+      'plugins/local-plugin.ts',
+      `import { greet } from '../src/lib/helper';
+export default {
+  name: 'local-plugin',
+  setup() { console.log('[local-plugin]', greet()); },
+};
+`,
+    );
+    writeFile(
+      'faapi.config.ts',
+      `export default { plugins: [{ path: './plugins/local-plugin' }] };\n`,
+    );
+
+    await buildCommand({ rootDir: tempDir });
+
+    // 插件产物 + src 内依赖产物就位（build 步骤 1 全量编译 src）
+    expect(existsSync(join(tempDir, OUT, 'plugins/local-plugin.js'))).toBe(true);
+    expect(existsSync(join(tempDir, OUT, 'lib/helper.js'))).toBe(true);
+
+    // 插件产物 import 指向打平的 src 内依赖（剥离前缀 + 子目录回退）
+    const pluginProd = readFileSync(join(tempDir, OUT, 'plugins/local-plugin.js'), 'utf-8');
+    expect(pluginProd).toMatch(/from ["']\.\.\/lib\/helper\.js["']/);
+  }, 20000);
+
   it('CLI 选项：--dist 改变产物根目录 + 写入 main.js 的 createProdApp 参数', async () => {
     writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
     writeFile(

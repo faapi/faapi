@@ -22,9 +22,9 @@ description: "使用 faapi 框架开发应用。Invoke when 用户要基于 faap
 | 写配置文件 / 了解所有配置字段 | [config.md](./config.md) | `faapi.config.ts` |
 | 配置 CORS | [cors.md](./cors.md) | `cors: { origin: '*' }` |
 | 统一响应格式 / 自定义错误响应 / 绕过 ok 封装 | [response.md](./response.md) | `ok()` 辅助函数、全局错误中间件、`ctx.json` 透传第三方协议响应 |
-| 配置生命周期钩子 | [lifecycle.md](./lifecycle.md) | `lifecycle: { onReady, onClose, onError }` |
+| 配置生命周期钩子 / 启动校验 | [lifecycle.md](./lifecycle.md) | `lifecycle: { onBoot, onReady, onClose, onError }`（onBoot 在 listen 前，失败即不暴露端口） |
 | 扩展 ctx | [extend-context.md](./extend-context.md) | `extendContext(ctx) { ... }` |
-| 写插件 / 集成 Next.js / 启用 @faapi/agent | [plugins.md](./plugins.md) | `@faapi/next` / `@faapi/agent` 集成 |
+| 写插件 / 本地 TS 插件 / 集成 Next.js / 启用 @faapi/agent | [plugins.md](./plugins.md) | `{ path: './my-plugin' }` 本地插件（dev 按需编译 / build 编译进 dist）/ `@faapi/next` / `@faapi/agent` 集成 |
 | 多环境配置 | [multi-env.md](./multi-env.md) | `.env` / `.env.production` |
 | 写 WebSocket / SSE / 流式响应 | [realtime.md](./realtime.md) | `WS` 导出 / `ctx.sse()` |
 | 写 agent / tool / 多 agent 协作 / LLM 驱动业务 | [agent.md](./agent.md) | `src/agents/<name>/handler.ts` / `src/tools/<name>/handler.ts` / `agent` 参数注入 |

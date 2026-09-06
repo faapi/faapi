@@ -371,7 +371,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     registries,
   });
 
-  // 加载插件 + 应用 handler/upgrade 包装器
+  // 加载插件 + 应用 handler/upgrade 包装器（dist 供本地 TS 插件按需编译/产物复用）
   const { handlerWrappers, upgradeWrappers } = await loadPlugins(
     config?.plugins,
     {
@@ -383,6 +383,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       config: pluginConfig,
     },
     rootDir,
+    dist,
   );
   applyPluginWrappers(server, handlerWrappers, upgradeWrappers);
 
@@ -400,6 +401,20 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       // 端口优先级：listen() 参数 > options.port > 环境变量 PORT > 默认 3000
       const envPort = process.env.PORT ? Number(process.env.PORT) : undefined;
       const actualPort = listenPort ?? options?.port ?? envPort ?? DEFAULT_PORT;
+
+      // onBoot 生命周期钩子（listen 前）：启动校验 / DB 迁移等"失败即不该暴露端口"的逻辑。
+      // 此时 server 已创建但未监听、路由/tool/agent 清单已水合、插件已加载。
+      // 抛错 → listen() 以原始错误 reject，server.listen 不会被调用，端口不暴露。
+      if (config?.lifecycle?.onBoot) {
+        try {
+          await config.lifecycle.onBoot({ rootDir, routes: sorted, server, registries });
+          console.log('- onBoot hook executed');
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[faapi] onBoot hook failed: ${message}`);
+          throw err;
+        }
+      }
 
       return new Promise<Server>((resolve, reject) => {
         // listen 阶段错误（端口占用等）转为 Promise reject，避免未监听 'error'

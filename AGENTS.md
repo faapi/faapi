@@ -147,7 +147,7 @@ dev 和 prod 生成完全一致的产物集（`faapi-config.js` + `faapi-routes.
 | `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
 
 - `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `generateToolArtifacts` 生成 `faapi-tools.js`（**仅 tool 清单，不预生成 zod.js**），调 `createDevApp()` + `listen()`（含 `reloadRoutes`/`reloadTools` 热替换能力 + toolRegistry 水合），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` / `app.reloadTools()` 热替换路由/tool）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
-- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 生成 `dist/faapi-routes.js` + 生成 `dist/faapi-tools.js`（tool 清单，可选）+ 每个 handler/tool 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
+- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 编译本地 TS 插件（config.plugins 的 path 声明 → `dist/plugins/`，保留相对结构）+ 生成 `dist/faapi-routes.js` + 生成 `dist/faapi-tools.js`（tool 清单，可选）+ 每个 handler/tool 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
 - `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`createProdApp()` 读 `FAAPI_DIST`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单 + 水合 `dist/faapi-tools.js` tool 清单到 `toolRegistry`，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
 
 `FAAPI_DIST` 是路径参数而非模式标志——`createAppBase` 内部无 `if (isDev)` 分支，统一水合 `faapi-routes.js` + `faapi-tools.js`、统一 `loadConfig(dist)` 读配置、统一按需 import `zod.js`。dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes` + `reloadTools`（重新生成 + 重新水合 tool 清单），prod 的 `createProdApp` 直接返回 `createAppBase` 结果。
@@ -326,6 +326,12 @@ import type { FaapiConfig } from '@faapi/faapi';
 export default {
   // 生命周期钩子
   lifecycle: {
+    // listen 前钩子：启动校验（环境变量、下游依赖）、DB 迁移等"失败即不该暴露端口"的逻辑。
+    // 抛错 → listen() reject 且 server.listen 未调用，端口不暴露（onReady 在 listen 回调内，
+    // 失败时端口已开——启动校验放 onBoot，资源初始化放 onReady）
+    async onBoot({ rootDir, routes }) {
+      if (!process.env.DB_HOST) throw new Error('DB_HOST is required');
+    },
     async onReady({ rootDir, routes, server, registries }) {
       // 初始化数据库连接、Redis 等
       console.log(`Server ready with ${routes.length} routes`);
@@ -384,7 +390,7 @@ export default {
     '@faapi/schema',                          // 包名
     ['@faapi/schema', { stdio: true }],        // 带选项
     { package: '@faapi/schema', enable: true }, // 完整声明
-    { path: './my-plugin' },                    // 本地路径
+    { path: './my-plugin' },                    // 本地路径（.ts 源码 dev 按需编译 / build 编译到 dist，详见 src/cli/loadPlugins.md）
   ],
 
   // agent 子系统全局配置（Phase 2.4，所有字段均可选）

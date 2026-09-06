@@ -11,8 +11,10 @@ import { generateSchemaFiles } from './generateSchemaFiles';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { compileBuildRoutes } from './compileBuildRoutes';
 import { ROUTE_PATTERNS } from '../utils/prodPaths';
-import { compileConfig } from './compileConfig';
+import { compileConfig, compileProjectModules } from './compileConfig';
 import { loadConfig } from '../config/loadConfig';
+import { resolveLocalPluginSource } from './loadPlugins';
+import type { PluginDeclaration } from '../config/pluginTypes';
 import path from 'node:path';
 import fs from 'node:fs';
 import { isInsideDir, toRealPath } from '../utils/prodPaths';
@@ -117,6 +119,22 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   // 2. 配置产物已在步骤 0 编译（compileConfig 内部有 mtime 缓存，无源码变化
   //    时重复调用只会命中缓存——此前重复调用还打印 "Written to" 撒谎日志）
 
+  // 2.5 编译本地 TS 插件（config.plugins 的 path 声明）：源文件 + src 外依赖闭包
+  //     编译到 `<dist>/` 下（保留相对结构），运行时 loadPlugins 直接 import 产物。
+  //     插件引用的 src 内模块已由步骤 1 全量编译，无需重复。
+  const localPluginSources = extractLocalPluginSources(_config?.plugins, rootDir);
+  if (localPluginSources.length > 0) {
+    console.log('\n[2.5/8] Compiling local plugins...');
+    const outside = localPluginSources.filter((p) => {
+      const rel = path.relative(rootDir, p).replace(/\\/g, '/');
+      return !rel.startsWith('src/');
+    });
+    if (outside.length > 0) {
+      await compileProjectModules(outside, rootDir, outdir);
+    }
+    console.log(`  Compiled ${localPluginSources.length} local plugin(s)`);
+  }
+
   // 3. 扫描路由（扫描源码 .ts 文件列表，但 import 产物 .js 拿方法名）
   console.log('\n[3/8] Scanning routes...');
   const { routes, wsRoutes } = await scanRoutes(rootDir, ROUTE_PATTERNS, outdir);
@@ -190,4 +208,40 @@ await app.listen();
   console.log(`  Written to ${mainPath}`);
 
   console.log('\nfaapi build completed');
+}
+
+/**
+ * 从 plugins 声明提取本地 TS/JS 插件源文件（build 端编译入口）
+ *
+ * 只取相对/绝对路径声明（`./x`、`../x`、绝对路径）；包名声明跳过（运行时 Node 解析）。
+ * 探测不到源文件的声明跳过——运行时 loadPlugins 会报带修复指引的失败，build 不在此
+ * 替代报错（文件可能在运行时才出现，或用户笔误由运行时日志定位）。
+ */
+function extractLocalPluginSources(
+  declarations: PluginDeclaration[] | undefined,
+  rootDir: string,
+): string[] {
+  if (!declarations || declarations.length === 0) return [];
+  const sources: string[] = [];
+  const seen = new Set<string>();
+  for (const decl of declarations) {
+    let specifier: string | undefined;
+    if (typeof decl === 'string') specifier = decl;
+    else if (Array.isArray(decl)) specifier = decl[0];
+    else if ('path' in decl) specifier = decl.path;
+    if (!specifier) continue;
+    if (
+      !specifier.startsWith('./') &&
+      !specifier.startsWith('../') &&
+      !path.isAbsolute(specifier)
+    ) {
+      continue; // 包名声明
+    }
+    const source = resolveLocalPluginSource(specifier, rootDir);
+    if (source && !seen.has(source)) {
+      seen.add(source);
+      sources.push(source);
+    }
+  }
+  return sources;
 }
