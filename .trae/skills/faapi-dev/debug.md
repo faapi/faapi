@@ -367,6 +367,20 @@ faapi build  # 重新编译
 
 **解决**:修改 `.env` 后重启 `faapi dev`。
 
+## Next.js 集成 — Invalid config 警告
+
+### 现象
+
+Next.js 集成项目启动时刷 `Invalid next.config.ts options detected` + `Unrecognized key "trustHostHeader"` 警告。
+
+### 原因
+
+警告来自**单独跑 `next dev`**:Next.js CLI 启动时对 `next.config.ts` 做全量 schema 校验,而 `experimental.trustHostHeader` 是 Next 内部字段、不在公开 schema 里,每次启动告警。`faapi dev` 下 @faapi/next 插件经 Next 内部 `loadConfig` 注入该配置再传给 `next({ conf })`,不走这条校验路径,无警告。
+
+### 解决
+
+集成 Next.js 的项目统一用 `faapi` / `faapi dev` 启动,不要单独跑 `next dev`——除了警告,`next dev` 进程里没有 faapi handler,`/api/*` 请求会全部 404。`next.config.ts` 无需手写 `experimental.trustHostHeader`(插件默认注入),已有的手写行可删除。详见 [plugins.md](./plugins.md) 的「集成 Next.js」。
+
 ## 类型校验不生效
 
 ### 现象

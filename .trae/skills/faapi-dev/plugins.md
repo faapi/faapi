@@ -93,8 +93,15 @@ export default {
 | `dev` | `process.env.NODE_ENV !== 'production'` | 开发模式 |
 | `dir` | `'.'` | Next.js 项目目录 |
 | `apiPrefix` | `'/api'` | faapi API 路径前缀(决定哪些请求走 faapi) |
+| `trustHostHeader` | `true` | 自动开启 Next.js 的 `experimental.trustHostHeader`(反向代理下用 `Host` 头正确构造 URL)。插件经 Next 内部 `loadConfig` 加载用户 `next.config.ts` 后注入,再通过 `next({ conf })` 传入——**无需也不建议手写进 `next.config.ts`** |
 
-启动用 `faapi` 主 CLI,自动加载插件。详见 [init.md](./init.md)。
+启动用 `faapi` 主 CLI,自动加载插件(单进程 custom server:`/api/*` 走 faapi handler,其余请求与 WS upgrade 透传给 Next.js)。详见 [init.md](./init.md)。
+
+**不要单独跑 `next dev`**,集成 Next.js 的项目统一用 `faapi` / `faapi dev` 启动:
+
+- **API 不通**:`next dev` 起的进程里没有 faapi handler,`/api/*` 请求全部 404。集成形态是单进程架构,不存在"前端 next dev + 后端 faapi 分开启动"的用法
+- **刷 Invalid config 警告**:`next dev` 启动时对 `next.config.ts` 做 schema 校验,schema 外字段(如 `experimental.trustHostHeader`)每次启动告警;faapi dev 经插件注入配置,不走该校验路径
+- **HMR 不受影响**:faapi dev 下 Next.js 热更新正常(浏览器到 dev server 的 HMR websocket upgrade 由插件透传给 Next.js 处理)
 
 ### 目录结构
 
