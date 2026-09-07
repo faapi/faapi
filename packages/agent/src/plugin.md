@@ -59,12 +59,13 @@ export function POST(agent: AgentHandle, body: { input: string }) {
 PluginContext { config.agent, rootDir }
          ↓
 1. readAgentConfig(ctx) → AgentConfig | undefined
-2. 检查 agentConfig.llms → 缺失时 warn + return（defaultAgent 可选）
-3. 遍历 agentConfig.llms → 每项调 createProvider → Map<providerKey, LLMProvider>
-4. 读 agentConfig.defaultLlm → defaultProvider（未设时用 llms 第一个 key）
-5. 读 agentConfig.defaultAgent（可选,未设时为空字符串）
-6. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
-7. registerAgentHandleFactory(() => new Agent({ providers, defaultProvider, llms, defaultLlm, agentName, rootDir, config, ...accessors }))
+2. 遍历 agentConfig?.llms ?? {} → 每项调 createProvider → Map<providerKey, LLMProvider>
+   （llms 可选——未配置时 providers 为空 Map,进入「外部 provider 模式」,照常注册工厂）
+3. 读 defaultLlm（agentConfig?.defaultLlm ?? llms 第一个 key）→ defaultProvider
+   （可为 undefined——指向不存在的 key 时 warn + 照常注册）
+4. 读 agentConfig.defaultAgent（可选,未设时为空字符串）
+5. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
+6. registerAgentHandleFactory(() => new Agent({ providers, defaultProvider, llms, defaultLlm, agentName, rootDir, config, ...accessors }))
 ```
 
 ### 工厂函数
@@ -79,10 +80,10 @@ const resolveToolSchema = (tool) => resolveToolSchemaImpl(tool, rootDir);
 
 registerAgentHandleFactory(() => {
   return new Agent({
-    providers,                   // 闭包捕获（setup 时创建,Map<providerKey, LLMProvider>）
-    defaultProvider,             // 闭包捕获（默认 provider 实例）
-    llms,                        // 闭包捕获（agentConfig.llms,供 Agent 按名查找 LlmConfig）
-    defaultLlm,                  // 闭包捕获（默认 provider key）
+    providers,                   // 闭包捕获（setup 时创建,Map<providerKey, LLMProvider>;llms 未配置时为空 Map）
+    defaultProvider,             // 闭包捕获（默认 provider 实例;llms 未配置/未命中时为 undefined）
+    llms,                        // 闭包捕获（agentConfig.llms ?? {},供 Agent 按名查找 LlmConfig）
+    defaultLlm,                  // 闭包捕获（默认 provider key;可为 undefined）
     agentName: defaultAgent,     // 闭包捕获（config.agent.defaultAgent）
     rootDir,                     // 闭包捕获（ctx.rootDir）
     config: runtimeConfig,      // 闭包捕获（maxTurns / maxAgentDepth）
@@ -118,16 +119,15 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 
 | 缺失项 | 行为 |
 | --- | --- |
-| `config.agent` 整块未设置 | warn + return,不注册工厂 |
-| `config.agent.llms` 未设置 | warn + return,不注册工厂 |
+| `config.agent` 整块未设置 / `config.agent.llms` 未设置 / `llms` 为空对象 | **照常注册工厂**（外部 provider 模式）——启动日志提示未配置 llms；`agent` 参数正常注入,但 `agent.run/stream` 不传 `options.provider` 时抛 `AgentError`（提示配 llms 或传外部 provider） |
 | `config.agent.llms.<key>.apiKey` 空/缺失（含空白字符） | **warn + 照常注册**——启动日志提示该 provider 的请求将省略 Authorization 头（上游大概率 401）,把「key 未配置」从首次 LLM 调用的上游 401 提前到启动日志;不跳过注册（部分网关/本地模型场景无需 key） |
 | `config.agent.defaultAgent` 未设置 | 正常注册,`deps.agentName` 为空字符串,handler 需 `agent.run(input, { agent: 'name' })` 显式指定 |
-| `config.agent.defaultLlm` 未设置 | 正常注册,用 `llms` 第一个 key 作默认 |
-| `config.agent.defaultLlm` 指向不存在的 key | warn + return,不注册工厂 |
+| `config.agent.defaultLlm` 未设置 | 正常注册,`llms` 非空时用其第一个 key 作默认,为空时无默认 provider（外部 provider 模式） |
+| `config.agent.defaultLlm` 指向不存在的 key | warn + **照常注册**——无默认 provider,调用时须传 `options.provider` |
 | `config.agent.maxTurns` 未设置 | 正常注册,Agent 用 agent 自身 maxTurns |
 | `config.agent.maxAgentDepth` 未设置 | 正常注册,Agent 用默认值 3 |
 
-工厂未注册时,[getAgentHandle](../../faapi/src/injection/agentHandle.md) 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。
+工厂未注册仅发生在 `@faapi/agent` 插件未加载时——此时 [getAgentHandle](../../faapi/src/injection/agentHandle.md) 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。
 `defaultAgent` 未设置但工厂已注册时,`agent` 参数不为 `undefined`——Agent 实例正常注入,但 `agent.run(input)` 不传 `{ agent }` 时抛 `AgentError`。
 
 ### resolveToolSchema 实现

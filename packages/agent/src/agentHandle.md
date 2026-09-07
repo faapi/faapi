@@ -222,9 +222,13 @@ handler GET(agent: AgentHandle)
 agent.run(input) / agent.run(input, { agent: 'researcher' }) / agent.stream(input, { model: 'gpt-4o' })
 ```
 
-### 工厂未注册时的行为
+### 工厂未注册 / llms 未配置时的行为
 
-工厂未注册（`@faapi/agent` 插件未加载或 `config.agent.llms` 未配置）时,`getAgentHandle(ctx)` 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。handler 需自行处理此情况（如返回 503 错误）。
+工厂未注册（`@faapi/agent` 插件未加载）时,`getAgentHandle(ctx)` 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。handler 需自行处理此情况（如返回 503 错误）。
+
+`config.agent.llms` 未配置（或为空）时插件**仍注册工厂**（外部 provider 模式）：`agent` 参数正常注入 Agent 实例,但 `agent.run/stream` 不传 `options.provider` 时抛 `AgentError`（提示配置 llms 或调用时传外部 provider）。适用于「LLM 凭证完全由请求侧提供（BYOK）、服务端不托管」的项目。
+
+`config.agent.defaultLlm` 指向不存在的 key 时 warn + 照常注册（无默认 provider,调用时须传 `options.provider`）。
 
 `defaultAgent` 未设置但工厂已注册时,`agent` 参数正常注入 Agent 实例,但 `agent.run(input)` 不传 `{ agent: 'name' }` 时抛 `AgentError`（agent 名为空字符串,查注册表返回 `undefined`）。
 

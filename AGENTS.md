@@ -400,6 +400,8 @@ export default {
   // agent 自身 config.maxTurns / config.model 优先于全局配置
   agent: {
     // LLM provider 配置（嵌套级联：key 是 provider 名，models 挂在该 provider 下）
+    // llms 可选——未配置时插件照常注册（外部 provider 模式），handler 需通过
+    // agent.run(input, { provider }) 传入外部 provider（LlmConfig 或 LLMProvider 实例）
     llms: {
       openai: {
         provider: 'openai',

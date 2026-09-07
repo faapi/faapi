@@ -235,7 +235,8 @@ export interface AgentConfig {
    * `createProvider` 创建实例存 Map，handler 通过 `agent.run(input, { model })`
    * 切换 provider + model（详见 [agentHandle](../../agent/src/agentHandle.md)）。
    *
-   * 未设置时 Phase 3.x 插件无法调用 LLM，agent 的 `run` 函数仍可手动实现。
+   * 可选——未设置时插件仍注册 agent handle 工厂（外部 provider 模式），
+   * `agent.run/stream` 需通过 `options.provider` 传入外部 provider 才能调用 LLM。
    */
   llms?: Record<string, LlmConfig>;
   /**

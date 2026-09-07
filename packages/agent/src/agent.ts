@@ -219,14 +219,19 @@ export interface ToolSchemaResolution {
  * 访问器签名与 faapi 核心对称（见 [agent.md](./agent.md) 依赖注入章节）。
  */
 export interface AgentDeps {
-  /** LLM provider 实例映射（key 是 provider 名，来自 config.agent.llms） */
+  /** LLM provider 实例映射（key 是 provider 名，来自 config.agent.llms；未配置时为空 Map） */
   providers: Map<string, LLMProvider>;
-  /** 默认 provider 实例（config.agent.defaultLlm 对应，或 llms 第一个 key） */
-  defaultProvider: LLMProvider;
-  /** LLM provider 配置映射（含 models，用于 options.model key 解析） */
+  /**
+   * 默认 provider 实例（config.agent.defaultLlm 对应，或 llms 第一个 key）
+   *
+   * 可选——config.agent.llms 未配置时为 undefined（外部 provider 模式），
+   * 此时 run/stream 必须传 options.provider，否则 resolveModelKey 抛 AgentError。
+   */
+  defaultProvider?: LLMProvider;
+  /** LLM provider 配置映射（含 models，用于 options.model key 解析；llms 未配置时为空对象） */
   llms: Record<string, LlmConfig>;
-  /** 默认 provider key（config.agent.defaultLlm，或 llms 第一个 key） */
-  defaultLlm: string;
+  /** 默认 provider key（config.agent.defaultLlm，或 llms 第一个 key；llms 未配置时为 undefined） */
+  defaultLlm?: string;
   /** 当前 agent 名 */
   agentName: string;
   /** 项目根目录（Phase 3.5 接线时用于加载器） */
@@ -518,7 +523,8 @@ export class Agent {
    * 解析 `options.model` 字符串 key → provider + model
    *
    * 规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」：
-   * 1. `undefined` → `deps.defaultProvider` + `meta.model`
+   * 1. `undefined` → `deps.defaultProvider`（未配置时抛 `AgentError`——外部 provider 模式
+   *    要求调用方传 `options.provider`）+ `meta.model`
    * 2. 精确匹配 `deps.providers` 的 key → 该 provider + 其 `models` 第一个 key
    * 3. 含 `/` → `provider/model` 形式,`deps.providers.get(provider)` + 该 model
    *    （要求该 model 在 `deps.llms[provider].models` 里）
@@ -527,7 +533,8 @@ export class Agent {
    *    - 多个 → 抛 `AgentError`（要求用 `provider/model` 消歧）
    *    - 无 → 抛 `AgentError`
    *
-   * @throws {AgentError} key 解析失败（provider/model 不存在或歧义）
+   * @throws {AgentError} key 解析失败（provider/model 不存在或歧义）；deps.defaultProvider
+   *   未配置（外部 provider 模式下调用方未传 options.provider）
    */
   private resolveModelKey(
     key: string | undefined,
@@ -535,6 +542,11 @@ export class Agent {
   ): { provider: LLMProvider; model: string | undefined } {
     // 不传 → 默认 provider + agent 元数据 model
     if (key === undefined) {
+      if (!this.deps.defaultProvider) {
+        throw new AgentError(
+          'No default LLM provider: configure config.agent.llms, or pass options.provider (external provider) on this call',
+        );
+      }
       return { provider: this.deps.defaultProvider, model: meta.model };
     }
 
@@ -553,7 +565,9 @@ export class Agent {
       const modelName = key.slice(slashIdx + 1);
       const provider = this.deps.providers.get(providerName);
       if (!provider) {
-        throw new AgentError(`Unknown provider "${providerName}" in model key "${key}"`);
+        throw new AgentError(
+          `Unknown provider "${providerName}" in model key "${key}". Declare it in config.agent.llms, or pass options.provider to use an external provider.`,
+        );
       }
       const llmConfig = this.deps.llms[providerName];
       if (!llmConfig || !llmConfig.models[modelName]) {
@@ -581,7 +595,7 @@ export class Agent {
       );
     }
     throw new AgentError(
-      `Model "${key}" not found in any provider. Declare it in config.agent.llms.*.models.`,
+      `Model "${key}" not found in any provider. Declare it in config.agent.llms.*.models, or pass options.provider to use an external provider.`,
     );
   }
 

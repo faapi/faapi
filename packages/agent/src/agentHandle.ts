@@ -22,8 +22,9 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  * }
  * ```
  *
- * 工厂未注册（`@faapi/agent` 插件未加载或 `config.agent.llm` / `defaultAgent` 未配置）
- * 时注入 `undefined`,handler 需自行处理。
+ * 仅在 `@faapi/agent` 插件未加载时注入 `undefined`,handler 需自行处理。
+ * `config.agent.llms` 未配置时工厂照常注册（外部 provider 模式）——
+ * `agent.run/stream` 需调用方传 `options.provider` 才能调用 LLM。
  *
  * 详见 [agentHandle.md](./agentHandle.md)。
  */

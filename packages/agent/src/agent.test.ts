@@ -1484,6 +1484,67 @@ describe('Agent', () => {
       expect(deltas.map((c) => c.deltaContent).join('')).toBe('hello stream');
       expect(streamCalls).toHaveBeenCalledTimes(1);
     });
+
+    describe('无默认 provider（llms 未配置,外部 provider 模式）', () => {
+      /** 构造无 defaultProvider 的 AgentDeps（config.agent.llms 未配置时插件注入的形态） */
+      function createDepsWithoutProvider(): AgentDeps {
+        return {
+          providers: new Map(),
+          defaultProvider: undefined,
+          llms: {},
+          defaultLlm: '',
+          agentName: 'researcher',
+          rootDir: '/project',
+          getAgent: (name) => (name === 'researcher' ? agentMeta() : undefined),
+          getAgentEntry: () => undefined,
+          getTool: () => undefined,
+          resolveAgentTools: () => [],
+          resolveSubAgents: () => [],
+          loadToolModule: async () => {
+            throw new Error('loadToolModule not mocked');
+          },
+          loadAgentModule: async () => {
+            throw new Error('loadAgentModule not mocked');
+          },
+        };
+      }
+
+      it('不传 options.provider/model 时抛 AgentError（提示配置 llms 或传外部 provider）', async () => {
+        const agent = new Agent(createDepsWithoutProvider());
+
+        await expect(agent.run('hi')).rejects.toThrowError(/options\.provider/);
+      });
+
+      it('options.model 纯 model 名在空 llms 下抛 AgentError 且提示外部 provider', async () => {
+        const agent = new Agent(createDepsWithoutProvider());
+
+        await expect(agent.run('hi', { model: 'gpt-4o' })).rejects.toThrowError(
+          /options\.provider/,
+        );
+      });
+
+      it('传 options.provider（LLMProvider 实例）时正常执行（纯外部 provider 项目）', async () => {
+        const externalCalls = vi.fn();
+        const externalProvider: LLMProvider = {
+          complete: async (req) => {
+            externalCalls(req);
+            return {
+              message: { role: 'assistant', content: 'ok-byok' },
+              stopReason: 'stop' as LLMStopReason,
+            };
+          },
+          stream: () => {
+            throw new Error('stream not mocked');
+          },
+        };
+        const agent = new Agent(createDepsWithoutProvider());
+
+        const result = await agent.run('hi', { provider: externalProvider, model: 'm1' });
+
+        expect(result.content).toBe('ok-byok');
+        expect(externalCalls).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   it('run(options.signal) 透传到 provider.complete 的请求参数', async () => {

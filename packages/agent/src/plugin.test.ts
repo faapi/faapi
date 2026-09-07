@@ -43,8 +43,8 @@ vi.mock('./provider', async (importOriginal) => {
 // ─── 导入（mock 后）─────────────────────────────────
 import { createAppRegistries } from '@faapi/faapi';
 import plugin from './plugin';
-import { createProvider } from './provider';
-import { Agent } from './agent';
+import { createProvider, type LLMProvider } from './provider';
+import { Agent, AgentError } from './agent';
 import type { AgentHandle } from './agentHandle';
 import { z } from 'zod';
 import {
@@ -164,26 +164,63 @@ describe('@faapi/agent plugin', () => {
   });
 
   describe('setup() — 配置缺失', () => {
-    it('config.agent 整块未设置时不注册工厂', () => {
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('config.agent 整块未设置时仍注册工厂（外部 provider 模式）', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
       const ctx = makeCtx(undefined);
-      const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
-      plugin.setup(ctx);
+      const factory = setupAndCaptureFactory(ctx);
 
-      expect(spy).not.toHaveBeenCalled();
-      expect(warnSpy).toHaveBeenCalled();
-      warnSpy.mockRestore();
+      expect(factory).toBeDefined();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('no llms configured'));
+      logSpy.mockRestore();
     });
 
-    it('config.agent.llms 未设置时不注册工厂', () => {
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('config.agent.llms 未设置时仍注册工厂,createProvider 不被调用', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
       const ctx = makeCtx({ defaultAgent: 'researcher' });
-      const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
-      plugin.setup(ctx);
+      const factory = setupAndCaptureFactory(ctx);
 
-      expect(spy).not.toHaveBeenCalled();
+      expect(factory).toBeDefined();
+      expect(createProvider).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('no llms configured'));
+      logSpy.mockRestore();
+    });
+
+    it('llms 未配置时:run 不传 options.provider 抛 AgentError,传外部 provider 正常执行', async () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const ctx = makeCtx({ defaultAgent: 'researcher' });
+      const factory = setupAndCaptureFactory(ctx);
+      logSpy.mockRestore();
+      const agent = factory!(makeReqCtx()) as Agent;
+
+      // 不传 options.provider:无默认 provider,早失败（AgentError,不发起 LLM 请求）
+      await expect(agent.run('hi', { agent: 'researcher' })).rejects.toThrowError(AgentError);
+
+      // 传 options.provider:外部 provider 接管,正常执行（BYOK 纯外部模式）
+      const external: LLMProvider = {
+        complete: async () => ({
+          message: { role: 'assistant' as const, content: 'from-external' },
+          stopReason: 'stop' as const,
+        }),
+        stream: async function* () {
+          yield { deltaContent: 'x', finishReason: 'stop' as const };
+        },
+      };
+      const result = await agent.run('hi', { agent: 'researcher', provider: external });
+      expect(result.content).toBe('from-external');
+    });
+
+    it('config.agent.defaultLlm 指向不存在的 key 时 warn + 照常注册（无默认 provider）', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ctx = makeCtx({
+        llms: { openai: { provider: 'openai', apiKey: 'k', models: { 'gpt-4o': {} } } },
+        defaultLlm: 'nonexistent',
+        defaultAgent: 'researcher',
+      });
+      const factory = setupAndCaptureFactory(ctx);
+
+      expect(factory).toBeDefined();
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('config.agent.llms not configured'),
+        expect.stringContaining('defaultLlm "nonexistent" not found'),
       );
       warnSpy.mockRestore();
     });

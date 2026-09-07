@@ -28,7 +28,7 @@ Agent 类把这些「胶水」逻辑集中在一处,reactLoop 保持纯函数。
 
 | 类型 | 说明 |
 | --- | --- |
-| `AgentDeps` | Agent 运行时依赖（providers Map + defaultProvider + agentName + rootDir + config + 注册表/加载器访问器 + 可选 schema 解析器） |
+| `AgentDeps` | Agent 运行时依赖（providers Map + 可选 defaultProvider + agentName + rootDir + config + 注册表/加载器访问器 + 可选 schema 解析器） |
 | `AgentRuntimeConfig` | 全局 agent 配置覆盖（maxTurns / maxAgentDepth / enableTracing） |
 | `ToolSchemaResolution` | tool schema 解析结果（jsonSchema 给 LLM + validate 给执行前校验） |
 | `AgentRecursionError` | sub-agent 递归超 `maxAgentDepth` 时抛出 |
