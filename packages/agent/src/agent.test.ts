@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Agent, AgentError } from './agent';
 import { AgentAbortError } from './provider';
 import type { AgentDeps, AgentRuntimeConfig, ToolSchemaResolution } from './agent';
@@ -1181,6 +1181,308 @@ describe('Agent', () => {
       );
 
       await expect(agent.run('hi')).rejects.toThrowError(AgentError);
+    });
+  });
+
+  describe('run() / stream() — options.provider 外部 provider', () => {
+    /** 构造 OpenAI chat completions JSON 响应 Response（外部 provider LlmConfig 形式测试用） */
+    function jsonResponse(payload: unknown): Response {
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    });
+
+    it('LlmConfig 形式：现场创建 provider,请求打到外部 baseURL 且带上 apiKey', async () => {
+      const { provider: defaultProvider, completeCalls: defaultCalls } = createMockProvider([
+        llmResponse({ content: 'from-default', stopReason: 'stop' }),
+      ]);
+      const fetchMock = vi.fn().mockResolvedValue(
+        jsonResponse({
+          choices: [
+            { message: { role: 'assistant', content: 'from-external' }, finish_reason: 'stop' },
+          ],
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const agent = new Agent(
+        createDeps({ provider: defaultProvider, agent: agentMeta({ model: 'gpt-4' }) }),
+      );
+
+      const result = await agent.run('hi', {
+        provider: {
+          provider: 'openai',
+          apiKey: 'user-key',
+          baseURL: 'https://byok.example.com/v1',
+          models: { 'gpt-4o': {} },
+          temperature: 0.7,
+        },
+        model: 'gpt-4o',
+      });
+
+      // 走外部 provider,默认 provider 未被调用
+      expect(result.content).toBe('from-external');
+      expect(defaultCalls).not.toHaveBeenCalled();
+
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe('https://byok.example.com/v1/chat/completions');
+      expect(init.headers.Authorization).toBe('Bearer user-key');
+      const body = JSON.parse(init.body);
+      // options.model 为原始 model 名（agent 元数据 model 'gpt-4' 不泄漏）
+      expect(body.model).toBe('gpt-4o');
+      // LlmConfig 的 provider 级透传字段生效
+      expect(body.temperature).toBe(0.7);
+    });
+
+    it('LLMProvider 实例形式：直接使用,model 带 / 原样透传不解析', async () => {
+      const externalCalls = vi.fn();
+      const externalProvider: LLMProvider = {
+        complete: async (req) => {
+          externalCalls(req);
+          return {
+            message: { role: 'assistant', content: 'from-gateway' },
+            stopReason: 'stop' as LLMStopReason,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const { provider: defaultProvider, completeCalls: defaultCalls } = createMockProvider([
+        llmResponse({ content: 'from-default', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({ provider: defaultProvider, agent: agentMeta({ model: 'gpt-4' }) }),
+      );
+
+      const result = await agent.run('hi', {
+        provider: externalProvider,
+        model: 'anthropic/claude-3.5-sonnet',
+      });
+
+      expect(result.content).toBe('from-gateway');
+      expect(defaultCalls).not.toHaveBeenCalled();
+      expect(externalCalls).toHaveBeenCalledTimes(1);
+      const request = externalCalls.mock.calls[0][0];
+      // 带 / 的 model id 不做 provider/model 拆分,原样透传
+      expect(request.model).toBe('anthropic/claude-3.5-sonnet');
+    });
+
+    it('options.provider 优先级最高：llms 里已声明的 model key 也走外部 provider', async () => {
+      const externalCalls = vi.fn();
+      const externalProvider: LLMProvider = {
+        complete: async (req) => {
+          externalCalls(req);
+          return {
+            message: { role: 'assistant', content: 'from-external' },
+            stopReason: 'stop' as LLMStopReason,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const llmsAnthropicCalls = vi.fn();
+      const llmsAnthropicProvider: LLMProvider = {
+        complete: async () => {
+          llmsAnthropicCalls();
+          return {
+            message: { role: 'assistant', content: 'from-llms-anthropic' },
+            stopReason: 'stop' as LLMStopReason,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const { provider: defaultProvider, completeCalls: defaultCalls } = createMockProvider([
+        llmResponse({ content: 'from-default', stopReason: 'stop' }),
+      ]);
+
+      // llms 里 openai（默认）+ anthropic（'claude-3' 已声明）
+      const llms: Record<string, LlmConfig> = {
+        openai: { provider: 'openai', apiKey: 'k1', models: { 'gpt-4o': {} } },
+        anthropic: { provider: 'anthropic', apiKey: 'k2', models: { 'claude-3': {} } },
+      };
+
+      const agent = new Agent(
+        createDeps({
+          provider: defaultProvider,
+          llms,
+          extraProviders: { anthropic: llmsAnthropicProvider },
+          agent: agentMeta(),
+        }),
+      );
+
+      // 'claude-3' 在 llms 的 anthropic.models 里,但外部 provider 存在时 llms 完全被忽略
+      const result = await agent.run('hi', { provider: externalProvider, model: 'claude-3' });
+
+      expect(result.content).toBe('from-external');
+      expect(externalCalls).toHaveBeenCalledTimes(1);
+      expect(defaultCalls).not.toHaveBeenCalled();
+      expect(llmsAnthropicCalls).not.toHaveBeenCalled();
+      expect(externalCalls.mock.calls[0][0].model).toBe('claude-3');
+    });
+
+    it('LlmConfig 形式缺省 options.model 时回落 models 第一个 key', async () => {
+      const { provider: defaultProvider } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const fetchMock = vi.fn().mockResolvedValue(
+        jsonResponse({
+          choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const agent = new Agent(
+        createDeps({ provider: defaultProvider, agent: agentMeta({ model: 'gpt-4' }) }),
+      );
+
+      await agent.run('hi', {
+        provider: { provider: 'openai', apiKey: 'k', models: { 'gateway-model': {} } },
+      });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      // agent 元数据 model 'gpt-4' 不泄漏到外部 provider
+      expect(body.model).toBe('gateway-model');
+    });
+
+    it('LlmConfig 形式缺省 options.model 且 models 为空时抛 AgentError', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+      const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
+
+      await expect(
+        agent.run('hi', { provider: { provider: 'openai', apiKey: 'k', models: {} } }),
+      ).rejects.toThrowError(AgentError);
+    });
+
+    it('provider 形式非法（既非 LlmConfig 也非 LLMProvider）抛 AgentError', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+      const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
+
+      // 普通对象缺 provider 字段
+      await expect(
+        agent.run('hi', { provider: { foo: 'bar' } as unknown as LlmConfig }),
+      ).rejects.toThrowError(AgentError);
+      // 字符串不是合法形式
+      await expect(
+        agent.run('hi', { provider: 'openai' as unknown as LlmConfig }),
+      ).rejects.toThrowError(AgentError);
+    });
+
+    it('外部 provider 仅本次调用生效,下一次 run 回落默认 provider', async () => {
+      const externalCalls = vi.fn();
+      const externalProvider: LLMProvider = {
+        complete: async () => {
+          externalCalls();
+          return {
+            message: { role: 'assistant', content: 'from-external' },
+            stopReason: 'stop' as LLMStopReason,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const { provider: defaultProvider, completeCalls: defaultCalls } = createMockProvider([
+        llmResponse({ content: 'from-default', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(createDeps({ provider: defaultProvider, agent: agentMeta() }));
+
+      const first = await agent.run('hi', { provider: externalProvider, model: 'm1' });
+      const second = await agent.run('hi');
+
+      expect(first.content).toBe('from-external');
+      expect(second.content).toBe('from-default');
+      expect(externalCalls).toHaveBeenCalledTimes(1);
+      expect(defaultCalls).toHaveBeenCalledTimes(1);
+    });
+
+    it('sub-agent 递归不继承外部 provider（sub-agent 走默认 provider）', async () => {
+      const externalCalls = vi.fn();
+      let externalTurn = 0;
+      const externalProvider: LLMProvider = {
+        complete: async (req) => {
+          externalCalls(req);
+          // 父 agent 第 1 轮：请求调 sub-agent；第 2 轮：给出最终回答
+          externalTurn++;
+          if (externalTurn === 1) {
+            return {
+              message: {
+                role: 'assistant',
+                content: '',
+                toolCalls: [{ id: 'c1', name: 'agent.writer', arguments: { task: 'write' } }],
+              },
+              stopReason: 'tool_calls' as LLMStopReason,
+            };
+          }
+          return {
+            message: { role: 'assistant', content: 'parent-done' },
+            stopReason: 'stop' as LLMStopReason,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      // 默认 provider 服务 sub-agent（turn 1）+ 父 agent 最后一轮（turn 2）
+      const { provider: defaultProvider, completeCalls: defaultCalls } = createMockProvider([
+        llmResponse({ content: 'sub-done', stopReason: 'stop' }),
+        llmResponse({ content: 'parent-done', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider: defaultProvider,
+          agent: agentMeta({ name: 'researcher' }),
+          subAgents: [agentMeta({ name: 'writer' })],
+        }),
+      );
+
+      const result = await agent.run('hi', { provider: externalProvider, model: 'ext-model' });
+
+      expect(result.content).toBe('parent-done');
+      // 父 agent 两轮都走外部 provider
+      expect(externalCalls).toHaveBeenCalledTimes(2);
+      expect(externalCalls.mock.calls[0][0].model).toBe('ext-model');
+      // sub-agent 的 LLM 调用走默认 provider,且未继承外部 model（writer 元数据无 model）
+      expect(defaultCalls).toHaveBeenCalledTimes(1);
+      const subRequest = defaultCalls.mock.calls[0][0];
+      expect(subRequest.model).toBeUndefined();
+    });
+
+    it('stream 也支持外部 provider', async () => {
+      const streamCalls = vi.fn();
+      const externalProvider: LLMProvider = {
+        complete: async () => {
+          throw new Error('complete not mocked');
+        },
+        stream: async function* (req) {
+          streamCalls(req);
+          yield { deltaContent: 'hello ' };
+          yield { deltaContent: 'stream', finishReason: 'stop' as LLMStopReason };
+        },
+      };
+      const { provider: defaultProvider } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(createDeps({ provider: defaultProvider, agent: agentMeta() }));
+
+      const chunks = await collect(agent.stream('hi', { provider: externalProvider }));
+
+      const deltas = chunks.filter((c) => c.deltaContent !== undefined);
+      expect(deltas.map((c) => c.deltaContent).join('')).toBe('hello stream');
+      expect(streamCalls).toHaveBeenCalledTimes(1);
     });
   });
 

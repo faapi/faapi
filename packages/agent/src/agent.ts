@@ -9,6 +9,7 @@ import type {
   ToolModule,
 } from '@faapi/faapi';
 import type { AgentRunOptions } from './agentHandle';
+import { createProvider } from './provider';
 import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
   reactLoop,
@@ -38,6 +39,50 @@ const DEFAULT_MAX_AGENT_DEPTH = 3;
 
 /** 合法消息 role（与 LLMMessage 的 role 联合一致，运行时校验反序列化历史用） */
 const VALID_MESSAGE_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
+
+/**
+ * 判断是否为 LLMProvider 实例（有 `complete` / `stream` 方法）
+ *
+ * 用于 `options.provider` 的运行时形状判别——`LLMProvider` 实例直接使用,
+ * `LlmConfig` 配置对象走 `createProvider` 现场创建。
+ */
+function isProviderInstance(value: unknown): value is LLMProvider {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as LLMProvider).complete === 'function' &&
+    typeof (value as LLMProvider).stream === 'function'
+  );
+}
+
+/**
+ * 判断是否为 LlmConfig 配置对象（含字符串 `provider` 字段）
+ */
+function isProviderConfig(value: unknown): value is LlmConfig {
+  return (
+    typeof value === 'object' && value !== null && typeof (value as LlmConfig).provider === 'string'
+  );
+}
+
+/**
+ * 物化外部 provider（`options.provider` → LLMProvider 实例）
+ *
+ * - `LLMProvider` 实例 → 直接使用（自定义内部模型网关等）
+ * - `LlmConfig` 配置对象 → `createProvider` 现场创建（浅拷贝 + `models` 兜底 `{}`,
+ *   不改调用方对象；每次调用独立创建,无共享状态,不进 providers Map）
+ * - 两者皆非 → 抛 `AgentError`（不降级猜测）
+ *
+ * @throws {AgentError} 形式非法（既非 LlmConfig 也非 LLMProvider）
+ */
+function materializeProvider(external: LlmConfig | LLMProvider): LLMProvider {
+  if (isProviderInstance(external)) return external;
+  if (isProviderConfig(external)) {
+    return createProvider({ ...external, models: external.models ?? {} });
+  }
+  throw new AgentError(
+    'options.provider must be an LlmConfig object (with a string "provider" field) or an LLMProvider instance (with complete/stream methods)',
+  );
+}
 
 /**
  * 校验续跑历史结构（见 reactLoop.md 中断恢复章节）
@@ -285,8 +330,8 @@ export class Agent {
    *
    * @param input 用户输入（可选——续跑场景不传新输入；input 与 `options.messages`
    *              都为空时抛 `AgentError`）
-   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens /
-   *                messages / enableTracing
+   * @param options 临时覆盖本次调用的 provider（外部 provider）/ model（字符串 key）/
+   *                temperature / maxTokens / messages / enableTracing
    *                （不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
    * @returns 最终结果（content + messages + turns + stopReason + usage + trace?）
    * @throws {AgentError} agent 未注册；input 与 messages 都为空；续跑历史结构非法
@@ -309,8 +354,9 @@ export class Agent {
    *
    * @param input 用户输入（可选——续跑场景不传新输入；input 与 `options.messages`
    *              都为空时抛 `AgentError`）
-   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens /
-   *                messages（不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
+   * @param options 临时覆盖本次调用的 provider（外部 provider）/ model（字符串 key）/
+   *                temperature / maxTokens / messages
+   *                （不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
    * @yields 流式 chunk（deltaContent / toolCall / toolResult / done）
    * @throws {AgentError} agent 未注册；input 与 messages 都为空；续跑历史结构非法
    * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 携带完整历史，可续跑）
@@ -372,7 +418,9 @@ export class Agent {
    * 3. buildToolDefinitions 组装 tool 列表（用有效 agent 名查 tools / sub-agents）
    * 4. config 字段优先级（高 → 低）：`options` > agent 元数据 > 全局 AgentRuntimeConfig / deps.defaultProvider
    *
-   * `options.model` 是字符串 key,由 {@link resolveModelKey} 解析为 provider + model
+   * `options.provider`（外部 provider）存在时由 {@link resolveExternalProvider} 物化,
+   * 优先级最高——`options.model` 变为原始 model 名原样透传（不解析 llms key）。
+   * 否则 `options.model` 是字符串 key,由 {@link resolveModelKey} 解析为 provider + model
    * （支持 llms key 精确匹配 / `provider/model` 一体化 / 纯 model 名模糊匹配）。
    * 不传 `options.model` 时用 `deps.defaultProvider` + agent 元数据 `config.model`。
    * 详见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
@@ -408,8 +456,12 @@ export class Agent {
 
     const tools = await this.buildToolDefinitions(agentName);
 
-    // 解析 options.model 字符串 key → provider + model
-    const { provider, model } = this.resolveModelKey(options?.model, meta);
+    // 解析 provider + model：options.provider（外部 provider）优先级最高,存在时跳过
+    // options.model 的 llms key 解析（model 原样透传）；否则按字符串 key 规则解析
+    const { provider, model } =
+      options?.provider !== undefined
+        ? this.resolveExternalProvider(options.provider, options?.model)
+        : this.resolveModelKey(options?.model, meta);
 
     // enableTracing 优先级:options > deps.config > 默认 false（opt-in,零开销）
     // 闭包捕获 enableTracing,通过 executeTool 传递给 executeSubAgent,使其能包装 TracingToolResult
@@ -428,6 +480,38 @@ export class Agent {
       enableTracing,
       executeTool: async (name, args) => this.executeTool(name, args, enableTracing),
     };
+  }
+
+  /**
+   * 解析外部 provider（`options.provider`）→ provider + model
+   *
+   * 规则见 [agentHandle.md](./agentHandle.md) 的「`options.provider` 外部 provider」章节：
+   * - `LLMProvider` 实例 → 直接使用,`modelKey` 原样透传（可为 `undefined`,自定义 provider 自决）
+   * - `LlmConfig` 配置对象 → `createProvider` 现场创建,`modelKey` 原样透传；
+   *   缺省回落该 config `models` 第一个 key,两者皆无抛 `AgentError`（早失败,不发请求）
+   * - `modelKey` 不做 llms key 解析、不拆 `/`（支持 OpenRouter 等带斜杠的 model id）
+   *
+   * 仅本次调用生效：不进 providers Map、sub-agent 递归不继承（executeSubAgent 构造
+   * subDeps 时不携带 options,sub-agent 走默认解析链路）。
+   *
+   * @throws {AgentError} provider 形式非法；LlmConfig 形式下 model 缺失
+   */
+  private resolveExternalProvider(
+    external: LlmConfig | LLMProvider,
+    modelKey: string | undefined,
+  ): { provider: LLMProvider; model: string | undefined } {
+    const provider = materializeProvider(external);
+    if (isProviderInstance(external)) {
+      return { provider, model: modelKey };
+    }
+    const firstModel = Object.keys(external.models ?? {})[0];
+    const model = modelKey ?? firstModel;
+    if (model === undefined) {
+      throw new AgentError(
+        'External provider requires a model: pass options.model or declare models in the provider config',
+      );
+    }
+    return { provider, model };
   }
 
   /**

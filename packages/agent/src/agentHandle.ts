@@ -1,5 +1,5 @@
-import type { AgentToolDescriptor } from '@faapi/faapi';
-import type { LLMMessage } from './provider';
+import type { AgentToolDescriptor, LlmConfig } from '@faapi/faapi';
+import type { LLMMessage, LLMProvider } from './provider';
 import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
 
 /**
@@ -78,8 +78,29 @@ export interface AgentRunOptions {
    * 切换 provider + model 的字符串 key（支持 llms key / `provider/model` / 纯 model 名）
    *
    * 不传时用 `defaultLlm` provider + agent 元数据 `config.model`。
+   * `provider` 字段存在时本字段变为「原始 model 名」原样透传给外部 provider
+   * （不做 llms key 解析,支持带 / 的 model id），详见 {@link AgentRunOptions.provider}。
    */
   model?: string;
+  /**
+   * 外部 provider（本次调用临时使用,优先级最高——完全不查 `config.agent.llms`）
+   *
+   * 两种形式（运行时按形状判别,两者皆非抛 `AgentError`）：
+   * - `LlmConfig` 对象（含字符串 `provider` 字段）→ 现场调 `createProvider` 创建适配器
+   *   （浅拷贝 + `models` 兜底 `{}`,不改调用方对象）,适用于 BYOK（用户自带 apiKey）/
+   *   按请求指定 baseURL 网关
+   * - `LLMProvider` 实例（有 `complete` / `stream` 方法）→ 直接使用,适用于框架未内置
+   *   适配器的 LLM 服务（内部自研模型网关等）
+   *
+   * 传入时 `options.model` 语义变为「原始 model 名」——不做 llms key 解析、不拆 `/`,
+   * 原样透传给该 provider（支持 OpenRouter 等带 `/` 的 model id）。
+   * LlmConfig 形式下 `options.model` 缺省时回落该 config 的 `models` 第一个 key,
+   * 两者皆无抛 `AgentError`；LLMProvider 实例形式下可为 `undefined`（自定义 provider 自决）。
+   *
+   * 仅影响本次调用——不进 providers Map、不修改 agent 状态,**sub-agent 递归不继承**
+   * （sub-agent 仍走默认解析链路）,下一次调用仍用默认配置。
+   */
+  provider?: LlmConfig | LLMProvider;
   /** 采样温度（透传给 LLM API,覆盖 provider/model 级 temperature） */
   temperature?: number;
   /** 最大生成 token 数（透传给 LLM API） */

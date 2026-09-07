@@ -93,8 +93,8 @@ class Agent {
 
 | 字段 | options 覆盖 | agent 元数据 | 全局默认 |
 | --- | --- | --- | --- |
-| `provider` | `options.model` 解析出的 provider（key 含 provider 时） | — | `deps.defaultProvider`（`defaultLlm` 对应） |
-| `model` | `options.model` 解析出的 model | `meta.model` | `defaultLlm` provider 的 models 第一个 |
+| `provider` | `options.provider` 外部 provider（最高,跳过 llms 解析）/ `options.model` 解析出的 provider（key 含 provider 时） | — | `deps.defaultProvider`（`defaultLlm` 对应） |
+| `model` | `options.model`（外部 provider 时为原始 model 名原样透传）/ `options.model` 解析出的 model | `meta.model` | `defaultLlm` provider 的 models 第一个 |
 | `temperature` | `options.temperature` | — | `LlmConfig.temperature`（provider 级透传） |
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（provider 级透传） |
 | `maxTurns` | — | `meta.maxTurns` | `AgentRuntimeConfig.maxTurns` |
@@ -102,6 +102,11 @@ class Agent {
 
 `options.model` 是字符串 key,解析规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
 不传 `options.model` 时用 `deps.defaultProvider` + agent 元数据 `config.model`（或该 provider 的 models 第一个）。
+
+`options.provider` 传外部 provider（`LlmConfig` 配置对象或 `LLMProvider` 实例）时优先级最高——
+完全跳过 llms key 解析,`options.model` 变为原始 model 名原样透传（支持带 `/` 的 model id）。
+仅本次调用生效,sub-agent 递归不继承。详见 [agentHandle.md](./agentHandle.md) 的
+「`options.provider` 外部 provider」章节。
 
 ### `buildToolDefinitions()` —— tool 列表组装
 

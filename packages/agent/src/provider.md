@@ -16,7 +16,9 @@
 
 - [reactLoop](./reactLoop.md) 每轮调 `provider.complete()` 或 `provider.stream()` 发送 messages + tools，拿回 assistant 消息
 - [Agent 类](./agent.md) 构造时接收 `LLMProvider` 实例（由 [createProvider](#createprovider) 工厂创建），传给 reactLoop
-- 业务方自定义 provider：实现 `LLMProvider` 接口即可对接任意 LLM 服务（如内部自研模型网关）
+- 业务方自定义 provider：实现 `LLMProvider` 接口即可对接任意 LLM 服务（如内部自研模型网关）；
+  可在 `agent.run(input, { provider })` 调用时直接注入实例或 `LlmConfig` 配置对象（外部 provider,
+  不查 `config.agent.llms`），也可经 [plugin](./plugin.md) 从 `config.agent.llms` 批量创建
 
 ## 设计
 
@@ -72,7 +74,7 @@ function createProvider(config: LlmConfig): LLMProvider;
 
 `LLMCompleteRequest` 的 `model` / `temperature` / `maxTokens` 优先级高于 `LlmConfig`（agent 自身 `config.model` 覆盖 `defaultLlm` provider 的默认 model）。
 
-完整优先级（高 → 低）：[Agent.run](./agent.md) 的 `options.model`（字符串 key,按解析规则定位 provider + model）/ `options.temperature` / `options.maxTokens` > agent 元数据 `config.model` > `LlmConfig`（`defaultLlm` provider 级 + model 级字段）。`options` 由 [Agent](./agent.md) 在 `buildLoopConfig` 阶段应用,Provider 适配器收到的 `LLMCompleteRequest` 已是最终值——Provider 无需感知 options 层或 key 解析。详见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
+完整优先级（高 → 低）：[Agent.run](./agent.md) 的 `options.provider`（外部 provider,跳过 llms 解析,详见 [agentHandle.md](./agentHandle.md) 的「`options.provider` 外部 provider」章节）/ `options.model`（字符串 key,按解析规则定位 provider + model；外部 provider 存在时为原始 model 名原样透传）/ `options.temperature` / `options.maxTokens` > agent 元数据 `config.model` > `LlmConfig`（`defaultLlm` provider 级 + model 级字段）。`options` 由 [Agent](./agent.md) 在 `buildLoopConfig` 阶段应用,Provider 适配器收到的 `LLMCompleteRequest` 已是最终值——Provider 无需感知 options 层或 key 解析。详见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
 
 ## 相关模块
 

@@ -19,6 +19,10 @@ faapi 核心的 [agentHandle 工厂注册机制](../../faapi/src/injection/agent
 - **按请求切 provider/model**：`agent.run(input, { model })` 通过字符串 key 切换
   provider + model,适用于「按用户身份 / tier 选模型」「A/B 测试不同 provider」等运行时动态切换场景。
   不修改 agent 自身状态,下一次调用仍用默认配置。
+- **外部 provider（BYOK / 自定义网关）**：`agent.run(input, { provider })` 传入
+  `LlmConfig` 配置对象（用户自带 apiKey / 自定义 baseURL）或 `LLMProvider` 实例
+  （自研模型网关等框架未内置适配器的 LLM 服务）,本次调用直接使用——完全不走
+  `config.agent.llms`。详见下方「`options.provider` 外部 provider」章节。
 - **中断恢复 / 多轮对话**：`agent.run(undefined, { messages })` 从断点续跑
   （`AgentAbortError.messages` / `ReactLoopError.messages`）,或 `agent.run(新输入, { messages })`
   把上次历史 + 新输入拼接为多轮对话。详见 [reactLoop.md](./reactLoop.md) 中断恢复章节。
@@ -42,6 +46,22 @@ export async function POST(agent: AgentHandle, body: { input: string }) {
   });
   return { content: result.content };
 }
+
+// 外部 provider 形式一：LlmConfig 配置对象（用户自带 key,BYOK）
+export async function POST(agent: AgentHandle, body: { input: string; apiKey: string; model: string }) {
+  const result = await agent.run(body.input, {
+    provider: { provider: 'openai', apiKey: body.apiKey },  // 现场创建适配器,不查 llms
+    model: body.model,  // 原始 model 名,原样透传（支持带 / 的 id,如 OpenRouter）
+  });
+  return { content: result.content };
+}
+
+// 外部 provider 形式二：LLMProvider 实例（自定义内部模型网关）
+import type { LLMProvider } from '@faapi/agent';
+export async function POST(agent: AgentHandle, body: { input: string }, gateway: LLMProvider) {
+  const result = await agent.run(body.input, { provider: gateway, model: 'internal-model' });
+  return { content: result.content };
+}
 ```
 
 ## 设计
@@ -60,6 +80,24 @@ interface AgentRunOptions {
    * 不传时用 `defaultLlm` provider + agent 元数据 `config.model`
    */
   model?: string;
+  /**
+   * 外部 provider（本次调用临时使用,优先级最高——完全不查 config.agent.llms）
+   *
+   * 两种形式：
+   * - `LlmConfig` 对象（含 `provider` / `apiKey` / `baseURL` 等字段）→ 现场调
+   *   `createProvider` 创建适配器（浅拷贝,不改调用方对象）,适用于 BYOK / 按请求指定网关
+   * - `LLMProvider` 实例（实现 `complete` / `stream`）→ 直接使用,适用于框架未内置
+   *   适配器的 LLM 服务（内部自研模型网关等）
+   *
+   * 传入时 `options.model` 语义变为「原始 model 名」——不做 llms key 解析,原样透传给该
+   * provider（支持带 / 的 model id,如 OpenRouter 的 'anthropic/claude-3.5-sonnet'）。
+   * LlmConfig 形式下 `options.model` 缺省时回落该 config 的 `models` 第一个 key,
+   * 两者皆无抛 `AgentError`；LLMProvider 实例形式下可为 `undefined`（自定义 provider 自决）。
+   *
+   * 仅影响本次调用——sub-agent 递归不继承外部 provider（sub-agent 仍走默认解析）,
+   * agent 状态不变,下一次调用仍用默认配置。每次调用现场物化 provider,不进 providers Map。
+   */
+  provider?: LlmConfig | LLMProvider;
   /** 采样温度（透传给 LLM API,覆盖 provider/model 级 temperature） */
   temperature?: number;
   /** 最大生成 token 数（透传给 LLM API） */
@@ -95,8 +133,8 @@ interface AgentHandle {
 | 字段 | 优先级 1（最高） | 优先级 2 | 优先级 3（默认） |
 | --- | --- | --- | --- |
 | `agentName` | `options.agent` | — | `deps.agentName`（`config.agent.defaultAgent`） |
-| `provider` | `options.model` 解析出的 provider（key 含 provider 时） | — | `deps.defaultProvider`（`defaultLlm` 对应的 provider 实例） |
-| `model` | `options.model` 解析出的 model | `meta.model`（agent 元数据） | `defaultLlm` provider 的 models 第一个 key |
+| `provider` | `options.provider` 物化的外部 provider（跳过全部 llms 解析） | `options.model` 解析出的 provider（key 含 provider 时） | `deps.defaultProvider`（`defaultLlm` 对应的 provider 实例） |
+| `model` | `options.model`（外部 provider 时为原始 model 名,原样透传） | `options.model` 解析出的 model / `meta.model`（agent 元数据） | `defaultLlm` provider 的 models 第一个 key |
 | `temperature` | `options.temperature` | model 级 `models[m].temperature` | provider 级 `LlmConfig.temperature` |
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（全局透传） |
 | `maxTurns` | — | `meta.maxTurns`（agent 元数据） | `AgentRuntimeConfig.maxTurns`（全局） |
@@ -107,6 +145,9 @@ interface AgentHandle {
 
 `buildLoopConfig` 收到 `options.model` 后按以下顺序解析（命中即停）：
 
+0. **外部 provider 接管**：`options.provider` 存在时**跳过下方全部 key 解析**——
+   `options.model` 不再是 llms key,而是原始 model 名原样透传给外部 provider
+   （详见下方「`options.provider` 外部 provider」章节）
 1. **llms key 精确匹配**：`options.model` 等于 `config.agent.llms` 的某个 key（如 `'openai'`）
    → 用该 key 对应的 provider 实例 + 该 provider `models` 的第一个 key 作为 model
 2. **`provider/model` 一体化**：`options.model` 含 `/`,拆成 `[provider, model]`
@@ -118,6 +159,36 @@ interface AgentHandle {
    - 无匹配 → 抛 `AgentError`（model 不在任何 provider 下,要求在 `llms.*.models` 里声明）
 
 不传 `options.model` → 用 `defaultLlm` provider + agent 元数据 `config.model`（或该 provider 的 models 第一个）。
+
+### `options.provider` 外部 provider
+
+`options.provider` 允许调用时临时传入 `config.agent.llms` 之外的外部 provider,两种形式：
+
+| 形式 | 物化方式 | model 解析 |
+| --- | --- | --- |
+| `LlmConfig` 对象（含字符串 `provider` 字段） | 现场调 `createProvider`（浅拷贝 + `models` 兜底 `{}`,不改调用方对象） | `options.model` 原样透传；缺省回落该 config `models` 第一个 key；两者皆无抛 `AgentError` |
+| `LLMProvider` 实例（有 `complete` / `stream` 方法） | 直接使用 | `options.model` 原样透传,可为 `undefined`（自定义 provider 自决） |
+
+两者皆非（如普通对象缺 `provider` 字段）→ 抛 `AgentError`。
+
+关键语义：
+
+- **`options.model` 变为原始 model 名**——不做 llms key 解析、不拆 `/`。带斜杠的 model id
+  （如 OpenRouter 的 `'anthropic/claude-3.5-sonnet'`）原样发给外部 provider
+- **优先级最高**——同时传 `options.provider` + `options.model`（llms 里已声明的 key）时,
+  走外部 provider 且 model 原样透传,llms 声明被完全忽略
+- **调用级作用域**——外部 provider 仅本次 `run` / `stream` 生效：不进 `providers Map`、
+  不修改 agent 状态；**sub-agent 递归不继承**（sub-agent 仍走默认解析链路）
+- **透传字段生效**——`LlmConfig` 形式的 provider 级透传字段（`temperature` / `top_p` 等）
+  与 `timeoutMs` / `maxRetries` 与内置 provider 行为完全一致（同一 `createProvider` 路径）；
+  `options.temperature` / `options.maxTokens` 仍为 request 级最高优先级
+
+典型场景：
+
+- **BYOK**：SaaS 终端用户自带 API key,服务端不托管凭证
+- **按请求指定网关**：同一服务按租户 / 区域路由到不同 baseURL
+- **自定义 LLM 服务**：内部自研模型网关实现 `LLMProvider` 接口后直接注入,
+  无需框架内置适配器
 
 ### Agent 满足 AgentHandle（结构化类型）
 
