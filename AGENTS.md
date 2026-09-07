@@ -10,6 +10,8 @@ faapi 是一个 Node.js 框架，核心理念是"函数即接口"。
 
 DDD 通用规范见 `.trae/skills/ddd/SKILL.md`。
 
+框架开发的场景路由（新功能 / 子包 / 发版 / 反馈处理）见 `.trae/skills/faapi-framework-dev/SKILL.md`；用 faapi 开发业务应用的场景走个人技能库的 `faapi-dev` 技能，不在本仓库。
+
 ## 3. 全局协作规则
 
 - 全程使用中文沟通。
