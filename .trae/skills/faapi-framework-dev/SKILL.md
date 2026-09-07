@@ -19,7 +19,7 @@ description: "开发 faapi 框架本身。Invoke when 在 faapi 仓库内新增/
 
 | 用户意图 | 执行方式 | 依据 |
 |---------|---------|------|
-| 开发框架功能（新增/修改模块、改行为） | 走 `ddd` 技能（`.trae/skills/ddd/SKILL.md`）：文档 → 测试 → 代码 → 通过，不跳过测试声明完成 | AGENTS.md「开发模式 / 文档体系」 |
+| 开发框架功能（新增/修改模块、改行为） | 走全局技能库的 `ddd` 技能（本仓库无本地副本，缺失时报错）：文档 → 测试 → 代码 → 通过，不跳过测试声明完成 | AGENTS.md「开发模式 / 文档体系」 |
 | 理解架构 / dev·build·prod 链路 / 产物机制 | 读 AGENTS.md「架构」（统一产物驱动、零入口设计、按需编译），再按需读模块 DDD 文档 | AGENTS.md「架构」 |
 | 新增 `@faapi/<name>` 子包 | 按 AGENTS.md「新增子包配置清单」逐项配置并跑完末节验证；npm 上包不存在时先用 `npm-empty-publish` 技能发占位包、配 Trusted Publisher | AGENTS.md「新增子包配置清单」 |
 | 测试 / 质量门禁 | `pnpm -r run typecheck` / `lint` / `test` / `build`；本地快速反馈用包内 `test:unit`，提交前跑全量 | AGENTS.md「技术栈」/「新增子包配置清单·验证」 |

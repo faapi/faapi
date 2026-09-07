@@ -8,7 +8,7 @@ faapi 是一个 Node.js 框架，核心理念是"函数即接口"。
 
 本项目使用 **DDD（Documentation-Driven Development）** 模式开发，流程为：**文档 → 测试 → 代码 → 通过**。
 
-DDD 通用规范见 `.trae/skills/ddd/SKILL.md`。
+DDD 通用规范使用全局技能库的 `ddd` 技能，本仓库不维护本地副本（全局技能的存放路径因环境而异）；找不到该技能时直接报错提示，不降级猜测。
 
 框架开发的场景路由（新功能 / 子包 / 发版 / 反馈处理）见 `.trae/skills/faapi-framework-dev/SKILL.md`；用 faapi 开发业务应用的场景走个人技能库的 `faapi-dev` 技能，不在本仓库。
 
@@ -16,6 +16,7 @@ DDD 通用规范见 `.trae/skills/ddd/SKILL.md`。
 
 - 全程使用中文沟通。
 - 禁止编造信息；不确定时先查文件或先提问。
+- 技能引用必须指向真实存在的文件；找不到技能时直接报错提示，不降级猜测、不编造路径。
 - 代码示例默认使用 TypeScript。
 - 包管理器默认使用 pnpm。
 - TypeScript 配置采用 `moduleResolution: Bundler`，本地相对导入路径不写后缀（如 `from './utils'`），由 tsc/tsx/tsup/esbuild 解析；第三方包导入正常使用包名。
@@ -48,7 +49,7 @@ AGENTS.md                       ← 项目唯一顶层文档（本文件）
 - **模块级信息**（用途、场景、依赖）只在 DDD `.md` 中维护。
 - **跨模块信息**只在目录级 `README.md` 中维护。
 - **项目级信息**（架构、约定、验收）只在 `AGENTS.md` 中维护。
-- **DDD 通用规范**（流程、模板、检查清单）只在 `.trae/skills/ddd/SKILL.md` 中维护。
+- **DDD 通用规范**（流程、模板、检查清单）只在全局技能库的 `ddd` 技能中维护（路径因环境而异，本仓库无本地副本，缺失时直接报错提示）。
 - 同一信息只在一处维护，其他地方引用。
 
 ## 5. 架构
