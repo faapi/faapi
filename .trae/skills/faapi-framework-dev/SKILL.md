@@ -19,13 +19,14 @@ description: "开发 faapi 框架本身。Invoke when 在 faapi 仓库内新增/
 
 | 用户意图 | 执行方式 | 依据 |
 |---------|---------|------|
-| 开发框架功能（新增/修改模块、改行为） | 走 `ddd` 技能（`.trae/skills/ddd/SKILL.md`）：文档 → 测试 → 代码 → 通过，不跳过测试声明完成 | AGENTS.md §2/§4/§7 |
-| 理解架构 / dev·build·prod 链路 / 产物机制 | 读 AGENTS.md §5（统一产物驱动、零入口设计、按需编译），再按需读模块 DDD 文档 | AGENTS.md §5 |
-| 新增 `@faapi/<name>` 子包 | 按 AGENTS.md §6.5 清单逐项配置并跑完 §6.5.10 验证；npm 上包不存在时先用 `npm-empty-publish` 技能发占位包、配 Trusted Publisher | AGENTS.md §6.5 |
-| 测试 / 质量门禁 | `pnpm -r run typecheck` / `lint` / `test` / `build`；本地快速反馈用包内 `test:unit`，提交前跑全量 | AGENTS.md §6.4/§6.5.10 |
-| 发 canary 版 | 打 `v{version}-canary.N` tag 推送，CI 以 Trusted Publisher（OIDC）自动发布到 npm `canary` tag | AGENTS.md §7 |
-| 发正式版 | 走 `npm-stable-release` 技能（changeset 升版本 + 打 tag） | AGENTS.md §7 |
-| 提交变更 | Conventional Commits（commitlint 强制）；`packages/faapi`、`packages/schema` 的用户可见变更必须随 PR 附 changeset（`pnpm changeset`），CHANGELOG 不手写 | AGENTS.md §7 |
+| 开发框架功能（新增/修改模块、改行为） | 走 `ddd` 技能（`.trae/skills/ddd/SKILL.md`）：文档 → 测试 → 代码 → 通过，不跳过测试声明完成 | AGENTS.md「开发模式 / 文档体系」 |
+| 理解架构 / dev·build·prod 链路 / 产物机制 | 读 AGENTS.md「架构」（统一产物驱动、零入口设计、按需编译），再按需读模块 DDD 文档 | AGENTS.md「架构」 |
+| 新增 `@faapi/<name>` 子包 | 按 AGENTS.md「新增子包配置清单」逐项配置并跑完末节验证；npm 上包不存在时先用 `npm-empty-publish` 技能发占位包、配 Trusted Publisher | AGENTS.md「新增子包配置清单」 |
+| 测试 / 质量门禁 | `pnpm -r run typecheck` / `lint` / `test` / `build`；本地快速反馈用包内 `test:unit`，提交前跑全量 | AGENTS.md「技术栈」/「新增子包配置清单·验证」 |
+| 发 canary 版 | 打 `v{version}-canary.N` tag 推送，CI 以 Trusted Publisher（OIDC）自动发布到 npm `canary` tag | AGENTS.md「交付完成定义·发布相关补充约定」 |
+| 发正式版 | 走 `npm-stable-release` 技能（changeset 升版本 + 打 tag） | AGENTS.md「交付完成定义·发布相关补充约定」 |
+| 提交变更 | Conventional Commits（commitlint 强制）；`packages/faapi`、`packages/schema` 的用户可见变更必须随 PR 附 changeset（`pnpm changeset`），CHANGELOG 不手写 | AGENTS.md「交付完成定义」 |
+| 用户可见变更（新能力 / 行为变化 / 配置字段） | 同步更新个人技能库 `faapi-dev`（cnb/skills 仓库 `skills/faapi-dev/`）对应场景文档及版本戳——属交付完成定义的一部分，不是可选项 | AGENTS.md「交付完成定义」 |
 | 处理业务方问题反馈 | 见下方「业务方反馈处理」 | — |
 
 ## 业务方反馈处理
