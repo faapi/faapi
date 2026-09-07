@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Agent, AgentError } from './agent';
+import { AgentAbortError } from './provider';
 import type { AgentDeps, AgentRuntimeConfig, ToolSchemaResolution } from './agent';
 import type {
   AgentCore,
@@ -1447,5 +1448,164 @@ describe('Agent', () => {
       await agent.run('weather?');
       expect(handler).toHaveBeenCalledWith({ city: '北京' }, ctx);
     });
+  });
+});
+
+// ─── 中断恢复（Resume）──────────────────────────────
+
+describe('Agent — 中断恢复（Resume）', () => {
+  /** 合法续跑历史：system + user + 完整轮组 */
+  const resumeHistory: LLMMessage[] = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'go' },
+    {
+      role: 'assistant',
+      content: '',
+      toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+    },
+    { role: 'tool', content: 'r1', toolCallId: 'c1' },
+  ];
+
+  it('run(undefined, { messages }) 纯续跑：provider 收到完整历史', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'resumed', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(createDeps({ provider, agent: agentMeta({ systemPrompt: 'sys' }) }));
+
+    const result = await agent.run(undefined, { messages: resumeHistory });
+
+    expect(result.content).toBe('resumed');
+    expect(completeCalls.mock.calls[0][0].messages).toEqual(resumeHistory);
+  });
+
+  it('run() 无 input 且无 messages → 抛 AgentError，不发起 LLM 请求', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'x', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
+
+    await expect(agent.run()).rejects.toBeInstanceOf(AgentError);
+    await expect(agent.run(undefined, {})).rejects.toBeInstanceOf(AgentError);
+    expect(completeCalls).not.toHaveBeenCalled();
+  });
+
+  it("run('') 空 input 且无 messages → 抛 AgentError", async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'x', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
+
+    await expect(agent.run('')).rejects.toBeInstanceOf(AgentError);
+    expect(completeCalls).not.toHaveBeenCalled();
+  });
+
+  it("run('继续', { messages }) → 历史末尾追加 user 消息（多轮对话）", async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'ok', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(createDeps({ provider, agent: agentMeta({ systemPrompt: 'sys' }) }));
+
+    await agent.run('继续', { messages: resumeHistory });
+
+    const sent = completeCalls.mock.calls[0][0].messages;
+    expect(sent.slice(0, -1)).toEqual(resumeHistory);
+    expect(sent.at(-1)).toEqual({ role: 'user', content: '继续' });
+  });
+
+  it('stream(undefined, { messages }) 同样支持续跑', async () => {
+    const { provider, streamCalls } = createMockStreamProvider([
+      [{ deltaContent: 'resumed', finishReason: 'stop' }],
+    ]);
+    const agent = new Agent(createDeps({ provider, agent: agentMeta({ systemPrompt: 'sys' }) }));
+
+    const chunks = await collect(agent.stream(undefined, { messages: resumeHistory }));
+
+    expect(chunks.at(-1)?.done).toMatchObject({ content: 'resumed', stopReason: 'stop' });
+    expect(streamCalls.mock.calls[0][0].messages).toEqual(resumeHistory);
+  });
+
+  it('options.messages 结构非法（tool 结果缺失）→ 抛 AgentError，不发起 LLM 请求', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'x', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
+    const broken: LLMMessage[] = [
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+      },
+      // 缺 tool 结果（截断在轮组中间）
+    ];
+
+    const err = await agent.run(undefined, { messages: broken }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect(String(err.message)).toContain('c1');
+    expect(completeCalls).not.toHaveBeenCalled();
+  });
+
+  it('options.messages 含未知 role → 抛 AgentError', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'x', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
+    const broken = [
+      { role: 'robot', content: 'hi' }, // 反序列化出的非法 role
+    ] as unknown as LLMMessage[];
+
+    const err = await agent.run(undefined, { messages: broken }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AgentError);
+    expect(String(err.message)).toContain('robot');
+    expect(completeCalls).not.toHaveBeenCalled();
+  });
+
+  it('中断恢复全流程：abort 携带断点历史 → 用 err.messages 续跑完成', async () => {
+    const controller = new AbortController();
+    const { provider } = createMockProvider([
+      llmResponse({
+        toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'never reached' }),
+    ]);
+    const agent = new Agent(
+      createDeps({
+        provider,
+        agent: agentMeta(),
+        tools: [toolMeta()],
+        loadToolModuleImpl: async () => ({
+          handler: async () => {
+            controller.abort(); // 模拟 tool 执行期间客户端断开
+            return '晴';
+          },
+          functionName: 'getWeather',
+        }),
+      }),
+    );
+
+    const err = await agent.run('北京天气?', { signal: controller.signal }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(AgentAbortError);
+    // 断点历史：完整轮组（assistant.toolCalls + tool 结果配对）
+    expect(err.messages.map((m: LLMMessage) => m.role)).toEqual(['user', 'assistant', 'tool']);
+    expect(err.messages[2]).toEqual({ role: 'tool', content: '晴', toolCallId: 'c1' });
+
+    // 续跑：新一次 run，无新输入，从断点历史继续
+    const { provider: provider2, completeCalls } = createMockProvider([
+      llmResponse({ content: '北京今天晴', stopReason: 'stop' }),
+    ]);
+    const agent2 = new Agent(
+      createDeps({ provider: provider2, agent: agentMeta({ systemPrompt: 'sys' }) }),
+    );
+
+    const result = await agent2.run(undefined, { messages: err.messages });
+
+    expect(result.content).toBe('北京今天晴');
+    expect(result.turns).toBe(1); // 续跑轮数重新计数
+    const sent = completeCalls.mock.calls[0][0].messages;
+    expect(sent.at(-1)).toEqual({ role: 'tool', content: '晴', toolCallId: 'c1' });
   });
 });

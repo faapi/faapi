@@ -19,6 +19,9 @@ faapi 核心的 [agentHandle 工厂注册机制](../../faapi/src/injection/agent
 - **按请求切 provider/model**：`agent.run(input, { model })` 通过字符串 key 切换
   provider + model,适用于「按用户身份 / tier 选模型」「A/B 测试不同 provider」等运行时动态切换场景。
   不修改 agent 自身状态,下一次调用仍用默认配置。
+- **中断恢复 / 多轮对话**：`agent.run(undefined, { messages })` 从断点续跑
+  （`AgentAbortError.messages` / `ReactLoopError.messages`）,或 `agent.run(新输入, { messages })`
+  把上次历史 + 新输入拼接为多轮对话。详见 [reactLoop.md](./reactLoop.md) 中断恢复章节。
 
 ```ts
 // src/api/chat/handler.ts
@@ -61,16 +64,27 @@ interface AgentRunOptions {
   temperature?: number;
   /** 最大生成 token 数（透传给 LLM API） */
   maxTokens?: number;
+  /**
+   * 初始对话历史（续跑 / 多轮对话,语义详见 [reactLoop.md](./reactLoop.md) 中断恢复章节）
+   *
+   * 提供时以其为基础（历史应含 system）,agent 的 systemPrompt 缺失时自动补齐；
+   * `input` 非空时追加为新的 user 消息（多轮对话）,为空时纯续跑。
+   * 续跑源:`AgentAbortError.messages`（中断断点）/ `ReactLoopError.messages`（maxTurns 超限）/
+   * 上次 `result.messages`（多轮对话）。历史经结构校验,assistant.toolCalls 与 tool 结果
+   * 配对不完整时抛 `AgentError`。
+   */
+  messages?: LLMMessage[];
 }
 
 interface AgentHandle {
-  run(input: string, options?: AgentRunOptions): Promise<ReactLoopResult>;
-  stream(input: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
+  run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult>;
+  stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
   asTool(): AgentToolDescriptor | undefined;
 }
 ```
 
 `options` 全可选——不传时用 `defaultLlm` provider + agent 元数据 `config.model`。
+`input` 变为可选（续跑场景不传新输入）——`input` 与 `options.messages` 都为空时抛 `AgentError`。
 传 `options.model` 时按字符串 key 解析规则定位 provider + model,临时覆盖本次调用,
 **不修改 agent 自身状态**,下一次 `run` 仍用默认配置。
 

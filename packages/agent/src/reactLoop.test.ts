@@ -1339,3 +1339,290 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     expect(JSON.stringify(toolMsgs[1]?.content)).toContain('fine');
   });
 });
+
+// ─── 中断恢复（Resume）──────────────────────────────
+
+describe('中断恢复（Resume）', () => {
+  /** 合法续跑历史：system + user + 完整轮组（assistant.toolCalls + tool 结果配对） */
+  const resumeHistory: LLMMessage[] = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'go' },
+    {
+      role: 'assistant',
+      content: '',
+      toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+    },
+    { role: 'tool', content: 'r1', toolCallId: 'c1' },
+  ];
+
+  describe('config.messages 续跑', () => {
+    it('input 为空 → 历史原样发送，不追加 user', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'resumed', stopReason: 'stop' }),
+      ]);
+
+      const result = await reactLoop(undefined, {
+        provider,
+        executeTool: async () => '',
+        messages: resumeHistory,
+      });
+
+      expect(completeCalls.mock.calls[0][0].messages).toEqual(resumeHistory);
+      // 本地历史 = 续跑历史 + 本次新 assistant 消息
+      expect(result.messages).toHaveLength(resumeHistory.length + 1);
+      expect(result.messages.at(-1)).toMatchObject({ role: 'assistant', content: 'resumed' });
+      expect(result.content).toBe('resumed');
+    });
+
+    it('历史无 system 且配置 systemPrompt → 自动在最前插入', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const historyNoSys = resumeHistory.slice(1); // user + assistant + tool
+
+      await reactLoop(undefined, {
+        provider,
+        systemPrompt: 'fresh-sys',
+        executeTool: async () => '',
+        messages: historyNoSys,
+      });
+
+      const sent = completeCalls.mock.calls[0][0].messages;
+      expect(sent[0]).toEqual({ role: 'system', content: 'fresh-sys' });
+      expect(sent.slice(1)).toEqual(historyNoSys);
+    });
+
+    it('历史已含 system → 不重复插入 systemPrompt', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+
+      await reactLoop(undefined, {
+        provider,
+        systemPrompt: 'another-sys',
+        executeTool: async () => '',
+        messages: resumeHistory,
+      });
+
+      const sent = completeCalls.mock.calls[0][0].messages;
+      expect(sent.filter((m: LLMMessage) => m.role === 'system')).toHaveLength(1);
+      expect(sent[0].content).toBe('sys');
+    });
+
+    it('input 非空 → 追加为新的 user 消息（多轮对话）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+
+      await reactLoop('继续', {
+        provider,
+        executeTool: async () => '',
+        messages: resumeHistory,
+      });
+
+      const sent = completeCalls.mock.calls[0][0].messages;
+      expect(sent.slice(0, -1)).toEqual(resumeHistory);
+      expect(sent.at(-1)).toEqual({ role: 'user', content: '继续' });
+    });
+  });
+
+  describe('中断携带历史', () => {
+    it('非流式：轮首预检查 abort → err.messages 携带初始历史，provider 未被调用', async () => {
+      const { provider, completeCalls } = createMockProvider([llmResponse({ content: 'x' })]);
+      const controller = new AbortController();
+      controller.abort();
+
+      const err = await reactLoop('hi', {
+        provider,
+        systemPrompt: 'sys',
+        executeTool: async () => '',
+        signal: controller.signal,
+      }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(AgentAbortError);
+      expect(completeCalls).not.toHaveBeenCalled();
+      expect(err.messages).toEqual([
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'hi' },
+      ]);
+    });
+
+    it('非流式：provider.complete 执行中 abort → err.messages 不含未完成 assistant', async () => {
+      const controller = new AbortController();
+      const provider: LLMProvider = {
+        complete: async () => {
+          controller.abort();
+          throw new AgentAbortError();
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+
+      const err = await reactLoop('hi', {
+        provider,
+        executeTool: async () => '',
+        signal: controller.signal,
+      }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(AgentAbortError);
+      expect(err.messages).toEqual([{ role: 'user', content: 'hi' }]);
+    });
+
+    it('非流式：tool 完成后下一轮轮首 abort → err.messages 为完整轮组（可直接续跑）', async () => {
+      const controller = new AbortController();
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'never reached' }),
+      ]);
+
+      const err = await reactLoop('go', {
+        provider,
+        executeTool: async () => {
+          controller.abort(); // 模拟 tool 执行期间客户端断开
+          return 'r1';
+        },
+        signal: controller.signal,
+      }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(AgentAbortError);
+      // 完整轮组：assistant.toolCalls 与 tool 结果按 id 配对
+      expect(err.messages.map((m: LLMMessage) => m.role)).toEqual(['user', 'assistant', 'tool']);
+      expect(err.messages[2]).toEqual({ role: 'tool', content: 'r1', toolCallId: 'c1' });
+      // 第二轮 LLM 调用未发起（轮首预检查拦截）
+      expect(completeCalls).toHaveBeenCalledTimes(1);
+    });
+
+    it('流式：轮首预检查 abort → err.messages 携带历史', async () => {
+      const { provider } = createMockStreamProvider([[{ finishReason: 'stop' }]]);
+      const controller = new AbortController();
+      controller.abort();
+
+      let caught: unknown;
+      try {
+        for await (const _ of reactLoopStream(undefined, {
+          provider,
+          executeTool: async () => '',
+          signal: controller.signal,
+          messages: resumeHistory,
+        })) {
+          // 不消费
+        }
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(AgentAbortError);
+      expect((caught as AgentAbortError).messages).toEqual(resumeHistory);
+    });
+
+    it('流式：执行中 abort → 已 yield 的部分 deltaContent 不入历史', async () => {
+      const controller = new AbortController();
+      const provider: LLMProvider = {
+        complete: async () => {
+          throw new Error('complete not mocked');
+        },
+        stream: async function* () {
+          yield { deltaContent: 'partial ' };
+          controller.abort();
+          throw new AgentAbortError();
+        },
+      };
+
+      const chunks: LLMStreamChunk[] = [];
+      let caught: unknown;
+      try {
+        for await (const chunk of reactLoopStream('hi', {
+          provider,
+          executeTool: async () => '',
+          signal: controller.signal,
+        })) {
+          chunks.push(chunk as LLMStreamChunk);
+        }
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(AgentAbortError);
+      // 部分 deltaContent 已 yield 给消费端，但属于未完成轮组，不入断点历史
+      expect(chunks.some((c) => c.deltaContent === 'partial ')).toBe(true);
+      expect((caught as AgentAbortError).messages).toEqual([{ role: 'user', content: 'hi' }]);
+    });
+  });
+
+  describe('maxTurns 超限携带历史', () => {
+    it('非流式：ReactLoopError.messages 携带完整历史（可提高 maxTurns 后续跑）', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'never reached' }),
+      ]);
+
+      const err = await reactLoop('go', {
+        provider,
+        executeTool: async () => 'r1',
+        maxTurns: 1,
+      }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(ReactLoopError);
+      expect(err.maxTurns).toBe(1);
+      expect(err.messages.map((m: LLMMessage) => m.role)).toEqual(['user', 'assistant', 'tool']);
+    });
+
+    it('流式：ReactLoopError.messages 携带完整历史', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+            finishReason: 'tool_calls',
+          },
+        ],
+        [{ deltaContent: 'never', finishReason: 'stop' }],
+      ]);
+
+      let caught: unknown;
+      try {
+        for await (const _ of reactLoopStream('go', {
+          provider,
+          executeTool: async () => 'r1',
+          maxTurns: 1,
+        })) {
+          // 不消费
+        }
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(caught).toBeInstanceOf(ReactLoopError);
+      expect((caught as ReactLoopError).messages.map((m) => m.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+      ]);
+    });
+  });
+
+  describe('流式续跑', () => {
+    it('config.messages → provider 收到历史，正常出 done', async () => {
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'done!', finishReason: 'stop' }],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream(undefined, {
+          provider,
+          executeTool: async () => '',
+          messages: resumeHistory,
+        }),
+      );
+
+      expect(chunks.at(-1)?.done).toMatchObject({ content: 'done!', stopReason: 'stop' });
+      expect(streamCalls.mock.calls[0][0].messages).toEqual(resumeHistory);
+    });
+  });
+});

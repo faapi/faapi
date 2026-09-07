@@ -1,4 +1,5 @@
 import type { AgentToolDescriptor } from '@faapi/faapi';
+import type { LLMMessage } from './provider';
 import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
 
 /**
@@ -91,6 +92,20 @@ export interface AgentRunOptions {
    * 结构化调用明细,详见 [trace.md](./trace.md)。
    */
   enableTracing?: boolean;
+  /**
+   * 初始对话历史（续跑 / 多轮对话）
+   *
+   * 提供时以其为基础,agent 的 systemPrompt 缺失时自动补齐；`input` 非空时追加为
+   * 新的 user 消息（多轮对话）,为空时纯续跑。续跑源：
+   * - `AgentAbortError.messages` —— 中断断点（客户端断开 / 请求取消）
+   * - `ReactLoopError.messages` —— maxTurns 超限（提高预算后续跑）
+   * - 上次 `result.messages` —— 多轮对话拼接
+   *
+   * 历史经结构校验（assistant.toolCalls 与 tool 结果按 toolCallId 配对完整、
+   * role 合法）,非法抛 `AgentError`,不发起 LLM 请求。
+   * 语义详见 [reactLoop.md](./reactLoop.md) 中断恢复章节。
+   */
+  messages?: LLMMessage[];
 }
 
 export interface AgentHandle {
@@ -100,15 +115,17 @@ export interface AgentHandle {
    * 组装 ReAct 循环 config（systemPrompt + tools + maxTurns + 应用 `options` 覆盖）→ 调
    * [reactLoop](./reactLoop.md) → 返回最终结果。
    *
-   * @param input 用户输入文本
-   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens
-   *                （不修改 agent 自身状态,详见 {@link AgentRunOptions}）
+   * @param input 用户输入文本（可选——续跑场景不传新输入；input 与
+   *              `options.messages` 都为空时抛 `AgentError`）
+   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens /
+   *                messages（不修改 agent 自身状态,详见 {@link AgentRunOptions}）
    * @returns 循环结果（content + messages + turns + stopReason + usage）
-   * @throws {AgentError} agent 未注册
-   * @throws {ReactLoopError} 超出 maxTurns
+   * @throws {AgentError} agent 未注册；input 与 messages 都为空；续跑历史结构非法
+   * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 可续跑）
+   * @throws {AgentAbortError} 中断（`error.messages` 为断点历史,可续跑）
    * @throws {Error} LLM provider 抛错时立即传播
    */
-  run(input: string, options?: AgentRunOptions): Promise<ReactLoopResult>;
+  run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult>;
 
   /**
    * 流式执行 agent
@@ -116,15 +133,17 @@ export interface AgentHandle {
    * 组装 config（应用 `options` 覆盖）→ 调 [reactLoopStream](./reactLoop.md) → yield 流式 chunk。
    * 适用于 LLM token 流式输出、tool 调用过程展示等场景。
    *
-   * @param input 用户输入文本
-   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens
-   *                （不修改 agent 自身状态,详见 {@link AgentRunOptions}）
+   * @param input 用户输入文本（可选——续跑场景不传新输入；input 与
+   *              `options.messages` 都为空时抛 `AgentError`）
+   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens /
+   *                messages（不修改 agent 自身状态,详见 {@link AgentRunOptions}）
    * @yields 流式 chunk（deltaContent / toolCall / toolResult / done）
-   * @throws {AgentError} agent 未注册
-   * @throws {ReactLoopError} 超出 maxTurns
+   * @throws {AgentError} agent 未注册；input 与 messages 都为空；续跑历史结构非法
+   * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 可续跑）
+   * @throws {AgentAbortError} 中断（`error.messages` 为断点历史,可续跑）
    * @throws {Error} LLM provider 抛错时立即传播
    */
-  stream(input: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
+  stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
 
   /**
    * 把自身包装为 `AgentToolDescriptor` 供 LLM 当 tool 调用

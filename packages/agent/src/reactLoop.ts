@@ -2,6 +2,7 @@ import { AgentAbortError } from './provider';
 import type {
   LLMMessage,
   LLMProvider,
+  LLMResponse,
   LLMStopReason,
   LLMToolCall,
   LLMToolDefinition,
@@ -78,6 +79,16 @@ export interface ReactLoopConfig {
    */
   maxHistoryTokens?: number;
   /**
+   * 初始对话历史（续跑 / 多轮对话）
+   *
+   * 提供时以其为基础（历史应含 system）：历史无 `system` 消息且配置了
+   * `systemPrompt` 时自动在最前插入（agent 人格不因续跑丢失）；`input` 非空时
+   * 追加为新的 `user` 消息（多轮对话），为空时纯续跑。历史经 `Agent` 层结构校验
+   * （assistant.toolCalls 与 tool 结果按 toolCallId 配对完整）。
+   * 续跑源见 [reactLoop.md](./reactLoop.md) 中断恢复章节。
+   */
+  messages?: LLMMessage[];
+  /**
    * 启用 tracing（默认 true）。开启时填充 `ReactLoopResult.trace` /
    * `ReactLoopStreamChunk.traceEvent`,详见 [trace.md](./trace.md)。
    *
@@ -146,11 +157,14 @@ export interface ReactLoopStreamChunk {
 export class ReactLoopError extends Error {
   /** 配置的 maxTurns 值 */
   readonly maxTurns: number;
+  /** 超限时的完整对话历史（业务方可提高 maxTurns 后经 `config.messages` 续跑，轮数重新计数） */
+  readonly messages: LLMMessage[];
 
-  constructor(message: string, maxTurns: number) {
+  constructor(message: string, maxTurns: number, messages: LLMMessage[] = []) {
     super(message);
     this.name = 'ReactLoopError';
     this.maxTurns = maxTurns;
+    this.messages = messages;
   }
 }
 
@@ -188,6 +202,29 @@ function buildInitialMessages(input: string, systemPrompt?: string): LLMMessage[
   }
   messages.push({ role: 'user', content: input });
   return messages;
+}
+
+/**
+ * 构造循环初始 messages（含续跑语义，见 reactLoop.md 中断恢复章节）
+ *
+ * - `config.messages` 提供（续跑 / 多轮对话）：以其为基础——历史无 `system` 时
+ *   自动前置 `systemPrompt`（agent 人格不因续跑丢失）；非空 `input` 追加为新的
+ *   user 消息，空 input 纯续跑
+ * - 未提供：`systemPrompt`（可选）+ user input（现状行为，input 为空时 user 内容为空串，
+ *   输入守卫由 Agent 层负责）
+ */
+function initLoopMessages(input: string | undefined, config: ReactLoopConfig): LLMMessage[] {
+  if (config.messages?.length) {
+    const messages = [...config.messages];
+    if (config.systemPrompt && !messages.some((m) => m.role === 'system')) {
+      messages.unshift({ role: 'system', content: config.systemPrompt });
+    }
+    if (input) {
+      messages.push({ role: 'user', content: input });
+    }
+    return messages;
+  }
+  return buildInitialMessages(input ?? '', config.systemPrompt);
 }
 
 /** 构造 LLM complete/stream 请求参数（除 messages 外的公共字段） */
@@ -281,15 +318,19 @@ function extractSubAgentName(toolName: string): string {
  *
  * 反复调 `provider.complete()` → 执行 tool → 回传结果，直到 LLM 返回 `stop`（或其他非 `tool_calls` 原因）或超出 `maxTurns`。
  *
- * @param input 用户输入
+ * @param input 用户输入（续跑场景可为空，历史经 `config.messages` 提供）
  * @param config 循环配置
  * @returns 最终结果（content + messages + turns + stopReason + usage）
- * @throws {ReactLoopError} 超出 maxTurns
+ * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 携带完整历史，可续跑）
+ * @throws {AgentAbortError} 中断（`error.messages` 携带断点历史，可续跑）
  * @throws {Error} provider.complete 抛错时立即传播
  */
-export async function reactLoop(input: string, config: ReactLoopConfig): Promise<ReactLoopResult> {
+export async function reactLoop(
+  input: string | undefined,
+  config: ReactLoopConfig,
+): Promise<ReactLoopResult> {
   const enableTracing = config.enableTracing ?? false;
-  const messages = buildInitialMessages(input, config.systemPrompt);
+  const messages = initLoopMessages(input, config);
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
@@ -300,9 +341,9 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
   const traceEvents: AgentTraceEvent[] | undefined = enableTracing ? [] : undefined;
 
   while (turns < maxTurns) {
-    // 取消预检查：已取消则不再发起本轮 LLM 调用
+    // 取消预检查：已取消则不再发起本轮 LLM 调用（携带断点历史供续跑）
     if (config.signal?.aborted) {
-      throw new AgentAbortError();
+      throw new AgentAbortError(undefined, messages);
     }
     turns++;
 
@@ -313,11 +354,21 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
       : messages;
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
     const inputSnapshot = enableTracing ? [...outgoing] : undefined;
-    const response = await config.provider.complete({
-      messages: [...outgoing],
-      ...extras,
-      signal: config.signal,
-    });
+    // 执行中取消由 provider 请求中断传播——附上断点历史重抛（不含未完成的 assistant 消息，
+    // 轮组原子性见 reactLoop.md 中断恢复章节）
+    let response: LLMResponse;
+    try {
+      response = await config.provider.complete({
+        messages: [...outgoing],
+        ...extras,
+        signal: config.signal,
+      });
+    } catch (err) {
+      if (err instanceof AgentAbortError) {
+        throw new AgentAbortError(err.message, messages);
+      }
+      throw err;
+    }
 
     if (response.usage) {
       totalUsage = accumulateUsage(totalUsage, response.usage);
@@ -456,6 +507,7 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
   throw new ReactLoopError(
     `Max turns (${maxTurns}) exceeded — agent did not converge to a final answer`,
     maxTurns,
+    messages,
   );
 }
 
@@ -466,27 +518,28 @@ export async function reactLoop(input: string, config: ReactLoopConfig): Promise
  *
  * 使用 `provider.stream()` 异步迭代 chunks，yield `deltaContent` + `toolCall` + `toolResult` + `done`。
  *
- * @param input 用户输入
+ * @param input 用户输入（续跑场景可为空，历史经 `config.messages` 提供）
  * @param config 循环配置
  * @yields {ReactLoopStreamChunk} 流式 chunk
- * @throws {ReactLoopError} 超出 maxTurns
+ * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 携带完整历史，可续跑）
+ * @throws {AgentAbortError} 中断（`error.messages` 携带断点历史，可续跑）
  * @throws {Error} provider.stream 抛错时立即传播
  */
 export async function* reactLoopStream(
-  input: string,
+  input: string | undefined,
   config: ReactLoopConfig,
 ): AsyncIterable<ReactLoopStreamChunk> {
   const enableTracing = config.enableTracing ?? false;
-  const messages = buildInitialMessages(input, config.systemPrompt);
+  const messages = initLoopMessages(input, config);
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
   let turns = 0;
 
   while (turns < maxTurns) {
-    // 取消预检查：已取消则不再发起本轮 LLM 调用
+    // 取消预检查：已取消则不再发起本轮 LLM 调用（携带断点历史供续跑）
     if (config.signal?.aborted) {
-      throw new AgentAbortError();
+      throw new AgentAbortError(undefined, messages);
     }
     turns++;
 
@@ -502,30 +555,39 @@ export async function* reactLoopStream(
     let finishReason: LLMStopReason | undefined;
     let turnUsage: LLMUsage | undefined;
 
-    for await (const chunk of config.provider.stream({
-      messages: [...outgoing],
-      ...extras,
-      signal: config.signal,
-    })) {
-      // 增量内容
-      if (typeof chunk.deltaContent === 'string' && chunk.deltaContent.length > 0) {
-        turnContent += chunk.deltaContent;
-        yield { deltaContent: chunk.deltaContent };
-      }
+    // 执行中取消由 provider 流中断传播——附上断点历史重抛。当前轮已 yield 的部分
+    // deltaContent 属于未完成轮组，不入历史（轮组原子性见 reactLoop.md 中断恢复章节）
+    try {
+      for await (const chunk of config.provider.stream({
+        messages: [...outgoing],
+        ...extras,
+        signal: config.signal,
+      })) {
+        // 增量内容
+        if (typeof chunk.deltaContent === 'string' && chunk.deltaContent.length > 0) {
+          turnContent += chunk.deltaContent;
+          yield { deltaContent: chunk.deltaContent };
+        }
 
-      // tool_calls（在最终 chunk 出现，含 id/name/arguments）
-      if (chunk.toolCalls && chunk.toolCalls.length > 0) {
-        toolCalls = chunk.toolCalls;
-      }
+        // tool_calls（在最终 chunk 出现，含 id/name/arguments）
+        if (chunk.toolCalls && chunk.toolCalls.length > 0) {
+          toolCalls = chunk.toolCalls;
+        }
 
-      // finishReason + usage（在最终 chunk 出现）
-      if (chunk.finishReason) {
-        finishReason = chunk.finishReason;
+        // finishReason + usage（在最终 chunk 出现）
+        if (chunk.finishReason) {
+          finishReason = chunk.finishReason;
+        }
+        if (chunk.usage) {
+          totalUsage = accumulateUsage(totalUsage, chunk.usage);
+          turnUsage = chunk.usage;
+        }
       }
-      if (chunk.usage) {
-        totalUsage = accumulateUsage(totalUsage, chunk.usage);
-        turnUsage = chunk.usage;
+    } catch (err) {
+      if (err instanceof AgentAbortError) {
+        throw new AgentAbortError(err.message, messages);
       }
+      throw err;
     }
 
     // 把 assistant 消息加入历史（含 toolCalls，供下一轮 LLM 上下文）
@@ -637,5 +699,6 @@ export async function* reactLoopStream(
   throw new ReactLoopError(
     `Max turns (${maxTurns}) exceeded — agent did not converge to a final answer`,
     maxTurns,
+    messages,
   );
 }

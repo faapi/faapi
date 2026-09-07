@@ -9,7 +9,7 @@ import type {
   ToolModule,
 } from '@faapi/faapi';
 import type { AgentRunOptions } from './agentHandle';
-import type { LLMProvider, LLMToolDefinition } from './provider';
+import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
   reactLoop,
   reactLoopStream,
@@ -35,6 +35,44 @@ import type { TracingToolResult } from './trace';
 
 /** 默认最大 agent 递归深度（根 agent depth=1，sub-agent 递增） */
 const DEFAULT_MAX_AGENT_DEPTH = 3;
+
+/** 合法消息 role（与 LLMMessage 的 role 联合一致，运行时校验反序列化历史用） */
+const VALID_MESSAGE_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
+
+/**
+ * 校验续跑历史结构（见 reactLoop.md 中断恢复章节）
+ *
+ * `AgentRunOptions.messages` 是业务方持久化后回传的历史，最常见的损坏是截断在
+ * 轮组中间（assistant.toolCalls 缺 tool 结果）或反序列化出非法 role——直接发给
+ * LLM API 只会得到模糊的 400。此处早失败（抛 `AgentError`，不发起 LLM 请求）。
+ *
+ * 校验规则：
+ * - role 必须是 system / user / assistant / tool 之一
+ * - assistant 消息带 `toolCalls` 时，其后必须紧跟对应数量的 tool 结果消息
+ *   （按 `toolCallId` 配对，在任何非 tool 消息之前）
+ *
+ * @throws {AgentError} 历史结构非法（消息含索引与 toolCallId，可定位损坏点）
+ */
+function validateResumeHistory(messages: LLMMessage[]): void {
+  messages.forEach((message, index) => {
+    if (!VALID_MESSAGE_ROLES.has(message.role)) {
+      throw new AgentError(
+        `Invalid resume history at messages[${index}]: unknown role "${String(message.role)}"`,
+      );
+    }
+    if (message.role === 'assistant' && message.toolCalls?.length) {
+      const missing = new Set(message.toolCalls.map((call) => call.id));
+      for (let j = index + 1; j < messages.length && messages[j]!.role === 'tool'; j++) {
+        missing.delete(messages[j]!.toolCallId ?? '');
+      }
+      if (missing.size > 0) {
+        throw new AgentError(
+          `Invalid resume history at messages[${index}]: assistant tool call(s) [${Array.from(missing).join(', ')}] have no matching tool result (history truncated mid-turn — persist the full turn group from AgentAbortError.messages / ReactLoopError.messages)`,
+        );
+      }
+    }
+  });
+}
 
 /**
  * 全局 agent 配置覆盖
@@ -245,16 +283,19 @@ export class Agent {
    * reactLoop 不知 agent 名（只关心循环逻辑）,返回的 `result.trace.agentName` 为空字符串。
    * 本方法在 reactLoop 返回后填充 `this.deps.agentName`,让顶层 trace 标识"是哪个 agent 跑的"。
    *
-   * @param input 用户输入
-   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens / enableTracing
+   * @param input 用户输入（可选——续跑场景不传新输入；input 与 `options.messages`
+   *              都为空时抛 `AgentError`）
+   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens /
+   *                messages / enableTracing
    *                （不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
    * @returns 最终结果（content + messages + turns + stopReason + usage + trace?）
-   * @throws {AgentError} agent 未注册
-   * @throws {ReactLoopError} 超出 maxTurns
+   * @throws {AgentError} agent 未注册；input 与 messages 都为空；续跑历史结构非法
+   * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 携带完整历史，可续跑）
+   * @throws {AgentAbortError} 中断（`error.messages` 携带断点历史，可续跑）
    * @throws {Error} provider.complete 抛错时立即传播
    */
-  async run(input: string, options?: AgentRunOptions): Promise<ReactLoopResult> {
-    const config = await this.buildLoopConfig(options);
+  async run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult> {
+    const config = await this.buildLoopConfig(input, options);
     const result = await reactLoop(input, config);
     // reactLoop 不知 agent 名,在此填充顶层 trace.agentName（sub-agent 调本方法时也走此路径）
     if (result.trace) {
@@ -266,16 +307,18 @@ export class Agent {
   /**
    * 流式执行——组装 config 调 [reactLoopStream](./reactLoop.md)
    *
-   * @param input 用户输入
-   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens
-   *                （不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
+   * @param input 用户输入（可选——续跑场景不传新输入；input 与 `options.messages`
+   *              都为空时抛 `AgentError`）
+   * @param options 临时覆盖本次调用的 model（字符串 key）/ temperature / maxTokens /
+   *                messages（不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
    * @yields 流式 chunk（deltaContent / toolCall / toolResult / done）
-   * @throws {AgentError} agent 未注册
-   * @throws {ReactLoopError} 超出 maxTurns
+   * @throws {AgentError} agent 未注册；input 与 messages 都为空；续跑历史结构非法
+   * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 携带完整历史，可续跑）
+   * @throws {AgentAbortError} 中断（`error.messages` 携带断点历史，可续跑）
    * @throws {Error} provider.stream 抛错时立即传播
    */
-  async *stream(input: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk> {
-    const config = await this.buildLoopConfig(options);
+  async *stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk> {
+    const config = await this.buildLoopConfig(input, options);
     yield* reactLoopStream(input, config);
   }
 
@@ -337,8 +380,26 @@ export class Agent {
    * `options.agent` 覆盖本次调用的 agent 名——不传时用 `deps.agentName`（来自
    * `config.agent.defaultAgent`）。`defaultAgent` 未设且 `options.agent` 未传时抛
    * `AgentError`。
+   *
+   * **输入守卫**（续跑入口,见 [reactLoop.md](./reactLoop.md) 中断恢复章节）：
+   * `input` 与 `options.messages` 都为空时抛 `AgentError`（不发送空请求）；
+   * `options.messages` 提供时先经 `validateResumeHistory` 结构校验,非法抛
+   * `AgentError`,不发起 LLM 请求。
    */
-  private async buildLoopConfig(options?: AgentRunOptions): Promise<ReactLoopConfig> {
+  private async buildLoopConfig(
+    input: string | undefined,
+    options?: AgentRunOptions,
+  ): Promise<ReactLoopConfig> {
+    // 输入守卫：全新对话必须有 input,续跑必须有 messages（空 input + messages = 纯续跑）
+    if (!input && !options?.messages?.length) {
+      throw new AgentError(
+        'agent.run/stream requires non-empty input, or options.messages to resume from (AgentAbortError.messages / ReactLoopError.messages / previous result.messages)',
+      );
+    }
+    if (options?.messages?.length) {
+      validateResumeHistory(options.messages);
+    }
+
     const agentName = options?.agent ?? this.deps.agentName;
     const meta = this.deps.getAgent(agentName);
     if (!meta) {
@@ -363,6 +424,7 @@ export class Agent {
       maxTurns: meta.maxTurns ?? this.deps.config?.maxTurns,
       tools,
       signal: options?.signal,
+      messages: options?.messages,
       enableTracing,
       executeTool: async (name, args) => this.executeTool(name, args, enableTracing),
     };

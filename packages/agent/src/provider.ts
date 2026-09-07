@@ -94,11 +94,20 @@ export interface LLMCompleteRequest {
  * 外部 `AbortSignal` 触发时抛出（请求前预检查或请求中断）。
  * 业务方通过 `instanceof AgentAbortError` 区分「用户取消」与真实错误——
  * 取消不是故障，不应触发告警/重试逻辑。
+ *
+ * `messages` 为中断时刻的部分对话历史（截至最后一个完整轮组），由
+ * [reactLoop](./reactLoop.md) 在循环边界附加（provider 层不感知历史，恒为空数组）。
+ * 业务方持久化后经 `config.messages` / `AgentRunOptions.messages` 从断点续跑，
+ * 语义详见 [reactLoop.md](./reactLoop.md) 中断恢复章节。
  */
 export class AgentAbortError extends Error {
-  constructor(message = 'Agent execution aborted') {
+  /** 中断时刻的部分对话历史（完整轮组快照，可直接用于续跑） */
+  readonly messages: LLMMessage[];
+
+  constructor(message = 'Agent execution aborted', messages: LLMMessage[] = []) {
     super(message);
     this.name = 'AgentAbortError';
+    this.messages = messages;
   }
 }
 

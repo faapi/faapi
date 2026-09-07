@@ -60,15 +60,19 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 ```ts
 class Agent {
   constructor(deps: AgentDeps, depth?: number);  // depth 默认 1（根 agent）
-  async run(input: string, options?: AgentRunOptions): Promise<ReactLoopResult>;
-  async *stream(input: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
+  async run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult>;
+  async *stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
   asTool(): AgentToolDescriptor | undefined;
 }
 ```
 
-- `run(input, options?)` —— 组装 `ReactLoopConfig`（应用 `options` 覆盖）→ 调 `reactLoop(input, config)` → 填充 `result.trace.agentName = this.deps.agentName`（reactLoop 不知 agent 名）
-- `stream(input, options?)` —— 组装 config（应用 `options` 覆盖）→ 调 `reactLoopStream(input, config)`（流式 chunk 含 `traceEvent`,不含顶层 `AgentTrace`,无需事后填 agentName）
+- `run(input?, options?)` —— 组装 `ReactLoopConfig`（应用 `options` 覆盖）→ 调 `reactLoop(input, config)` → 填充 `result.trace.agentName = this.deps.agentName`（reactLoop 不知 agent 名）
+- `stream(input?, options?)` —— 组装 config（应用 `options` 覆盖）→ 调 `reactLoopStream(input, config)`（流式 chunk 含 `traceEvent`,不含顶层 `AgentTrace`,无需事后填 agentName）
 - `asTool()` —— 把自身包装为 `AgentToolDescriptor`（`kind: 'agent'` / `name: 'agent.<name>'` / `metadata`）
+
+`input` 可选（续跑场景不传新输入）：`input` 与 `options.messages` 都为空时抛 `AgentError`；
+`options.messages` 提供时以历史为基础 + system 自动补齐 + 非空 `input` 追加为 user 消息,
+语义详见 [reactLoop.md](./reactLoop.md) 中断恢复章节。
 
 `AgentRunOptions` 定义在 [agentHandle](./agentHandle.md),`model` 字段是字符串 key
 （支持 llms key 精确匹配 / `provider/model` 一体化 / 纯 model 名三种形式）,允许本次调用
