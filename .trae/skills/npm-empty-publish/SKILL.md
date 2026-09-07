@@ -15,7 +15,7 @@ description: "发布 0.0.0-canary.0 空包到 npm 占位,以便为 @faapi/<name>
 
 ## 不适用场景
 
-- 新增 monorepo 子包结构(参照 [AGENTS.md 6.5](file:///Users/tu/workspace/github/faapi/AGENTS.md) "新增子包配置清单")
+- 新增 monorepo 子包结构(参照 AGENTS.md 6.5 "新增子包配置清单")
 - 正式版发布(用 `npm-stable-release` skill)
 - DDD 开发某个模块(用 `ddd` skill)
 - 包已存在且 Trusted Publisher 已配置(直接走 CI canary)
@@ -151,7 +151,7 @@ Trusted Publisher 配置需用户在 npm 网页确认。
 
 ### 8. 后续
 
-- 在 monorepo 的 `packages/<name>/` 下按 [AGENTS.md 6.5](file:///Users/tu/workspace/github/faapi/AGENTS.md) "新增子包配置清单" 创建正式包结构
+- 在 monorepo 的 `packages/<name>/` 下按 AGENTS.md 6.5 "新增子包配置清单" 创建正式包结构
 - 加入 `.changeset/config.json` 的 fixed 数组
 - 创建初始 changeset(`.changeset/<name>-init.md`,声明 `major`)
 - push 到 main 触发 CI canary job,自动以 `0.0.0-canary.<hash>` 发布到 npm `canary` tag
@@ -206,7 +206,7 @@ Trusted Publisher 配置需用户在 npm 网页确认。
 
 ## 参考资料
 
-- [AGENTS.md 6.5.9 "npm 端手动配置"](file:///Users/tu/workspace/github/faapi/AGENTS.md) — Trusted Publisher 字段单一来源
-- [AGENTS.md 7 "发布相关补充约定"](file:///Users/tu/workspace/github/faapi/AGENTS.md) — canary/正式版发布路径
+- AGENTS.md 6.5.9 "npm 端手动配置" — Trusted Publisher 字段单一来源
+- AGENTS.md 7 "发布相关补充约定" — canary/正式版发布路径
 - `npm-stable-release` skill — 正式版发布流程
 - `.github/workflows/release.yml` — CI canary/stable workflow
