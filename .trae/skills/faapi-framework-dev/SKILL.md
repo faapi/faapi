@@ -26,7 +26,7 @@ description: "开发 faapi 框架本身。Invoke when 在 faapi 仓库内新增/
 | 发 canary 版 | 打 `v{version}-canary.N` tag 推送，CI 以 Trusted Publisher（OIDC）自动发布到 npm `canary` tag | AGENTS.md「交付完成定义·发布相关补充约定」 |
 | 发正式版 | 走 `npm-stable-release` 技能（changeset 升版本 + 打 tag） | AGENTS.md「交付完成定义·发布相关补充约定」 |
 | 提交变更 | Conventional Commits（commitlint 强制）；`packages/faapi`、`packages/schema` 的用户可见变更必须随 PR 附 changeset（`pnpm changeset`），CHANGELOG 不手写 | AGENTS.md「交付完成定义」 |
-| 用户可见变更（新能力 / 行为变化 / 配置字段） | 同步更新个人技能库 `faapi-dev`（cnb/skills 仓库 `skills/faapi-dev/`）对应场景文档及版本戳——属交付完成定义的一部分，不是可选项 | AGENTS.md「交付完成定义」 |
+| 用户可见变更（新能力 / 行为变化 / 配置字段） | **不做自动同步**——个人技能库 `faapi-dev`（cnb/skills 仓库 `skills/faapi-dev/`）的更新由维护者在正式发版后手动同步、自行触发；框架侧不代为同步，也不预测发版版本 | AGENTS.md「交付完成定义」 |
 | 处理业务方问题反馈 | 见下方「业务方反馈处理」 | — |
 
 ## 业务方反馈处理

@@ -981,7 +981,8 @@ fixed 模式强制所有包统一版本号，新增包必须加入此数组。
 - 测试存在且通过。
 - 实现存在。
 - 本文件已确认无需或已经同步更新。
-- 用户可见变更（新能力 / 行为变化 / 配置字段）已同步到个人技能库的 `faapi-dev` 对应场景文档，并更新其版本戳（cnb/skills 仓库 `skills/faapi-dev/`，跨仓库操作，场景路由见 `.trae/skills/faapi-framework-dev/SKILL.md`）。
+
+个人技能库 `faapi-dev`（cnb/skills 仓库 `skills/faapi-dev/`）的更新**不由框架侧自动同步**：由维护者在正式发版后手动同步、自行触发。框架开发时不在 faapi-dev 文档中代写内容或预测发版版本。
 
 发布相关补充约定：
 
