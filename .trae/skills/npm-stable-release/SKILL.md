@@ -175,8 +175,8 @@ fi
 **多类改动混合时,取最高 bump type**(major > minor > patch > none)。
 
 **特殊情况**:
-- 改了 `@faapi/faapi` / `@faapi/schema` / `@faapi/next` / `@faapi/mcp` 中的任意一个或多个 → 因 `fixed` 配置,四个包都标同一个 bump type
-- 只改了 `@faapi/schema`(或 `@faapi/next` / `@faapi/mcp`) → 仍然四个包都标(因 `fixed` 配置强制同步)
+- 改了 `@faapi/faapi` / `@faapi/schema` / `@faapi/next` / `@faapi/mcp` / `@faapi/agent` 中的任意一个或多个 → 因 `fixed` 配置,五个包都标同一个 bump type
+- 只改了 `@faapi/schema`(或 `@faapi/next` / `@faapi/mcp` / `@faapi/agent`) → 仍然五个包都标(因 `fixed` 配置强制同步)
 - 改动只在 devDependencies → none(不影响运行时)
 
 ##### 4.3 判断影响的包
@@ -185,9 +185,10 @@ fi
 - 改动 `packages/schema/src/**` → `@faapi/schema`
 - 改动 `packages/next/src/**` → `@faapi/next`
 - 改动 `packages/mcp/src/**` → `@faapi/mcp`
+- 改动 `packages/agent/src/**` → `@faapi/agent`
 - 多个都改 → 实际影响的包都标
 
-**因 `fixed` 配置,实际会取最高 bump type 同步升级四个包**,但 changeset 文件里仍按实际影响的包标注。
+**因 `fixed` 配置,实际会取最高 bump type 同步升级五个包**,但 changeset 文件里仍按实际影响的包标注。
 
 ##### 4.4 询问用户确认
 
@@ -260,7 +261,7 @@ pnpm changeset version
 - 更新 `packages/*/CHANGELOG.md`
 - 删除已消费的 changeset 文件
 
-**fixed 配置保证四包版本同步**:即使 changeset 只标记其中一个包,`.changeset/config.json` 的 `fixed: [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/mcp"]]` 会让四个包版本号保持一致(取最高 bump type)。
+**fixed 配置保证五包版本同步**:即使 changeset 只标记其中一个包,`.changeset/config.json` 的 `fixed: [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/mcp", "@faapi/agent"]]` 会让五个包版本号保持一致(取最高 bump type)。
 
 ### 7. 验证版本升级
 
@@ -271,16 +272,17 @@ node -p "require('./packages/faapi/package.json').version"
 
 对比 `OLD_VERSION`,确认版本号已升级。若未变,说明 changeset 文件的 bump type 有问题,中止流程。
 
-### 8. 验证四包版本同步
+### 8. 验证五包版本同步
 
 ```bash
 FAAPI_VERSION=$(node -p "require('./packages/faapi/package.json').version")
 SCHEMA_VERSION=$(node -p "require('./packages/schema/package.json').version")
 NEXT_VERSION=$(node -p "require('./packages/next/package.json').version")
 MCP_VERSION=$(node -p "require('./packages/mcp/package.json').version")
+AGENT_VERSION=$(node -p "require('./packages/agent/package.json').version")
 ```
 
-四个版本必须一致(因 fixed 配置)。若不一致,中止流程并提示检查 changeset config。
+五个版本必须一致(因 fixed 配置)。若不一致,中止流程并提示检查 changeset config。
 
 ### 9. 本地验证(发版前)
 
@@ -313,7 +315,8 @@ pnpm test
 
 ```bash
 git add -A
-git commit -m "release: v$NEW_VERSION"
+# commitlint 不允许 release 类型,用历史惯例的 chore 类型(版本号不带 v 前缀)
+git commit -m "chore: version packages to $NEW_VERSION"
 ```
 
 提交内容包含:
@@ -406,7 +409,7 @@ CI 进度监控: https://github.com/faapi/faapi/actions
 | minor | 中位 +1,末位归 0 | 0.0.1 → 0.1.0 |
 | major | 首位 +1,中末位归 0 | 0.1.0 → 1.0.0 |
 
-**fixed 配置**:四个包取所有 changeset 中最高的 bump type 同步升级。
+**fixed 配置**:五个包取所有 changeset 中最高的 bump type 同步升级。
 
 ## 异常处理
 
@@ -422,9 +425,9 @@ CI 进度监控: https://github.com/faapi/faapi/actions
 
 ### 包版本不同步
 
-**症状**:`@faapi/faapi` / `@faapi/schema` / `@faapi/next` / `@faapi/mcp` 四者版本号不一致
+**症状**:`@faapi/faapi` / `@faapi/schema` / `@faapi/next` / `@faapi/mcp` / `@faapi/agent` 五者版本号不一致
 
-**处理**:检查 `.changeset/config.json` 的 `fixed` 字段是否包含全部四个包（`@faapi/faapi` / `@faapi/schema` / `@faapi/next` / `@faapi/mcp`）。
+**处理**:检查 `.changeset/config.json` 的 `fixed` 字段是否包含全部五个包（`@faapi/faapi` / `@faapi/schema` / `@faapi/next` / `@faapi/mcp` / `@faapi/agent`）。
 
 ### CI stable job 失败
 
@@ -471,13 +474,13 @@ git push origin :refs/tags/v$VERSION  # 删远程 tag
 - [ ] canary 版本验证通过(或确认跳过)
 - [ ] 至少一个 pending changeset 文件(或已通过步骤 4 自动生成)
 - [ ] `pnpm changeset version` 后版本号升级
-- [ ] 四个包（faapi/schema/next/mcp）版本号一致
+- [ ] 五个包（faapi/agent/mcp/next/schema）版本号一致
 - [ ] 各包 `package.json` 含 `publishConfig.provenance: true`
 - [ ] `pnpm build` 成功
 - [ ] `pnpm typecheck` 通过
 - [ ] `pnpm test` 通过
 - [ ] 本地验证到 build / typecheck / test 全绿为止，未做任何 tarball 安装 / dist 导入模拟
-- [ ] commit message 格式 `release: v$VERSION`
+- [ ] commit message 格式 `chore: version packages to <版本号>`（commitlint 无 release 类型）
 - [ ] tag 名格式 `v$VERSION`
 - [ ] 已 `git push origin main --tags`
 - [ ] CI stable job 触发并成功
