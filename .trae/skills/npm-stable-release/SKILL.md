@@ -295,14 +295,19 @@ pnpm typecheck
 
 # 测试通过
 pnpm test
-
-# 验证构建产物可导入
-node -e "import('./packages/faapi/dist/index.js').then(m => console.log('faapi OK:', Object.keys(m).length > 0))"
-node -e "import('./packages/schema/dist/index.js').then(m => console.log('schema OK:', typeof m.default === 'object'))"
-node -e "import('./packages/next/dist/index.js').then(m => console.log('next OK:', Object.keys(m).length > 0))"
 ```
 
 **任一验证失败则中止**,提示用户修复后重试。
+
+#### ⚠️ 本地验证边界——到此为止,不要模拟发布
+
+**本地验证以 build / typecheck / test 全绿为准,不要继续做任何「安装级模拟」**:
+
+- ❌ 不要 `npm pack` 打 tarball 再本地安装验证——tarball 里的 `workspace:` 协议依赖要等 CI `pnpm publish` 时才被 pnpm 改写,`npm pack` 不改写,本地安装必然 404
+- ❌ 不要用裸 `node` import 各包 `dist` 验证——monorepo 内 `package.json` 的 `main`/`exports` 指向 `src/index.ts`(开发态),external 的 workspace 依赖会解析到别的包的 TS 源码,报 `ERR_MODULE_NOT_FOUND` 属**开发态假象**,不是发布 bug
+- ✅ 发布机制(`publishConfig` 改写、workspace 协议替换、OIDC provenance、npm 安装)是 CI 的职责,由 `pnpm changeset publish` 完成,且已被历史发版(4.2.0 / 4.2.1 / 4.3.0 等)反复验证
+
+> 教训(v4.3.0 发版):本地 tarball 模拟连环报错(404 faapi@*、import 解析到 src/index.ts),排查半天全是开发态假象——发布后 npm 验证一次通过。发版前只需要 build/typecheck/test 绿,然后提交、打 tag、推送,**发布正确性交给 CI,发版后走第 13 步在真实 npm 上验证**。
 
 ### 10. 提交版本升级
 
@@ -471,7 +476,7 @@ git push origin :refs/tags/v$VERSION  # 删远程 tag
 - [ ] `pnpm build` 成功
 - [ ] `pnpm typecheck` 通过
 - [ ] `pnpm test` 通过
-- [ ] 构建产物可导入
+- [ ] 本地验证到 build / typecheck / test 全绿为止，未做任何 tarball 安装 / dist 导入模拟
 - [ ] commit message 格式 `release: v$VERSION`
 - [ ] tag 名格式 `v$VERSION`
 - [ ] 已 `git push origin main --tags`
