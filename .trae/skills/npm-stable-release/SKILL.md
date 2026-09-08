@@ -20,6 +20,19 @@ description: "发布 npm 正式版,通过 changeset 升版本号 + 打 tag 触�
 
 ## 流程
 
+### 0. major 升版二次确认（硬性约束，先于一切步骤）
+
+任何导致 **major 升版** 的发版——待消费的 pending changeset 含 major，或本流程判定需新建 major changeset——**必须先向维护者二次确认，不得自主做主**：
+
+1. 展示：影响包、bump 类型（major）、变更描述、破坏性影响（哪些现有用法会失效）
+2. 获得维护者明确确认后才可继续后续步骤；未确认（或维护者要求改 minor/patch）→ 按其意见调整后重新确认
+3. 未获确认直接中止,不得执行步骤 6（`changeset version`）与打 tag 推送
+
+依据：AGENTS.md「交付完成定义·发布相关补充约定」的 major 二次确认条款。
+minor / patch 不受此限，按本流程正常执行。
+
+> 背景（v5.0.0 事故）：功能变更建了 major changeset,用户说"提交发版"后未再确认 bump 类型直接发了 5.0.0,事后被迫 unpublish 回退改发 4.5.0。"发版"指令不等于确认 major——升大版本永远是独立的确认点。
+
 ### 1. 前置检查
 
 ```bash
@@ -471,6 +484,7 @@ git push origin :refs/tags/v$VERSION  # 删远程 tag
 
 - [ ] 当前在 main 分支
 - [ ] working tree 干净(或已处理脏状态)
+- [ ] **major 升版已获维护者二次确认**(未确认不执行 changeset version / 打 tag;minor/patch 跳过此项)
 - [ ] canary 版本验证通过(或确认跳过)
 - [ ] 至少一个 pending changeset 文件(或已通过步骤 4 自动生成)
 - [ ] `pnpm changeset version` 后版本号升级

@@ -989,6 +989,7 @@ fixed 模式强制所有包统一版本号，新增包必须加入此数组。
 - 对 `packages/faapi` 或 `packages/schema` 的用户可见变更必须添加 Changeset（`pnpm changeset`），随 PR 提交。
 - CHANGELOG 由 Changesets 生成与维护，不手写。
 - 提交信息遵循 Conventional Commits（由 commitlint 强制）。
+- **major 升版必须二次确认**：changeset 判定（或待消费的 changeset 声明）为 major（如删除公开导出 / 配置字段、破坏性 API 变更）时，执行 `pnpm changeset version` 与打 tag 推送前必须向维护者展示影响包、bump 类型与变更描述并获明确确认——不得自主决定升大版本；minor / patch 不受此限。
 - **Canary 发布**：手动创建并推送 `v{version}-canary.N` 形式的 tag（如 `v1.2.3-canary.0`），CI 自动发布 canary 包（版本号取自 tag，npm tag `canary`）。
 - **正式发布**：手动 `pnpm changeset version` 更新版本和 CHANGELOG → 提交 → 创建 `v{version}` tag（不含 `-canary` 后缀）→ 推送 tag，CI 自动发布正式包（npm tag `latest`）。
 - 发版通过 npm Trusted Publisher（OIDC）自动完成，无需 `NPM_TOKEN` secret；workflow 需 `permissions: id-token: write`，发布命令带 `--provenance`。
