@@ -177,10 +177,7 @@ describe('multi-agent demo e2e', () => {
     const providers = new Map<string, LLMProvider>([['openai', provider]]);
     return {
       providers,
-      defaultProvider: provider,
       llms,
-      defaultLlm: 'openai',
-      agentName: 'researcher',
       rootDir: tempDir,
       config: {
         maxTurns: 10,
@@ -296,7 +293,10 @@ describe('multi-agent demo e2e', () => {
       const deps = makeAgentDeps(provider, app);
       const agent = new Agent(deps);
 
-      const result = await agent.run('查询北京天气并撰写关于 AI 的报告');
+      const result = await agent.run('查询北京天气并撰写关于 AI 的报告', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+      });
 
       // 验证最终结果
       expect(result.content).toBe('研究完成：北京 22 度晴，writer 生成了报告');
@@ -384,7 +384,7 @@ describe('multi-agent demo e2e', () => {
 
       const deps = makeAgentDeps(provider, app);
       const agent = new Agent(deps);
-      const result = await agent.run('查询天气');
+      const result = await agent.run('查询天气', { agent: 'researcher', model: 'gpt-4o' });
 
       // 验证最终结果（LLM 收到 error 后返回最终答案）
       expect(result.content).toBe('校验失败已处理');

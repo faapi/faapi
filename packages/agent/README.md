@@ -44,17 +44,30 @@ import type { FaapiConfig } from '@faapi/faapi';
 
 export default {
   agent: {
-    llm: {
-      provider: 'openai',
-      apiKey: process.env.OPENAI_API_KEY,
-      model: 'gpt-4o',
+    llms: {
+      openai: {
+        provider: 'openai',
+        apiKey: process.env.OPENAI_API_KEY,
+        models: { 'gpt-4o': {} },
+      },
     },
-    defaultAgent: 'researcher',
     maxTurns: 10,
     maxAgentDepth: 3,
   },
   plugins: ['@faapi/agent'],
 } satisfies FaapiConfig;
+```
+
+无默认 agent / 默认 provider——handler 调用时显式指定 agent 名与 model/provider：
+
+```ts
+// src/api/chat/handler.ts
+import type { AgentHandle } from '@faapi/agent';
+
+export async function POST(agent: AgentHandle, body: { input: string }) {
+  const result = await agent.run(body.input, { agent: 'researcher', model: 'gpt-4o' });
+  return { content: result.content, turns: result.turns };
+}
 ```
 
 CLI 启动时动态加载——未安装时自动跳过，不影响核心功能。需单独安装：`pnpm add @faapi/agent`。

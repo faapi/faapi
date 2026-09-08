@@ -192,6 +192,21 @@ export type FilterToolsHook = (
 ) => LLMToolDefinition[];
 
 /**
+ * 本次调用的解析结果（[buildLoopConfig](#buildLoopConfig) 解析后经闭包传给 executeTool）
+ *
+ * - `agentName`——本次调用的有效 agent 名（执行白名单按它的声明集合校验）
+ * - `enableTracing`——sub-agent 调用是否包装 TracingToolResult
+ * - `provider` / `model`——解析出的 LLM 入口,sub-agent 递归继承（sub 元数据
+ *   声明 `model` 时优先用自身的）
+ */
+interface AgentCallContext {
+  agentName: string;
+  enableTracing: boolean;
+  provider: LLMProvider;
+  model: string | undefined;
+}
+
+/**
  * tool schema 解析结果
  *
  * 由 Phase 3.5 的注入器实现，提供 JSON Schema（给 LLM）和校验函数（给执行前校验）。
@@ -221,19 +236,8 @@ export interface ToolSchemaResolution {
 export interface AgentDeps {
   /** LLM provider 实例映射（key 是 provider 名，来自 config.agent.llms；未配置时为空 Map） */
   providers: Map<string, LLMProvider>;
-  /**
-   * 默认 provider 实例（config.agent.defaultLlm 对应，或 llms 第一个 key）
-   *
-   * 可选——config.agent.llms 未配置时为 undefined（外部 provider 模式），
-   * 此时 run/stream 必须传 options.provider，否则 resolveModelKey 抛 AgentError。
-   */
-  defaultProvider?: LLMProvider;
   /** LLM provider 配置映射（含 models，用于 options.model key 解析；llms 未配置时为空对象） */
   llms: Record<string, LlmConfig>;
-  /** 默认 provider key（config.agent.defaultLlm，或 llms 第一个 key；llms 未配置时为 undefined） */
-  defaultLlm?: string;
-  /** 当前 agent 名 */
-  agentName: string;
   /** 项目根目录（Phase 3.5 接线时用于加载器） */
   rootDir: string;
   /** 全局 agent 配置覆盖 */
@@ -319,7 +323,7 @@ export class Agent {
   private readonly schemaCache = new Map<string, ToolSchemaResolution | undefined>();
 
   /**
-   * @param deps 运行时依赖（访问器 + providers Map + defaultProvider + llms + config）
+   * @param deps 运行时依赖（访问器 + providers Map + llms + config）
    * @param depth 递归深度（默认 1 = 根 agent；sub-agent 递归时传入 depth+1）
    */
   constructor(deps: AgentDeps, depth: number = 1) {
@@ -331,15 +335,17 @@ export class Agent {
    * 非流式执行——组装 config 调 [reactLoop](./reactLoop.md)
    *
    * reactLoop 不知 agent 名（只关心循环逻辑）,返回的 `result.trace.agentName` 为空字符串。
-   * 本方法在 reactLoop 返回后填充 `this.deps.agentName`,让顶层 trace 标识"是哪个 agent 跑的"。
+   * 本方法在 reactLoop 返回后填充 `options.agent`,让顶层 trace 标识"是哪个 agent 跑的"。
    *
    * @param input 用户输入（可选——续跑场景不传新输入；input 与 `options.messages`
    *              都为空时抛 `AgentError`）
-   * @param options 临时覆盖本次调用的 provider（外部 provider）/ model（字符串 key）/
-   *                temperature / maxTokens / messages / enableTracing
+   * @param options 本次调用配置——`agent`（agent 名,必须显式传,无默认 agent）/
+   *                provider（外部 provider）/ model（字符串 key）/ temperature /
+   *                maxTokens / messages / enableTracing
    *                （不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
    * @returns 最终结果（content + messages + turns + stopReason + usage + trace?）
-   * @throws {AgentError} agent 未注册；input 与 messages 都为空；续跑历史结构非法
+   * @throws {AgentError} 未传 options.agent；agent 未注册；input 与 messages 都为空；
+   *                      续跑历史结构非法；provider/model 无法解析
    * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 携带完整历史，可续跑）
    * @throws {AgentAbortError} 中断（`error.messages` 携带断点历史，可续跑）
    * @throws {Error} provider.complete 抛错时立即传播
@@ -349,7 +355,7 @@ export class Agent {
     const result = await reactLoop(input, config);
     // reactLoop 不知 agent 名,在此填充顶层 trace.agentName（sub-agent 调本方法时也走此路径）
     if (result.trace) {
-      result.trace.agentName = options?.agent ?? this.deps.agentName;
+      result.trace.agentName = options?.agent ?? '';
     }
     return result;
   }
@@ -359,11 +365,12 @@ export class Agent {
    *
    * @param input 用户输入（可选——续跑场景不传新输入；input 与 `options.messages`
    *              都为空时抛 `AgentError`）
-   * @param options 临时覆盖本次调用的 provider（外部 provider）/ model（字符串 key）/
+   * @param options 本次调用配置——`agent`（必须显式传）/ provider / model /
    *                temperature / maxTokens / messages
    *                （不修改 agent 自身状态,详见 [agentHandle](./agentHandle.md)）
    * @yields 流式 chunk（deltaContent / toolCall / toolResult / done）
-   * @throws {AgentError} agent 未注册；input 与 messages 都为空；续跑历史结构非法
+   * @throws {AgentError} 未传 options.agent；agent 未注册；input 与 messages 都为空；
+   *                      续跑历史结构非法；provider/model 无法解析
    * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 携带完整历史，可续跑）
    * @throws {AgentAbortError} 中断（`error.messages` 携带断点历史，可续跑）
    * @throws {Error} provider.stream 抛错时立即传播
@@ -374,15 +381,16 @@ export class Agent {
   }
 
   /**
-   * 把自身包装为 `AgentToolDescriptor` 供 LLM 当 tool 调用
+   * 把指定 agent 包装为 `AgentToolDescriptor` 供 LLM 当 tool 调用
    *
    * 与 [agentRegistry.asTool](../../faapi/src/injection/agentRegistry.md) 同构——
    * Agent 类自带此方法便于在注入器场景直接调用（不必再过注册表）。
    *
+   * @param name agent 名（显式指定——无默认 agent）
    * @returns `AgentToolDescriptor` 或 `undefined`（agent 未注册）
    */
-  asTool(): AgentToolDescriptor | undefined {
-    const meta = this.deps.getAgent(this.deps.agentName);
+  asTool(name: string): AgentToolDescriptor | undefined {
+    const meta = this.deps.getAgent(name);
     if (!meta) return undefined;
     return {
       kind: 'agent',
@@ -417,22 +425,18 @@ export class Agent {
   /**
    * 组装 ReactLoopConfig
    *
-   * 1. 解析有效 agent 名：`options.agent` > `deps.agentName`（`config.agent.defaultAgent`）
+   * 1. 解析有效 agent 名：`options.agent`（必须显式传——无默认 agent,不传抛 AgentError）
    * 2. 查 agent 元数据（未注册抛 AgentError）——用 `getAgent` 拿 AgentCore
    *    (LLM-facing 字段:systemPrompt / model / maxTurns)
    * 3. buildToolDefinitions 组装 tool 列表（用有效 agent 名查 tools / sub-agents）
-   * 4. config 字段优先级（高 → 低）：`options` > agent 元数据 > 全局 AgentRuntimeConfig / deps.defaultProvider
+   * 4. config 字段优先级（高 → 低）：`options` > agent 元数据 > 全局 AgentRuntimeConfig
    *
    * `options.provider`（外部 provider）存在时由 {@link resolveExternalProvider} 物化,
    * 优先级最高——`options.model` 变为原始 model 名原样透传（不解析 llms key）。
    * 否则 `options.model` 是字符串 key,由 {@link resolveModelKey} 解析为 provider + model
-   * （支持 llms key 精确匹配 / `provider/model` 一体化 / 纯 model 名模糊匹配）。
-   * 不传 `options.model` 时用 `deps.defaultProvider` + agent 元数据 `config.model`。
+   * （支持 llms key 精确匹配 / `provider/model` 一体化 / 纯 model 名模糊匹配；
+   * 未传 `options.model` 时用 agent 元数据 `config.model` 作为缺省 key）。
    * 详见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
-   *
-   * `options.agent` 覆盖本次调用的 agent 名——不传时用 `deps.agentName`（来自
-   * `config.agent.defaultAgent`）。`defaultAgent` 未设且 `options.agent` 未传时抛
-   * `AgentError`。
    *
    * **输入守卫**（续跑入口,见 [reactLoop.md](./reactLoop.md) 中断恢复章节）：
    * `input` 与 `options.messages` 都为空时抛 `AgentError`（不发送空请求）；
@@ -453,7 +457,13 @@ export class Agent {
       validateResumeHistory(options.messages);
     }
 
-    const agentName = options?.agent ?? this.deps.agentName;
+    // 无默认 agent——options.agent 必须显式传
+    const agentName = options?.agent;
+    if (!agentName) {
+      throw new AgentError(
+        'agent.run/stream requires options.agent (no default agent) — pass { agent: "name" } to specify which agent to run',
+      );
+    }
     const meta = this.deps.getAgent(agentName);
     if (!meta) {
       throw new AgentError(`Agent "${agentName}" is not registered`);
@@ -472,6 +482,10 @@ export class Agent {
     // 闭包捕获 enableTracing,通过 executeTool 传递给 executeSubAgent,使其能包装 TracingToolResult
     const enableTracing = options?.enableTracing ?? this.deps.config?.enableTracing ?? false;
 
+    // 本次调用的解析结果——executeTool / executeSubAgent 复用（白名单校验用 agentName,
+    // sub-agent 递归继承 provider/model）
+    const callCtx = { agentName, enableTracing, provider, model };
+
     return {
       provider,
       systemPrompt: meta.systemPrompt,
@@ -483,7 +497,7 @@ export class Agent {
       signal: options?.signal,
       messages: options?.messages,
       enableTracing,
-      executeTool: async (name, args) => this.executeTool(name, args, enableTracing),
+      executeTool: async (name, args) => this.executeTool(name, args, callCtx),
     };
   }
 
@@ -522,51 +536,50 @@ export class Agent {
   /**
    * 解析 `options.model` 字符串 key → provider + model
    *
-   * 规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」：
-   * 1. `undefined` → `deps.defaultProvider`（未配置时抛 `AgentError`——外部 provider 模式
-   *    要求调用方传 `options.provider`）+ `meta.model`
-   * 2. 精确匹配 `deps.providers` 的 key → 该 provider + 其 `models` 第一个 key
-   * 3. 含 `/` → `provider/model` 形式,`deps.providers.get(provider)` + 该 model
+   * 规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
+   * 无默认 provider——`key` 未传时用 agent 元数据 `config.model` 作为缺省 key；
+   * 两者皆无抛 `AgentError`（要求调用方传 `options.model` 或 `options.provider`）。
+   * 1. 精确匹配 `deps.providers` 的 key → 该 provider + 其 `models` 第一个 key
+   *    （该 provider 未声明 `models` 时回落 `meta.model`）
+   * 2. 含 `/` → `provider/model` 形式,`deps.providers.get(provider)` + 该 model
    *    （要求该 model 在 `deps.llms[provider].models` 里）
-   * 4. 不含 `/` 且非 provider key → 在所有 provider 的 `models` 里按 model 名查找
+   * 3. 不含 `/` 且非 provider key → 在所有 provider 的 `models` 里按 model 名查找
    *    - 唯一 → 该 provider + 该 model
    *    - 多个 → 抛 `AgentError`（要求用 `provider/model` 消歧）
    *    - 无 → 抛 `AgentError`
    *
-   * @throws {AgentError} key 解析失败（provider/model 不存在或歧义）；deps.defaultProvider
-   *   未配置（外部 provider 模式下调用方未传 options.provider）
+   * @throws {AgentError} key 与 `meta.model` 均缺省；key 解析失败（provider/model
+   *   不存在或歧义）
    */
   private resolveModelKey(
     key: string | undefined,
     meta: AgentCore,
   ): { provider: LLMProvider; model: string | undefined } {
-    // 不传 → 默认 provider + agent 元数据 model
-    if (key === undefined) {
-      if (!this.deps.defaultProvider) {
-        throw new AgentError(
-          'No default LLM provider: configure config.agent.llms, or pass options.provider (external provider) on this call',
-        );
-      }
-      return { provider: this.deps.defaultProvider, model: meta.model };
+    // 无默认 provider——未传 options.model 时用 agent 元数据 model 作为缺省 key
+    const effectiveKey = key ?? meta.model;
+    if (effectiveKey === undefined) {
+      throw new AgentError(
+        'No LLM provider resolved: pass options.model (a provider key / "provider/model" / model name from config.agent.llms), options.provider (external provider), or declare model in the agent config',
+      );
     }
 
     // 规则 1：精确匹配 providers key（如 'openai'）
-    const byProviderKey = this.deps.providers.get(key);
+    const byProviderKey = this.deps.providers.get(effectiveKey);
     if (byProviderKey) {
-      const llmConfig = this.deps.llms[key];
+      const llmConfig = this.deps.llms[effectiveKey];
       const firstModel = llmConfig ? Object.keys(llmConfig.models)[0] : undefined;
       return { provider: byProviderKey, model: firstModel ?? meta.model };
     }
 
     // 规则 2：含 '/' → provider/model 形式（如 'openai/gpt-4o'）
-    if (key.includes('/')) {
-      const slashIdx = key.indexOf('/');
-      const providerName = key.slice(0, slashIdx);
-      const modelName = key.slice(slashIdx + 1);
+    if (effectiveKey.includes('/')) {
+      const slashIdx = effectiveKey.indexOf('/');
+      const providerName = effectiveKey.slice(0, slashIdx);
+      const modelName = effectiveKey.slice(slashIdx + 1);
       const provider = this.deps.providers.get(providerName);
       if (!provider) {
         throw new AgentError(
-          `Unknown provider "${providerName}" in model key "${key}". Declare it in config.agent.llms, or pass options.provider to use an external provider.`,
+          `Unknown provider "${providerName}" in model key "${effectiveKey}". Declare it in config.agent.llms, or pass options.provider to use an external provider.`,
         );
       }
       const llmConfig = this.deps.llms[providerName];
@@ -582,20 +595,20 @@ export class Agent {
     const matches: { provider: LLMProvider; providerName: string }[] = [];
     for (const [providerName, provider] of this.deps.providers) {
       const llmConfig = this.deps.llms[providerName];
-      if (llmConfig && llmConfig.models[key]) {
+      if (llmConfig && llmConfig.models[effectiveKey]) {
         matches.push({ provider, providerName });
       }
     }
     if (matches.length === 1) {
-      return { provider: matches[0]!.provider, model: key };
+      return { provider: matches[0]!.provider, model: effectiveKey };
     }
     if (matches.length > 1) {
       throw new AgentError(
-        `Model "${key}" is ambiguous (found in providers: ${matches.map((m) => m.providerName).join(', ')}). Use "provider/model" to disambiguate.`,
+        `Model "${effectiveKey}" is ambiguous (found in providers: ${matches.map((m) => m.providerName).join(', ')}). Use "provider/model" to disambiguate.`,
       );
     }
     throw new AgentError(
-      `Model "${key}" not found in any provider. Declare it in config.agent.llms.*.models, or pass options.provider to use an external provider.`,
+      `Model "${effectiveKey}" not found in any provider. Declare it in config.agent.llms.*.models, or pass options.provider to use an external provider.`,
     );
   }
 
@@ -649,8 +662,9 @@ export class Agent {
    * - `agent.` 前缀 → {@link executeSubAgent} 递归（含 enableTracing + TracingToolResult 包装）
    * - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
    *
-   * `enableTracing` 由 [buildLoopConfig](#buildLoopConfig) 闭包捕获传入,用于 sub-agent
-   * 调用时决定是否包装 [TracingToolResult](./trace.md) 携带 sub-trace。
+   * `callCtx` 由 [buildLoopConfig](#buildLoopConfig) 闭包捕获传入——本次调用的有效
+   * agent 名（白名单校验）、enableTracing（sub-agent tracing 包装）与解析出的
+   * provider/model（sub-agent 递归继承）。常规 tool 不需要 tracing 包装,直接返回结果。
    *
    * **常规 tool 校验失败**：不抛错，返回 `{ error }` 对象——reactLoop stringify 后
    * 作为 tool 结果回传 LLM，LLM 可据此修正参数重试。
@@ -660,7 +674,7 @@ export class Agent {
   private async executeTool(
     rawName: string,
     rawArgs: Record<string, unknown>,
-    enableTracing: boolean,
+    callCtx: AgentCallContext,
   ): Promise<unknown | TracingToolResult> {
     // 执行守卫（authHooks）：在 agent. 分流之前——一个钩子同时覆盖常规 tool
     // 与 sub-agent 递归。拒绝时不执行目标,守卫的 error 回传 LLM;
@@ -678,21 +692,21 @@ export class Agent {
     // （如管理类 tool）,执行前按声明集合强制校验,未声明一律拒绝（错误回传 LLM,
     // 与参数校验失败语义一致）。sub-agent 递归时每个 depth 层按自己的声明集合校验。
     const declared = new Set<string>();
-    for (const tool of this.deps.resolveAgentTools(this.deps.agentName)) {
+    for (const tool of this.deps.resolveAgentTools(callCtx.agentName)) {
       declared.add(tool.name);
     }
-    for (const sub of this.deps.resolveSubAgents(this.deps.agentName)) {
+    for (const sub of this.deps.resolveSubAgents(callCtx.agentName)) {
       declared.add(`agent.${sub.name}`);
     }
     if (!declared.has(name)) {
       return {
-        error: `Tool "${name}" is not declared by agent "${this.deps.agentName}" (add it to the agent's tools/agents declaration)`,
+        error: `Tool "${name}" is not declared by agent "${callCtx.agentName}" (add it to the agent's tools/agents declaration)`,
       };
     }
 
-    // sub-agent 递归（携带 enableTracing,使其能包装 TracingToolResult）
+    // sub-agent 递归（携带 callCtx,使其能继承 provider/model + 包装 TracingToolResult）
     if (name.startsWith('agent.')) {
-      return await this.executeSubAgent(name.slice(6), args, enableTracing);
+      return await this.executeSubAgent(name.slice(6), args, callCtx);
     }
 
     // 常规 tool
@@ -724,7 +738,9 @@ export class Agent {
    *
    * 1. `maxAgentDepth` 防护——超限抛 {@link AgentRecursionError}
    * 2. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`（无 trace,与常规 tool 一致）
-   * 3. 无 `run` 时调 `subAgent.run(stringify(args), { enableTracing })` 走默认 reactLoop
+   * 3. 无 `run` 时调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`
+   *    走默认 reactLoop——继承父调用的 provider,sub 元数据声明 `model` 时优先用自身的,
+   *    未声明时沿用父 model
    *
    * **tracing 路径**：`enableTracing=true` 时,subAgent.run 返回的 `result.trace`（agentName
    * 已被 `Agent.run` 填为 subName）被包装为 [TracingToolResult](./trace.md) 返回给 reactLoop。
@@ -745,7 +761,7 @@ export class Agent {
   private async executeSubAgent(
     subName: string,
     args: Record<string, unknown>,
-    enableTracing: boolean,
+    callCtx: AgentCallContext,
   ): Promise<unknown | TracingToolResult> {
     const newDepth = this.depth + 1;
     const maxDepth = this.deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
@@ -753,9 +769,8 @@ export class Agent {
       throw new AgentRecursionError(maxDepth, newDepth);
     }
 
-    // 构造子 agent（复用父 deps，仅覆盖 agentName）
-    const subDeps: AgentDeps = { ...this.deps, agentName: subName };
-    const subAgent = new Agent(subDeps, newDepth);
+    // 构造子 agent（复用父 deps——providers/llms/访问器共享,无 per-agent 名绑定）
+    const subAgent = new Agent(this.deps, newDepth);
 
     // 自定义 run：sub-agent handler 导出 run 函数时走自定义逻辑（无 trace）
     // 用 getAgentEntry 拿 AgentMetadata(含 filePath/hasRun),DB skill 无文件走默认 reactLoop
@@ -769,15 +784,21 @@ export class Agent {
       }
     }
 
-    // 默认 reactLoop：stringify args 作为 user 消息,传递 enableTracing 让 sub-agent 采集 trace
+    // 默认 reactLoop：继承父调用的 provider；sub 元数据声明 model 时优先用自身的,
+    // 未声明时沿用父 model。stringify args 作为 user 消息（agent-as-tool input 为开放式 JSON）,
+    // 传递 enableTracing 让 sub-agent 采集 trace
+    const subMeta = this.deps.getAgent(subName);
     const result = await subAgent.run(typeof args === 'string' ? args : JSON.stringify(args), {
-      enableTracing,
+      agent: subName,
+      provider: callCtx.provider,
+      model: subMeta?.model ?? callCtx.model,
+      enableTracing: callCtx.enableTracing,
     });
 
     // enableTracing=true:包装 TracingToolResult,reactLoop 据此发出 subagent_call 事件
     // enableTracing=false:直接返回 content（unknown,与常规 tool 一致,零开销）
     this.deps.config?.afterToolCall?.(`agent.${subName}`, args, result.content, this.deps.ctx);
-    if (enableTracing && result.trace) {
+    if (callCtx.enableTracing && result.trace) {
       return {
         __trace: true,
         result: result.content,

@@ -398,10 +398,12 @@ export default {
 
   // agent 子系统全局配置（Phase 2.4，所有字段均可选）
   // agent 自身 config.maxTurns / config.model 优先于全局配置
+  // 无 defaultAgent / defaultLlm——agent.run(input, { agent, model }) 每次调用
+  // 显式指定 agent 名与 model/provider（agent 元数据 config.model 可作缺省 key）
   agent: {
     // LLM provider 配置（嵌套级联：key 是 provider 名，models 挂在该 provider 下）
     // llms 可选——未配置时插件照常注册（外部 provider 模式），handler 需通过
-    // agent.run(input, { provider }) 传入外部 provider（LlmConfig 或 LLMProvider 实例）
+    // agent.run(input, { agent, provider }) 传入外部 provider（LlmConfig 或 LLMProvider 实例）
     llms: {
       openai: {
         provider: 'openai',
@@ -418,8 +420,6 @@ export default {
         models: { 'claude-3-5-sonnet': {} },
       },
     },
-    defaultLlm: 'openai',                        // 默认 provider key（不传用 llms 第一个）
-    defaultAgent: 'researcher',                  // 默认 agent 名（可选——未设时 handler 需 agent.run(input, { agent: 'name' }) 显式指定，不传且未设时抛 AgentError）
     maxTurns: 10,                                // 默认最大对话轮数
     maxAgentDepth: 3,                            // agent 调用 agent 的最大递归深度
     // enableTracing: true,                      // 开启 tracing（默认 false——opt-in，不开启零开销）。
@@ -610,7 +610,7 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 | `ua` | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） | `GET(ua)` |
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
-| `agent` | 默认 agent 的 `AgentHandle`（由 `@faapi/agent` 插件注册的工厂 `getAgentHandle(ctx)` 注入，含可调用 `run`/`stream`/`asTool`）；插件未注册时返回 `undefined` | `GET(agent)` |
+| `agent` | `AgentHandle`（由 `@faapi/agent` 插件注册的工厂 `getAgentHandle(ctx)` 注入，含可调用 `run`/`stream`/`asTool`；无默认 agent——`run`/`stream` 每次显式传 `{ agent, model }`）；插件未注册时返回 `undefined` | `GET(agent)` |
 | `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
 
 `form` 与 `body` 互斥：handler 声明其一即可。`form` 共享 `body` 的解析结果（`resolveInput` 已按 Content-Type 解析 form-urlencoded 为 `Record<string, string>`），差异仅在 schema 校验——`form` 的 schema coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串），`body` 的 schema coerce=false。schema 名仍为 `POSTBody`（form 共享 body 的 schema key），通过 `RouteSchemaSource.coerce=true` 显式覆盖。

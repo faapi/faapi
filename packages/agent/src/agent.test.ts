@@ -149,17 +149,14 @@ function defaultLlms(): Record<string, LlmConfig> {
 
 /** 构造 AgentDeps（mock 访问器）
  *
- * @param opts.provider 默认 provider 实例（也会放入 providers Map 的 defaultLlm key 下）
+ * @param opts.provider 默认测试 provider（放入 providers Map 的 'openai' key 下）
  * @param opts.llms 可选,覆盖默认 llms 配置（用于多 provider 测试）
- * @param opts.defaultLlm 可选,覆盖默认 defaultLlm key（默认 'openai'）
  * @param opts.extraProviders 可选,额外加入 providers Map 的 provider（key 是 provider 名）
  */
 function createDeps(opts: {
   provider: LLMProvider;
   llms?: Record<string, LlmConfig>;
-  defaultLlm?: string;
   extraProviders?: Record<string, LLMProvider>;
-  agentName?: string;
   agent: AgentCore;
   agentEntry?: AgentMetadata;
   tools?: ToolMetadata[];
@@ -177,8 +174,7 @@ function createDeps(opts: {
     toolsByName.set(t.name, t);
   }
   const llms = opts.llms ?? defaultLlms();
-  const defaultLlm = opts.defaultLlm ?? 'openai';
-  const providers = new Map<string, LLMProvider>([[defaultLlm, opts.provider]]);
+  const providers = new Map<string, LLMProvider>([['openai', opts.provider]]);
   if (opts.extraProviders) {
     for (const [name, p] of Object.entries(opts.extraProviders)) {
       providers.set(name, p);
@@ -186,10 +182,7 @@ function createDeps(opts: {
   }
   return {
     providers,
-    defaultProvider: opts.provider,
     llms,
-    defaultLlm,
-    agentName: opts.agentName ?? opts.agent.name,
     rootDir: '/project',
     config: opts.config,
     ctx: opts.ctx,
@@ -227,12 +220,13 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4', maxTurns: 5 }),
+          // meta.model 作为缺省 key 参与 llms 解析（defaultLlms 的 openai.models 里已声明）
+          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o', maxTurns: 5 }),
           tools: [toolMeta()],
         }),
       );
 
-      const result = await agent.run('hi');
+      const result = await agent.run('hi', { agent: 'researcher' });
 
       expect(result.content).toBe('Hello!');
       expect(result.turns).toBe(1);
@@ -240,7 +234,7 @@ describe('Agent', () => {
       // 验证 provider 收到 systemPrompt + model + tools
       const request = completeCalls.mock.calls[0][0];
       expect(request.messages[0]).toEqual({ role: 'system', content: 'You are helpful' });
-      expect(request.model).toBe('gpt-4');
+      expect(request.model).toBe('gpt-4o');
       expect(request.tools).toHaveLength(1);
       expect(request.tools[0].name).toBe('weather.getWeather');
     });
@@ -257,7 +251,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('hi');
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       // agent.maxTurns=7,全局 20,应取 7。单轮直答无法直接断言 maxTurns,
       // 但可通过让 LLM 连续 tool_call 验证 7 轮后抛 ReactLoopError——此处简化为验证单轮直答不抛错
@@ -274,7 +268,7 @@ describe('Agent', () => {
 
       const agent = new Agent(deps);
 
-      await expect(agent.run('hi')).rejects.toThrowError(AgentError);
+      await expect(agent.run('hi', { agent: 'researcher' })).rejects.toThrowError(AgentError);
     });
   });
 
@@ -308,7 +302,7 @@ describe('Agent', () => {
         }),
       );
 
-      const result = await agent.run('weather?');
+      const result = await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('done');
       // handler 签名 (args, ctx)：编程式直调无 ctx 时第二参数为 undefined
       expect(handler).toHaveBeenCalledWith({ city: '北京' }, undefined);
@@ -331,7 +325,7 @@ describe('Agent', () => {
         }),
       );
 
-      const result = await agent.run('hi');
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
       // 第二轮 LLM 收到 tool 错误消息后给出最终回答
       expect(result.content).toBe('recovered');
 
@@ -376,7 +370,7 @@ describe('Agent', () => {
         }),
       );
 
-      const result = await agent.run('hi');
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('refused');
 
       // 危险 handler 绝不能被执行
@@ -407,7 +401,7 @@ describe('Agent', () => {
         }),
       );
 
-      const result = await agent.run('hi');
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('refused');
       const secondRequest = completeCalls.mock.calls[1][0];
       const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
@@ -446,7 +440,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('weather?');
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(validate).toHaveBeenCalledWith({});
       expect(handler).not.toHaveBeenCalled();
@@ -489,7 +483,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('weather?');
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(handler).toHaveBeenCalledWith({ city: '北京' }, undefined);
     });
 
@@ -532,7 +526,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('weather?');
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
 
       // buildToolDefinitions 调用 1 次,两次 executeTool 命中缓存——总共只调用 1 次
       expect(resolveToolSchemaImpl).toHaveBeenCalledTimes(1);
@@ -580,7 +574,10 @@ describe('Agent', () => {
         }),
       );
 
-      const result = await agent.run('write about AI');
+      const result = await agent.run('write about AI', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+      });
       expect(result.content).toBe('final');
 
       // 验证第二轮请求把 sub-agent 结果回传 LLM
@@ -619,7 +616,10 @@ describe('Agent', () => {
         }),
       );
 
-      const result = await agent.run('write about AI');
+      const result = await agent.run('write about AI', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+      });
       expect(result.content).toBe('parent-final');
 
       // 验证子 agent 的 input 是 stringify(args)
@@ -652,7 +652,7 @@ describe('Agent', () => {
         }),
       );
 
-      const result = await agent.run('hi');
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('recovered from recursion error');
 
       // 验证错误回传 LLM
@@ -683,7 +683,7 @@ describe('Agent', () => {
         }),
       );
 
-      const result = await agent.run('hi');
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('parent-ok');
     });
   });
@@ -708,7 +708,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('hi');
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const request = completeCalls.mock.calls[0][0];
       const toolNames = (request.tools as LLMToolDefinition[]).map((t) => t.name);
@@ -745,7 +745,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('hi');
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
       const withDef = tools.find((t) => t.name === 'with.schema')!;
@@ -767,7 +767,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('hi');
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
       const writerDef = tools.find((t) => t.name === 'agent.writer')!;
@@ -786,7 +786,7 @@ describe('Agent', () => {
         }),
       );
 
-      const desc = agent.asTool();
+      const desc = agent.asTool('researcher');
       expect(desc).toBeDefined();
       expect(desc!.kind).toBe('agent');
       expect(desc!.name).toBe('agent.researcher');
@@ -801,7 +801,7 @@ describe('Agent', () => {
       deps.getAgent = () => undefined;
 
       const agent = new Agent(deps);
-      expect(agent.asTool()).toBeUndefined();
+      expect(agent.asTool('researcher')).toBeUndefined();
     });
   });
 
@@ -818,7 +818,7 @@ describe('Agent', () => {
         }),
       );
 
-      const chunks = await collect(agent.stream('hi'));
+      const chunks = await collect(agent.stream('hi', { agent: 'researcher', model: 'gpt-4o' }));
       const deltas = chunks.filter((c) => c.deltaContent !== undefined);
       expect(deltas.map((c) => c.deltaContent).join('')).toBe('Hello world');
       const done = chunks.find((c) => c.done !== undefined);
@@ -843,31 +843,38 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ model: 'gpt-4' }),
+          agent: agentMeta({ model: 'gpt-4o' }),
         }),
       );
 
-      await agent.run('hi', { model: 'gpt-4o-mini' });
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o-mini' });
 
       const request = completeCalls.mock.calls[0][0];
       expect(request.model).toBe('gpt-4o-mini');
     });
 
-    it('不传 options 时 model 用 agent 元数据（行为不变）', async () => {
+    it('未传 options.model 时用 agent 元数据 model 作为缺省 key 解析', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
       ]);
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ model: 'gpt-4' }),
+          agent: agentMeta({ model: 'gpt-4o' }),
         }),
       );
 
-      await agent.run('hi');
+      await agent.run('hi', { agent: 'researcher' });
 
       const request = completeCalls.mock.calls[0][0];
-      expect(request.model).toBe('gpt-4');
+      expect(request.model).toBe('gpt-4o');
+    });
+
+    it('options.model 与 agent 元数据 model 均缺省且无 options.provider 时抛 AgentError', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+      const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
+
+      await expect(agent.run('hi', { agent: 'researcher' })).rejects.toThrowError(AgentError);
     });
 
     it('options.model 用 llms key 切换 provider（不调默认 provider）', async () => {
@@ -905,7 +912,7 @@ describe('Agent', () => {
       );
 
       // model='anthropic' 精确匹配 llms key → 切到 anthropic provider
-      const result = await agent.run('hi', { model: 'anthropic' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'anthropic' });
 
       expect(result.content).toBe('from-override');
       expect(overrideCalls).toHaveBeenCalledTimes(1);
@@ -946,7 +953,7 @@ describe('Agent', () => {
       );
 
       // 'anthropic/claude-3' → 拆 [anthropic, claude-3],切到 anthropic provider + claude-3 model
-      const result = await agent.run('hi', { model: 'anthropic/claude-3' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'anthropic/claude-3' });
 
       expect(result.content).toBe('from-anthropic');
       const request = overrideCalls.mock.calls[0][0];
@@ -987,7 +994,7 @@ describe('Agent', () => {
       );
 
       // 'claude-3-sonnet' 在 anthropic.models 里唯一 → 切到 anthropic provider + 该 model
-      const result = await agent.run('hi', { model: 'claude-3-sonnet' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'claude-3-sonnet' });
 
       expect(result.content).toBe('from-anthropic');
       expect(overrideCalls).toHaveBeenCalledTimes(1);
@@ -1018,7 +1025,9 @@ describe('Agent', () => {
         }),
       );
 
-      await expect(agent.run('hi', { model: 'gpt-4o' })).rejects.toThrowError(AgentError);
+      await expect(agent.run('hi', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        AgentError,
+      );
     });
 
     it('options.model 未声明的 provider/model 抛 AgentError', async () => {
@@ -1034,11 +1043,13 @@ describe('Agent', () => {
       );
 
       // 'unknown-llm/gpt-x' 的 provider 不在 llms 里
-      await expect(agent.run('hi', { model: 'unknown-llm/gpt-x' })).rejects.toThrowError(
-        AgentError,
-      );
+      await expect(
+        agent.run('hi', { agent: 'researcher', model: 'unknown-llm/gpt-x' }),
+      ).rejects.toThrowError(AgentError);
       // 'unknown-model' 纯 model 名,不在任何 provider 的 models 里
-      await expect(agent.run('hi', { model: 'unknown-model' })).rejects.toThrowError(AgentError);
+      await expect(
+        agent.run('hi', { agent: 'researcher', model: 'unknown-model' }),
+      ).rejects.toThrowError(AgentError);
     });
 
     it('options.temperature / maxTokens 透传给 provider', async () => {
@@ -1052,7 +1063,12 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('hi', { temperature: 0.1, maxTokens: 50 });
+      await agent.run('hi', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+        temperature: 0.1,
+        maxTokens: 50,
+      });
 
       const request = completeCalls.mock.calls[0][0];
       expect(request.temperature).toBe(0.1);
@@ -1070,13 +1086,13 @@ describe('Agent', () => {
         }),
       );
 
-      await collect(agent.stream('hi', { model: 'gpt-4o-mini' }));
+      await collect(agent.stream('hi', { agent: 'researcher', model: 'gpt-4o-mini' }));
 
       const request = streamCalls.mock.calls[0][0];
       expect(request.model).toBe('gpt-4o-mini');
     });
 
-    it('options 不修改 agent 状态（下一次 run 仍用默认 model）', async () => {
+    it('options 不修改 agent 状态（下一次 run 仍用元数据 model 解析）', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'first', stopReason: 'stop' }),
         llmResponse({ content: 'second', stopReason: 'stop' }),
@@ -1084,17 +1100,17 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ model: 'gpt-4' }),
+          agent: agentMeta({ model: 'gpt-4o' }),
         }),
       );
 
-      await agent.run('hi', { model: 'gpt-4o-mini' });
-      await agent.run('hi');
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o-mini' });
+      await agent.run('hi', { agent: 'researcher' });
 
       const firstRequest = completeCalls.mock.calls[0][0];
       const secondRequest = completeCalls.mock.calls[1][0];
       expect(firstRequest.model).toBe('gpt-4o-mini');
-      expect(secondRequest.model).toBe('gpt-4');
+      expect(secondRequest.model).toBe('gpt-4o');
     });
 
     it('options.agent 覆盖 agent 名（使用指定 agent 的元数据/tools）', async () => {
@@ -1111,12 +1127,11 @@ describe('Agent', () => {
         createDeps({
           provider,
           agent: researcherMeta,
-          agentName: 'researcher',
           subAgents: [writerMeta],
         }),
       );
 
-      await agent.run('hi', { agent: 'writer' });
+      await agent.run('hi', { agent: 'writer', model: 'gpt-4o' });
 
       const request = completeCalls.mock.calls[0][0];
       expect(request.messages[0]).toEqual({ role: 'system', content: 'You are a writer.' });
@@ -1136,18 +1151,17 @@ describe('Agent', () => {
         createDeps({
           provider,
           agent: researcherMeta,
-          agentName: 'researcher',
           subAgents: [writerMeta],
         }),
       );
 
-      await collect(agent.stream('hi', { agent: 'writer' }));
+      await collect(agent.stream('hi', { agent: 'writer', model: 'gpt-4o' }));
 
       const request = streamCalls.mock.calls[0][0];
       expect(request.messages[0]).toEqual({ role: 'system', content: 'You are a writer.' });
     });
 
-    it('options.agent 不传时用 deps.agentName（defaultAgent）', async () => {
+    it('不传 options.agent 时抛 AgentError（无默认 agent——每次调用显式指定）', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
       ]);
@@ -1156,31 +1170,11 @@ describe('Agent', () => {
         systemPrompt: 'You are a researcher.',
       });
 
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: researcherMeta,
-          agentName: 'researcher',
-        }),
-      );
+      const agent = new Agent(createDeps({ provider, agent: researcherMeta }));
 
-      await agent.run('hi');
-
-      const request = completeCalls.mock.calls[0][0];
-      expect(request.messages[0]).toEqual({ role: 'system', content: 'You are a researcher.' });
-    });
-
-    it('deps.agentName 为空且不传 options.agent 时抛 AgentError', async () => {
-      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta(),
-          agentName: '',
-        }),
-      );
-
-      await expect(agent.run('hi')).rejects.toThrowError(AgentError);
+      await expect(agent.run('hi')).rejects.toThrowError(/options\.agent/);
+      await expect(agent.run('hi', { model: 'gpt-4o' })).rejects.toThrowError(/options\.agent/);
+      expect(completeCalls).not.toHaveBeenCalled();
     });
   });
 
@@ -1216,6 +1210,7 @@ describe('Agent', () => {
       );
 
       const result = await agent.run('hi', {
+        agent: 'researcher',
         provider: {
           provider: 'openai',
           apiKey: 'user-key',
@@ -1263,6 +1258,7 @@ describe('Agent', () => {
       );
 
       const result = await agent.run('hi', {
+        agent: 'researcher',
         provider: externalProvider,
         model: 'anthropic/claude-3.5-sonnet',
       });
@@ -1322,7 +1318,11 @@ describe('Agent', () => {
       );
 
       // 'claude-3' 在 llms 的 anthropic.models 里,但外部 provider 存在时 llms 完全被忽略
-      const result = await agent.run('hi', { provider: externalProvider, model: 'claude-3' });
+      const result = await agent.run('hi', {
+        agent: 'researcher',
+        provider: externalProvider,
+        model: 'claude-3',
+      });
 
       expect(result.content).toBe('from-external');
       expect(externalCalls).toHaveBeenCalledTimes(1);
@@ -1347,6 +1347,7 @@ describe('Agent', () => {
       );
 
       await agent.run('hi', {
+        agent: 'researcher',
         provider: { provider: 'openai', apiKey: 'k', models: { 'gateway-model': {} } },
       });
 
@@ -1360,7 +1361,10 @@ describe('Agent', () => {
       const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
 
       await expect(
-        agent.run('hi', { provider: { provider: 'openai', apiKey: 'k', models: {} } }),
+        agent.run('hi', {
+          agent: 'researcher',
+          provider: { provider: 'openai', apiKey: 'k', models: {} },
+        }),
       ).rejects.toThrowError(AgentError);
     });
 
@@ -1370,15 +1374,15 @@ describe('Agent', () => {
 
       // 普通对象缺 provider 字段
       await expect(
-        agent.run('hi', { provider: { foo: 'bar' } as unknown as LlmConfig }),
+        agent.run('hi', { agent: 'researcher', provider: { foo: 'bar' } as unknown as LlmConfig }),
       ).rejects.toThrowError(AgentError);
       // 字符串不是合法形式
       await expect(
-        agent.run('hi', { provider: 'openai' as unknown as LlmConfig }),
+        agent.run('hi', { agent: 'researcher', provider: 'openai' as unknown as LlmConfig }),
       ).rejects.toThrowError(AgentError);
     });
 
-    it('外部 provider 仅本次调用生效,下一次 run 回落默认 provider', async () => {
+    it('外部 provider 仅本次调用生效,下一次 run 走 llms 解析的 provider', async () => {
       const externalCalls = vi.fn();
       const externalProvider: LLMProvider = {
         complete: async () => {
@@ -1396,10 +1400,17 @@ describe('Agent', () => {
         llmResponse({ content: 'from-default', stopReason: 'stop' }),
       ]);
 
-      const agent = new Agent(createDeps({ provider: defaultProvider, agent: agentMeta() }));
+      const agent = new Agent(
+        createDeps({ provider: defaultProvider, agent: agentMeta({ model: 'gpt-4o' }) }),
+      );
 
-      const first = await agent.run('hi', { provider: externalProvider, model: 'm1' });
-      const second = await agent.run('hi');
+      const first = await agent.run('hi', {
+        agent: 'researcher',
+        provider: externalProvider,
+        model: 'm1',
+      });
+      // 第二次不传外部 provider——meta.model 作为缺省 key 走 llms 解析（openai）
+      const second = await agent.run('hi', { agent: 'researcher' });
 
       expect(first.content).toBe('from-external');
       expect(second.content).toBe('from-default');
@@ -1407,13 +1418,13 @@ describe('Agent', () => {
       expect(defaultCalls).toHaveBeenCalledTimes(1);
     });
 
-    it('sub-agent 递归不继承外部 provider（sub-agent 走默认 provider）', async () => {
+    it('sub-agent 递归继承父调用的 provider（含外部 provider）,model 用 sub 元数据声明', async () => {
       const externalCalls = vi.fn();
       let externalTurn = 0;
       const externalProvider: LLMProvider = {
         complete: async (req) => {
           externalCalls(req);
-          // 父 agent 第 1 轮：请求调 sub-agent；第 2 轮：给出最终回答
+          // turn 1：父请求调 sub-agent；turn 2：sub-agent 直答；turn 3：父给出最终回答
           externalTurn++;
           if (externalTurn === 1) {
             return {
@@ -1425,6 +1436,12 @@ describe('Agent', () => {
               stopReason: 'tool_calls' as LLMStopReason,
             };
           }
+          if (externalTurn === 2) {
+            return {
+              message: { role: 'assistant', content: 'sub-done' },
+              stopReason: 'stop' as LLMStopReason,
+            };
+          }
           return {
             message: { role: 'assistant', content: 'parent-done' },
             stopReason: 'stop' as LLMStopReason,
@@ -1434,30 +1451,81 @@ describe('Agent', () => {
           throw new Error('stream not mocked');
         },
       };
-      // 默认 provider 服务 sub-agent（turn 1）+ 父 agent 最后一轮（turn 2）
+      // llms 里的 openai provider 不应被调用——父走外部 provider,sub 继承之
       const { provider: defaultProvider, completeCalls: defaultCalls } = createMockProvider([
-        llmResponse({ content: 'sub-done', stopReason: 'stop' }),
-        llmResponse({ content: 'parent-done', stopReason: 'stop' }),
+        llmResponse({ content: 'never called', stopReason: 'stop' }),
       ]);
 
       const agent = new Agent(
         createDeps({
           provider: defaultProvider,
           agent: agentMeta({ name: 'researcher' }),
-          subAgents: [agentMeta({ name: 'writer' })],
+          subAgents: [agentMeta({ name: 'writer' })], // writer 元数据无 model
         }),
       );
 
-      const result = await agent.run('hi', { provider: externalProvider, model: 'ext-model' });
+      const result = await agent.run('hi', {
+        agent: 'researcher',
+        provider: externalProvider,
+        model: 'ext-model',
+      });
 
       expect(result.content).toBe('parent-done');
-      // 父 agent 两轮都走外部 provider
-      expect(externalCalls).toHaveBeenCalledTimes(2);
+      // 父两轮 + sub 一轮都走同一个外部 provider（继承）
+      expect(externalCalls).toHaveBeenCalledTimes(3);
       expect(externalCalls.mock.calls[0][0].model).toBe('ext-model');
-      // sub-agent 的 LLM 调用走默认 provider,且未继承外部 model（writer 元数据无 model）
-      expect(defaultCalls).toHaveBeenCalledTimes(1);
-      const subRequest = defaultCalls.mock.calls[0][0];
-      expect(subRequest.model).toBeUndefined();
+      // sub-agent 未声明 model 时沿用父 model（ext-model）
+      expect(externalCalls.mock.calls[1][0].model).toBe('ext-model');
+      // llms 解析的 provider 全程未被调用
+      expect(defaultCalls).not.toHaveBeenCalled();
+    });
+
+    it('sub-agent 元数据声明 model 时优先用自身 model（继承父 provider）', async () => {
+      const parentCalls = vi.fn();
+      const parentProvider: LLMProvider = {
+        complete: async (req) => {
+          parentCalls(req);
+          const turn = parentCalls.mock.calls.length;
+          if (turn === 1) {
+            return {
+              message: {
+                role: 'assistant',
+                content: '',
+                toolCalls: [{ id: 'c1', name: 'agent.writer', arguments: { task: 'write' } }],
+              },
+              stopReason: 'tool_calls' as LLMStopReason,
+            };
+          }
+          if (turn === 2) {
+            return {
+              message: { role: 'assistant', content: 'sub-done' },
+              stopReason: 'stop' as LLMStopReason,
+            };
+          }
+          return {
+            message: { role: 'assistant', content: 'parent-done' },
+            stopReason: 'stop' as LLMStopReason,
+          };
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+
+      const agent = new Agent(
+        createDeps({
+          provider: parentProvider,
+          agent: agentMeta({ name: 'researcher' }),
+          subAgents: [agentMeta({ name: 'writer', model: 'gpt-4o-mini' })],
+        }),
+      );
+
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(result.content).toBe('parent-done');
+      // turn 2 是 sub-agent 的调用——provider 继承父,model 用 sub 元数据声明的 gpt-4o-mini
+      const subRequest = parentCalls.mock.calls[1][0];
+      expect(subRequest.model).toBe('gpt-4o-mini');
     });
 
     it('stream 也支持外部 provider', async () => {
@@ -1478,22 +1546,21 @@ describe('Agent', () => {
 
       const agent = new Agent(createDeps({ provider: defaultProvider, agent: agentMeta() }));
 
-      const chunks = await collect(agent.stream('hi', { provider: externalProvider }));
+      const chunks = await collect(
+        agent.stream('hi', { agent: 'researcher', provider: externalProvider }),
+      );
 
       const deltas = chunks.filter((c) => c.deltaContent !== undefined);
       expect(deltas.map((c) => c.deltaContent).join('')).toBe('hello stream');
       expect(streamCalls).toHaveBeenCalledTimes(1);
     });
 
-    describe('无默认 provider（llms 未配置,外部 provider 模式）', () => {
-      /** 构造无 defaultProvider 的 AgentDeps（config.agent.llms 未配置时插件注入的形态） */
+    describe('无 provider 可解析（llms 未配置,外部 provider 模式）', () => {
+      /** 构造空 providers 的 AgentDeps（config.agent.llms 未配置时插件注入的形态） */
       function createDepsWithoutProvider(): AgentDeps {
         return {
           providers: new Map(),
-          defaultProvider: undefined,
           llms: {},
-          defaultLlm: '',
-          agentName: 'researcher',
           rootDir: '/project',
           getAgent: (name) => (name === 'researcher' ? agentMeta() : undefined),
           getAgentEntry: () => undefined,
@@ -1512,15 +1579,17 @@ describe('Agent', () => {
       it('不传 options.provider/model 时抛 AgentError（提示配置 llms 或传外部 provider）', async () => {
         const agent = new Agent(createDepsWithoutProvider());
 
-        await expect(agent.run('hi')).rejects.toThrowError(/options\.provider/);
+        await expect(agent.run('hi', { agent: 'researcher' })).rejects.toThrowError(
+          /options\.provider/,
+        );
       });
 
       it('options.model 纯 model 名在空 llms 下抛 AgentError 且提示外部 provider', async () => {
         const agent = new Agent(createDepsWithoutProvider());
 
-        await expect(agent.run('hi', { model: 'gpt-4o' })).rejects.toThrowError(
-          /options\.provider/,
-        );
+        await expect(
+          agent.run('hi', { agent: 'researcher', model: 'gpt-4o' }),
+        ).rejects.toThrowError(/options\.provider/);
       });
 
       it('传 options.provider（LLMProvider 实例）时正常执行（纯外部 provider 项目）', async () => {
@@ -1539,7 +1608,11 @@ describe('Agent', () => {
         };
         const agent = new Agent(createDepsWithoutProvider());
 
-        const result = await agent.run('hi', { provider: externalProvider, model: 'm1' });
+        const result = await agent.run('hi', {
+          agent: 'researcher',
+          provider: externalProvider,
+          model: 'm1',
+        });
 
         expect(result.content).toBe('ok-byok');
         expect(externalCalls).toHaveBeenCalledTimes(1);
@@ -1554,7 +1627,7 @@ describe('Agent', () => {
     const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
 
     const controller = new AbortController();
-    await agent.run('hi', { signal: controller.signal });
+    await agent.run('hi', { agent: 'researcher', model: 'gpt-4o', signal: controller.signal });
 
     const request = completeCalls.mock.calls[0][0];
     expect(request.signal).toBe(controller.signal);
@@ -1596,7 +1669,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('weather?');
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(beforeToolCall).toHaveBeenCalledWith('weather.getWeather', { city: '北京' }, ctx);
       expect(handler).toHaveBeenCalledTimes(1);
     });
@@ -1620,7 +1693,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('weather?');
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(handler).not.toHaveBeenCalled();
       const secondRequest = completeCalls.mock.calls[1][0];
       const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
@@ -1646,7 +1719,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('weather?');
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(handler).toHaveBeenCalledWith({ city: '北京', workspaceId: 'ws-1' }, ctx);
     });
 
@@ -1680,7 +1753,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('go');
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
       expect(subRun).not.toHaveBeenCalled();
       const secondRequest = completeCalls.mock.calls[1][0];
       const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
@@ -1714,7 +1787,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('go');
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
       expect(subRun).toHaveBeenCalledWith({ q: 'x' }, ctx);
     });
 
@@ -1740,7 +1813,7 @@ describe('Agent', () => {
           ctx,
         }),
       );
-      await denied.run('weather?');
+      await denied.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(afterToolCall).not.toHaveBeenCalled();
 
       // 放行场景：成功后调用
@@ -1758,7 +1831,7 @@ describe('Agent', () => {
           ctx,
         }),
       );
-      await agent.run('weather?');
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(afterToolCall).toHaveBeenCalledWith(
         'weather.getWeather',
         { city: '北京' },
@@ -1784,7 +1857,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('hi');
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
       const request = completeCalls.mock.calls[0][0];
       const names = request.tools.map((t: { name: string }) => t.name);
       expect(names).toContain('weather.getWeather');
@@ -1808,7 +1881,7 @@ describe('Agent', () => {
         }),
       );
 
-      await agent.run('weather?');
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(handler).toHaveBeenCalledWith({ city: '北京' }, ctx);
     });
   });
@@ -1835,7 +1908,11 @@ describe('Agent — 中断恢复（Resume）', () => {
     ]);
     const agent = new Agent(createDeps({ provider, agent: agentMeta({ systemPrompt: 'sys' }) }));
 
-    const result = await agent.run(undefined, { messages: resumeHistory });
+    const result = await agent.run(undefined, {
+      agent: 'researcher',
+      model: 'gpt-4o',
+      messages: resumeHistory,
+    });
 
     expect(result.content).toBe('resumed');
     expect(completeCalls.mock.calls[0][0].messages).toEqual(resumeHistory);
@@ -1868,7 +1945,11 @@ describe('Agent — 中断恢复（Resume）', () => {
     ]);
     const agent = new Agent(createDeps({ provider, agent: agentMeta({ systemPrompt: 'sys' }) }));
 
-    await agent.run('继续', { messages: resumeHistory });
+    await agent.run('继续', {
+      agent: 'researcher',
+      model: 'gpt-4o',
+      messages: resumeHistory,
+    });
 
     const sent = completeCalls.mock.calls[0][0].messages;
     expect(sent.slice(0, -1)).toEqual(resumeHistory);
@@ -1881,7 +1962,13 @@ describe('Agent — 中断恢复（Resume）', () => {
     ]);
     const agent = new Agent(createDeps({ provider, agent: agentMeta({ systemPrompt: 'sys' }) }));
 
-    const chunks = await collect(agent.stream(undefined, { messages: resumeHistory }));
+    const chunks = await collect(
+      agent.stream(undefined, {
+        agent: 'researcher',
+        model: 'gpt-4o',
+        messages: resumeHistory,
+      }),
+    );
 
     expect(chunks.at(-1)?.done).toMatchObject({ content: 'resumed', stopReason: 'stop' });
     expect(streamCalls.mock.calls[0][0].messages).toEqual(resumeHistory);
@@ -1949,7 +2036,9 @@ describe('Agent — 中断恢复（Resume）', () => {
       }),
     );
 
-    const err = await agent.run('北京天气?', { signal: controller.signal }).catch((e) => e);
+    const err = await agent
+      .run('北京天气?', { agent: 'researcher', model: 'gpt-4o', signal: controller.signal })
+      .catch((e) => e);
 
     expect(err).toBeInstanceOf(AgentAbortError);
     // 断点历史：完整轮组（assistant.toolCalls + tool 结果配对）
@@ -1964,7 +2053,11 @@ describe('Agent — 中断恢复（Resume）', () => {
       createDeps({ provider: provider2, agent: agentMeta({ systemPrompt: 'sys' }) }),
     );
 
-    const result = await agent2.run(undefined, { messages: err.messages });
+    const result = await agent2.run(undefined, {
+      agent: 'researcher',
+      model: 'gpt-4o',
+      messages: err.messages,
+    });
 
     expect(result.content).toBe('北京今天晴');
     expect(result.turns).toBe(1); // 续跑轮数重新计数

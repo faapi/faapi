@@ -80,7 +80,7 @@ describe('configTypes', () => {
   });
 
   describe('agent 配置块（Phase 2.4，Phase 3.5 改为嵌套级联）', () => {
-    it('FaapiConfig 支持 agent 字段（嵌套 llms + defaultLlm）', () => {
+    it('FaapiConfig 支持 agent 字段（嵌套 llms，无 defaultAgent/defaultLlm）', () => {
       const config: FaapiConfig = {
         agent: {
           llms: {
@@ -90,19 +90,15 @@ describe('configTypes', () => {
               models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
             },
           },
-          defaultLlm: 'openai',
-          defaultAgent: 'researcher',
           maxTurns: 10,
           maxAgentDepth: 3,
         },
       };
       expect(config.agent).toBeDefined();
-      expect(config.agent!.defaultAgent).toBe('researcher');
       expect(config.agent!.maxTurns).toBe(10);
       expect(config.agent!.maxAgentDepth).toBe(3);
       expect(config.agent!.llms!.openai.provider).toBe('openai');
       expect(config.agent!.llms!.openai.models!['gpt-4o']).toEqual({});
-      expect(config.agent!.defaultLlm).toBe('openai');
     });
 
     it('agent 字段所有子字段均可省略', () => {
@@ -111,8 +107,6 @@ describe('configTypes', () => {
       };
       expect(config.agent).toBeDefined();
       expect(config.agent!.llms).toBeUndefined();
-      expect(config.agent!.defaultLlm).toBeUndefined();
-      expect(config.agent!.defaultAgent).toBeUndefined();
       expect(config.agent!.maxTurns).toBeUndefined();
       expect(config.agent!.maxAgentDepth).toBeUndefined();
     });
@@ -138,14 +132,11 @@ describe('configTypes', () => {
             models: { 'claude-3-5-sonnet': {} },
           },
         },
-        defaultLlm: 'anthropic',
-        defaultAgent: 'writer',
         maxTurns: 5,
         maxAgentDepth: 2,
       };
-      expect(agentConfig.defaultAgent).toBe('writer');
-      expect(agentConfig.defaultLlm).toBe('anthropic');
       expect(Object.keys(agentConfig.llms!)).toHaveLength(2);
+      expect(agentConfig.maxTurns).toBe(5);
     });
 
     it('LlmConfig 必填 provider + models 字段', () => {
@@ -196,13 +187,13 @@ describe('configTypes', () => {
           llms: {
             openai: { provider: 'openai', apiKey: 'sk-xxx', models: { 'gpt-4o': {} } },
           },
-          defaultAgent: 'researcher',
+          maxTurns: 5,
         },
         db: { host: 'localhost' },
       };
       expect(config.cors).toBeDefined();
       expect(config.lifecycle).toBeDefined();
-      expect(config.agent!.defaultAgent).toBe('researcher');
+      expect(config.agent!.maxTurns).toBe(5);
       expect((config as { db: { host: string } }).db.host).toBe('localhost');
     });
 
@@ -215,20 +206,18 @@ describe('configTypes', () => {
         .toMatchTypeOf<Record<string, LlmModelConfig>>();
     });
 
-    it('AgentConfig 类型校验（不含 defaultTools 字段）', () => {
+    it('AgentConfig 类型校验（无 defaultAgent / defaultLlm / defaultTools 字段）', () => {
       expectTypeOf<AgentConfig>()
         .toHaveProperty('llms')
         .toEqualTypeOf<Record<string, LlmConfig> | undefined>();
-      expectTypeOf<AgentConfig>().toHaveProperty('defaultLlm').toEqualTypeOf<string | undefined>();
-      expectTypeOf<AgentConfig>()
-        .toHaveProperty('defaultAgent')
-        .toEqualTypeOf<string | undefined>();
       expectTypeOf<AgentConfig>().toHaveProperty('maxTurns').toEqualTypeOf<number | undefined>();
       expectTypeOf<AgentConfig>()
         .toHaveProperty('maxAgentDepth')
         .toEqualTypeOf<number | undefined>();
-      // 显式断言：已移除 defaultTools 字段
+      // 显式断言：已移除的字段（默认 agent / 默认 provider 均在调用时显式指定）
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultTools');
+      expectTypeOf<AgentConfig>().not.toHaveProperty('defaultAgent');
+      expectTypeOf<AgentConfig>().not.toHaveProperty('defaultLlm');
     });
 
     it('FaapiConfig.agent 类型校验', () => {

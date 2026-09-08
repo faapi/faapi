@@ -33,11 +33,11 @@ describe('agentHandle', () => {
 
       const ctx = createTestContext({
         path: '/api/test',
-        config: { agent: { defaultAgent: 'researcher' } },
+        config: { agent: { maxTurns: 10 } },
       });
       getAgentHandle(ctx);
 
-      expect(receivedConfig).toEqual({ agent: { defaultAgent: 'researcher' } });
+      expect(receivedConfig).toEqual({ agent: { maxTurns: 10 } });
     });
 
     it('工厂返回 undefined 时,getAgentHandle 返回 undefined', () => {

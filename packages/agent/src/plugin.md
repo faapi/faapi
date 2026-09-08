@@ -6,7 +6,7 @@
 
 faapi 核心与 `@faapi/agent` 解耦——核心只提供 [agentHandle 工厂注册机制](../../faapi/src/injection/agentHandle.md)（`registerAgentHandleFactory` / `getAgentHandle` / `clearAgentHandleFactory`）,不依赖 agent 实现。需要一个组件把这两端粘合起来：
 
-- **读配置**——从 `faapi.config.ts` 的 `agent` 块读取 LLM 配置、默认 agent 名、全局参数
+- **读配置**——从 `faapi.config.ts` 的 `agent` 块读取 LLM 配置、全局参数（无默认 agent / 默认 provider——调用时显式指定）
 - **创建 provider**——调 [createProvider](./provider.md) 构造 LLM provider 实例（单例）
 - **注册工厂**——调 `registerAgentHandleFactory` 注册工厂函数,工厂在每次请求时构造 [Agent](./agent.md) 实例
 - **注入访问器**——从 `@faapi/faapi` import 注册表/加载器访问器（`getAgent` / `getTool` / `resolveAgentTools` / `resolveSubAgents` / `loadAgentModule` / `loadToolModule`）,构造 `AgentDeps` 注入到 Agent
@@ -32,8 +32,6 @@ export default {
         },
       },
     },
-    defaultLlm: 'openai', // 可选,未设置时用 llms 第一个 key
-    defaultAgent: 'researcher',
     maxTurns: 10,
     maxAgentDepth: 3,
   },
@@ -46,7 +44,8 @@ export default {
 import type { AgentHandle } from '@faapi/agent';
 
 export function POST(agent: AgentHandle, body: { input: string }) {
-  const result = await agent.run(body.input);
+  // 必须显式指定 agent 名与 model（agent 元数据声明 model 时可省略 model）
+  const result = await agent.run(body.input, { agent: 'researcher', model: 'gpt-4o' });
   return { content: result.content, turns: result.turns };
 }
 ```
@@ -61,12 +60,12 @@ PluginContext { config.agent, rootDir }
 1. readAgentConfig(ctx) → AgentConfig | undefined
 2. 遍历 agentConfig?.llms ?? {} → 每项调 createProvider → Map<providerKey, LLMProvider>
    （llms 可选——未配置时 providers 为空 Map,进入「外部 provider 模式」,照常注册工厂）
-3. 读 defaultLlm（agentConfig?.defaultLlm ?? llms 第一个 key）→ defaultProvider
-   （可为 undefined——指向不存在的 key 时 warn + 照常注册）
-4. 读 agentConfig.defaultAgent（可选,未设时为空字符串）
-5. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
-6. registerAgentHandleFactory(() => new Agent({ providers, defaultProvider, llms, defaultLlm, agentName, rootDir, config, ...accessors }))
+3. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
+4. registerAgentHandleFactory(() => new Agent({ providers, llms, rootDir, config, ...accessors }))
 ```
+
+无默认 agent / 默认 provider——`agent.run/stream` 每次调用显式传 `options.agent` +
+`options.model` / `options.provider`（详见 [agentHandle](./agentHandle.md) 的解析规则）。
 
 ### 工厂函数
 
@@ -81,10 +80,7 @@ const resolveToolSchema = (tool) => resolveToolSchemaImpl(tool, rootDir);
 registerAgentHandleFactory(() => {
   return new Agent({
     providers,                   // 闭包捕获（setup 时创建,Map<providerKey, LLMProvider>;llms 未配置时为空 Map）
-    defaultProvider,             // 闭包捕获（默认 provider 实例;llms 未配置/未命中时为 undefined）
     llms,                        // 闭包捕获（agentConfig.llms ?? {},供 Agent 按名查找 LlmConfig）
-    defaultLlm,                  // 闭包捕获（默认 provider key;可为 undefined）
-    agentName: defaultAgent,     // 闭包捕获（config.agent.defaultAgent）
     rootDir,                     // 闭包捕获（ctx.rootDir）
     config: runtimeConfig,      // 闭包捕获（maxTurns / maxAgentDepth）
     getAgent,                    // 从 @faapi/faapi import（单例模块）
@@ -121,14 +117,11 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 | --- | --- |
 | `config.agent` 整块未设置 / `config.agent.llms` 未设置 / `llms` 为空对象 | **照常注册工厂**（外部 provider 模式）——启动日志提示未配置 llms；`agent` 参数正常注入,但 `agent.run/stream` 不传 `options.provider` 时抛 `AgentError`（提示配 llms 或传外部 provider） |
 | `config.agent.llms.<key>.apiKey` 空/缺失（含空白字符） | **warn + 照常注册**——启动日志提示该 provider 的请求将省略 Authorization 头（上游大概率 401）,把「key 未配置」从首次 LLM 调用的上游 401 提前到启动日志;不跳过注册（部分网关/本地模型场景无需 key） |
-| `config.agent.defaultAgent` 未设置 | 正常注册,`deps.agentName` 为空字符串,handler 需 `agent.run(input, { agent: 'name' })` 显式指定 |
-| `config.agent.defaultLlm` 未设置 | 正常注册,`llms` 非空时用其第一个 key 作默认,为空时无默认 provider（外部 provider 模式） |
-| `config.agent.defaultLlm` 指向不存在的 key | warn + **照常注册**——无默认 provider,调用时须传 `options.provider` |
 | `config.agent.maxTurns` 未设置 | 正常注册,Agent 用 agent 自身 maxTurns |
 | `config.agent.maxAgentDepth` 未设置 | 正常注册,Agent 用默认值 3 |
 
 工厂未注册仅发生在 `@faapi/agent` 插件未加载时——此时 [getAgentHandle](../../faapi/src/injection/agentHandle.md) 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。
-`defaultAgent` 未设置但工厂已注册时,`agent` 参数不为 `undefined`——Agent 实例正常注入,但 `agent.run(input)` 不传 `{ agent }` 时抛 `AgentError`。
+工厂已注册时 `agent` 参数不为 `undefined`,但 `agent.run(input)` 不传 `{ agent: 'name' }` 时抛 `AgentError`（无默认 agent——每次调用显式指定）。
 
 ### resolveToolSchema 实现
 

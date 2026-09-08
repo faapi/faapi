@@ -76,8 +76,6 @@ const fullAgentConfig: AgentConfig = {
   llms: {
     openai: { provider: 'openai', apiKey: 'test-key', models: { 'gpt-4o': {} } },
   },
-  defaultLlm: 'openai',
-  defaultAgent: 'researcher',
   maxTurns: 10,
   maxAgentDepth: 3,
 };
@@ -145,14 +143,22 @@ describe('@faapi/agent plugin', () => {
       expect(typeof handle.asTool).toBe('function');
     });
 
-    it('工厂返回的 Agent 绑定 defaultAgent 名', () => {
+    it('工厂返回的 Agent 支持显式指定 agent 名（asTool）', () => {
       const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as Agent;
 
-      const tool = agent.asTool();
+      // 无默认 agent——asTool 需显式传名
+      const tool = agent.asTool('researcher');
       expect(tool).toBeDefined();
       expect(tool?.agentName).toBe('researcher');
       expect(tool?.name).toBe('agent.researcher');
+    });
+
+    it('run 不传 options.agent 时抛 AgentError（无默认 agent）', async () => {
+      const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
+      const agent = factory!(makeReqCtx()) as Agent;
+
+      await expect(agent.run('hello')).rejects.toThrowError(AgentError);
     });
 
     it('每次调工厂构造新 Agent 实例', () => {
@@ -176,7 +182,7 @@ describe('@faapi/agent plugin', () => {
 
     it('config.agent.llms 未设置时仍注册工厂,createProvider 不被调用', () => {
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const ctx = makeCtx({ defaultAgent: 'researcher' });
+      const ctx = makeCtx({});
       const factory = setupAndCaptureFactory(ctx);
 
       expect(factory).toBeDefined();
@@ -187,12 +193,12 @@ describe('@faapi/agent plugin', () => {
 
     it('llms 未配置时:run 不传 options.provider 抛 AgentError,传外部 provider 正常执行', async () => {
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const ctx = makeCtx({ defaultAgent: 'researcher' });
+      const ctx = makeCtx({});
       const factory = setupAndCaptureFactory(ctx);
       logSpy.mockRestore();
       const agent = factory!(makeReqCtx()) as Agent;
 
-      // 不传 options.provider:无默认 provider,早失败（AgentError,不发起 LLM 请求）
+      // 不传 options.provider:无 provider 可解析,早失败（AgentError,不发起 LLM 请求）
       await expect(agent.run('hi', { agent: 'researcher' })).rejects.toThrowError(AgentError);
 
       // 传 options.provider:外部 provider 接管,正常执行（BYOK 纯外部模式）
@@ -209,32 +215,13 @@ describe('@faapi/agent plugin', () => {
       expect(result.content).toBe('from-external');
     });
 
-    it('config.agent.defaultLlm 指向不存在的 key 时 warn + 照常注册（无默认 provider）', () => {
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const ctx = makeCtx({
-        llms: { openai: { provider: 'openai', apiKey: 'k', models: { 'gpt-4o': {} } } },
-        defaultLlm: 'nonexistent',
-        defaultAgent: 'researcher',
-      });
-      const factory = setupAndCaptureFactory(ctx);
-
-      expect(factory).toBeDefined();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('defaultLlm "nonexistent" not found'),
-      );
-      warnSpy.mockRestore();
-    });
-
-    it('config.agent.defaultAgent 未设置时正常注册工厂（agentName 为空字符串）', () => {
+    it('config.agent 只含 maxTurns 时正常注册工厂', () => {
       const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-      const ctx = makeCtx({
-        llms: { openai: { provider: 'openai', apiKey: 'k', models: { 'gpt-4o': {} } } },
-      });
+      const ctx = makeCtx({ maxTurns: 5 });
       const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
       plugin.setup(ctx);
 
       expect(spy).toHaveBeenCalledTimes(1);
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('no defaultAgent set'));
       logSpy.mockRestore();
     });
   });
@@ -244,7 +231,6 @@ describe('@faapi/agent plugin', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const ctx = makeCtx({
         llms: { openai: { provider: 'openai', apiKey: '', models: { 'gpt-4o': {} } } },
-        defaultLlm: 'openai',
       });
       const factory = setupAndCaptureFactory(ctx);
 
@@ -258,7 +244,6 @@ describe('@faapi/agent plugin', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const ctx = makeCtx({
         llms: { openai: { provider: 'openai', models: { 'gpt-4o': {} } } },
-        defaultLlm: 'openai',
       });
       const factory = setupAndCaptureFactory(ctx);
 
@@ -271,7 +256,6 @@ describe('@faapi/agent plugin', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const ctx = makeCtx({
         llms: { openai: { provider: 'openai', apiKey: '   ', models: { 'gpt-4o': {} } } },
-        defaultLlm: 'openai',
       });
       const factory = setupAndCaptureFactory(ctx);
 
@@ -287,7 +271,6 @@ describe('@faapi/agent plugin', () => {
           openai: { provider: 'openai', apiKey: '', models: { 'gpt-4o': {} } },
           gateway: { provider: 'openai', apiKey: 'real-key', models: { 'gpt-4o': {} } },
         },
-        defaultLlm: 'gateway',
       });
       const factory = setupAndCaptureFactory(ctx);
 
@@ -323,7 +306,7 @@ describe('@faapi/agent plugin', () => {
     it('agent.run 返回 ReactLoopResult', async () => {
       const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as AgentHandle;
-      const result = await agent.run('hello');
+      const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('ok');
       expect(result.turns).toBe(1);
       expect(result.stopReason).toBe('stop');
@@ -333,7 +316,7 @@ describe('@faapi/agent plugin', () => {
       const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as AgentHandle;
       const chunks: { deltaContent?: string; done?: { content: string } }[] = [];
-      for await (const chunk of agent.stream('hello')) {
+      for await (const chunk of agent.stream('hello', { agent: 'researcher', model: 'gpt-4o' })) {
         chunks.push(chunk);
       }
       const done = chunks.find((c) => c.done !== undefined);
@@ -368,7 +351,7 @@ describe('@faapi/agent plugin', () => {
 
       const factory = setupAndCaptureFactory(makeCtxWithTool(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as AgentHandle;
-      await agent.run('hello');
+      await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(loadToolSchema).toHaveBeenCalledWith(testTool, '/project');
     });
@@ -378,7 +361,7 @@ describe('@faapi/agent plugin', () => {
 
       const factory = setupAndCaptureFactory(makeCtxWithTool(fullAgentConfig));
       const agent = factory!(makeReqCtx()) as AgentHandle;
-      const result = await agent.run('hello');
+      const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.content).toBe('ok');
       expect(loadToolSchema).toHaveBeenCalledWith(testTool, '/project');
@@ -410,8 +393,8 @@ describe('@faapi/agent plugin', () => {
       const a1 = factory!(makeReqCtx()) as AgentHandle;
       const a2 = factory!(makeReqCtx()) as AgentHandle;
 
-      await a1.run('hi');
-      await a2.run('hi');
+      await a1.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+      await a2.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       // 第二个请求命中插件级缓存（zod.js mtime 未变），不重新 loadToolSchema
       expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(1);
@@ -423,7 +406,10 @@ describe('@faapi/agent plugin', () => {
       const a2 = factory!(makeReqCtx()) as AgentHandle;
 
       // 同一轮事件循环发起：第二个请求命中已缓存的 in-flight Promise
-      await Promise.all([a1.run('hi'), a2.run('hi')]);
+      await Promise.all([
+        a1.run('hi', { agent: 'researcher', model: 'gpt-4o' }),
+        a2.run('hi', { agent: 'researcher', model: 'gpt-4o' }),
+      ]);
 
       expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(1);
     });
@@ -453,7 +439,7 @@ describe('@faapi/agent plugin', () => {
         const factory = setupAndCaptureFactory(ctx);
 
         const a1 = factory!(makeReqCtx()) as AgentHandle;
-        await a1.run('hi');
+        await a1.run('hi', { agent: 'researcher', model: 'gpt-4o' });
         expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(1);
 
         // bump mtime（模拟 dev reloadTools 重生成 zod.js）
@@ -461,7 +447,7 @@ describe('@faapi/agent plugin', () => {
         utimesSync(zodPath, later, later);
 
         const a2 = factory!(makeReqCtx()) as AgentHandle;
-        await a2.run('hi');
+        await a2.run('hi', { agent: 'researcher', model: 'gpt-4o' });
         // mtime 变化 → 缓存失效 → 重新解析
         expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(2);
       } finally {

@@ -14,13 +14,11 @@ CLI 和 server 启动时需要统一的配置结构，包含根目录、app 目�
 
 ## agent 配置块（Phase 2.4）
 
-`config.agent` 提供 agent 子系统的全局默认配置，所有字段均可选，未设置时用框架默认值：
+`config.agent` 提供 agent 子系统的全局配置，所有字段均可选。无全局默认 agent / 默认 provider——`agent.run/stream` 每次调用必须显式传 `options.agent` 与 `options.model` / `options.provider`：
 
 | 字段 | 类型 | 说明 | 默认值 |
 | --- | --- | --- | --- |
-| `llms` | `Record<string, LlmConfig>` | LLM provider 配置映射（嵌套级联：key 是 provider 名，值含 `models`）。plugin setup 时遍历调 `createProvider` 创建实例存 Map | `undefined`（Phase 3.2 由 @faapi/agent 插件使用） |
-| `defaultLlm` | `string` | 默认 provider key（`agent.run` 不传 `options.model` 时用此 key 的 provider） | `undefined`（用 `llms` 第一个 key） |
-| `defaultAgent` | `string` | 默认 agent 名（可选）。未设时 handler 需通过 `agent.run(input, { agent: 'name' })` 显式指定 | `undefined`（`agent.run` 不传 `{ agent }` 时抛 `AgentError`） |
+| `llms` | `Record<string, LlmConfig>` | LLM provider 配置映射（嵌套级联：key 是 provider 名，值含 `models`）。plugin setup 时遍历调 `createProvider` 创建实例存 Map | `undefined`（外部 provider 模式，插件照常注册工厂） |
 | `maxTurns` | `number` | 默认最大对话轮数，覆盖 agent 自身 `config.maxTurns`（agent 自身配置优先于全局） | `undefined`（用 agent 自身 maxTurns 或 Phase 3.x 默认值） |
 | `maxAgentDepth` | `number` | agent 调用 agent 的最大递归深度（防护无限递归，Phase 3.3 reactLoop 使用） | `undefined`（Phase 3.x 用默认值，如 3） |
 
@@ -47,10 +45,6 @@ export default {
         models: { 'claude-3-5-sonnet': {} },
       },
     },
-    // 默认 provider key（不传时用 llms 第一个 key）
-    defaultLlm: 'openai',
-    // 默认 agent 名（Phase 2.3 的 agent 参数注入读取此值）
-    defaultAgent: 'researcher',
     // 默认最大对话轮数（agent 自身 config.maxTurns 优先）
     maxTurns: 10,
     // agent 调用 agent 的最大递归深度（Phase 3.3 reactLoop 防护）
@@ -59,11 +53,11 @@ export default {
 } satisfies FaapiConfig;
 ```
 
-**嵌套级联结构**：provider 在外层，model 在 `models` 下挂多个。provider 级字段（`apiKey` / `baseURL`）共享给所有 model；model 级字段在 `models[modelName]` 里覆盖。handler 通过 `agent.run(input, { model: 'gpt-4o' })` 切换 model（详见 [agentHandle](../../agent/src/agentHandle.md) 的 Run-level 覆盖优先级表）。
+**嵌套级联结构**：provider 在外层，model 在 `models` 下挂多个。provider 级字段（`apiKey` / `baseURL`）共享给所有 model；model 级字段在 `models[modelName]` 里覆盖。handler 通过 `agent.run(input, { agent: 'name', model: 'gpt-4o' })` 切换 model（详见 [agentHandle](../../agent/src/agentHandle.md) 的 Run-level 覆盖优先级表）。
 
-**优先级**：`agent.run` 的 `options.model` > agent 自身 `config.maxTurns` / `config.model` > 全局 `agent.maxTurns` / `agent.defaultLlm` + `llms[defaultLlm]`。tool 引用列表只在每个 agent 自身的 `config.tools` 里显式声明（无全局共享 defaultTools，显式优于隐式）。
+**优先级**：`agent.run` 的 `options.model` / `options.provider` > agent 自身 `config.maxTurns` / `config.model`（未传 `options.model` 时 `config.model` 作为缺省 key 参与 llms 解析）> 全局 `agent.maxTurns`。tool 引用列表只在每个 agent 自身的 `config.tools` 里显式声明（无全局共享 defaultTools，显式优于隐式）。
 
-**与 injectParams 的集成**：Phase 2.3 的 `agent` 参数注入暂返回 `undefined`，Phase 3.x 的 `@faapi/agent` 插件读取 `config.agent.defaultAgent`，从 [agentRegistry](../injection/agentRegistry.md) 查找对应 agent 元数据，注入 `AgentHandle`（含可调用 `run`）。
+**与 injectParams 的集成**：`@faapi/agent` 插件注册 agent handle 工厂，`agent` 参数注入 `AgentHandle`（含可调用 `run`）。调用时必须显式传 `options.agent` 指定 agent 名，不传抛 `AgentError`。
 
 
 

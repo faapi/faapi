@@ -101,7 +101,7 @@ export function config() {
 
 非字面量值(变量引用、模板字符串、Spread、非 StringLiteral 的数组元素)返回 `undefined`——AST 静态提取无法求值，这些字段在运行时由 faapi.config.ts 的 `agent` 配置块或默认值兜底。
 
-字段全部可选——缺失的字段为 `undefined`，运行时按默认值处理(如 `maxTurns` 默认 10、`model` 默认 faapi.config.ts 的 `agent.defaultAgent.model`)。
+字段全部可选——缺失的字段为 `undefined`，运行时按默认值处理(如 `maxTurns` 默认 10、`model` 缺省时由调用方 `agent.run(input, { model })` 显式指定或作为缺省 key 参与 llms 解析)。
 
 ## API
 

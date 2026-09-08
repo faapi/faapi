@@ -20,7 +20,7 @@ Agent 类把这些「胶水」逻辑集中在一处,reactLoop 保持纯函数。
 
 - **Phase 3.5 集成**：faapi 核心 agent 注入器构造 `Agent` 实例（注入真实注册表/加载器访问器），包装为 `AgentHandle`（含可调用 `run` / `stream`）注入到 handler 的 `agent` 参数
 - **sub-agent 递归**：reactLoop 执行 `agent.<name>` tool 时,Agent 构造子 Agent（depth+1）并调其 `run`
-- **agent-as-tool**：父 agent 通过 `asTool()` 把自身包装为 `AgentToolDescriptor`,加入 LLM 可见 tool 列表
+- **agent-as-tool**：通过 `asTool(name)` 把指定 agent 包装为 `AgentToolDescriptor`,加入 LLM 可见 tool 列表
 
 ## 设计
 
@@ -28,7 +28,7 @@ Agent 类把这些「胶水」逻辑集中在一处,reactLoop 保持纯函数。
 
 | 类型 | 说明 |
 | --- | --- |
-| `AgentDeps` | Agent 运行时依赖（providers Map + 可选 defaultProvider + agentName + rootDir + config + 注册表/加载器访问器 + 可选 schema 解析器） |
+| `AgentDeps` | Agent 运行时依赖（providers Map + llms + rootDir + config + 注册表/加载器访问器 + 可选 schema 解析器；无默认 provider / 默认 agent 名——每次调用显式指定） |
 | `AgentRuntimeConfig` | 全局 agent 配置覆盖（maxTurns / maxAgentDepth / enableTracing） |
 | `ToolSchemaResolution` | tool schema 解析结果（jsonSchema 给 LLM + validate 给执行前校验） |
 | `AgentRecursionError` | sub-agent 递归超 `maxAgentDepth` 时抛出 |
@@ -62,13 +62,13 @@ class Agent {
   constructor(deps: AgentDeps, depth?: number);  // depth 默认 1（根 agent）
   async run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult>;
   async *stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
-  asTool(): AgentToolDescriptor | undefined;
+  asTool(name: string): AgentToolDescriptor | undefined;
 }
 ```
 
-- `run(input?, options?)` —— 组装 `ReactLoopConfig`（应用 `options` 覆盖）→ 调 `reactLoop(input, config)` → 填充 `result.trace.agentName = this.deps.agentName`（reactLoop 不知 agent 名）
+- `run(input?, options?)` —— 组装 `ReactLoopConfig`（应用 `options` 覆盖）→ 调 `reactLoop(input, config)` → 填充 `result.trace.agentName = options.agent`（reactLoop 不知 agent 名）
 - `stream(input?, options?)` —— 组装 config（应用 `options` 覆盖）→ 调 `reactLoopStream(input, config)`（流式 chunk 含 `traceEvent`,不含顶层 `AgentTrace`,无需事后填 agentName）
-- `asTool()` —— 把自身包装为 `AgentToolDescriptor`（`kind: 'agent'` / `name: 'agent.<name>'` / `metadata`）
+- `asTool(name)` —— 把指定 agent 包装为 `AgentToolDescriptor`（`kind: 'agent'` / `name: 'agent.<name>'` / `metadata`）;未注册返回 `undefined`
 
 `input` 可选（续跑场景不传新输入）：`input` 与 `options.messages` 都为空时抛 `AgentError`；
 `options.messages` 提供时以历史为基础 + system 自动补齐 + 非空 `input` 追加为 user 消息,
@@ -87,25 +87,27 @@ class Agent {
 
 `run` / `stream` 内部先组装 `ReactLoopConfig`：
 
-1. `getAgent(deps.agentName)` 取元数据,未注册抛 `AgentError`
+1. `options.agent` 取本次调用的 agent 名（不传抛 `AgentError`——无默认 agent）,`getAgent(agentName)` 取元数据,未注册抛 `AgentError`
 2. `buildToolDefinitions()`（async,因 schema 解析）组装 `LLMToolDefinition[]`
-3. config 字段优先级（高 → 低）：`options`（本次调用传入）> agent 元数据（`systemPrompt` / `model` / `maxTurns`）> 全局 `AgentRuntimeConfig` / `deps.defaultProvider`
+3. config 字段优先级（高 → 低）：`options`（本次调用传入）> agent 元数据（`systemPrompt` / `model` / `maxTurns`）> 全局 `AgentRuntimeConfig`
 
 | 字段 | options 覆盖 | agent 元数据 | 全局默认 |
 | --- | --- | --- | --- |
-| `provider` | `options.provider` 外部 provider（最高,跳过 llms 解析）/ `options.model` 解析出的 provider（key 含 provider 时） | — | `deps.defaultProvider`（`defaultLlm` 对应） |
-| `model` | `options.model`（外部 provider 时为原始 model 名原样透传）/ `options.model` 解析出的 model | `meta.model` | `defaultLlm` provider 的 models 第一个 |
+| `agentName` | `options.agent`（必须显式传） | — | — |
+| `provider` | `options.provider` 外部 provider（最高,跳过 llms 解析）/ `options.model` 解析出的 provider（key 含 provider 时） | — | —（无默认 provider,`meta.model` 作为缺省 key 解析） |
+| `model` | `options.model`（外部 provider 时为原始 model 名原样透传）/ `options.model` 解析出的 model | `meta.model`（未传 `options.model` 时作为缺省 key） | — |
 | `temperature` | `options.temperature` | — | `LlmConfig.temperature`（provider 级透传） |
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（provider 级透传） |
 | `maxTurns` | — | `meta.maxTurns` | `AgentRuntimeConfig.maxTurns` |
 | `enableTracing` | `options.enableTracing` | — | `AgentRuntimeConfig.enableTracing`（默认 `false`） |
 
 `options.model` 是字符串 key,解析规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
-不传 `options.model` 时用 `deps.defaultProvider` + agent 元数据 `config.model`（或该 provider 的 models 第一个）。
+未传 `options.model` 时用 agent 元数据 `config.model` 作为缺省 key 走同一套解析；
+两者皆无且未传 `options.provider` 时抛 `AgentError`（无默认 provider）。
 
 `options.provider` 传外部 provider（`LlmConfig` 配置对象或 `LLMProvider` 实例）时优先级最高——
 完全跳过 llms key 解析,`options.model` 变为原始 model 名原样透传（支持带 `/` 的 model id）。
-仅本次调用生效,sub-agent 递归不继承。详见 [agentHandle.md](./agentHandle.md) 的
+仅本次调用生效,sub-agent 递归继承父调用解析出的 provider。详见 [agentHandle.md](./agentHandle.md) 的
 「`options.provider` 外部 provider」章节。
 
 ### `buildToolDefinitions()` —— tool 列表组装
@@ -152,14 +154,14 @@ return await mod.handler(callArgs);
 - **tool 未找到 / 加载失败**：抛错,被 reactLoop catch 后同样回传 LLM
 - **`enableTracing` 参数**：由 [buildLoopConfig](#config-组装流程) 闭包捕获传入,用于 sub-agent 调用时决定是否包装 [TracingToolResult](./trace.md) 携带 sub-trace。常规 tool 不需要 tracing 包装,直接返回结果
 
-### `executeSubAgent(subName, args, enableTracing)` —— sub-agent 递归
+### `executeSubAgent(subName, args, resolved)` —— sub-agent 递归
 
 ```ts
 const newDepth = this.depth + 1;
 const maxDepth = deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
 if (newDepth > maxDepth) throw new AgentRecursionError(maxDepth, newDepth);
 
-const subAgent = new Agent({ ...deps, agentName: subName }, newDepth);
+const subAgent = new Agent(deps, newDepth);  // deps 共享（providers/llms/访问器）
 
 // 用 getAgentEntry 拿 AgentMetadata（含 filePath/hasRun）
 const entry = deps.getAgentEntry(subName);
@@ -168,10 +170,16 @@ if (entry?.hasRun) {
   if (mod.run) return await mod.run(args);  // 自定义 run,无 trace
 }
 
-// 默认 reactLoop:传递 enableTracing 让 sub-agent 采集 trace
+// 默认 reactLoop:继承父调用的 provider,sub 的 model 用其元数据声明（未声明沿用父 model）
+const subMeta = deps.getAgent(subName);
 const result = await subAgent.run(
   typeof args === 'string' ? args : JSON.stringify(args),
-  { enableTracing },
+  {
+    agent: subName,
+    enableTracing: resolved.enableTracing,
+    provider: resolved.provider,                        // 继承父 provider
+    model: subMeta?.model ?? resolved.model,            // sub 自身声明优先,否则沿用父 model
+  },
 );
 
 // enableTracing=true:包装 TracingToolResult,reactLoop 据此发出 subagent_call 事件
@@ -184,13 +192,13 @@ return result.content;  // enableTracing=false:直接返回,与常规 tool 一�
 - **`maxAgentDepth`**：默认 3。depth 从 1（根）开始,sub-agent 为 2、3...,超出抛 `AgentRecursionError`
 - **`getAgentEntry` vs `getAgent`**：加载 `handler.js` 必须用 `getAgentEntry`——`getAgent` 返回 `AgentCore`（无 `filePath` / `hasRun`）。两者都仅查文件 registry,不 fallback 到 skillRegistry（skill 与 agent 职责正交不耦合,skill 不参与 sub-agent 递归）。sub-agent 必须是文件型 agent,skill 不被 `agents` 列表自动引用
 - **自定义 run**：sub-agent handler 导出 `run` 时（`entry.hasRun=true`）,调用 `mod.run(args)` 跳过默认 reactLoop——业务方完全控制 sub-agent 逻辑,**无 trace**（业务方自己返回业务结果,不参与 reactLoop 的 tracing 采集）
-- **默认 reactLoop + tracing**：sub-agent 无 `run`（未注册或 `hasRun=false`）时,调 `subAgent.run(stringify(args), { enableTracing })`——agent-as-tool input 为开放式 JSON,stringify 后作为 user 消息喂给 sub-agent 的 LLM。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）被包装为 `TracingToolResult` 返回给 reactLoop,reactLoop 通过 `isTracingToolResult` 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`enableTracing=false` 时返回 `result.content`（与常规 tool 一致,零开销）
+- **默认 reactLoop + provider 继承**：sub-agent 无 `run`（未注册或 `hasRun=false`）时,调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。agent-as-tool input 为开放式 JSON,stringify 后作为 user 消息喂给 sub-agent 的 LLM。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）被包装为 `TracingToolResult` 返回给 reactLoop,reactLoop 通过 `isTracingToolResult` 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`enableTracing=false` 时返回 `result.content`（与常规 tool 一致,零开销）
 
 ### Tracing
 
 Agent 类是 [trace](./trace.md) 的「接线层」——reactLoop 只关心循环逻辑,不知道：
 
-- **agent 名**：`reactLoop` 返回的 `result.trace.agentName` 是空字符串。`Agent.run` 在 reactLoop 返回后填充 `result.trace.agentName = this.deps.agentName`（sub-agent 调本方法时也走此路径,subAgent.run 返回的 trace.agentName 自动是 subName）
+- **agent 名**：`reactLoop` 返回的 `result.trace.agentName` 是空字符串。`Agent.run` 在 reactLoop 返回后填充 `result.trace.agentName = options.agent`（sub-agent 调本方法时也走此路径,subAgent.run 返回的 trace.agentName 自动是 subName）
 - **常规 tool vs sub-agent**：reactLoop 只调 `executeTool(name, args, enableTracing)`,不区分。Agent 在 `executeSubAgent` 中根据 `enableTracing` 决定返回值——`true` 时返回 `TracingToolResult`（reactLoop 据此发 `subagent_call` 事件,嵌入 sub-trace）；`false` 时返回 `result.content`（reactLoop 发 `tool_call` 事件,零开销）
 
 #### 业务方使用示例
@@ -260,11 +268,11 @@ export async function POST(agent: AgentHandle, ctx, body: { input: string }) {
 | tool input 校验失败 | 返回 `{ error }` | 不抛错,作为 tool 结果回传 LLM 重试 |
 | LLM provider 抛错 | 透传 | reactLoop 不 catch,立即传播 |
 
-### `asTool()` —— agent 包装为 tool
+### `asTool(name)` —— agent 包装为 tool
 
 ```ts
-asTool(): AgentToolDescriptor | undefined {
-  const meta = deps.getAgent(deps.agentName);
+asTool(name: string): AgentToolDescriptor | undefined {
+  const meta = deps.getAgent(name);
   if (!meta) return undefined;
   return {
     kind: 'agent',
@@ -282,7 +290,7 @@ asTool(): AgentToolDescriptor | undefined {
 
 - [reactLoop](./reactLoop.md) —— Phase 3.3,Agent 的 `run`/`stream` 委托给它
 - [trace](./trace.md) —— Tracing 类型与文档（`AgentTrace` / `AgentTraceEvent` / `TracingToolResult`）,Agent 类是其「接线层」（填 agentName + 包装 sub-agent 返回值）
-- [provider](./provider.md) —— Phase 3.2,Agent 构造时持有 `providers` Map + `defaultProvider`（由 plugin 从 `config.agent.llms` 遍历调 `createProvider` 创建）
+- [provider](./provider.md) —— Phase 3.2,Agent 构造时持有 `providers` Map（由 plugin 从 `config.agent.llms` 遍历调 `createProvider` 创建）
 - faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) —— `AgentDeps` 访问器的真实实现来源（Phase 3.5 接线）
 - faapi 核心 [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— tool 元数据查询
 - faapi 核心 [loadAgentModule](../../faapi/src/loader/loadAgentModule.md) / [loadToolModule](../../faapi/src/loader/loadToolModule.md) —— 动态加载 handler

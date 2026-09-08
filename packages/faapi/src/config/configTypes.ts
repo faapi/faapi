@@ -127,8 +127,9 @@ export interface LlmModelConfig {
  * provider 级字段（`apiKey` / `baseURL`）共享给所有 model；
  * model 级字段在 `models[modelName]` 里覆盖 provider 级同名字段。
  *
- * `config.agent.llms` 的 key 是 provider 名（如 `'openai'` / `'anthropic'`），
- * `config.agent.defaultLlm` 指定默认 provider key（不传时用 `llms` 第一个 key）。
+ * `config.agent.llms` 的 key 是 provider 名（如 `'openai'` / `'anthropic'`）。
+ * 无全局默认 provider——每次 `agent.run/stream` 调用通过 `options.model`（llms key /
+ * `provider/model` / 纯 model 名）或 `options.provider`（外部 provider）显式指定。
  *
  * 由 Phase 3.2 的 `@faapi/agent` 插件读取，调 `createProvider` 创建实例存 Map。
  *
@@ -203,8 +204,11 @@ export interface LlmConfig {
 /**
  * agent 子系统全局配置（Phase 2.4，Phase 3.5 LLM 配置改为嵌套级联）
  *
- * 提供 agent 子系统的全局默认值，所有字段均可选，未设置时用框架默认值。
- * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置。
+ * 提供 agent 子系统的全局配置，所有字段均可选。
+ * 无全局默认 agent / 默认 provider——`agent.run/stream` 每次调用必须显式传
+ * `options.agent`（agent 名）和 `options.model` / `options.provider`（LLM 定位）；
+ * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置，其中 `config.model`
+ * 在调用未传 `options.model` 时作为缺省 key 参与 llms 解析。
  *
  * ```ts
  * import type { FaapiConfig } from '@faapi/faapi';
@@ -217,8 +221,6 @@ export interface LlmConfig {
  *         models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
  *       },
  *     },
- *     defaultLlm: 'openai',
- *     defaultAgent: 'researcher',
  *     maxTurns: 10,
  *     maxAgentDepth: 3,
  *   },
@@ -239,24 +241,6 @@ export interface AgentConfig {
    * `agent.run/stream` 需通过 `options.provider` 传入外部 provider 才能调用 LLM。
    */
   llms?: Record<string, LlmConfig>;
-  /**
-   * 默认 provider key（Phase 3.5）
-   *
-   * `agent.run` 不传 `options.model` 时用此 key 对应的 provider 实例。
-   * 未设置时用 `llms` 的第一个 key（`Object.keys(llms)[0]`）。
-   */
-  defaultLlm?: string;
-  /**
-   * 默认 agent 名，用于 `agent` 参数注入（[injectParams](../injection/injectParams.md) Phase 2.3）
-   *
-   * Phase 2.3 的 `agent` 参数注入暂返回 `undefined`，Phase 3.x 的 @faapi/agent 插件
-   * 读取此值从 [agentRegistry](../injection/agentRegistry.md) 查找对应 agent 元数据，
-   * 注入 `AgentHandle`（含可调用 `run`）。
-   *
-   * 可选——未设时 handler 需通过 `agent.run(input, { agent: 'name' })` 显式指定 agent 名，
-   * 否则 `agent.run` 抛 `AgentError`。
-   */
-  defaultAgent?: string;
   /**
    * 默认最大对话轮数（覆盖 agent 自身 `config.maxTurns`，agent 自身配置优先）
    *
@@ -495,9 +479,11 @@ export interface FaapiConfig {
   /**
    * agent 子系统全局配置（Phase 2.4）
    *
-   * 提供 agent 子系统的全局默认值：LLM 提供方、默认 agent、
-   * 最大对话轮数、agent 调用 agent 的最大递归深度。
+   * 提供 agent 子系统的全局配置：LLM 提供方、最大对话轮数、
+   * agent 调用 agent 的最大递归深度。
    *
+   * 无全局默认 agent / 默认 provider——`agent.run/stream` 每次调用显式传
+   * `options.agent` + `options.model` / `options.provider`。
    * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置。
    * tool 引用列表只在每个 agent 自身的 `config.tools` 里声明（无全局共享 defaultTools）。
    *
@@ -512,8 +498,6 @@ export interface FaapiConfig {
    *         models: { 'gpt-4o': {} },
    *       },
    *     },
-   *     defaultLlm: 'openai',
-   *     defaultAgent: 'researcher',
    *     maxTurns: 10,
    *     maxAgentDepth: 3,
    *   },

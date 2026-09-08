@@ -17,7 +17,7 @@ faapi 的核心设计是"函数即接口"。框架根据 handler 参数名自动
 | `ua` | ua | 客户端 User-Agent（请求头 `user-agent` 原值，createContext 内联读取） |
 | `files` | files | multipart 上传文件列表（UploadedFile[]） |
 | `fields` | fields | multipart 表单字段（Record<string, string>） |
-| `agent` | agent | 默认 agent 元数据（`config.defaultAgent` 对应的 `AgentCore`，由 `@faapi/agent` 插件工厂注入；未启用插件或未配置时为 `undefined`） |
+| `agent` | agent | `AgentHandle`（由 `@faapi/agent` 插件工厂注入；`run`/`stream` 需显式传 `options.agent`；未启用插件时为 `undefined`） |
 | `agents` | agents | 所有已注册**文件型 agent** 的 `AgentCore` 列表（`agentRegistry.listAgents()`；不合并 skillRegistry——skill 与 agent 物理隔离） |
 | 其他 | unknown | 不注入（由中间件 resolve 提供） |
 

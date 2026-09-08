@@ -4,7 +4,8 @@ import ts from 'typescript';
  * 参数注入类型
  *
  * Phase 2.3 扩展 `agent` / `agents`：
- * - `agent` —— 默认 agent 元数据（Phase 2.4 实现 `config.defaultAgent` 后注入值）
+ * - `agent` —— AgentHandle（由 `@faapi/agent` 插件工厂注入；调用时需显式传
+ *   `options.agent` 指定 agent 名,无默认 agent）
  * - `agents` —— 所有已注册 agent 的元数据列表（`agentRegistry.listAgents()`）
  */
 export type InjectionType =

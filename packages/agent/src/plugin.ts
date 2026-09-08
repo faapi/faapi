@@ -15,8 +15,6 @@
  *         models: { 'gpt-4o': {}, 'gpt-4o-mini': { temperature: 0.5 } },
  *       },
  *     },
- *     defaultLlm: 'openai',
- *     defaultAgent: 'researcher',
  *     maxTurns: 10,
  *   },
  *   plugins: ['@faapi/agent'],
@@ -25,19 +23,17 @@
  *
  * 插件 setup 时：
  * 1. 遍历 `config.agent.llms`（可选）→ 每项调 `createProvider` → `Map<providerKey, LLMProvider>`
- * 2. 读 `config.agent.defaultLlm` → `defaultProvider`（未设时用 `llms` 第一个 key;
- *    `llms` 未配置/未命中时为 `undefined`——外部 provider 模式,照常注册工厂）
- * 3. 读 `config.agent.defaultAgent`（可选） / `maxTurns` / `maxAgentDepth`
- * 4. 从 `@faapi/faapi` import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools /
+ * 2. 读 `config.agent.maxTurns` / `maxAgentDepth`
+ * 3. 从 `@faapi/faapi` import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools /
  *    resolveSubAgents / loadAgentModule / loadToolModule）
- * 5. `registerAgentHandleFactory` 注册工厂——每次请求时构造 [Agent](./agent.md) 实例注入到
+ * 4. `registerAgentHandleFactory` 注册工厂——每次请求时构造 [Agent](./agent.md) 实例注入到
  *    handler 的 `agent` 参数
+ *
+ * 无默认 agent / 默认 provider——`agent.run/stream` 每次调用显式传 `options.agent` +
+ * `options.model` / `options.provider`。
  *
  * `agent.llms` 可选——未配置时工厂照常注册（外部 provider 模式）,`agent.run/stream`
  * 需调用方传 `options.provider` 才能调用 LLM。只有插件未加载时 `agent` 参数才注入 `undefined`。
- *
- * `defaultAgent` 可选——未设时 handler 需通过 `agent.run(input, { agent: 'name' })`
- * 显式指定 agent 名。
  *
  * 详见 [plugin.md](./plugin.md)。
  */
@@ -114,20 +110,18 @@ const agentPlugin: FaapiPlugin = {
     const registries = ctx.registries;
     const agentConfig = readAgentConfig(ctx);
 
-    // llms 可选——未配置时进入「外部 provider 模式」：工厂照常注册（providers 为空 Map,
-    // 无默认 provider）,agent.run/stream 需调用方传 options.provider 才能调用 LLM
+    // llms 可选——未配置时进入「外部 provider 模式」：工厂照常注册（providers 为空 Map）,
+    // agent.run/stream 需调用方传 options.provider 才能调用 LLM
     const llms = agentConfig?.llms ?? {};
     if (Object.keys(llms).length === 0) {
       console.log(
-        '- @faapi/agent: no llms configured — use agent.run(input, { provider }) to pass an external provider per call',
+        '- @faapi/agent: no llms configured — use agent.run(input, { agent, provider }) to pass an external provider per call',
       );
     }
 
-    // defaultAgent 可选——未设时 handler 需通过 agent.run(input, { agent: 'name' }) 显式指定
-    const defaultAgent = agentConfig?.defaultAgent ?? '';
-
     // 创建 LLM provider 实例 Map（key 是 provider 名,来自 config.agent.llms）
     // 单例,所有请求共享;每个 provider 实例对应一个 LlmConfig
+    // 无默认 provider——每次 agent.run/stream 调用经 options.model / options.provider 显式解析
     const providers = new Map<string, LLMProvider>();
     for (const [name, llmConfig] of Object.entries(llms)) {
       // 空 apiKey 照常注册（部分网关/本地模型场景无需 key），但启动日志显性提示——
@@ -138,16 +132,6 @@ const agentPlugin: FaapiPlugin = {
         );
       }
       providers.set(name, createProvider(llmConfig));
-    }
-
-    // 默认 provider：config.agent.defaultLlm 优先,否则取 llms 第一个 key;
-    // llms 未配置 / defaultLlm 未命中时为 undefined（外部 provider 模式,照常注册）
-    const defaultLlm = agentConfig?.defaultLlm ?? Object.keys(llms)[0];
-    const defaultProvider = defaultLlm !== undefined ? providers.get(defaultLlm) : undefined;
-    if (defaultLlm !== undefined && !defaultProvider) {
-      console.warn(
-        `! @faapi/agent: config.agent.defaultLlm "${defaultLlm}" not found in llms — no default provider, use agent.run(input, { provider }) to pass an external provider per call`,
-      );
     }
 
     // 全局 agent 运行时配置覆盖
@@ -200,10 +184,7 @@ const agentPlugin: FaapiPlugin = {
     ctx.registries.agentHandle.register((ctx) => {
       return new Agent({
         providers,
-        defaultProvider,
         llms,
-        defaultLlm,
-        agentName: defaultAgent ?? '',
         rootDir,
         config: runtimeConfig,
         // ctx 传递链（authHooks）：捕获请求上下文,tool handler / sub-agent /
@@ -225,11 +206,9 @@ const agentPlugin: FaapiPlugin = {
     });
 
     console.log(
-      defaultProvider
-        ? defaultAgent
-          ? `- @faapi/agent: default agent "${defaultAgent}" (provider: ${defaultLlm}) available via agent parameter injection`
-          : `- @faapi/agent: no defaultAgent set — use agent.run(input, { agent: 'name' }) to specify agent (provider: ${defaultLlm})`
-        : '- @faapi/agent: no default provider — use agent.run(input, { provider }) to pass an external provider per call',
+      Object.keys(llms).length > 0
+        ? `- @faapi/agent: providers [${Object.keys(llms).join(', ')}] — call agent.run(input, { agent, model }) to execute (no default agent/provider)`
+        : '- @faapi/agent: no llms configured — use agent.run(input, { agent, provider }) to pass an external provider per call',
     );
   },
 };

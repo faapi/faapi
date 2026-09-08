@@ -17,7 +17,7 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  *
  * // src/api/chat/handler.ts
  * export function POST(agent: AgentHandle, body: { input: string }) {
- *   const result = await agent.run(body.input);
+ *   const result = await agent.run(body.input, { agent: 'researcher', model: 'gpt-4o' });
  *   return { content: result.content, turns: result.turns };
  * }
  * ```
@@ -25,15 +25,16 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  * 仅在 `@faapi/agent` 插件未加载时注入 `undefined`,handler 需自行处理。
  * `config.agent.llms` 未配置时工厂照常注册（外部 provider 模式）——
  * `agent.run/stream` 需调用方传 `options.provider` 才能调用 LLM。
+ * 无默认 agent——每次 `run` / `stream` 必须显式传 `options.agent`。
  *
  * 详见 [agentHandle.md](./agentHandle.md)。
  */
 
 /**
- * `agent.run` / `agent.stream` 的 options 参数——临时覆盖本次调用的 LLM 配置
+ * `agent.run` / `agent.stream` 的 options 参数——本次调用的 LLM 配置
  *
- * 所有字段可选,不传或 `undefined` 时回落到下一优先级（agent 元数据 → 全局配置）。
- * **不修改 agent 自身状态**——下一次调用仍用默认配置。
+ * `agent` 必须显式传（无默认 agent）；其余字段可选,不传或 `undefined` 时回落到
+ * 下一优先级（agent 元数据 → 全局配置）。**不修改 agent 自身状态**。
  *
  * `model` 是字符串 key,支持三种形式（解析规则见 [agentHandle.md](./agentHandle.md) 的
  * 「`options.model` 字符串 key 解析规则」）：
@@ -41,23 +42,20 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  * - `provider/model` 一体化（如 `'openai/gpt-4o'`）
  * - 纯 model 名（如 `'gpt-4o'`）—— 在所有 provider 的 `models` 里查找,唯一时切到对应 provider
  *
+ * 不传 `model` 时用 agent 元数据 `config.model` 作为缺省 key 参与同一套解析。
  * 优先级（高 → 低）：`options` > agent 元数据（`config.model` / `config.maxTurns`）> 全局
- * `AgentRuntimeConfig` / `defaultLlm` provider。详见 [agentHandle.md](./agentHandle.md) 的
- * Run-level 覆盖优先级表。
- *
- * `agent` 字段覆盖本次调用的 agent 名（不传时用 `config.agent.defaultAgent`，
- * 未设 defaultAgent 时必须显式传入）。
+ * `AgentRuntimeConfig`。详见 [agentHandle.md](./agentHandle.md) 的 Run-level 覆盖优先级表。
  *
  * @example
  * ```ts
+ * // 指定 agent（必须——无默认 agent）
+ * await agent.run(input, { agent: 'researcher' });
+ *
  * // 按请求切模型（纯 model 名,在 llms 里唯一时切到对应 provider）
- * await agent.run(input, { model: 'gpt-4o-mini' });
+ * await agent.run(input, { agent: 'researcher', model: 'gpt-4o-mini' });
  *
  * // provider/model 一体化形式（精确切换）
- * await agent.run(input, { model: 'anthropic/claude-3-5-sonnet' });
- *
- * // 指定 agent（不依赖 defaultAgent 配置）
- * await agent.run(input, { agent: 'researcher' });
+ * await agent.run(input, { agent: 'researcher', model: 'anthropic/claude-3-5-sonnet' });
  * ```
  */
 export interface AgentRunOptions {
@@ -69,16 +67,17 @@ export interface AgentRunOptions {
    */
   signal?: AbortSignal;
   /**
-   * 覆盖本次调用的 agent 名（从 agentRegistry 查找对应元数据 / tools / sub-agents）
+   * 本次调用的 agent 名（必须显式传——config.agent 无 defaultAgent 默认值）
    *
-   * 不传时用 `config.agent.defaultAgent`。`defaultAgent` 未设时必须显式传入，
-   * 否则抛 `AgentError`。
+   * 从 agentRegistry 查找对应元数据 / tools / sub-agents。
+   * 不传抛 `AgentError`。
    */
   agent?: string;
   /**
    * 切换 provider + model 的字符串 key（支持 llms key / `provider/model` / 纯 model 名）
    *
-   * 不传时用 `defaultLlm` provider + agent 元数据 `config.model`。
+   * 不传时用 agent 元数据 `config.model` 作为缺省 key 参与解析；
+   * 两者皆无且未传 `provider` 时抛 `AgentError`（无默认 provider）。
    * `provider` 字段存在时本字段变为「原始 model 名」原样透传给外部 provider
    * （不做 llms key 解析,支持带 / 的 model id），详见 {@link AgentRunOptions.provider}。
    */
@@ -98,8 +97,9 @@ export interface AgentRunOptions {
    * LlmConfig 形式下 `options.model` 缺省时回落该 config 的 `models` 第一个 key,
    * 两者皆无抛 `AgentError`；LLMProvider 实例形式下可为 `undefined`（自定义 provider 自决）。
    *
-   * 仅影响本次调用——不进 providers Map、不修改 agent 状态,**sub-agent 递归不继承**
-   * （sub-agent 仍走默认解析链路）,下一次调用仍用默认配置。
+   * 仅影响本次调用——不进 providers Map、不修改 agent 状态。
+   * **sub-agent 递归继承父调用解析出的 provider**（sub 的 model 用其元数据声明的
+   * `config.model`,未声明时沿用父 model）,不继承 options 对象本身。
    */
   provider?: LlmConfig | LLMProvider;
   /** 采样温度（透传给 LLM API,覆盖 provider/model 级 temperature） */
@@ -168,12 +168,13 @@ export interface AgentHandle {
   stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk>;
 
   /**
-   * 把自身包装为 `AgentToolDescriptor` 供 LLM 当 tool 调用
+   * 把指定 agent 包装为 `AgentToolDescriptor` 供 LLM 当 tool 调用
    *
-   * 用于 agent-as-tool 场景：父 agent 把子 agent 包装为 tool,
+   * 用于 agent-as-tool 场景：把 agent 包装为 tool,
    * 加入 LLM 可见 tool 列表,LLM 调用时触发 sub-agent 递归执行。
    *
+   * @param name agent 名（显式指定——无默认 agent）
    * @returns `AgentToolDescriptor` 或 `undefined`（agent 未注册）
    */
-  asTool(): AgentToolDescriptor | undefined;
+  asTool(name: string): AgentToolDescriptor | undefined;
 }

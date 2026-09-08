@@ -3,6 +3,7 @@
  *
  * agent 参数由 @faapi/agent 插件注入（e2e 测试中手动注册工厂）。
  * 工厂未注册时 agent 为 undefined，返回 503。
+ * agent 名与 model 在调用时显式传入（无 defaultAgent/defaultLlm 全局默认）。
  */
 import type { AgentHandle } from '@faapi/agent';
 
@@ -18,7 +19,7 @@ export async function POST(agent: AgentHandle | undefined, body: ChatBody) {
       headers: { 'content-type': 'application/json' },
     });
   }
-  const result = await agent.run(body.input);
+  const result = await agent.run(body.input, { agent: 'researcher', model: 'gpt-4o' });
   return {
     content: result.content,
     turns: result.turns,

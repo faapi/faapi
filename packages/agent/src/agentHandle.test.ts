@@ -22,7 +22,7 @@ function _assertAgentIsAgentHandle(agent: Agent): AgentHandle {
 function _assertMethodSignatures(handle: AgentHandle): {
   run: (input: string, options?: AgentRunOptions) => Promise<unknown>;
   stream: (input: string, options?: AgentRunOptions) => AsyncIterable<unknown>;
-  asTool: () => unknown;
+  asTool: (name: string) => unknown;
 } {
   return {
     run: handle.run,
@@ -63,15 +63,10 @@ function defaultLlms(): Record<string, LlmConfig> {
 
 /** 构造完整 AgentDeps（mock 版）
  *
- * @param overrideProvider 可选,覆盖默认 provider 实例（用于多 provider 测试）
- * @param overrideLlms 可选,覆盖默认 llms 配置
- * @param overrideDefaultLlm 可选,覆盖默认 defaultLlm key
+ * @param opts.provider 可选,覆盖默认 provider 实例（用于多 provider 测试）
+ * @param opts.llms 可选,覆盖默认 llms 配置
  */
-function mockDeps(opts?: {
-  provider?: LLMProvider;
-  llms?: Record<string, LlmConfig>;
-  defaultLlm?: string;
-}): AgentDeps {
+function mockDeps(opts?: { provider?: LLMProvider; llms?: Record<string, LlmConfig> }): AgentDeps {
   // getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath/hasRun）
   const agentCore: AgentCore = {
     name: 'researcher',
@@ -83,16 +78,11 @@ function mockDeps(opts?: {
     filePath: 'dist/agents/researcher/handler.js',
     hasRun: false,
   };
-  const provider = opts?.provider ?? mockProvider();
   const llms = opts?.llms ?? defaultLlms();
-  const defaultLlm = opts?.defaultLlm ?? 'openai';
-  const providers = new Map<string, LLMProvider>([[defaultLlm, provider]]);
+  const providers = new Map<string, LLMProvider>([['openai', opts?.provider ?? mockProvider()]]);
   return {
     providers,
-    defaultProvider: provider,
     llms,
-    defaultLlm,
-    agentName: 'researcher',
     rootDir: '/project',
     getAgent: (name) => (name === 'researcher' ? agentCore : undefined),
     getAgentEntry: (name) => (name === 'researcher' ? agentEntryMeta : undefined),
@@ -123,17 +113,24 @@ describe('AgentHandle', () => {
   describe('run()', () => {
     it('返回 ReactLoopResult（content + turns + stopReason）', async () => {
       const handle: AgentHandle = new Agent(mockDeps());
-      const result = await handle.run('hello');
+      const result = await handle.run('hello', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('done');
       expect(result.turns).toBe(1);
       expect(result.stopReason).toBe('stop');
+    });
+
+    it('不传 options.agent 时抛 AgentError（无默认 agent）', async () => {
+      const handle: AgentHandle = new Agent(mockDeps());
+      await expect(handle.run('hello', { model: 'gpt-4o' })).rejects.toThrow(/options\.agent/);
     });
 
     it('agent 未注册时抛 AgentError', async () => {
       const deps = mockDeps();
       deps.getAgent = () => undefined;
       const handle: AgentHandle = new Agent(deps);
-      await expect(handle.run('hello')).rejects.toThrow('Agent "researcher" is not registered');
+      await expect(handle.run('hello', { agent: 'researcher' })).rejects.toThrow(
+        'Agent "researcher" is not registered',
+      );
     });
 
     it('options.model / temperature / maxTokens 透传给 provider', async () => {
@@ -154,7 +151,12 @@ describe('AgentHandle', () => {
       const deps = mockDeps({ provider: recordingProvider });
       const handle: AgentHandle = new Agent(deps);
 
-      await handle.run('hello', { model: 'gpt-4o-mini', temperature: 0.2, maxTokens: 100 });
+      await handle.run('hello', {
+        agent: 'researcher',
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        maxTokens: 100,
+      });
 
       expect(recorded).toHaveLength(1);
       expect(recorded[0].model).toBe('gpt-4o-mini');
@@ -203,14 +205,13 @@ describe('AgentHandle', () => {
       const deps = mockDeps({
         provider: defaultProvider,
         llms,
-        defaultLlm: 'openai',
       });
-      // 手动覆盖 providers Map（mockDeps 只放 defaultLlm 一个,这里需要两个）
+      // 手动覆盖 providers Map（mockDeps 只放 openai 一个,这里需要两个）
       deps.providers = providers;
       const handle: AgentHandle = new Agent(deps);
 
       // model='anthropic' 精确匹配 llms key → 切到 anthropic provider
-      const result = await handle.run('hello', { model: 'anthropic' });
+      const result = await handle.run('hello', { agent: 'researcher', model: 'anthropic' });
 
       expect(result.content).toBe('override');
       expect(overrideCalled).toBe(1);
@@ -222,7 +223,10 @@ describe('AgentHandle', () => {
     it('yield ReactLoopStreamChunk（delta + done）', async () => {
       const handle: AgentHandle = new Agent(mockDeps());
       const chunks: { deltaContent?: string; done?: { content: string } }[] = [];
-      for await (const chunk of handle.stream('hello')) {
+      for await (const chunk of handle.stream('hello', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+      })) {
         chunks.push(chunk);
       }
       expect(chunks.length).toBeGreaterThanOrEqual(1);
@@ -234,7 +238,7 @@ describe('AgentHandle', () => {
   describe('asTool()', () => {
     it('返回 AgentToolDescriptor（name = agent.<agentName>）', () => {
       const handle: AgentHandle = new Agent(mockDeps());
-      const tool = handle.asTool();
+      const tool = handle.asTool('researcher');
       expect(tool).toBeDefined();
       expect(tool?.kind).toBe('agent');
       expect(tool?.name).toBe('agent.researcher');
@@ -246,7 +250,7 @@ describe('AgentHandle', () => {
       const deps = mockDeps();
       deps.getAgent = () => undefined;
       const handle: AgentHandle = new Agent(deps);
-      expect(handle.asTool()).toBeUndefined();
+      expect(handle.asTool('researcher')).toBeUndefined();
     });
   });
 });
