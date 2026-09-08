@@ -1,6 +1,6 @@
 {
   "name": "@faapi/faapi",
-  "version": "4.5.0",
+  "version": "5.0.1",
   "description": "函数即接口 - Function as API",
   "type": "module",
   "main": "./src/index.ts",

@@ -1,5 +1,11 @@
 # @faapi/faapi
 
+## 5.0.1
+
+### Patch Changes
+
+- 版本线修复：此前 5.0.0 被误发布到 npm（其中 `@faapi/faapi` 与 `@faapi/mcp` 因依赖关系无法 unpublish，该版本号已作废不可复用），版本线跳过 5.0.0 对齐到 5.0.1。本版本功能内容与 4.5.0 完全一致（含移除 `config.agent` 的 `defaultAgent` / `defaultLlm` 配置——`agent.run/stream` 改为每次调用显式传 `options.agent` 与 `options.model` / `options.provider`）。
+
 ## 4.5.0
 
 ### Minor Changes
