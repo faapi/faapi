@@ -93,13 +93,13 @@ export function config() {
 
 | 字段 | 期望类型 | 提取值 | 示例 |
 |------|---------|--------|------|
-| `systemPrompt` | `StringLiteral` / `NoSubstitutionTemplateLiteral` | `string` | `'You are a researcher'`、`` `You are a researcher` `` |
-| `tools` | `ArrayLiteralExpression` 全 `StringLiteral`/`NoSubstitutionTemplateLiteral` | `string[]` | `['weather.getWeather']` |
-| `agents` | `ArrayLiteralExpression` 全 `StringLiteral`/`NoSubstitutionTemplateLiteral` | `string[]` | `['coder']` |
-| `model` | `StringLiteral` / `NoSubstitutionTemplateLiteral` | `string` | `'gpt-4'` |
+| `systemPrompt` | `StringLiteral` / `NoSubstitutionTemplateLiteral` / 其 `+` 拼接 | `string` | `'You are a researcher'`、`` `You are a researcher` ``、`'You are' + ' a researcher'` |
+| `tools` | `ArrayLiteralExpression` 全元素为字符串字面量 / 无插值模板字符串 / 其 `+` 拼接 | `string[]` | `['weather.getWeather']`、`['weather' + '.getWeather']` |
+| `agents` | `ArrayLiteralExpression` 全元素为字符串字面量 / 无插值模板字符串 / 其 `+` 拼接 | `string[]` | `['coder']` |
+| `model` | `StringLiteral` / `NoSubstitutionTemplateLiteral` / 其 `+` 拼接 | `string` | `'gpt-4'`、`'gpt' + '-4'` |
 | `maxTurns` | `NumericLiteral` | `number` | `10` |
 
-无插值模板字符串(`NoSubstitutionTemplateLiteral`)语义等价于字符串字面量(多行分析人设的常见写法)，与 `StringLiteral` 同等提取；含插值的模板字符串(`TemplateExpression`)无法静态求值。
+无插值模板字符串(`NoSubstitutionTemplateLiteral`)语义等价于字符串字面量(多行分析人设的常见写法)，与 `StringLiteral` 同等提取。此外，字符串字面量之间用 `+` 拼接的多行写法(`'a' +\n 'b' + 'c'`)静态可求值，同样接受——拼接两侧递归求值，链式拼接按左结合自然展开，求值结果与 JS 运行时语义一致。拼接中混入无法静态求值为字符串的操作数(变量引用、含插值模板字符串、数字等)或使用非 `+` 运算符，仍视为提取失败抛错。
 
 ### 声明但提取失败 / systemPrompt 缺失 → 构建期报错
 
@@ -109,7 +109,7 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 |------|------|
 | `systemPrompt` 未声明(无 config 导出、config 无 return 对象、config 里没有该 key) | 抛 `SchemaExtractionError`——**agent 不能没有提示词**，人设是 agent 的必要组成 |
 | 其他字段(tools/agents/model/maxTurns)未声明 | `undefined`，合法缺省，运行时按默认值处理 |
-| 任意字段声明了但值提取失败(变量引用、含插值模板字符串、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
+| 任意字段声明了但值提取失败(变量引用、含插值模板字符串、拼接混入数字/变量、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
 | config 里声明了未知字段(如拼写错误 `maxTurn`) | 抛 `SchemaExtractionError`——框架不读的字段几乎必然是拼写错误或误解，静默忽略后运行时按默认值跑，与声明意图不符 |
 | config 用了不支持的属性形式(computed 名、shorthand、方法) | 抛 `SchemaExtractionError` |
 | 声明了 `config` 但形式不支持(`export const config = someVar`、函数/箭头函数无 return 对象字面量) | 抛 `SchemaExtractionError`，提示支持的导出形式 |
@@ -160,7 +160,7 @@ function extractAgentMetadata(
 
 - **config 查找**支持两种导出形式：`export const config = {...}`(对象字面量)和 `export function config() { return {...} }`(函数返回对象)
 - **JSDoc 查找**对箭头函数/函数表达式自动回溯到外层 `VariableStatement`(与 [extractToolMetadata](./extractToolMetadata.md) 同构)
-- **config 块字段提取**仅处理字面量值——无插值模板字符串与字符串字面量同等提取；声明了字段但值提取失败(变量引用/含插值模板字符串/混合数组元素等)抛 `SchemaExtractionError`，不静默降级
+- **config 块字段提取**仅处理字面量值——无插值模板字符串与字符串字面量同等提取，静态可求值的 `+` 字符串拼接同样接受(含数组元素)；声明了字段但值提取失败(变量引用/含插值模板字符串/拼接混入数字/混合数组元素等)抛 `SchemaExtractionError`，不静默降级
 - **systemPrompt 必填**——文件型 agent 未声明(无 config/config 无 return 对象/config 缺该 key)抛 `SchemaExtractionError`，提示词是 agent 的必要组成
 - **无 try/catch**——AST 异常向上传播，依赖调用方处理
 - **不调用 `extractTypeInfo`**——agent 无输入参数 schema(tool 有，agent 无——agent 输入是自由文本 prompt，由 reactLoop 传递给 LLM)

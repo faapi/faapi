@@ -28,9 +28,9 @@ export interface AgentCore {
   description?: string;
   /** 系统提示词(config 块字面量提取);文件型 agent 必填(构建期校验),DB skill 由业务方自治 */
   systemPrompt?: string;
-  /** agent 显式声明可用的 tool 引用列表(config 块字面量提取),未声明时为 `undefined`;声明了但含非字面量元素在构建期抛错 */
+  /** agent 显式声明可用的 tool 引用列表(config 块字面量提取),未声明时为 `undefined`;声明了但含无法静态求值的元素在构建期抛错 */
   tools?: string[];
-  /** 可调用的其他 agent 名列表(config 块字面量提取),未声明时为 `undefined`;声明了但含非字面量元素在构建期抛错 */
+  /** 可调用的其他 agent 名列表(config 块字面量提取),未声明时为 `undefined`;声明了但含无法静态求值的元素在构建期抛错 */
   agents?: string[];
   /** LLM 模型名(config 块字面量提取),未声明时为 `undefined`;声明了但非字面量在构建期抛错 */
   model?: string;
@@ -106,8 +106,9 @@ interface FoundConfig {
  * (JSDoc 通常写在 `export const` 上方，而非箭头函数本身)。
  * 与 [extractToolMetadata](./extractToolMetadata.md) 的 JSDoc 查找同构。
  *
- * config 块字段提取仅接受字面量值——字符串字面量与无插值模板字符串同等提取；
- * 声明了字段但值提取失败(变量引用/含插值模板字符串/混合数组元素等)抛 `SchemaExtractionError`。
+ * config 块字段提取仅接受静态可求值的字符串值——字符串字面量、无插值模板字符串及
+ * 其 `+` 拼接同等提取；声明了字段但值提取失败(变量引用/含插值模板字符串/拼接混入
+ * 数字/混合数组元素等)抛 `SchemaExtractionError`。
  * `systemPrompt` 必填——无 config 导出、config 无 return 对象、config 缺该 key 均抛错，
  * 提示词是 agent 的必要组成。
  *
@@ -131,7 +132,7 @@ export function extractAgentMetadata(
     throw SchemaExtractionError.at(
       sourceFile,
       'config.systemPrompt',
-      'agent 必填——请在 config 块声明系统提示词（字符串字面量或无插值模板字符串）',
+      'agent 必填——请在 config 块声明系统提示词（字符串字面量、无插值模板字符串或其 + 拼接）',
       sourceFile,
     );
   }
@@ -257,10 +258,10 @@ function getReturnObjectLiteral(
 /**
  * 从 config 对象字面量提取 config 块字段
  *
- * 遍历对象属性，按属性名匹配提取对应字段。仅接受字面量值——
- * 字符串字面量与无插值模板字符串(`NoSubstitutionTemplateLiteral`)同等提取；
- * **声明了字段但值提取失败**(变量引用/含插值模板字符串/混合数组元素等)
- * 抛 `SchemaExtractionError`——静默降级为 `undefined` 后，运行时与
+ * 遍历对象属性，按属性名匹配提取对应字段。仅接受静态可求值的字符串值——
+ * 字符串字面量、无插值模板字符串(`NoSubstitutionTemplateLiteral`)及其 `+` 拼接
+ * 同等提取；**声明了字段但值提取失败**(变量引用/含插值模板字符串/拼接混入数字/
+ * 混合数组元素等)抛 `SchemaExtractionError`——静默降级为 `undefined` 后，运行时与
  * "合法地未声明该字段"不可区分，只能在构建期拦截。
  *
  * 属性名匹配支持 Identifier 和 StringLiteral 两种形式：
@@ -345,7 +346,7 @@ function extractConfigFields(
     throw SchemaExtractionError.at(
       objLit,
       'config.systemPrompt',
-      'agent 必填——请在 config 块声明系统提示词（字符串字面量或无插值模板字符串）',
+      'agent 必填——请在 config 块声明系统提示词（字符串字面量、无插值模板字符串或其 + 拼接）',
       sourceFile,
     );
   }
@@ -369,14 +370,24 @@ function getPropertyName(name: ts.PropertyName): string | null {
 }
 
 /**
- * 从表达式提取字符串值（StringLiteral / NoSubstitutionTemplateLiteral）
+ * 从表达式提取字符串值（StringLiteral / NoSubstitutionTemplateLiteral / 其 + 拼接）
  *
  * - `'hello'` / `"hello"` → `'hello'`
  * - `` `hello` `` → `'hello'`（无插值模板字符串语义等价字符串字面量，多行人设的常见写法）
- * - 含插值模板字符串 / 变量引用 / 数字 → `undefined`
+ * - `'a' + 'b'`（含链式 `'a' + 'b' + 'c'`，左结合递归展开）→ `'abc'`——纯字面量拼接
+ *   静态可求值，多行提示词的常见写法
+ * - 含插值模板字符串 / 变量引用 / 数字（`'a' + 1`）/ 非 `+` 运算符 → `undefined`
  */
 function extractStringValue(expr: ts.Expression): string | undefined {
   if (isStringLikeLiteral(expr)) return expr.text;
+  // 字符串字面量的 + 拼接：两侧递归求值，任一侧不可求值即整体失败
+  if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = extractStringValue(expr.left);
+    if (left === undefined) return undefined;
+    const right = extractStringValue(expr.right);
+    if (right === undefined) return undefined;
+    return left + right;
+  }
   return undefined;
 }
 
@@ -396,7 +407,7 @@ function requireStringValue(
     throw SchemaExtractionError.at(
       prop.initializer,
       `config.${fieldName}`,
-      '仅支持字符串字面量或无插值模板字符串（含插值的模板字符串/变量引用无法静态求值）',
+      '仅支持字符串字面量、无插值模板字符串或其 + 拼接（含插值的模板字符串/变量引用/数字无法静态求值为字符串）',
       sourceFile,
     );
   }
@@ -418,7 +429,7 @@ function requireStringArrayValue(
     throw SchemaExtractionError.at(
       prop.initializer,
       `config.${fieldName}`,
-      '仅支持全字符串字面量数组（元素为字符串字面量或无插值模板字符串）',
+      '仅支持全字符串字面量数组（元素为字符串字面量、无插值模板字符串或其 + 拼接）',
       sourceFile,
     );
   }
@@ -471,11 +482,12 @@ function isStringLikeLiteral(
 }
 
 /**
- * 从表达式提取字符串数组（ArrayLiteralExpression，全字符串字面量元素）
+ * 从表达式提取字符串数组（ArrayLiteralExpression，全元素静态可求值为字符串）
  *
  * - `['a', 'b']` → `['a', 'b']`
  * - `` [`a`, `b`] `` → `['a', 'b']`（无插值模板字符串元素）
- * - `['a', someVar]` → `undefined`（含非字符串字面量元素）
+ * - `['a' + 'b', 'c']` → `['ab', 'c']`（元素支持字面量拼接）
+ * - `['a', someVar]` → `undefined`（含无法静态求值的元素）
  * - `[]` → `[]`（空数组）
  * - 非数组 → `undefined`
  */
@@ -483,8 +495,9 @@ function extractStringArrayValue(expr: ts.Expression): string[] | undefined {
   if (!ts.isArrayLiteralExpression(expr)) return undefined;
   const values: string[] = [];
   for (const element of expr.elements) {
-    if (!isStringLikeLiteral(element)) return undefined;
-    values.push(element.text);
+    const value = extractStringValue(element);
+    if (value === undefined) return undefined;
+    values.push(value);
   }
   return values;
 }

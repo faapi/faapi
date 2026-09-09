@@ -390,6 +390,87 @@ describe('extractAgentMetadata', () => {
     });
   });
 
+  describe('字符串拼接静态求值（字面量 + 拼接）', () => {
+    it('两段字符串字面量拼接 → 求值合并', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'You are' + ' a researcher' };\n`,
+      );
+      expect(result!.systemPrompt).toBe('You are a researcher');
+    });
+
+    it('多段链式拼接（多行写法）→ 全部合并', () => {
+      const result = extract(
+        `export const config = {
+          systemPrompt: 'You are a researcher.' +
+            ' Search the web.' +
+            ' Summarize findings.',
+        };\n`,
+      );
+      expect(result!.systemPrompt).toBe(
+        'You are a researcher. Search the web. Summarize findings.',
+      );
+    });
+
+    it('字面量与无插值模板字符串混合拼接 → 求值合并', () => {
+      const result = extract("export const config = { systemPrompt: `line1\n` + 'line2' };\n");
+      expect(result!.systemPrompt).toBe('line1\nline2');
+    });
+
+    it('model 支持字面量拼接', () => {
+      const result = extract(`export const config = { systemPrompt: 'x', model: 'gpt' + '-4' };\n`);
+      expect(result!.model).toBe('gpt-4');
+    });
+
+    it('tools 数组元素支持字面量拼接', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x', tools: ['weather' + '.getWeather', 'search'] };\n`,
+      );
+      expect(result!.tools).toEqual(['weather.getWeather', 'search']);
+    });
+
+    it('拼接含变量引用 → 抛错', () => {
+      expect(() =>
+        extract(`const part = 'x';\nexport const config = { systemPrompt: 'a' + part };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('拼接含插值模板字符串 → 抛错', () => {
+      expect(() =>
+        extract("const n = 'x';\nexport const config = { systemPrompt: 'a' + `b${n}` };\n"),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('拼接混入数字字面量 → 抛错（仅字符串拼接）', () => {
+      expect(() => extract(`export const config = { systemPrompt: 'a' + 1 };\n`)).toThrow(
+        SchemaExtractionError,
+      );
+    });
+
+    it('非加号运算符 → 抛错', () => {
+      expect(() => extract(`export const config = { systemPrompt: 'a' - 'b' };\n`)).toThrow(
+        SchemaExtractionError,
+      );
+    });
+
+    it('数组元素拼接混入变量 → 抛错', () => {
+      expect(() =>
+        extract(`const t = 'a';\nexport const config = { systemPrompt: 'x', tools: ['b' + t] };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('抛错信息说明支持拼接', () => {
+      try {
+        extract(`export const config = { systemPrompt: 'a' + 1 };\n`);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(SchemaExtractionError);
+        expect((err as Error).message).toContain('config.systemPrompt');
+        expect((err as Error).message).toContain('拼接');
+        expect((err as Error).message).toContain('模板字符串');
+      }
+    });
+  });
+
   describe('透传字段', () => {
     it('filePath / hasRun 从 pathMeta 透传', () => {
       const result = extract(`export const config = { systemPrompt: 'x' };\n`, {
