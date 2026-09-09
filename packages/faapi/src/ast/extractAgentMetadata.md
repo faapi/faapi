@@ -101,20 +101,23 @@ export function config() {
 
 无插值模板字符串(`NoSubstitutionTemplateLiteral`)语义等价于字符串字面量(多行分析人设的常见写法)，与 `StringLiteral` 同等提取；含插值的模板字符串(`TemplateExpression`)无法静态求值。
 
-### 声明但提取失败 → 构建期报错
+### 声明但提取失败 / systemPrompt 缺失 → 构建期报错
 
 config 字段缺失与提取失败是两种语义，处理方式不同：
 
 | 场景 | 行为 |
 |------|------|
-| 字段未声明(`config` 里没有该 key) | `undefined`，合法缺省，运行时按默认值处理 |
-| 字段声明了但值提取失败(变量引用、含插值模板字符串、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
+| `systemPrompt` 未声明(无 config 导出、config 无 return 对象、config 里没有该 key) | 抛 `SchemaExtractionError`——**agent 不能没有提示词**，人设是 agent 的必要组成 |
+| 其他字段(tools/agents/model/maxTurns)未声明 | `undefined`，合法缺省，运行时按默认值处理 |
+| 任意字段声明了但值提取失败(变量引用、含插值模板字符串、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
 
 理由："声明了却提取不出"是确定的构建错误——静默降级为 `undefined` 后，运行时与"合法地无人设"不可区分(`reactLoop` 对 `undefined` systemPrompt 是正常路径)，agent 人设整体失效且端到端无任何告警。与 schema 类型提取的原则一致(AST 暂不支持的语法直接抛错，不降级)。
 
-`SpreadAssignment`(`...other`)跳过不报错——它不声明任何具名字段，无法静态归属。
+`systemPrompt` 进一步收紧为**必填**：提示词定义 agent 人设与输出格式约定，无提示词的 agent 不是合法的文件型 agent(JSDoc `description` 只是 LLM 可见的用途说明，不构成提示词)。约束加在文件型 agent 的构建期——DB-driven skill 不经过此链路，`AgentCore.systemPrompt` 类型保持可选，由业务方 plugin 自治。
 
-字段全部可选——未声明的字段为 `undefined`，运行时按默认值处理(如 `maxTurns` 默认 10、`model` 缺省时由调用方 `agent.run(input, { model })` 显式指定或作为缺省 key 参与 llms 解析)。
+`SpreadAssignment`(`...other`)跳过不报错——它不声明任何具名字段，无法静态归属；但 spread 提供不了 `systemPrompt` 时同样触发缺失报错。
+
+除 `systemPrompt` 外的字段全部可选——未声明的字段为 `undefined`，运行时按默认值处理(如 `maxTurns` 默认 10、`model` 缺省时由调用方 `agent.run(input, { model })` 显式指定或作为缺省 key 参与 llms 解析)。
 
 ## API
 
@@ -122,8 +125,8 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 // LLM 可见核心字段(文件型 agent 与 DB-driven skill 都实现)
 interface AgentCore {
   name: string;              // @agent 覆盖值 或 pathMeta.name
-  description?: string;      // JSDoc 描述
-  systemPrompt?: string;     // config 块字面量提取
+  description?: string;      // JSDoc 描述(用途说明,不构成提示词)
+  systemPrompt?: string;     // 系统提示词;文件型 agent 必填(构建期校验),DB skill 由业务方自治
   tools?: string[];          // agent 显式声明可用 tool 引用列表
   agents?: string[];         // 可调用的其他 agent 名
   model?: string;            // LLM 模型名
@@ -155,6 +158,7 @@ function extractAgentMetadata(
 - **config 查找**支持两种导出形式：`export const config = {...}`(对象字面量)和 `export function config() { return {...} }`(函数返回对象)
 - **JSDoc 查找**对箭头函数/函数表达式自动回溯到外层 `VariableStatement`(与 [extractToolMetadata](./extractToolMetadata.md) 同构)
 - **config 块字段提取**仅处理字面量值——无插值模板字符串与字符串字面量同等提取；声明了字段但值提取失败(变量引用/含插值模板字符串/混合数组元素等)抛 `SchemaExtractionError`，不静默降级
+- **systemPrompt 必填**——文件型 agent 未声明(无 config/config 无 return 对象/config 缺该 key)抛 `SchemaExtractionError`，提示词是 agent 的必要组成
 - **无 try/catch**——AST 异常向上传播，依赖调用方处理
 - **不调用 `extractTypeInfo`**——agent 无输入参数 schema(tool 有，agent 无——agent 输入是自由文本 prompt，由 reactLoop 传递给 LLM)
 

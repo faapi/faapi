@@ -322,7 +322,7 @@ export const config = {
       expect(content).toContain('dist/agents/researcher/handler.js');
     });
 
-    it('仅 hasRun 的 agent(无 config 块)从 run 提取 JSDoc', async () => {
+    it('仅 hasRun 的 agent(无 config 块)→ 抛错(systemPrompt 必填)', async () => {
       writeAgent(
         'src/agents/writer/handler.ts',
         `/**
@@ -340,14 +340,7 @@ export async function run(ctx) { return 'done'; }
         },
       ];
       const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      expect(metadata[0].name).toBe('writer');
-      expect(metadata[0].description).toBe('写作助手');
-      expect(metadata[0].hasRun).toBe(true);
-      // 无 config 块,systemPrompt 等字段为 undefined
-      expect(metadata[0].systemPrompt).toBeUndefined();
-      expect(metadata[0].model).toBeUndefined();
+      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/systemPrompt/);
     });
 
     it('不生成 zod.js(与 tool 的关键差异)', async () => {
@@ -431,6 +424,7 @@ export const config = { systemPrompt: 'x', model: 'gpt-4' };
       writeAgent(
         'src/agents/writer/handler.ts',
         `/** 写作助手 */
+export const config = { systemPrompt: 'write well' };
 export async function run(ctx) { return 'done'; }
 `,
       );
@@ -463,6 +457,7 @@ export async function run(ctx) { return 'done'; }
       expect(metadata[0].model).toBe('gpt-4');
       expect(metadata[1].name).toBe('writer');
       expect(metadata[1].hasRun).toBe(true);
+      expect(metadata[1].systemPrompt).toBe('write well');
       expect(metadata[1].model).toBeUndefined();
     });
 
