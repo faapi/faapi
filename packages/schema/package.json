@@ -1,6 +1,6 @@
 {
   "name": "@faapi/schema",
-  "version": "5.0.1",
+  "version": "5.1.0",
   "description": "Schema introspection for faapi — expose API schema to AI assistants via MCP",
   "type": "module",
   "main": "./dist/index.js",

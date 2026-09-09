@@ -1,5 +1,13 @@
 # @faapi/faapi
 
+## 5.1.0
+
+### Minor Changes
+
+- 234ab0c: agent 构建期校验收紧：不如预期的声明直接报错，不再静默忽略。新增拦截场景：config 声明未知字段（如 `maxTurn` 拼写错误）、config 用不支持的属性形式（shorthand/方法/getter/computed 名）、config 导出形式不支持（`export const config = someVar` 等非对象字面量，错误提示与"未声明 config"区分）、agent 源文件不在 Program（原静默跳过导致 agent 从清单无声消失）、agent 名重复（目录推导名或 `@agent` 覆盖名撞名，原水合时静默后者覆盖前者）、`agents` 引用清单中不存在的 agent 名（原推迟到运行时首次 sub-agent 调用才失败）。`tools` 引用不做构建期校验（业务方 plugin 可运行时注册额外 tool，避免误报）。注意：存量 config 中写了框架不读字段的 agent 升级后构建会失败，需删除或更正字段名。
+- e0d1e9a: agent config 块字段提取增强：`systemPrompt`/`tools`/`agents`/`model`/`maxTurns` 支持无插值模板字符串（`NoSubstitutionTemplateLiteral`，多行人设的常见写法，语义等价字符串字面量）；声明了字段但值提取失败（变量引用、含插值模板字符串、混合类型数组元素等）时构建期抛 `SchemaExtractionError`（带 file:line:column），不再静默降级为 `undefined` 导致运行时人设丢失无告警。
+- e96d794: 文件型 agent 的 `systemPrompt` 收紧为必填：config 未声明（无 config 导出、config 无 return 对象、config 缺该 key）时 `faapi build`/dev 构建期抛 `SchemaExtractionError`（带 file:line:column），不再静默降级为 `undefined` 运行时按"无人设"执行。提示词是 agent 人设与输出格式约定的必要组成，JSDoc `description` 只是用途说明不构成提示词；DB-driven skill 不经过此链路，`AgentCore.systemPrompt` 类型保持可选。注意：存量项目中未声明 `systemPrompt` 的 agent 升级后构建会失败，需补声明。
+
 ## 5.0.1
 
 ### Patch Changes
