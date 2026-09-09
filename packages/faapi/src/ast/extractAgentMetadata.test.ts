@@ -282,6 +282,48 @@ describe('extractAgentMetadata', () => {
     });
   });
 
+  describe('config 形式与字段声明不如预期 → 抛 SchemaExtractionError', () => {
+    it('config 声明为变量引用（非对象字面量）→ 抛错', () => {
+      expect(() =>
+        extract(`const base = { systemPrompt: 'x' };\nexport const config = base;\n`),
+      ).toThrow(/仅支持/);
+    });
+
+    it('箭头函数返回非对象字面量 → 抛错', () => {
+      expect(() => extract(`export const config = () => 'str';\n`)).toThrow(/仅支持/);
+    });
+
+    it('config 声明未知字段（拼写错误）→ 抛错', () => {
+      expect(() => extract(`export const config = { systemPrompt: 'x', maxTurn: 3 };\n`)).toThrow(
+        /未知 config 字段/,
+      );
+    });
+
+    it('config 声明任意未知字段 → 抛错', () => {
+      expect(() => extract(`export const config = { systemPrompt: 'x', foo: 1 };\n`)).toThrow(
+        /未知 config 字段/,
+      );
+    });
+
+    it('computed 属性名 → 抛错', () => {
+      expect(() =>
+        extract("const k = 'model';\nexport const config = { systemPrompt: 'x', [k]: 'gpt-4' };\n"),
+      ).toThrow(/computed/);
+    });
+
+    it('shorthand 属性 → 抛错', () => {
+      expect(() =>
+        extract(`const systemPrompt = 'x';\nexport const config = { systemPrompt };\n`),
+      ).toThrow(/仅支持 key: value/);
+    });
+
+    it('方法形式属性 → 抛错', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', model() { return 'gpt-4'; } };\n`),
+      ).toThrow(/仅支持 key: value/);
+    });
+  });
+
   describe('声明了字段但值提取失败 → 抛 SchemaExtractionError', () => {
     it('变量引用的 systemPrompt → 抛错', () => {
       expect(() =>

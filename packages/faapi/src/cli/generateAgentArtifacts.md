@@ -47,7 +47,19 @@ agentRegistry 单例
 
 ### undefined 字段处理
 
-`description` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` 在 JSON.stringify 时自动省略，水合时通过 `?? undefined` 兜底，保证 `AgentMetadata` 类型完整。
+`description` / `tools` / `agents` / `model` / `maxTurns` 在 JSON.stringify 时自动省略，水合时通过 `?? undefined` 兜底，保证 `AgentMetadata` 类型完整。`systemPrompt` 经上游必填校验必有值。
+
+### 清单级校验（不如预期即报错）
+
+AST 提取层的单 agent 校验（systemPrompt 必填、字面量提取失败、未知字段等）之外，本模块在生成清单时做**跨 agent 的清单级校验**——这些问题只在多个 agent 组合时暴露，静默水合会让注册表处于与声明意图不符的状态：
+
+| 场景 | 行为 |
+|------|------|
+| 某个 agent 源文件不在 Program 中(`extractAgentMetadata` 返回 null) | 抛错——正常构建链路不该发生，静默跳过会让 agent 从清单里无声消失 |
+| agent 名重复(目录推导名或 `@agent` 覆盖名撞名) | 抛错——水合语义是后者覆盖前者，静默覆盖丢失 agent |
+| `agents` 引用了清单中不存在的 agent 名 | 抛错——sub-agent 递归在运行时才失败会把错误推迟到首次调用，且错误信息不带构建上下文 |
+
+`tools` 引用**不做**构建期校验——业务方 plugin 可在运行时注册额外 tool（`PluginContext.registries`），构建期校验会误报。
 
 ## API
 

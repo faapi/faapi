@@ -124,15 +124,24 @@ export function extractAgentMetadata(
   const sourceFile = program.getSourceFile(filePath);
   if (!sourceFile) return null;
 
-  // systemPrompt 必填——config 是提示词的唯一载体，无 config 导出、config 无
-  // return 对象字面量都无法声明提示词，直接抛错。不存在合法的无提示词文件型
-  // agent（JSDoc description 只是用途说明，不构成提示词）。
+  // systemPrompt 必填——config 是提示词的唯一载体，无 config 导出时直接抛错。
+  // 不存在合法的无提示词文件型 agent（JSDoc description 只是用途说明，不构成提示词）。
   const configFound = findConfigExport(sourceFile);
-  if (!configFound?.objectLiteral) {
+  if (!configFound) {
     throw SchemaExtractionError.at(
       sourceFile,
       'config.systemPrompt',
       'agent 必填——请在 config 块声明系统提示词（字符串字面量或无插值模板字符串）',
+      sourceFile,
+    );
+  }
+  // 声明了 config 但提取不出对象字面量——形式不支持，与"未声明"分开提示，
+  // 避免"请在 config 块声明"误导已声明 config 的用户
+  if (!configFound.objectLiteral) {
+    throw SchemaExtractionError.at(
+      configFound.jsDocOwner,
+      'config',
+      '仅支持对象字面量、箭头函数返回对象字面量或函数返回对象字面量',
       sourceFile,
     );
   }
@@ -168,7 +177,9 @@ export function extractAgentMetadata(
  * - `export const config = { ... }` → VariableStatement，对象字面量是 initializer
  * - `export function config() { return { ... } }` → FunctionDeclaration，对象字面量是 return 表达式
  *
- * 返回 JSDoc 持有节点和对象字面量(可能为 null——函数无 return / return 非对象字面量)。
+ * 返回 JSDoc 持有节点和对象字面量(可能为 null——函数无 return / return 非对象字面量 /
+ * const initializer 非对象字面量与箭头函数)。`objectLiteral` 为 null 而 `jsDocOwner`
+ * 已定位时，表达"声明了 config 但形式不支持"，与"未声明 config"(返回 null)区分。
  *
  * 不依赖 `node.parent` 链——`ts.createProgram` 配置 `noEmit: true` 时不会设置父指针。
  */
@@ -185,14 +196,14 @@ function findConfigExport(sourceFile: ts.SourceFile): FoundConfig | null {
         const nameText = ts.isIdentifier(decl.name) ? decl.name.text : '';
         if (nameText !== 'config' || !decl.initializer) continue;
 
-        // 对象字面量：export const config = { ... }
+        // 记录 config 导出——形式是否支持由 objectLiteral 是否为 null 表达，
+        // 调用方据此区分"未声明 config"与"声明了但形式不支持"
         if (ts.isObjectLiteralExpression(decl.initializer)) {
           result = { jsDocOwner: node, objectLiteral: decl.initializer };
-        }
-        // 箭头函数返回对象：export const config = () => ({ ... })
-        else if (ts.isArrowFunction(decl.initializer)) {
-          const returnObj = getReturnObjectLiteral(decl.initializer);
-          result = { jsDocOwner: node, objectLiteral: returnObj };
+        } else if (ts.isArrowFunction(decl.initializer)) {
+          result = { jsDocOwner: node, objectLiteral: getReturnObjectLiteral(decl.initializer) };
+        } else {
+          result = { jsDocOwner: node, objectLiteral: null };
         }
       }
     }
@@ -257,6 +268,8 @@ function getReturnObjectLiteral(
  * - `{ 'systemPrompt': 'x' }` — StringLiteral 属性名
  *
  * SpreadAssignment(`...other`)跳过——不声明任何具名字段，无法静态归属。
+ * 未知字段（拼写错误/框架不读的 key）与不支持的属性形式（shorthand/方法/
+ * getter/computed 名）抛 `SchemaExtractionError`，不静默忽略。
  *
  * 返回类型的 `systemPrompt` 必填——属性存在但提取失败由 `requireStringValue`
  * 抛错，属性未声明(空对象/缺 key/仅 spread)由返回前校验抛错，正常返回时必有值。
@@ -283,10 +296,22 @@ function extractConfigFields(
 
   for (const prop of objLit.properties) {
     // 跳过 SpreadAssignment（...other）
-    if (!ts.isPropertyAssignment(prop)) continue;
+    if (ts.isSpreadAssignment(prop)) continue;
+
+    // shorthand / 方法 / getter 等形式——config 只支持 key: value 字面量属性
+    if (!ts.isPropertyAssignment(prop)) {
+      throw SchemaExtractionError.at(
+        prop,
+        'config',
+        '仅支持 key: value 属性形式（不支持 shorthand/方法/getter）',
+        sourceFile,
+      );
+    }
 
     const propName = getPropertyName(prop.name);
-    if (!propName) continue;
+    if (!propName) {
+      throw SchemaExtractionError.at(prop.name, 'config', '不支持 computed 属性名', sourceFile);
+    }
 
     switch (propName) {
       case 'systemPrompt':
@@ -304,6 +329,15 @@ function extractConfigFields(
       case 'maxTurns':
         maxTurns = requireNumberValue(prop, 'maxTurns', sourceFile);
         break;
+      default:
+        // 框架不读的字段几乎必然是拼写错误或误解——静默忽略后运行时按默认值
+        // 跑，与声明意图不符（如 maxTurn 拼错后轮数走默认值）
+        throw SchemaExtractionError.at(
+          prop,
+          `config.${propName}`,
+          '未知 config 字段——仅支持 systemPrompt / tools / agents / model / maxTurns',
+          sourceFile,
+        );
     }
   }
 

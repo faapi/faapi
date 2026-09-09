@@ -108,6 +108,40 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
 }
 
 /**
+ * 清单级校验：跨 agent 组合才暴露的问题，静默水合会让注册表处于与声明意图不符的状态
+ *
+ * - **agent 名重复**——水合语义是后者覆盖前者，静默覆盖丢失 agent
+ * - **`agents` 引用不存在的 agent 名**——sub-agent 递归到运行时首次调用才失败，
+ *   错误被推迟且不带构建上下文
+ *
+ * `tools` 引用不做构建期校验——业务方 plugin 可在运行时注册额外 tool
+ * （`PluginContext.registries`），构建期校验会误报。
+ */
+function validateAgentList(metadata: AgentMetadata[]): void {
+  const names = new Map<string, string>();
+  for (const a of metadata) {
+    const prev = names.get(a.name);
+    if (prev) {
+      throw new Error(
+        `agent 名重复: "${a.name}"（${prev} 与 ${a.filePath} 冲突——目录推导名或 @agent 覆盖名撞名）`,
+      );
+    }
+    names.set(a.name, a.filePath);
+  }
+
+  for (const a of metadata) {
+    for (const ref of a.agents ?? []) {
+      if (!names.has(ref)) {
+        const available = [...names.keys()].join(', ') || '无';
+        throw new Error(
+          `agent "${a.name}" 的 agents 引用了不存在的 agent: "${ref}"（清单中可用: ${available}）`,
+        );
+      }
+    }
+  }
+}
+
+/**
  * 主入口：从 AgentManifest[] 生成 faapi-agents.js
  *
  * agent **不生成 zod.js**——与 tool 不同，agent 没有用户输入参数（config 块字段
@@ -118,8 +152,9 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
  * 内部流程：
  * 1. 对每个 AgentManifest 调 `createProgram` + `extractAgentMetadata` → AgentMetadata[]
  *    （AST 增强：补全 description / `@agent` 覆盖名 / config 块字段）
- * 2. `serializeAgents(metadata, dist)` → SerializedAgentRecord[]（filePath 转产物形式）
- * 3. `writeAgentsModule(serialized, faapiAgentsPath)` → 写入 `<dist>/faapi-agents.js`
+ * 2. `validateAgentList` 清单级校验（名重复 / agents 互引存在性）
+ * 3. `serializeAgents(metadata, dist)` → SerializedAgentRecord[]（filePath 转产物形式）
+ * 4. `writeAgentsModule(serialized, faapiAgentsPath)` → 写入 `<dist>/faapi-agents.js`
  *
  * 与 [generateToolArtifacts](./generateToolArtifacts.md) 的差异：
  * - 不生成 zod.js（agent 无输入参数）
@@ -147,12 +182,20 @@ export async function generateAgentArtifacts(
       filePath: manifest.filePath,
       hasRun: manifest.hasRun,
     });
-    if (result) {
-      metadata.push(result);
+    // 正常构建链路不该发生（createPrograms 按同一批 filePath 建 Program）——
+    // 静默跳过会让 agent 从清单里无声消失
+    if (!result) {
+      throw new Error(
+        `agent "${manifest.name}" 源文件不在 Program 中: ${manifest.filePath}——无法生成清单`,
+      );
     }
+    metadata.push(result);
   }
 
-  // 2. 序列化 + 写入 faapi-agents.js
+  // 2. 清单级校验：名重复 / agents 互引存在性
+  validateAgentList(metadata);
+
+  // 3. 序列化 + 写入 faapi-agents.js
   const serialized = serializeAgents(metadata, dist);
   const agentsPath = path.resolve(rootDir, dist, AGENTS_FILE);
   await writeAgentsModule(serialized, agentsPath);

@@ -110,8 +110,11 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 | `systemPrompt` 未声明(无 config 导出、config 无 return 对象、config 里没有该 key) | 抛 `SchemaExtractionError`——**agent 不能没有提示词**，人设是 agent 的必要组成 |
 | 其他字段(tools/agents/model/maxTurns)未声明 | `undefined`，合法缺省，运行时按默认值处理 |
 | 任意字段声明了但值提取失败(变量引用、含插值模板字符串、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
+| config 里声明了未知字段(如拼写错误 `maxTurn`) | 抛 `SchemaExtractionError`——框架不读的字段几乎必然是拼写错误或误解，静默忽略后运行时按默认值跑，与声明意图不符 |
+| config 用了不支持的属性形式(computed 名、shorthand、方法) | 抛 `SchemaExtractionError` |
+| 声明了 `config` 但形式不支持(`export const config = someVar`、函数/箭头函数无 return 对象字面量) | 抛 `SchemaExtractionError`，提示支持的导出形式 |
 
-理由："声明了却提取不出"是确定的构建错误——静默降级为 `undefined` 后，运行时与"合法地无人设"不可区分(`reactLoop` 对 `undefined` systemPrompt 是正常路径)，agent 人设整体失效且端到端无任何告警。与 schema 类型提取的原则一致(AST 暂不支持的语法直接抛错，不降级)。
+理由："声明了却提取不出"是确定的构建错误——静默降级为 `undefined` 后，运行时与"合法地未声明"不可区分(`reactLoop` 对 `undefined` systemPrompt 是正常路径)，agent 人设整体失效且端到端无任何告警。与 schema 类型提取的原则一致(AST 暂不支持的语法直接抛错，不降级)。
 
 `systemPrompt` 进一步收紧为**必填**：提示词定义 agent 人设与输出格式约定，无提示词的 agent 不是合法的文件型 agent(JSDoc `description` 只是 LLM 可见的用途说明，不构成提示词)。约束加在文件型 agent 的构建期——DB-driven skill 不经过此链路，`AgentCore.systemPrompt` 类型保持可选，由业务方 plugin 自治。
 

@@ -287,6 +287,11 @@ export const config = {
 };
 `,
       );
+      // researcher 的 agents 引用了 writer——清单需包含 writer（互引校验通过）
+      writeAgent(
+        'src/agents/writer/handler.ts',
+        `export const config = { systemPrompt: 'write well' };\n`,
+      );
 
       const agents: AgentManifest[] = [
         {
@@ -294,12 +299,17 @@ export const config = {
           filePath: 'src/agents/researcher/handler.ts',
           hasRun: false,
         },
+        {
+          name: 'writer',
+          filePath: 'src/agents/writer/handler.ts',
+          hasRun: false,
+        },
       ];
       const dist = join(tempDir, 'dist');
       const metadata = await generateAgentArtifacts(agents, tempDir, dist);
 
       // 返回值是 AST 增强后的 AgentMetadata
-      expect(metadata).toHaveLength(1);
+      expect(metadata).toHaveLength(2);
       expect(metadata[0].name).toBe('researcher');
       expect(metadata[0].description).toBe('研究助手');
       expect(metadata[0].hasRun).toBe(false);
@@ -320,6 +330,39 @@ export const config = {
       expect(content).toContain('web-search.search');
       expect(content).toContain('gpt-4');
       expect(content).toContain('dist/agents/researcher/handler.js');
+    });
+
+    it('agents 引用清单中不存在的 agent → 抛错', async () => {
+      writeAgent(
+        'src/agents/researcher/handler.ts',
+        `export const config = { systemPrompt: 'x', agents: ['ghost'] };\n`,
+      );
+      const agents: AgentManifest[] = [
+        { name: 'researcher', filePath: 'src/agents/researcher/handler.ts', hasRun: false },
+      ];
+      const dist = join(tempDir, 'dist');
+      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(
+        /agents 引用了不存在的 agent: "ghost"/,
+      );
+    });
+
+    it('agent 名重复(@agent 覆盖名撞名)→ 抛错', async () => {
+      writeAgent(
+        'src/agents/researcher/handler.ts',
+        `/** @agent dup */\nexport const config = { systemPrompt: 'x' };\n`,
+      );
+      writeAgent(
+        'src/agents/writer/handler.ts',
+        `/** @agent dup */\nexport const config = { systemPrompt: 'y' };\n`,
+      );
+      const agents: AgentManifest[] = [
+        { name: 'researcher', filePath: 'src/agents/researcher/handler.ts', hasRun: false },
+        { name: 'writer', filePath: 'src/agents/writer/handler.ts', hasRun: false },
+      ];
+      const dist = join(tempDir, 'dist');
+      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(
+        /agent 名重复: "dup"/,
+      );
     });
 
     it('仅 hasRun 的 agent(无 config 块)→ 抛错(systemPrompt 必填)', async () => {
