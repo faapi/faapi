@@ -386,6 +386,25 @@ export async function run(ctx) { return 'done'; }
       await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/systemPrompt/);
     });
 
+    it('模板字符串 systemPrompt 端到端写入 faapi-agents.js(多行人设)', async () => {
+      // 业务反馈场景:2K 字符多行分析人设用反引号模板字符串书写,
+      // 提取失败静默降级曾导致产物无 systemPrompt 字段、运行时人设整体丢失
+      writeAgent(
+        'src/agents/log-analyzer/handler.ts',
+        'export const config = {\n  systemPrompt: `You are a log analyzer.\nBe careful.`,\n  maxTurns: 3,\n};\n',
+      );
+      const agents: AgentManifest[] = [
+        { name: 'log-analyzer', filePath: 'src/agents/log-analyzer/handler.ts', hasRun: true },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
+
+      expect(metadata[0].systemPrompt).toBe('You are a log analyzer.\nBe careful.');
+      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
+      expect(content).toContain('"systemPrompt"');
+      expect(content).toContain('You are a log analyzer.');
+    });
+
     it('不生成 zod.js(与 tool 的关键差异)', async () => {
       writeAgent(
         'src/agents/researcher/handler.ts',
