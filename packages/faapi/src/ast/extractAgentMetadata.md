@@ -93,15 +93,28 @@ export function config() {
 
 | 字段 | 期望类型 | 提取值 | 示例 |
 |------|---------|--------|------|
-| `systemPrompt` | `StringLiteral` | `string` | `'You are a researcher'` |
-| `tools` | `ArrayLiteralExpression` 全 `StringLiteral` | `string[]` | `['weather.getWeather']` |
-| `agents` | `ArrayLiteralExpression` 全 `StringLiteral` | `string[]` | `['coder']` |
-| `model` | `StringLiteral` | `string` | `'gpt-4'` |
+| `systemPrompt` | `StringLiteral` / `NoSubstitutionTemplateLiteral` | `string` | `'You are a researcher'`、`` `You are a researcher` `` |
+| `tools` | `ArrayLiteralExpression` 全 `StringLiteral`/`NoSubstitutionTemplateLiteral` | `string[]` | `['weather.getWeather']` |
+| `agents` | `ArrayLiteralExpression` 全 `StringLiteral`/`NoSubstitutionTemplateLiteral` | `string[]` | `['coder']` |
+| `model` | `StringLiteral` / `NoSubstitutionTemplateLiteral` | `string` | `'gpt-4'` |
 | `maxTurns` | `NumericLiteral` | `number` | `10` |
 
-非字面量值(变量引用、模板字符串、Spread、非 StringLiteral 的数组元素)返回 `undefined`——AST 静态提取无法求值，这些字段在运行时由 faapi.config.ts 的 `agent` 配置块或默认值兜底。
+无插值模板字符串(`NoSubstitutionTemplateLiteral`)语义等价于字符串字面量(多行分析人设的常见写法)，与 `StringLiteral` 同等提取；含插值的模板字符串(`TemplateExpression`)无法静态求值。
 
-字段全部可选——缺失的字段为 `undefined`，运行时按默认值处理(如 `maxTurns` 默认 10、`model` 缺省时由调用方 `agent.run(input, { model })` 显式指定或作为缺省 key 参与 llms 解析)。
+### 声明但提取失败 → 构建期报错
+
+config 字段缺失与提取失败是两种语义，处理方式不同：
+
+| 场景 | 行为 |
+|------|------|
+| 字段未声明(`config` 里没有该 key) | `undefined`，合法缺省，运行时按默认值处理 |
+| 字段声明了但值提取失败(变量引用、含插值模板字符串、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
+
+理由："声明了却提取不出"是确定的构建错误——静默降级为 `undefined` 后，运行时与"合法地无人设"不可区分(`reactLoop` 对 `undefined` systemPrompt 是正常路径)，agent 人设整体失效且端到端无任何告警。与 schema 类型提取的原则一致(AST 暂不支持的语法直接抛错，不降级)。
+
+`SpreadAssignment`(`...other`)跳过不报错——它不声明任何具名字段，无法静态归属。
+
+字段全部可选——未声明的字段为 `undefined`，运行时按默认值处理(如 `maxTurns` 默认 10、`model` 缺省时由调用方 `agent.run(input, { model })` 显式指定或作为缺省 key 参与 llms 解析)。
 
 ## API
 
@@ -141,7 +154,7 @@ function extractAgentMetadata(
 
 - **config 查找**支持两种导出形式：`export const config = {...}`(对象字面量)和 `export function config() { return {...} }`(函数返回对象)
 - **JSDoc 查找**对箭头函数/函数表达式自动回溯到外层 `VariableStatement`(与 [extractToolMetadata](./extractToolMetadata.md) 同构)
-- **config 块字段提取**仅处理字面量值——变量引用/Spread/模板字符串等非静态值返回 `undefined`
+- **config 块字段提取**仅处理字面量值——无插值模板字符串与字符串字面量同等提取；声明了字段但值提取失败(变量引用/含插值模板字符串/混合数组元素等)抛 `SchemaExtractionError`，不静默降级
 - **无 try/catch**——AST 异常向上传播，依赖调用方处理
 - **不调用 `extractTypeInfo`**——agent 无输入参数 schema(tool 有，agent 无——agent 输入是自由文本 prompt，由 reactLoop 传递给 LLM)
 

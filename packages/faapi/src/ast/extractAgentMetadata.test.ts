@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createProgram, invalidateProgramCache } from './createProgram';
 import { extractAgentMetadata, type AgentPathMeta } from './extractAgentMetadata';
+import { SchemaExtractionError } from './resolveTypeNode';
 
 describe('extractAgentMetadata', () => {
   let tempDir: string;
@@ -133,6 +134,33 @@ describe('extractAgentMetadata', () => {
       expect(result!.systemPrompt).toBe('You are a researcher');
     });
 
+    it('提取 systemPrompt（无插值模板字符串，语义等价字符串字面量）', () => {
+      const result = extract('export const config = { systemPrompt: `You are a researcher` };\n');
+      expect(result!.systemPrompt).toBe('You are a researcher');
+    });
+
+    it('提取多行无插值模板字符串的 systemPrompt（保留换行）', () => {
+      const result = extract(
+        'export const config = { systemPrompt: `You are a log analyzer.\nAnalyze logs carefully.` };\n',
+      );
+      expect(result!.systemPrompt).toBe('You are a log analyzer.\nAnalyze logs carefully.');
+    });
+
+    it('提取 model（无插值模板字符串）', () => {
+      const result = extract('export const config = { model: `gpt-4` };\n');
+      expect(result!.model).toBe('gpt-4');
+    });
+
+    it('提取 tools（无插值模板字符串元素）', () => {
+      const result = extract('export const config = { tools: [`weather.getWeather`, `x`] };\n');
+      expect(result!.tools).toEqual(['weather.getWeather', 'x']);
+    });
+
+    it('空数组 tools → 空数组', () => {
+      const result = extract(`export const config = { tools: [] };\n`);
+      expect(result!.tools).toEqual([]);
+    });
+
     it('提取 model（字符串）', () => {
       const result = extract(`export const config = { model: 'gpt-4' };\n`);
       expect(result!.model).toBe('gpt-4');
@@ -214,37 +242,65 @@ describe('extractAgentMetadata', () => {
     });
   });
 
-  describe('非字面量值处理', () => {
-    it('变量引用的 systemPrompt → undefined', () => {
-      const result = extract(
-        `const prompt = 'x';\nexport const config = { systemPrompt: prompt };\n`,
+  describe('声明了字段但值提取失败 → 抛 SchemaExtractionError', () => {
+    it('变量引用的 systemPrompt → 抛错', () => {
+      expect(() =>
+        extract(`const prompt = 'x';\nexport const config = { systemPrompt: prompt };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('含插值模板字符串的 systemPrompt → 抛错', () => {
+      expect(() =>
+        extract("const name = 'x';\nexport const config = { systemPrompt: `hello ${name}` };\n"),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('混合元素的 tools → 抛错（数组含非字符串字面量）', () => {
+      expect(() =>
+        extract(`const extra = 'x';\nexport const config = { tools: ['a', extra] };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('非数组的 tools → 抛错', () => {
+      expect(() => extract(`export const config = { tools: 'a' };\n`)).toThrow(
+        SchemaExtractionError,
       );
-      expect(result!.systemPrompt).toBeUndefined();
     });
 
-    it('模板字符串的 systemPrompt → undefined', () => {
-      const result = extract(`export const config = { systemPrompt: \`hello\` };\n`);
-      expect(result!.systemPrompt).toBeUndefined();
-    });
-
-    it('混合元素的 tools → undefined（数组含非 StringLiteral）', () => {
-      const result = extract(
-        `const extra = 'x';\nexport const config = { tools: ['a', extra] };\n`,
+    it('变量引用的 model → 抛错', () => {
+      expect(() => extract(`const m = 'gpt-4';\nexport const config = { model: m };\n`)).toThrow(
+        SchemaExtractionError,
       );
-      expect(result!.tools).toBeUndefined();
     });
 
-    it('空数组 tools → 空数组', () => {
-      const result = extract(`export const config = { tools: [] };\n`);
-      expect(result!.tools).toEqual([]);
+    it('非数字的 maxTurns → 抛错', () => {
+      expect(() => extract(`export const config = { maxTurns: '10' };\n`)).toThrow(
+        SchemaExtractionError,
+      );
     });
 
-    it('非数字的 maxTurns → undefined', () => {
-      const result = extract(`export const config = { maxTurns: '10' };\n`);
-      expect(result!.maxTurns).toBeUndefined();
+    it('抛错信息携带字段名与支持的写法提示', () => {
+      try {
+        extract(`export const config = { systemPrompt: someVar };\n`);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(SchemaExtractionError);
+        expect((err as Error).message).toContain('config.systemPrompt');
+        expect((err as Error).message).toContain('模板字符串');
+      }
     });
 
-    it('Spread 元素 → 跳过该属性', () => {
+    it('抛错定位到字段所在 file:line:column', () => {
+      try {
+        extract('export const config = {\n  systemPrompt: v,\n};\n');
+        expect.unreachable();
+      } catch (err) {
+        expect((err as SchemaExtractionError).location?.file).toBe(tempFile);
+        expect((err as SchemaExtractionError).location?.line).toBe(2);
+      }
+    });
+
+    it('Spread 元素 → 跳过该属性（不报错）', () => {
       const result = extract(`export const config = { ...other, systemPrompt: 'x' };\n`);
       expect(result!.systemPrompt).toBe('x');
     });

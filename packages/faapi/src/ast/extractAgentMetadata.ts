@@ -5,6 +5,7 @@ import {
   getJSDocFromNode,
   hasExportModifier,
 } from './jsDocMetadata';
+import { SchemaExtractionError } from './resolveTypeNode';
 
 /**
  * Agent 的 LLM 可见核心字段
@@ -25,15 +26,15 @@ export interface AgentCore {
   name: string;
   /** JSDoc 描述(agent 描述,对 LLM 可见),无 JSDoc 或 JSDoc 无自由文本时为 `undefined` */
   description?: string;
-  /** 系统提示词(config 块字面量提取),无/非字面量时为 `undefined` */
+  /** 系统提示词(config 块字面量提取),未声明时为 `undefined`;声明了但非字面量在构建期抛 `SchemaExtractionError` */
   systemPrompt?: string;
-  /** agent 显式声明可用的 tool 引用列表(config 块字面量提取),无/含非字面量元素时为 `undefined` */
+  /** agent 显式声明可用的 tool 引用列表(config 块字面量提取),未声明时为 `undefined`;声明了但含非字面量元素在构建期抛错 */
   tools?: string[];
-  /** 可调用的其他 agent 名列表(config 块字面量提取),无/含非字面量元素时为 `undefined` */
+  /** 可调用的其他 agent 名列表(config 块字面量提取),未声明时为 `undefined`;声明了但含非字面量元素在构建期抛错 */
   agents?: string[];
-  /** LLM 模型名(config 块字面量提取),无/非字面量时为 `undefined` */
+  /** LLM 模型名(config 块字面量提取),未声明时为 `undefined`;声明了但非字面量在构建期抛错 */
   model?: string;
-  /** 最大对话轮数(config 块字面量提取),无/非字面量时为 `undefined` */
+  /** 最大对话轮数(config 块字面量提取),未声明时为 `undefined`;声明了但非数字字面量在构建期抛错 */
   maxTurns?: number;
 }
 
@@ -105,7 +106,8 @@ interface FoundConfig {
  * (JSDoc 通常写在 `export const` 上方，而非箭头函数本身)。
  * 与 [extractToolMetadata](./extractToolMetadata.md) 的 JSDoc 查找同构。
  *
- * config 块字段提取仅处理字面量值——变量引用/Spread/模板字符串等非静态值返回 `undefined`。
+ * config 块字段提取仅接受字面量值——字符串字面量与无插值模板字符串同等提取；
+ * 声明了字段但值提取失败(变量引用/含插值模板字符串/混合数组元素等)抛 `SchemaExtractionError`。
  *
  * @param program TypeScript Program
  * @param filePath 源文件**绝对路径**(AST 用，需与 `program.getSourceFile` 一致)
@@ -148,7 +150,7 @@ export function extractAgentMetadata(
   let maxTurns: number | undefined;
 
   if (objectLiteral) {
-    const fields = extractConfigFields(objectLiteral);
+    const fields = extractConfigFields(objectLiteral, sourceFile);
     systemPrompt = fields.systemPrompt;
     tools = fields.tools;
     agents = fields.agents;
@@ -288,16 +290,26 @@ function getReturnObjectLiteral(
 /**
  * 从 config 对象字面量提取 config 块字段
  *
- * 遍历对象属性，按属性名匹配提取对应字段。仅处理字面量值——
- * 变量引用/Spread/模板字符串等非静态值返回 `undefined`。
+ * 遍历对象属性，按属性名匹配提取对应字段。仅接受字面量值——
+ * 字符串字面量与无插值模板字符串(`NoSubstitutionTemplateLiteral`)同等提取；
+ * **声明了字段但值提取失败**(变量引用/含插值模板字符串/混合数组元素等)
+ * 抛 `SchemaExtractionError`——静默降级为 `undefined` 后，运行时与
+ * "合法地未声明该字段"不可区分，只能在构建期拦截。
  *
  * 属性名匹配支持 Identifier 和 StringLiteral 两种形式：
  * - `{ systemPrompt: 'x' }` — Identifier 属性名
  * - `{ 'systemPrompt': 'x' }` — StringLiteral 属性名
  *
- * SpreadAssignment(`...other`)跳过——无法静态求值。
+ * SpreadAssignment(`...other`)跳过——不声明任何具名字段，无法静态归属。
+ *
+ * @param objLit config 对象字面量
+ * @param sourceFile 所在源文件(报错定位用——纯语法遍历路径无 parent 指针，
+ *   `node.getSourceFile()` 不可用，需显式传入)
  */
-function extractConfigFields(objLit: ts.ObjectLiteralExpression): {
+function extractConfigFields(
+  objLit: ts.ObjectLiteralExpression,
+  sourceFile: ts.SourceFile,
+): {
   systemPrompt?: string;
   tools?: string[];
   agents?: string[];
@@ -321,19 +333,19 @@ function extractConfigFields(objLit: ts.ObjectLiteralExpression): {
 
     switch (propName) {
       case 'systemPrompt':
-        result.systemPrompt = extractStringValue(prop.initializer);
+        result.systemPrompt = requireStringValue(prop, 'systemPrompt', sourceFile);
         break;
       case 'tools':
-        result.tools = extractStringArrayValue(prop.initializer);
+        result.tools = requireStringArrayValue(prop, 'tools', sourceFile);
         break;
       case 'agents':
-        result.agents = extractStringArrayValue(prop.initializer);
+        result.agents = requireStringArrayValue(prop, 'agents', sourceFile);
         break;
       case 'model':
-        result.model = extractStringValue(prop.initializer);
+        result.model = requireStringValue(prop, 'model', sourceFile);
         break;
       case 'maxTurns':
-        result.maxTurns = extractNumberValue(prop.initializer);
+        result.maxTurns = requireNumberValue(prop, 'maxTurns', sourceFile);
         break;
     }
   }
@@ -357,15 +369,80 @@ function getPropertyName(name: ts.PropertyName): string | null {
 }
 
 /**
- * 从表达式提取字符串值（仅 StringLiteral）
+ * 从表达式提取字符串值（StringLiteral / NoSubstitutionTemplateLiteral）
  *
- * - `'hello'` → `'hello'`
- * - `"hello"` → `'hello'`
- * - 模板字符串 / 变量引用 / 数字 → `undefined`
+ * - `'hello'` / `"hello"` → `'hello'`
+ * - `` `hello` `` → `'hello'`（无插值模板字符串语义等价字符串字面量，多行人设的常见写法）
+ * - 含插值模板字符串 / 变量引用 / 数字 → `undefined`
  */
 function extractStringValue(expr: ts.Expression): string | undefined {
-  if (ts.isStringLiteral(expr)) return expr.text;
+  if (isStringLikeLiteral(expr)) return expr.text;
   return undefined;
+}
+
+/**
+ * 从属性赋值提取字符串字段值，声明了但提取失败抛 `SchemaExtractionError`
+ *
+ * 与直接用 `extractStringValue` 的区别：失败即抛错（带字段名与 file:line:column），
+ * 不静默返回 `undefined`——"声明了却提取不出"是确定的构建错误。
+ */
+function requireStringValue(
+  prop: ts.PropertyAssignment,
+  fieldName: string,
+  sourceFile: ts.SourceFile,
+): string {
+  const value = extractStringValue(prop.initializer);
+  if (value === undefined) {
+    throw SchemaExtractionError.at(
+      prop.initializer,
+      `config.${fieldName}`,
+      '仅支持字符串字面量或无插值模板字符串（含插值的模板字符串/变量引用无法静态求值）',
+      sourceFile,
+    );
+  }
+  return value;
+}
+
+/**
+ * 从属性赋值提取字符串数组字段值，声明了但提取失败抛 `SchemaExtractionError`
+ *
+ * 覆盖两种失败形态：值不是数组表达式、数组含非字符串字面量元素。
+ */
+function requireStringArrayValue(
+  prop: ts.PropertyAssignment,
+  fieldName: string,
+  sourceFile: ts.SourceFile,
+): string[] {
+  const value = extractStringArrayValue(prop.initializer);
+  if (value === undefined) {
+    throw SchemaExtractionError.at(
+      prop.initializer,
+      `config.${fieldName}`,
+      '仅支持全字符串字面量数组（元素为字符串字面量或无插值模板字符串）',
+      sourceFile,
+    );
+  }
+  return value;
+}
+
+/**
+ * 从属性赋值提取数字字段值，声明了但提取失败抛 `SchemaExtractionError`
+ */
+function requireNumberValue(
+  prop: ts.PropertyAssignment,
+  fieldName: string,
+  sourceFile: ts.SourceFile,
+): number {
+  const value = extractNumberValue(prop.initializer);
+  if (value === undefined) {
+    throw SchemaExtractionError.at(
+      prop.initializer,
+      `config.${fieldName}`,
+      '仅支持数字字面量',
+      sourceFile,
+    );
+  }
+  return value;
 }
 
 /**
@@ -383,10 +460,22 @@ function extractNumberValue(expr: ts.Expression): number | undefined {
 }
 
 /**
- * 从表达式提取字符串数组（ArrayLiteralExpression，全 StringLiteral 元素）
+ * 字符串字面量形态判断（StringLiteral 或无插值模板字符串）
+ *
+ * 两者 `.text` 均为去引号后的源码文本，语义等价。
+ */
+function isStringLikeLiteral(
+  node: ts.Expression,
+): node is ts.StringLiteral | ts.NoSubstitutionTemplateLiteral {
+  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node);
+}
+
+/**
+ * 从表达式提取字符串数组（ArrayLiteralExpression，全字符串字面量元素）
  *
  * - `['a', 'b']` → `['a', 'b']`
- * - `['a', someVar]` → `undefined`（含非 StringLiteral 元素）
+ * - `` [`a`, `b`] `` → `['a', 'b']`（无插值模板字符串元素）
+ * - `['a', someVar]` → `undefined`（含非字符串字面量元素）
  * - `[]` → `[]`（空数组）
  * - 非数组 → `undefined`
  */
@@ -394,7 +483,7 @@ function extractStringArrayValue(expr: ts.Expression): string[] | undefined {
   if (!ts.isArrayLiteralExpression(expr)) return undefined;
   const values: string[] = [];
   for (const element of expr.elements) {
-    if (!ts.isStringLiteral(element)) return undefined;
+    if (!isStringLikeLiteral(element)) return undefined;
     values.push(element.text);
   }
   return values;

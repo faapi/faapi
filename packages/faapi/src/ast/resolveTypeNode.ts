@@ -56,15 +56,24 @@ export class SchemaExtractionError extends Error {
    *
    * 所有抛错点应优先使用此工厂——错误无行号时，几百行的类型文件只能靠
    * 类型名肉眼定位；解析 lib.d.ts 类型别名时还会出现错误文本与文件上下文错位
+   *
+   * `sourceFile` 可选：未触达 checker 的纯语法遍历路径（binder 未运行）没有
+   * parent 指针，`node.getSourceFile()` 返回 undefined，此时调用方需显式传入
+   * `program.getSourceFile(filePath)` 的结果以携带位置。
    */
-  static at(node: ts.Node, typeText: string, reason: string): SchemaExtractionError {
-    const sourceFile = node.getSourceFile();
-    if (!sourceFile) {
+  static at(
+    node: ts.Node,
+    typeText: string,
+    reason: string,
+    sourceFile?: ts.SourceFile,
+  ): SchemaExtractionError {
+    const sf = sourceFile ?? node.getSourceFile();
+    if (!sf) {
       return new SchemaExtractionError(typeText, reason);
     }
-    const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+    const { line, character } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
     return new SchemaExtractionError(typeText, reason, undefined, {
-      file: sourceFile.fileName,
+      file: sf.fileName,
       line: line + 1,
       column: character + 1,
     });
