@@ -84,7 +84,7 @@ export interface ReactLoopConfig {
    * 提供时以其为基础（历史应含 system）：历史无 `system` 消息且配置了
    * `systemPrompt` 时自动在最前插入（agent 人格不因续跑丢失）；`input` 非空时
    * 追加为新的 `user` 消息（多轮对话），为空时纯续跑。历史经 `Agent` 层结构校验
-   * （assistant.toolCalls 与 tool 结果按 toolCallId 配对完整）。
+   * （assistant.tool_calls 与 tool 结果按 tool_call_id 配对完整）。
    * 续跑源见 [reactLoop.md](./reactLoop.md) 中断恢复章节。
    */
   messages?: LLMMessage[];
@@ -188,9 +188,9 @@ function stringifyError(err: unknown): string {
 function accumulateUsage(a: LLMUsage | undefined, b: LLMUsage): LLMUsage {
   if (!a) return { ...b };
   return {
-    promptTokens: a.promptTokens + b.promptTokens,
-    completionTokens: a.completionTokens + b.completionTokens,
-    totalTokens: a.totalTokens + b.totalTokens,
+    prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+    completion_tokens: a.completion_tokens + b.completion_tokens,
+    total_tokens: a.total_tokens + b.total_tokens,
   };
 }
 
@@ -202,6 +202,18 @@ function buildInitialMessages(input: string, systemPrompt?: string): LLMMessage[
   }
   messages.push({ role: 'user', content: input });
   return messages;
+}
+
+/**
+ * 解析 tool_call 的 `function.arguments`（OpenAI 线格式 JSON 字符串）为对象
+ *
+ * 解析边界收敛在此——tool 执行函数 / 鉴权钩子 / trace 事件拿到的都是已 parse 的对象。
+ * 解析失败抛错，由调用方的 tool 错误路径 catch 后回传 LLM（LLM 可修正参数重试）。
+ */
+function parseToolCallArguments(toolCall: LLMToolCall): Record<string, unknown> {
+  const raw = toolCall.function.arguments;
+  if (!raw) return {};
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 /**
@@ -235,11 +247,11 @@ function estimateTokens(chars: number): number {
 
 function estimateMessageTokens(message: LLMMessage): number {
   let chars = message.content.length;
-  if (message.toolCalls) {
-    chars += JSON.stringify(message.toolCalls).length;
+  if (message.tool_calls) {
+    chars += JSON.stringify(message.tool_calls).length;
   }
-  if (message.toolCallId) {
-    chars += message.toolCallId.length;
+  if (message.tool_call_id) {
+    chars += message.tool_call_id.length;
   }
   return estimateTokens(chars);
 }
@@ -393,7 +405,7 @@ export async function reactLoop(
     messages.push(response.message);
 
     // 非 tool_calls → 循环结束
-    if (response.stopReason !== 'tool_calls' || !response.message.toolCalls) {
+    if (response.stopReason !== 'tool_calls' || !response.message.tool_calls) {
       const traceEndedAt = enableTracing ? nowMs() : 0;
       return {
         content: response.message.content,
@@ -418,18 +430,23 @@ export async function reactLoop(
 
     // 并行执行同轮全部 tool_call——多个独立 tool 的总耗时从「各 tool 之和」
     // 降为「最慢一个」。每个 toolCall 独立 try/catch（单个失败不影响其余），
-    // 结果按下方的 toolCalls 声明顺序回传（与完成顺序无关，保证 tool 配对语义）。
+    // 结果按下方的 tool_calls 声明顺序回传（与完成顺序无关，保证 tool 配对语义）。
     // 注：beforeToolCall/afterToolCall 钩子会并发触发，业务方钩子不应依赖调用顺序。
     // 流式路径（reactLoopStream）保持串行——yield 顺序受消费端约束。
+    // arguments 解析边界在此收拢：线格式 JSON 字符串在此 parse，执行函数 /
+    // 鉴权钩子 / trace 事件拿到的都是已 parse 的对象；解析失败走 tool 错误路径回传。
     const settled = await Promise.all(
-      response.message.toolCalls.map(async (toolCall) => {
+      response.message.tool_calls.map(async (toolCall) => {
         const toolStartedAt = enableTracing ? nowMs() : 0;
+        const toolName = toolCall.function.name;
+        let args: Record<string, unknown> = {};
         let resultStr: string;
         let rawResult: unknown | TracingToolResult;
         let toolErr: unknown;
         let hasError = false;
         try {
-          rawResult = await config.executeTool(toolCall.name, toolCall.arguments);
+          args = parseToolCallArguments(toolCall);
+          rawResult = await config.executeTool(toolName, args);
           // TracingToolResult:提取 result 字段作为 tool 消息内容
           if (isTracingToolResult(rawResult)) {
             resultStr = stringifyResult(rawResult.result);
@@ -448,6 +465,8 @@ export async function reactLoop(
         const toolEndedAt = enableTracing ? nowMs() : 0;
         return {
           toolCall,
+          toolName,
+          args,
           toolStartedAt,
           toolEndedAt,
           resultStr,
@@ -460,6 +479,8 @@ export async function reactLoop(
 
     for (const {
       toolCall,
+      toolName,
+      args,
       toolStartedAt,
       toolEndedAt,
       resultStr,
@@ -476,8 +497,8 @@ export async function reactLoop(
             startedAt: toolStartedAt,
             durationMs: toolEndedAt - toolStartedAt,
             toolCallId: toolCall.id,
-            agentName: extractSubAgentName(toolCall.name),
-            input: JSON.stringify(toolCall.arguments),
+            agentName: extractSubAgentName(toolName),
+            input: JSON.stringify(args),
             trace: rawResult.trace,
             result: resultStr,
           });
@@ -488,8 +509,8 @@ export async function reactLoop(
             startedAt: toolStartedAt,
             durationMs: toolEndedAt - toolStartedAt,
             toolCallId: toolCall.id,
-            name: toolCall.name,
-            arguments: toolCall.arguments,
+            name: toolName,
+            arguments: args,
             result: resultStr,
             error: hasError ? stringifyError(toolErr) : undefined,
           });
@@ -499,7 +520,7 @@ export async function reactLoop(
       messages.push({
         role: 'tool',
         content: resultStr,
-        toolCallId: toolCall.id,
+        tool_call_id: toolCall.id,
       });
     }
   }
@@ -590,13 +611,14 @@ export async function* reactLoopStream(
       throw err;
     }
 
-    // 把 assistant 消息加入历史（含 toolCalls，供下一轮 LLM 上下文）
+    // 把 assistant 消息加入历史（含 tool_calls，供下一轮 LLM 上下文；规范形，
+    // function.arguments 保持线格式 JSON 字符串）
     const assistantMessage: LLMMessage = {
       role: 'assistant',
       content: turnContent,
     };
     if (toolCalls) {
-      assistantMessage.toolCalls = toolCalls;
+      assistantMessage.tool_calls = toolCalls;
     }
     messages.push(assistantMessage);
 
@@ -630,17 +652,20 @@ export async function* reactLoopStream(
       return;
     }
 
-    // 执行每个 tool call
+    // 执行每个 tool call（arguments 解析边界与非流式路径一致：先 parse，
+    // 解析失败走 tool 错误路径回传 LLM）
     for (const toolCall of toolCalls) {
-      yield { toolCall: { name: toolCall.name, arguments: toolCall.arguments } };
-
+      const toolName = toolCall.function.name;
       const toolStartedAt = enableTracing ? nowMs() : 0;
+      let args: Record<string, unknown> = {};
       let resultStr: string;
       let rawResult: unknown | TracingToolResult;
       let toolErr: unknown;
       let hasError = false;
       try {
-        rawResult = await config.executeTool(toolCall.name, toolCall.arguments);
+        args = parseToolCallArguments(toolCall);
+        yield { toolCall: { name: toolName, arguments: args } };
+        rawResult = await config.executeTool(toolName, args);
         if (isTracingToolResult(rawResult)) {
           resultStr = stringifyResult(rawResult.result);
         } else {
@@ -653,7 +678,7 @@ export async function* reactLoopStream(
         rawResult = undefined;
       }
 
-      yield { toolResult: { name: toolCall.name, result: resultStr } };
+      yield { toolResult: { name: toolName, result: resultStr } };
 
       if (enableTracing) {
         const toolEndedAt = nowMs();
@@ -665,8 +690,8 @@ export async function* reactLoopStream(
               startedAt: toolStartedAt,
               durationMs: toolEndedAt - toolStartedAt,
               toolCallId: toolCall.id,
-              agentName: extractSubAgentName(toolCall.name),
-              input: JSON.stringify(toolCall.arguments),
+              agentName: extractSubAgentName(toolName),
+              input: JSON.stringify(args),
               trace: rawResult.trace,
               result: resultStr,
             },
@@ -679,8 +704,8 @@ export async function* reactLoopStream(
               startedAt: toolStartedAt,
               durationMs: toolEndedAt - toolStartedAt,
               toolCallId: toolCall.id,
-              name: toolCall.name,
-              arguments: toolCall.arguments,
+              name: toolName,
+              arguments: args,
               result: resultStr,
               error: hasError ? stringifyError(toolErr) : undefined,
             },
@@ -691,7 +716,7 @@ export async function* reactLoopStream(
       messages.push({
         role: 'tool',
         content: resultStr,
-        toolCallId: toolCall.id,
+        tool_call_id: toolCall.id,
       });
     }
   }

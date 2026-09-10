@@ -59,7 +59,7 @@ OpenAI 的 chat completions API 已成为事实标准——Anthropic、Google、
 OpenAI → `LLMMessage`（响应解析）：
 
 - `message.content` → `LLMMessage.content`（可能为 `null`，统一为 `''`）
-- `message.tool_calls` → `LLMMessage.toolCalls`（每个 `arguments` 字符串 `JSON.parse`，失败抛错）
+- `message.tool_calls` → `LLMMessage.tool_calls`（规范形恒等;校验每个 `arguments` 可 JSON 解析,失败抛错,字符串原样保留——解析边界在 reactLoop）
 
 ### Tool 定义转换
 

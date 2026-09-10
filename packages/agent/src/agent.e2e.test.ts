@@ -57,9 +57,15 @@ const FIXTURES_DIR = path.resolve(__dirname, '../fixtures/multi-agent-demo');
 // ─── Mock LLM Provider 构造器 ─────────────────────────
 
 /** 构造 LLMResponse（complete 模式） */
+/** 构造规范形 LLMToolCall（arguments 对象转 JSON 字符串） */
+function toolCall(id: string, name: string, args: Record<string, unknown> = {}): LLMToolCall {
+  return { id, type: 'function', function: { name, arguments: JSON.stringify(args) } };
+}
+
+/** 构造 LLMResponse（complete 模式） */
 function llmResponse(opts: {
   content?: string;
-  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  toolCalls?: LLMToolCall[];
   stopReason?: LLMStopReason;
 }): LLMResponse {
   const message: LLMMessage = {
@@ -67,7 +73,7 @@ function llmResponse(opts: {
     content: opts.content ?? '',
   };
   if (opts.toolCalls && opts.toolCalls.length > 0) {
-    message.toolCalls = opts.toolCalls;
+    message.tool_calls = opts.toolCalls;
   }
   return {
     message,
@@ -281,10 +287,10 @@ describe('multi-agent demo e2e', () => {
       // 3. stop 返回最终答案
       const { provider, completeRequests } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+          toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
         }),
         llmResponse({
-          toolCalls: [{ id: 'c2', name: 'agent.writer', arguments: { topic: 'AI' } }],
+          toolCalls: [toolCall('c2', 'agent.writer', { topic: 'AI' })],
         }),
         llmResponse({ content: '研究完成：北京 22 度晴，writer 生成了报告', stopReason: 'stop' }),
       ]);
@@ -308,7 +314,7 @@ describe('multi-agent demo e2e', () => {
       const systemMsg = firstRequest.messages.find((m) => m.role === 'system');
       expect(systemMsg?.content).toContain('研究助手');
 
-      const toolNames = (firstRequest.tools ?? []).map((t) => t.name);
+      const toolNames = (firstRequest.tools ?? []).map((t) => t.function.name);
       expect(toolNames).toContain('weather.getWeather');
       expect(toolNames).toContain('calculator.calc');
       expect(toolNames).toContain('agent.writer');
@@ -335,10 +341,10 @@ describe('multi-agent demo e2e', () => {
       // mock provider 响应序列（同上）
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+          toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
         }),
         llmResponse({
-          toolCalls: [{ id: 'c2', name: 'agent.writer', arguments: { topic: 'AI' } }],
+          toolCalls: [toolCall('c2', 'agent.writer', { topic: 'AI' })],
         }),
         llmResponse({ content: 'inject 模式完成', stopReason: 'stop' }),
       ]);
@@ -377,7 +383,7 @@ describe('multi-agent demo e2e', () => {
       // 2. 收到 error 后返回最终答案
       const { provider, completeRequests } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: {} }],
+          toolCalls: [toolCall('c1', 'weather.getWeather', {})],
         }),
         llmResponse({ content: '校验失败已处理', stopReason: 'stop' }),
       ]);

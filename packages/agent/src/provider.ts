@@ -12,54 +12,66 @@ import { createOpenAIProvider } from './providers/openai';
  */
 
 /**
- * 对话消息
+ * 对话消息（OpenAI chat completions 规范形）
  *
  * 四种 role 与 OpenAI chat completions 一致：
  * - `system` —— 系统提示词（agent 的 systemPrompt）
  * - `user` —— 用户输入
- * - `assistant` —— LLM 回复（可能含 toolCalls）
- * - `tool` —— tool 执行结果（需带 toolCallId 标识对应哪个 tool_call）
+ * - `assistant` —— LLM 回复（可能含 tool_calls）
+ * - `tool` —— tool 执行结果（需带 tool_call_id 标识对应哪个 tool_call）
+ *
+ * 字段拼写与 OpenAI 线格式一致（`tool_calls` / `tool_call_id`），OpenAI provider
+ * 对 messages 恒等透传，观测/存储/展示消费方按 OpenAI 形状处理即可。
  */
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   /** 消息内容（assistant 角色 + tool_calls 时可能为空字符串） */
   content: string;
   /** role='tool' 时:对应的 tool_call ID（用于 LLM 关联 tool 结果） */
-  toolCallId?: string;
+  tool_call_id?: string;
   /** role='assistant' 时:LLM 请求的 tool 调用（reactLoop 据此执行 tool） */
-  toolCalls?: LLMToolCall[];
+  tool_calls?: LLMToolCall[];
 }
 
 /**
- * LLM 请求的 tool 调用
+ * assistant 消息内的 tool 调用（OpenAI chat completions 规范形）
  *
- * 由 LLM 在 assistant 消息中返回。`arguments` 已 JSON.parse，
- * reactLoop 直接传给 tool 函数。
+ * 由 LLM 在 assistant 消息中返回。`function.arguments` 是线格式的 JSON **字符串**
+ * （不预解析）——消息历史可原样透传与持久化；[reactLoop](./reactLoop.md) 在执行前
+ * JSON.parse，tool 执行函数 / 鉴权钩子 / trace 事件拿到的都是已 parse 的对象。
  */
 export interface LLMToolCall {
   /** tool call ID（provider 分配，用于匹配 tool 结果） */
   id: string;
-  /** tool 名（匹配 LLMToolDefinition.name） */
-  name: string;
-  /** tool 参数（已 JSON.parse 的对象） */
-  arguments: Record<string, unknown>;
+  /** 固定 `'function'`（OpenAI 线格式） */
+  type: 'function';
+  function: {
+    /** tool 名（匹配 LLMToolDefinition.function.name） */
+    name: string;
+    /** tool 参数（JSON 字符串，线格式原样） */
+    arguments: string;
+  };
 }
 
 /**
- * Tool 定义
+ * Tool 定义（OpenAI chat completions 规范形）
  *
  * 由 [reactLoop](./reactLoop.md) 从 [toolRegistry](../../faapi/src/injection/toolRegistry.md)
  * + [agentRegistry.resolveSubAgents](../../faapi/src/injection/agentRegistry.md) 组装：
- * - 常规 tool：`input` 来自 AST 提取的 zod schema（JSON Schema 形式）
- * - agent-as-tool：`input` 为自由 schema（agent 参数开放）
+ * - 常规 tool：`function.parameters` 来自 AST 提取的 zod schema（JSON Schema 形式）
+ * - agent-as-tool：`function.parameters` 为自由 schema（agent 参数开放）
  */
 export interface LLMToolDefinition {
-  /** tool 名（如 `weather.getWeather` 或 `agent.researcher`） */
-  name: string;
-  /** tool 描述（对 LLM 可见，引导 LLM 选择调用） */
-  description?: string;
-  /** JSON Schema 对象（描述 tool 参数结构） */
-  input: Record<string, unknown>;
+  /** 固定 `'function'`（OpenAI 线格式） */
+  type: 'function';
+  function: {
+    /** tool 名（如 `weather.getWeather` 或 `agent.researcher`） */
+    name: string;
+    /** tool 描述（对 LLM 可见，引导 LLM 选择调用） */
+    description?: string;
+    /** JSON Schema 对象（描述 tool 参数结构） */
+    parameters?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -125,10 +137,10 @@ export type LLMStopReason = 'stop' | 'tool_calls' | 'length' | 'content_filter' 
 /**
  * complete 的返回
  *
- * `message.toolCalls` 不为空时 stopReason 应为 `'tool_calls'`。
+ * `message.tool_calls` 不为空时 stopReason 应为 `'tool_calls'`。
  */
 export interface LLMResponse {
-  /** assistant 消息（含 content + 可选 toolCalls） */
+  /** assistant 消息（OpenAI 规范形，含 content + 可选 tool_calls） */
   message: LLMMessage;
   /** 停止原因（reactLoop 据此判断是否进入下一轮） */
   stopReason: LLMStopReason;
@@ -137,19 +149,21 @@ export interface LLMResponse {
 }
 
 /**
- * Token 用量
+ * Token 用量（OpenAI chat completions 规范形）
  */
 export interface LLMUsage {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
 }
 
 /**
  * stream 的单个 chunk
  *
+ * provider 内部流抽象（非 OpenAI 分片 delta 线格式）：
  * - 内容流：`deltaContent` 为增量 token
- * - tool 调用：累积完成后在最终 chunk 一并 emit `toolCalls`
+ * - tool 调用：累积完成后在最终 chunk 一并 emit `toolCalls`（OpenAI 规范形，
+ *   `function.arguments` 为 JSON 字符串）
  * - 结束：最终 chunk 含 `finishReason` + 可选 `usage`
  */
 export interface LLMStreamChunk {

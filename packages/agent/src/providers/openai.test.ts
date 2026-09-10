@@ -96,12 +96,12 @@ describe('createOpenAIProvider', () => {
 
       expect(res.message.role).toBe('assistant');
       expect(res.message.content).toBe('Hello!');
-      expect(res.message.toolCalls).toBeUndefined();
+      expect(res.message.tool_calls).toBeUndefined();
       expect(res.stopReason).toBe('stop');
       expect(res.usage).toBeUndefined();
     });
 
-    it('tool_calls 响应:返回 toolCalls + stopReason=tool_calls,arguments 已 JSON.parse', async () => {
+    it('tool_calls 响应:返回规范形 tool_calls（arguments 保持线格式 JSON 字符串）', async () => {
       fetchMock.mockResolvedValue(
         jsonResponse(
           openaiResponse({
@@ -117,17 +117,30 @@ describe('createOpenAIProvider', () => {
       const provider = createOpenAIProvider(baseConfig);
       const res = await provider.complete({
         messages: [{ role: 'user', content: 'search and read' }],
-        tools: [{ name: 'search', description: 'search web', input: { type: 'object' } }],
+        tools: [
+          {
+            type: 'function',
+            function: { name: 'search', description: 'search web', parameters: { type: 'object' } },
+          },
+        ],
       });
 
       expect(res.stopReason).toBe('tool_calls');
-      expect(res.message.toolCalls).toEqual([
-        { id: 'call_1', name: 'search', arguments: { q: 'foo' } },
-        { id: 'call_2', name: 'read', arguments: { path: '/tmp' } },
+      expect(res.message.tool_calls).toEqual([
+        {
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'search', arguments: '{"q":"foo"}' },
+        },
+        {
+          id: 'call_2',
+          type: 'function',
+          function: { name: 'read', arguments: '{"path":"/tmp"}' },
+        },
       ]);
     });
 
-    it('usage 字段透传(prompt/completion/total tokens)', async () => {
+    it('usage 字段透传(OpenAI 规范形 snake_case)', async () => {
       fetchMock.mockResolvedValue(
         jsonResponse(
           openaiResponse({
@@ -141,9 +154,9 @@ describe('createOpenAIProvider', () => {
       const res = await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
 
       expect(res.usage).toEqual({
-        promptTokens: 10,
-        completionTokens: 5,
-        totalTokens: 15,
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
       });
     });
 
@@ -281,23 +294,10 @@ describe('createOpenAIProvider', () => {
       expect(url).toBe('https://api.openai.com/v1/chat/completions');
     });
 
-    it('tools 转换为 OpenAI function calling 格式', async () => {
+    it('tools 为 OpenAI 形状时恒等透传（不再重拼写）', async () => {
       fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'ok' })));
 
-      const provider = createOpenAIProvider(baseConfig);
-      await provider.complete({
-        messages: [{ role: 'user', content: 'hi' }],
-        tools: [
-          {
-            name: 'search',
-            description: 'search web',
-            input: { type: 'object', properties: { q: { type: 'string' } } },
-          },
-        ],
-      });
-
-      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.tools).toEqual([
+      const tools = [
         {
           type: 'function',
           function: {
@@ -306,7 +306,15 @@ describe('createOpenAIProvider', () => {
             parameters: { type: 'object', properties: { q: { type: 'string' } } },
           },
         },
-      ]);
+      ];
+      const provider = createOpenAIProvider(baseConfig);
+      await provider.complete({
+        messages: [{ role: 'user', content: 'hi' }],
+        tools,
+      });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.tools).toEqual(tools);
     });
 
     it('temperature / maxTokens 透传到请求体', async () => {
@@ -339,40 +347,29 @@ describe('createOpenAIProvider', () => {
       expect(body.max_tokens).toBe(2048);
     });
 
-    it('assistant + tool 消息在 messages 数组中保留(多轮 tool 调用)', async () => {
+    it('assistant + tool 消息恒等透传（多轮 tool 调用,规范形不再重拼写）', async () => {
       fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'done' })));
 
+      const messages = [
+        { role: 'user', content: 'search foo' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'search', arguments: '{"q":"foo"}' },
+            },
+          ],
+        },
+        { role: 'tool', content: 'result-foo', tool_call_id: 'call_1' },
+      ];
       const provider = createOpenAIProvider(baseConfig);
-      await provider.complete({
-        messages: [
-          { role: 'user', content: 'search foo' },
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [{ id: 'call_1', name: 'search', arguments: { q: 'foo' } }],
-          },
-          { role: 'tool', content: 'result-foo', toolCallId: 'call_1' },
-        ],
-      });
+      await provider.complete({ messages });
 
       const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-      expect(body.messages).toHaveLength(3);
-      expect(body.messages[1]).toEqual({
-        role: 'assistant',
-        content: '',
-        tool_calls: [
-          {
-            id: 'call_1',
-            type: 'function',
-            function: { name: 'search', arguments: '{"q":"foo"}' },
-          },
-        ],
-      });
-      expect(body.messages[2]).toEqual({
-        role: 'tool',
-        content: 'result-foo',
-        tool_call_id: 'call_1',
-      });
+      expect(body.messages).toEqual(messages);
     });
   });
 
@@ -537,7 +534,11 @@ describe('createOpenAIProvider', () => {
       const finalChunk = chunks[chunks.length - 1];
       expect(finalChunk.finishReason).toBe('tool_calls');
       expect(finalChunk.toolCalls).toEqual([
-        { id: 'call_1', name: 'search', arguments: { q: 'foo' } },
+        {
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'search', arguments: '{"q":"foo"}' },
+        },
       ]);
     });
 
@@ -561,9 +562,9 @@ describe('createOpenAIProvider', () => {
 
       const finalChunk = chunks[chunks.length - 1];
       expect(finalChunk.usage).toEqual({
-        promptTokens: 5,
-        completionTokens: 1,
-        totalTokens: 6,
+        prompt_tokens: 5,
+        completion_tokens: 1,
+        total_tokens: 6,
       });
     });
 

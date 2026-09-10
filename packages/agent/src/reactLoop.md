@@ -36,10 +36,10 @@
    - 调 `provider.complete()` 发送 messages + tools
    - 累积 `usage`（多轮 token 用量累加）
    - 把 assistant 消息 push 到 messages
-   - 若 `stopReason !== 'tool_calls'` 或无 `toolCalls` → 返回最终结果
-   - 遍历 `toolCalls`，逐个调 `executeTool(name, args)`
+   - 若 `stopReason !== 'tool_calls'` 或无 `tool_calls` → 返回最终结果
+   - 遍历 `tool_calls`，arguments JSON 字符串 parse 后逐个调 `executeTool(name, args)`（解析边界收拢在 reactLoop，tool 执行函数 / 鉴权钩子 / trace 拿到已 parse 对象）
    - tool 执行错误被 catch，错误消息作为 tool 结果回传 LLM（LLM 可自我恢复）
-   - tool 结果 push 到 messages（role='tool' + toolCallId）
+   - tool 结果 push 到 messages（role='tool' + tool_call_id）
 3. 超出 `maxTurns` → 抛 `ReactLoopError`
 
 ### `reactLoopStream(input, config)` 流程
@@ -75,7 +75,7 @@ tool 执行错误回传 LLM 是业界惯例（OpenAI Agents SDK / LangChain / Cr
 
 LLM 一轮可返回多个 tool_call，非流式路径**并行执行**（`Promise.all`）——总耗时从各 tool 之和降为最慢一个。语义约束：
 
-- **结果按 toolCalls 声明顺序回传**（与完成顺序无关），tool 消息与 id 的配对语义不变
+- **结果按 tool_calls 声明顺序回传**（与完成顺序无关），tool 消息与 id 的配对语义不变
 - **每个 toolCall 独立 try/catch**——单个失败不影响其余的结果回传
 - **`beforeToolCall` / `afterToolCall` 钩子会并发触发**——业务方钩子不应依赖调用顺序（读 ctx 做鉴权/改写与顺序无关）
 - 流式路径（`reactLoopStream`）保持**串行**——chunk 的 yield 顺序受消费端约束
@@ -84,7 +84,7 @@ LLM 一轮可返回多个 tool_call，非流式路径**并行执行**（`Promise
 
 多轮 tool 循环中 `messages` 只增不减，大 tool 结果（如整个文件内容）会把对话历史撑爆模型上下文窗口——下一轮 LLM 直接 400，整个 run 失败。`ReactLoopConfig.maxHistoryTokens`（token 预算，未设置 = 不裁剪，向后兼容）按预算裁剪**发给 LLM 的**消息：
 
-- **裁剪单位是「轮组」**：一条 assistant 消息（可能带 toolCalls）+ 其后全部对应 tool 结果。以轮组为原子单位保证 OpenAI 的 tool 配对约束不被破坏（不裁半轮）
+- **裁剪单位是「轮组」**：一条 assistant 消息（可能带 tool_calls）+ 其后全部对应 tool 结果。以轮组为原子单位保证 OpenAI 的 tool 配对约束不被破坏（不裁半轮）
 - **永不裁剪**：system 消息 + 初始 user 输入（用户目标保留，丢的是中间过程）
 - **至少保留最近一轮**：即使最新轮组自己超预算也保留（不发送空历史）
 - **token 为近似估算**（`字符数 / 2`，中英混合保守值），不引入 tokenizer 依赖
@@ -162,7 +162,7 @@ interface ReactLoopStreamChunk {
 1. **以历史为基础**——不再构造初始 system + user（历史应含此前轮次的全部消息）
 2. **system 自动补齐**——历史中无 `system` 消息且配置了 `systemPrompt` 时，在最前插入（agent 人格/规则不因续跑丢失；`AgentAbortError.messages` 天然含 system，此规则是对业务方自构造历史的容错）
 3. **`input` 追加**——`input` 非空字符串时追加为新的 `user` 消息（多轮对话场景）；`input` 为空（`undefined` / `''`）时纯续跑；两者都为空抛 `AgentError`
-4. **结构校验**——历史中 assistant 消息带 `toolCalls` 时，其后必须紧跟对应数量的 `tool` 结果消息（按 `toolCallId` 配对），缺失抛 `AgentError`（早失败优于 LLM API 400 模糊报错——常见诱因是业务方持久化/反序列化时截断在轮组中间）
+4. **结构校验**——历史中 assistant 消息带 `tool_calls` 时，其后必须紧跟对应数量的 `tool` 结果消息（按 `tool_call_id` 配对），缺失抛 `AgentError`（早失败优于 LLM API 400 模糊报错——常见诱因是业务方持久化/反序列化时截断在轮组中间）
 5. **续跑历史同样受 `maxHistoryTokens` 裁剪**——发给 LLM 的副本按预算裁剪，本地历史不受影响
 
 ### 续跑轮数重新计数

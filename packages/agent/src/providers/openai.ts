@@ -8,7 +8,6 @@ import type {
   LLMStopReason,
   LLMStreamChunk,
   LLMToolCall,
-  LLMToolDefinition,
   LLMUsage,
 } from '../provider';
 
@@ -152,11 +151,12 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
 
     const body: OpenAIRequestBody = {
       model: modelName,
-      messages: request.messages.map(toOpenAIMessage),
+      // 规范形即 OpenAI 形状：messages / tools 恒等透传，无重拼写
+      messages: request.messages,
     };
 
     if (request.tools && request.tools.length > 0) {
-      body.tools = request.tools.map(toOpenAITool);
+      body.tools = request.tools;
     }
 
     // 合并 config 透传字段：provider 级 + model 级覆盖（model 级优先）
@@ -372,14 +372,14 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
     }
 
     const content = msg.content ?? '';
-    const toolCalls = parseToolCalls(msg.tool_calls, bodyText, response.status);
+    const toolCalls = normalizeToolCalls(msg.tool_calls, bodyText, response.status);
+
+    // assistant 消息按规范形构造（OpenAI 形状，tool_calls 原样保留字符串参数）
+    const message: LLMMessage = { role: 'assistant', content };
+    if (toolCalls) message.tool_calls = toolCalls;
 
     return {
-      message: {
-        role: 'assistant',
-        content,
-        toolCalls,
-      },
+      message,
       stopReason: mapStopReason(choice.finish_reason ?? undefined),
       usage: mapUsage(json.usage),
     };
@@ -492,37 +492,14 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
 
 // ─── 辅助函数 ──────────────────────────────────────
 
-/** LLMMessage → OpenAI 消息格式 */
-function toOpenAIMessage(msg: LLMMessage): unknown {
-  const out: Record<string, unknown> = {
-    role: msg.role,
-    content: msg.content,
-  };
-  if (msg.toolCallId !== undefined) out.tool_call_id = msg.toolCallId;
-  if (msg.toolCalls !== undefined && msg.toolCalls.length > 0) {
-    out.tool_calls = msg.toolCalls.map((tc) => ({
-      id: tc.id,
-      type: 'function',
-      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-    }));
-  }
-  return out;
-}
-
-/** LLMToolDefinition → OpenAI tool 定义格式 */
-function toOpenAITool(tool: LLMToolDefinition): unknown {
-  return {
-    type: 'function',
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.input,
-    },
-  };
-}
-
-/** OpenAI tool_calls 数组 → LLMToolCall[],JSON.parse 每个 arguments */
-function parseToolCalls(
+/**
+ * OpenAI tool_calls 数组 → 规范形 LLMToolCall[]
+ *
+ * 补全缺失的 id/name 默认值并**校验 arguments 可解析**（不合法抛
+ * `LLMProviderError`，fail-fast 在 provider 边界），`arguments` 保持线格式
+ * JSON 字符串——解析边界收敛在 reactLoop（执行前 parse）。
+ */
+function normalizeToolCalls(
   toolCalls: OpenAIToolCall[] | undefined,
   bodyText: string,
   status: number,
@@ -533,9 +510,8 @@ function parseToolCalls(
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i];
     const argsStr = tc?.function?.arguments ?? '{}';
-    let args: Record<string, unknown>;
     try {
-      args = JSON.parse(argsStr);
+      JSON.parse(argsStr);
     } catch {
       const excerpt = argsStr.slice(0, 500);
       throw new LLMProviderError(`Invalid tool arguments JSON: ${excerpt}`, {
@@ -545,8 +521,8 @@ function parseToolCalls(
     }
     result.push({
       id: tc?.id ?? `call_${i}`,
-      name: tc?.function?.name ?? '',
-      arguments: args,
+      type: 'function',
+      function: { name: tc?.function?.name ?? '', arguments: argsStr },
     });
   }
   return result;
@@ -568,7 +544,7 @@ function mapStopReason(fr: string | undefined | null): LLMStopReason {
   }
 }
 
-/** OpenAI usage → LLMUsage */
+/** OpenAI usage → 规范形 LLMUsage（snake_case，缺省补 0） */
 function mapUsage(u?: {
   prompt_tokens?: number;
   completion_tokens?: number;
@@ -576,9 +552,9 @@ function mapUsage(u?: {
 }): LLMUsage | undefined {
   if (!u) return undefined;
   return {
-    promptTokens: u.prompt_tokens ?? 0,
-    completionTokens: u.completion_tokens ?? 0,
-    totalTokens: u.total_tokens ?? 0,
+    prompt_tokens: u.prompt_tokens ?? 0,
+    completion_tokens: u.completion_tokens ?? 0,
+    total_tokens: u.total_tokens ?? 0,
   };
 }
 
@@ -649,7 +625,7 @@ function accumulateToolCall(
   accumulators.set(idx, acc);
 }
 
-/** 流结束时把累积器转为 LLMToolCall[] + finishReason + usage 一并 emit */
+/** 流结束时把累积器转为规范形 LLMToolCall[]（arguments 保持 JSON 字符串，校验可解析）+ finishReason + usage 一并 emit */
 function finalizeStreamChunk(
   accumulators: Map<number, ToolCallAccumulator>,
   finishReason: LLMStopReason | undefined,
@@ -662,19 +638,19 @@ function finalizeStreamChunk(
       const acc = accumulators.get(idx)!;
       // 跳过不完整(无 id 或 name)的累积,异常流不应阻止结束
       if (!acc.id || !acc.name) continue;
-      let args: Record<string, unknown>;
+      const argsStr = acc.argsString || '{}';
       try {
-        args = acc.argsString ? JSON.parse(acc.argsString) : {};
+        JSON.parse(argsStr);
       } catch {
-        const excerpt = acc.argsString.slice(0, 500);
+        const excerpt = argsStr.slice(0, 500);
         throw new LLMProviderError(`Invalid tool arguments JSON: ${excerpt}`, {
           body: excerpt,
         });
       }
       toolCalls.push({
         id: acc.id,
-        name: acc.name,
-        arguments: args,
+        type: 'function',
+        function: { name: acc.name, arguments: argsStr },
       });
     }
   }

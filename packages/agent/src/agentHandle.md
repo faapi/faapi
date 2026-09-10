@@ -123,7 +123,7 @@ interface AgentRunOptions {
    * 提供时以其为基础（历史应含 system）,agent 的 systemPrompt 缺失时自动补齐；
    * `input` 非空时追加为新的 user 消息（多轮对话）,为空时纯续跑。
    * 续跑源:`AgentAbortError.messages`（中断断点）/ `ReactLoopError.messages`（maxTurns 超限）/
-   * 上次 `result.messages`（多轮对话）。历史经结构校验,assistant.toolCalls 与 tool 结果
+   * 上次 `result.messages`（多轮对话）。历史经结构校验,assistant.tool_calls 与 tool 结果
    * 配对不完整时抛 `AgentError`。
    */
   messages?: LLMMessage[];

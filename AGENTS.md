@@ -435,7 +435,8 @@ export default {
       if ('workspaceId' in args) args.workspaceId = ctx.workspace.id;
     },
     filterTools(tools, ctx) {
-      return tools.filter((t) => t.name.startsWith('agent.') || isAllowed(ctx?.workspace, t.name));
+      // tools 为 OpenAI 规范形（type: 'function' + function.name），6.0.0 起
+      return tools.filter((t) => t.function.name.startsWith('agent.') || isAllowed(ctx?.workspace, t.function.name));
     },
   },
 

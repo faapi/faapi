@@ -105,10 +105,10 @@ function validateResumeHistory(messages: LLMMessage[]): void {
         `Invalid resume history at messages[${index}]: unknown role "${String(message.role)}"`,
       );
     }
-    if (message.role === 'assistant' && message.toolCalls?.length) {
-      const missing = new Set(message.toolCalls.map((call) => call.id));
+    if (message.role === 'assistant' && message.tool_calls?.length) {
+      const missing = new Set(message.tool_calls.map((call) => call.id));
       for (let j = index + 1; j < messages.length && messages[j]!.role === 'tool'; j++) {
-        missing.delete(messages[j]!.toolCallId ?? '');
+        missing.delete(messages[j]!.tool_call_id ?? '');
       }
       if (missing.size > 0) {
         throw new AgentError(
@@ -613,17 +613,17 @@ export class Agent {
   }
 
   /**
-   * 组装 LLM 可见 tool 列表
+   * 组装 LLM 可见 tool 列表（OpenAI chat completions 规范形）
    *
-   * 合并两个来源（按 `name` 去重，先入者保留）：
+   * 合并两个来源（按 `function.name` 去重，先入者保留）：
    * 1. **resolveAgentTools** —— agent 显式声明的 `tools` 引用
    * 2. **sub-agent** —— `resolveSubAgents` 每个包装为 `agent.<name>`
    *
-   * 每个常规 tool 的 `input`：
+   * 每个常规 tool 的 `function.parameters`：
    * - `resolveToolSchema` 提供 → 用其 `jsonSchema`
    * - 未提供 / tool 无 `inputTypeName` → 自由 schema `{ type: 'object' }`
    *
-   * sub-agent 的 `input` 始终为 `{ type: 'object' }`（agent 参数开放）。
+   * sub-agent 的 `function.parameters` 始终为 `{ type: 'object' }`（agent 参数开放）。
    */
   private async buildToolDefinitions(agentName: string): Promise<LLMToolDefinition[]> {
     const definitions = new Map<string, LLMToolDefinition>();
@@ -633,9 +633,12 @@ export class Agent {
       if (definitions.has(tool.name)) continue;
       const schemaRes = await this.getToolSchema(tool);
       definitions.set(tool.name, {
-        name: tool.name,
-        description: tool.description,
-        input: schemaRes?.jsonSchema ?? { type: 'object' },
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: schemaRes?.jsonSchema ?? { type: 'object' },
+        },
       });
     }
 
@@ -644,9 +647,12 @@ export class Agent {
       const name = `agent.${subAgent.name}`;
       if (definitions.has(name)) continue;
       definitions.set(name, {
-        name,
-        description: subAgent.description,
-        input: { type: 'object' },
+        type: 'function',
+        function: {
+          name,
+          description: subAgent.description,
+          parameters: { type: 'object' },
+        },
       });
     }
 

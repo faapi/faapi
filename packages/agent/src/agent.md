@@ -6,7 +6,7 @@
 
 [reactLoop](./reactLoop.md)（Phase 3.3）是纯循环引擎——它只接收 `ReactLoopConfig`（provider + systemPrompt + tools + executeTool + maxTurns），不关心 tool 从哪来、如何加载、sub-agent 如何递归。需要一个组件负责「组装 config」和「执行 tool」：
 
-- **组装 tool 列表**——从 faapi 核心的 `agentRegistry.resolveAgentTools` + `resolveSubAgents` 合并出 `LLMToolDefinition[]`,带每个 tool 的 input schema（JSON Schema）
+- **组装 tool 列表**——从 faapi 核心的 `agentRegistry.resolveAgentTools` + `resolveSubAgents` 合并出 `LLMToolDefinition[]`（OpenAI chat completions 规范形）,每个 tool 的 `function.parameters` 为 JSON Schema
 - **执行 tool**——`reactLoop` 调 `executeTool(name, args, enableTracing)` 时,Agent 路由：
   - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
   - `agent.` 前缀 → 递归构造 sub-agent 调用（含 `maxAgentDepth` 防护 + 传递 `enableTracing`）
@@ -115,7 +115,7 @@ class Agent {
 合并两个来源（按 `name` 去重,先入者保留）：
 
 1. **agent.tools 引用** —— `resolveAgentTools(agentName)` 返回 agent 显式声明的 `tools` 引用
-2. **sub-agent** —— `resolveSubAgents(agentName)` 每个包装为 `agent.<name>`（input 为自由 schema `{ type: 'object' }`）
+2. **sub-agent** —— `resolveSubAgents(agentName)` 每个包装为 `agent.<name>`（`function.parameters` 为自由 schema `{ type: 'object' }`）
 
 每个常规 tool 的 `input`：
 - `getToolSchema(tool)`（带缓存）提供 → 用其 `jsonSchema`

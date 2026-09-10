@@ -6,6 +6,7 @@ import type {
   LLMResponse,
   LLMStreamChunk,
   LLMMessage,
+  LLMToolCall,
   LLMUsage,
   LLMStopReason,
 } from './provider';
@@ -13,10 +14,15 @@ import type { AgentTrace, TracingToolResult } from './trace';
 
 // ─── Mock 工具 ──────────────────────────────────────
 
+/** 构造规范形 LLMToolCall（arguments 对象转 JSON 字符串） */
+function toolCall(id: string, name: string, args: Record<string, unknown> = {}): LLMToolCall {
+  return { id, type: 'function', function: { name, arguments: JSON.stringify(args) } };
+}
+
 /** 构造 LLMResponse（complete 模式） */
 function llmResponse(opts: {
   content?: string;
-  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  toolCalls?: LLMToolCall[];
   stopReason?: LLMStopReason;
   usage?: LLMUsage;
 }): LLMResponse {
@@ -25,7 +31,7 @@ function llmResponse(opts: {
     content: opts.content ?? '',
   };
   if (opts.toolCalls && opts.toolCalls.length > 0) {
-    message.toolCalls = opts.toolCalls;
+    message.tool_calls = opts.toolCalls;
   }
   return {
     message,
@@ -151,16 +157,16 @@ describe('reactLoop', () => {
         llmResponse({
           content: 'ok',
           stopReason: 'stop',
-          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
         }),
       ]);
 
       const result = await reactLoop('hi', { provider, executeTool: baseConfig.executeTool });
 
       expect(result.usage).toEqual({
-        promptTokens: 10,
-        completionTokens: 5,
-        totalTokens: 15,
+        prompt_tokens: 10,
+        completion_tokens: 5,
+        total_tokens: 15,
       });
     });
 
@@ -181,7 +187,7 @@ describe('reactLoop', () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           content: '',
-          toolCalls: [{ id: 'call_1', name: 'search', arguments: { q: 'foo' } }],
+          toolCalls: [toolCall('call_1', 'search', { q: 'foo' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'Found foo', stopReason: 'stop' }),
@@ -207,7 +213,7 @@ describe('reactLoop', () => {
       expect(toolMsg).toEqual({
         role: 'tool',
         content: 'result-foo',
-        toolCallId: 'call_1',
+        tool_call_id: 'call_1',
       });
     });
 
@@ -216,8 +222,8 @@ describe('reactLoop', () => {
         llmResponse({
           content: '',
           toolCalls: [
-            { id: 'call_1', name: 'search', arguments: { q: 'a' } },
-            { id: 'call_2', name: 'read', arguments: { path: '/b' } },
+            toolCall('call_1', 'search', { q: 'a' }),
+            toolCall('call_2', 'read', { path: '/b' }),
           ],
           stopReason: 'tool_calls',
         }),
@@ -236,11 +242,11 @@ describe('reactLoop', () => {
     it('多轮 tool 调用(3 轮 LLM,2 次 tool)', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'step1', arguments: {} }],
+          toolCalls: [toolCall('c1', 'step1', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({
-          toolCalls: [{ id: 'c2', name: 'step2', arguments: {} }],
+          toolCalls: [toolCall('c2', 'step2', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'final', stopReason: 'stop' }),
@@ -263,7 +269,7 @@ describe('reactLoop', () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           content: '',
-          toolCalls: [{ id: 'c1', name: 't', arguments: {} }],
+          toolCalls: [toolCall('c1', 't', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -275,13 +281,13 @@ describe('reactLoop', () => {
       // messages: [user, assistant(toolCalls), tool(result)]
       expect(secondRequest.messages).toHaveLength(3);
       expect(secondRequest.messages[1].role).toBe('assistant');
-      expect(secondRequest.messages[1].toolCalls).toBeDefined();
+      expect(secondRequest.messages[1].tool_calls).toBeDefined();
     });
 
     it('tool 结果为非 string 时自动 JSON.stringify', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'getData', arguments: {} }],
+          toolCalls: [toolCall('c1', 'getData', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'ok', stopReason: 'stop' }),
@@ -298,7 +304,7 @@ describe('reactLoop', () => {
     it('tool 结果为 number 时 JSON.stringify', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'count', arguments: {} }],
+          toolCalls: [toolCall('c1', 'count', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'ok', stopReason: 'stop' }),
@@ -315,23 +321,23 @@ describe('reactLoop', () => {
     it('usage 多轮累加', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 't', arguments: {} }],
+          toolCalls: [toolCall('c1', 't', {})],
           stopReason: 'tool_calls',
-          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
         }),
         llmResponse({
           content: 'ok',
           stopReason: 'stop',
-          usage: { promptTokens: 20, completionTokens: 3, totalTokens: 23 },
+          usage: { prompt_tokens: 20, completion_tokens: 3, total_tokens: 23 },
         }),
       ]);
 
       const result = await reactLoop('hi', { provider, executeTool: baseConfig.executeTool });
 
       expect(result.usage).toEqual({
-        promptTokens: 30,
-        completionTokens: 8,
-        totalTokens: 38,
+        prompt_tokens: 30,
+        completion_tokens: 8,
+        total_tokens: 38,
       });
     });
 
@@ -378,7 +384,7 @@ describe('reactLoop', () => {
       const { provider } = createMockProvider(
         Array.from({ length: 5 }, () =>
           llmResponse({
-            toolCalls: [{ id: 'c1', name: 't', arguments: {} }],
+            toolCalls: [toolCall('c1', 't', {})],
             stopReason: 'tool_calls',
           }),
         ),
@@ -397,7 +403,7 @@ describe('reactLoop', () => {
     it('maxTurns 默认 10', async () => {
       const responses = Array.from({ length: 11 }, () =>
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 't', arguments: {} }],
+          toolCalls: [toolCall('c1', 't', {})],
           stopReason: 'tool_calls',
         }),
       );
@@ -411,7 +417,7 @@ describe('reactLoop', () => {
     it('maxTurns=1 时,LLM 返回 tool_calls 会抛错(无法继续)', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 't', arguments: {} }],
+          toolCalls: [toolCall('c1', 't', {})],
           stopReason: 'tool_calls',
         }),
       ]);
@@ -441,7 +447,7 @@ describe('reactLoop', () => {
     it('executeTool 抛错时,错误消息回传 LLM(不传播)', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'fail', arguments: {} }],
+          toolCalls: [toolCall('c1', 'fail', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'recovered', stopReason: 'stop' }),
@@ -462,7 +468,7 @@ describe('reactLoop', () => {
     it('executeTool 抛非 Error 对象时,String(err) 作为 tool 结果', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'fail', arguments: {} }],
+          toolCalls: [toolCall('c1', 'fail', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'ok', stopReason: 'stop' }),
@@ -496,7 +502,7 @@ describe('reactLoop', () => {
     it('包含完整对话历史(system + user + assistant + tool)', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 't', arguments: {} }],
+          toolCalls: [toolCall('c1', 't', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'final', stopReason: 'stop' }),
@@ -561,7 +567,7 @@ describe('reactLoopStream', () => {
           { deltaContent: 'x' },
           {
             finishReason: 'stop',
-            usage: { promptTokens: 5, completionTokens: 1, totalTokens: 6 },
+            usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
           },
         ],
       ]);
@@ -572,9 +578,9 @@ describe('reactLoopStream', () => {
 
       const done = chunks.find((c) => c.done !== undefined);
       expect(done!.done!.usage).toEqual({
-        promptTokens: 5,
-        completionTokens: 1,
-        totalTokens: 6,
+        prompt_tokens: 5,
+        completion_tokens: 1,
+        total_tokens: 6,
       });
     });
   });
@@ -586,7 +592,7 @@ describe('reactLoopStream', () => {
         [
           { deltaContent: '' },
           {
-            toolCalls: [{ id: 'c1', name: 'search', arguments: { q: 'foo' } }],
+            toolCalls: [toolCall('c1', 'search', { q: 'foo' })],
             finishReason: 'tool_calls',
           },
         ],
@@ -627,16 +633,16 @@ describe('reactLoopStream', () => {
       const { provider } = createMockStreamProvider([
         [
           {
-            toolCalls: [{ id: 'c1', name: 't', arguments: {} }],
+            toolCalls: [toolCall('c1', 't', {})],
             finishReason: 'tool_calls',
-            usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
           },
         ],
         [
           { deltaContent: 'ok' },
           {
             finishReason: 'stop',
-            usage: { promptTokens: 20, completionTokens: 3, totalTokens: 23 },
+            usage: { prompt_tokens: 20, completion_tokens: 3, total_tokens: 23 },
           },
         ],
       ]);
@@ -647,9 +653,9 @@ describe('reactLoopStream', () => {
 
       const done = chunks.find((c) => c.done !== undefined);
       expect(done!.done!.usage).toEqual({
-        promptTokens: 30,
-        completionTokens: 8,
-        totalTokens: 38,
+        prompt_tokens: 30,
+        completion_tokens: 8,
+        total_tokens: 38,
       });
     });
 
@@ -658,8 +664,8 @@ describe('reactLoopStream', () => {
         [
           {
             toolCalls: [
-              { id: 'c1', name: 'search', arguments: { q: 'a' } },
-              { id: 'c2', name: 'read', arguments: { path: '/b' } },
+              toolCall('c1', 'search', { q: 'a' }),
+              toolCall('c2', 'read', { path: '/b' }),
             ],
             finishReason: 'tool_calls',
           },
@@ -685,7 +691,7 @@ describe('reactLoopStream', () => {
       const { provider } = createMockStreamProvider([
         [
           {
-            toolCalls: [{ id: 'c1', name: 'fail', arguments: {} }],
+            toolCalls: [toolCall('c1', 'fail', {})],
             finishReason: 'tool_calls',
           },
         ],
@@ -710,13 +716,13 @@ describe('reactLoopStream', () => {
       const { provider } = createMockStreamProvider([
         [
           {
-            toolCalls: [{ id: 'c1', name: 't', arguments: {} }],
+            toolCalls: [toolCall('c1', 't', {})],
             finishReason: 'tool_calls',
           },
         ],
         [
           {
-            toolCalls: [{ id: 'c2', name: 't', arguments: {} }],
+            toolCalls: [toolCall('c2', 't', {})],
             finishReason: 'tool_calls',
           },
         ],
@@ -766,7 +772,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
    * ReactLoopResult.trace 填充 AgentTrace,事件按发生顺序排列。
    * 流式版本通过 ReactLoopStreamChunk.traceEvent 增量推送。
    */
-  const usage: LLMUsage = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
+  const usage: LLMUsage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
 
   /** 构造一个 sub-agent trace（用于 TracingToolResult 测试） */
   function makeSubTrace(name: string): AgentTrace {
@@ -864,7 +870,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     it('2 轮 trace:llm_call → tool_call → llm_call 顺序正确', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'search', arguments: { q: 'foo' } }],
+          toolCalls: [toolCall('c1', 'search', { q: 'foo' })],
           stopReason: 'tool_calls',
           usage,
         }),
@@ -911,10 +917,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     it('并行 tool 的 durationMs 各自独立（不含等待其他 tool 的时间）', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [
-            { id: 'fast', name: 'fast-tool', arguments: {} },
-            { id: 'slow', name: 'slow-tool', arguments: {} },
-          ],
+          toolCalls: [toolCall('fast', 'fast-tool', {}), toolCall('slow', 'slow-tool', {})],
           stopReason: 'tool_calls',
           usage,
         }),
@@ -952,7 +955,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
       const subTrace = makeSubTrace('translator');
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'agent.translator', arguments: { input: 'hi' } }],
+          toolCalls: [toolCall('c1', 'agent.translator', { input: 'hi' })],
           stopReason: 'tool_calls',
           usage,
         }),
@@ -992,7 +995,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     it('tool 抛错:tool_call 事件含 error 字段,result 为 stringifyError', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'fail', arguments: {} }],
+          toolCalls: [toolCall('c1', 'fail', {})],
           stopReason: 'tool_calls',
           usage,
         }),
@@ -1026,7 +1029,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
           { deltaContent: 'Hello' },
           { deltaContent: ' world' },
           {
-            toolCalls: [{ id: 'c1', name: 'search', arguments: { q: 'foo' } }],
+            toolCalls: [toolCall('c1', 'search', { q: 'foo' })],
             finishReason: 'tool_calls',
             usage,
           },
@@ -1093,7 +1096,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
       const { provider } = createMockStreamProvider([
         [
           {
-            toolCalls: [{ id: 'c1', name: 'agent.translator', arguments: { input: 'hi' } }],
+            toolCalls: [toolCall('c1', 'agent.translator', { input: 'hi' })],
             finishReason: 'tool_calls',
             usage,
           },
@@ -1157,7 +1160,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
   it('maxHistoryTokens 未设置时行为不变（历史全量发送）', async () => {
     const { provider, completeCalls } = createMockProvider([
       llmResponse({
-        toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+        toolCalls: [toolCall('c1', 't1', {})],
         stopReason: 'tool_calls',
       }),
       llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1178,11 +1181,11 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     // 预算只够装下 system + user + 最近一轮：第一轮 assistant/tool 被裁
     const { provider, completeCalls } = createMockProvider([
       llmResponse({
-        toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+        toolCalls: [toolCall('c1', 't1', {})],
         stopReason: 'tool_calls',
       }),
       llmResponse({
-        toolCalls: [{ id: 'c2', name: 't2', arguments: {} }],
+        toolCalls: [toolCall('c2', 't2', {})],
         stopReason: 'tool_calls',
       }),
       llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1200,18 +1203,15 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     const roles = third.map((m: LLMMessage) => m.role);
     expect(roles[0]).toBe('system');
     expect(roles[1]).toBe('user');
-    expect(third.some((m: LLMMessage) => m.toolCallId === 'c1')).toBe(false);
-    expect(third.some((m: LLMMessage) => m.toolCallId === 'c2')).toBe(true);
+    expect(third.some((m: LLMMessage) => m.tool_call_id === 'c1')).toBe(false);
+    expect(third.some((m: LLMMessage) => m.tool_call_id === 'c2')).toBe(true);
   });
 
   it('裁剪以轮组为原子单位：assistant.toolCalls 与 tool 结果不拆散', async () => {
     // 一轮带 2 个 toolCalls，tool 结果也大——轮组要么完整保留要么整体消失
     const { provider, completeCalls } = createMockProvider([
       llmResponse({
-        toolCalls: [
-          { id: 'a1', name: 't1', arguments: {} },
-          { id: 'a2', name: 't2', arguments: {} },
-        ],
+        toolCalls: [toolCall('a1', 't1', {}), toolCall('a2', 't2', {})],
         stopReason: 'tool_calls',
       }),
       llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1226,17 +1226,17 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     // 第二轮：轮组超预算仍完整保留（至少保留最近一轮），且配对完整
     const second = completeCalls.mock.calls[1][0].messages;
     const assistant = second.find((m: LLMMessage) => m.role === 'assistant');
-    expect(assistant?.toolCalls).toHaveLength(2);
+    expect(assistant?.tool_calls).toHaveLength(2);
     const toolIds = second
       .filter((m: LLMMessage) => m.role === 'tool')
-      .map((m: LLMMessage) => m.toolCallId);
+      .map((m: LLMMessage) => m.tool_call_id);
     expect(toolIds).toEqual(['a1', 'a2']);
   });
 
   it('流式循环同样执行裁剪', async () => {
     const { provider, streamCalls } = createMockStreamProvider([
-      [{ toolCalls: [{ id: 'c1', name: 't1', arguments: {} }], finishReason: 'tool_calls' }],
-      [{ toolCalls: [{ id: 'c2', name: 't2', arguments: {} }], finishReason: 'tool_calls' }],
+      [{ toolCalls: [toolCall('c1', 't1', {})], finishReason: 'tool_calls' }],
+      [{ toolCalls: [toolCall('c2', 't2', {})], finishReason: 'tool_calls' }],
       [{ deltaContent: 'done', finishReason: 'stop' }],
     ]);
 
@@ -1251,8 +1251,8 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     }
 
     const third = streamCalls.mock.calls[2][0].messages;
-    expect(third.some((m: LLMMessage) => m.toolCallId === 'c1')).toBe(false);
-    expect(third.some((m: LLMMessage) => m.toolCallId === 'c2')).toBe(true);
+    expect(third.some((m: LLMMessage) => m.tool_call_id === 'c1')).toBe(false);
+    expect(third.some((m: LLMMessage) => m.tool_call_id === 'c2')).toBe(true);
   });
 
   it('同轮多个 tool_call 并行执行（并发峰值 > 1）', async () => {
@@ -1260,10 +1260,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     let peak = 0;
     const { provider } = createMockProvider([
       llmResponse({
-        toolCalls: [
-          { id: 'c1', name: 't1', arguments: {} },
-          { id: 'c2', name: 't2', arguments: {} },
-        ],
+        toolCalls: [toolCall('c1', 't1', {}), toolCall('c2', 't2', {})],
         stopReason: 'tool_calls',
       }),
       llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1286,10 +1283,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
   it('并行后 tool 结果仍按 toolCalls 顺序回传（慢的先完成不乱序）', async () => {
     const { provider, completeCalls } = createMockProvider([
       llmResponse({
-        toolCalls: [
-          { id: 'slow', name: 't1', arguments: {} },
-          { id: 'fast', name: 't2', arguments: {} },
-        ],
+        toolCalls: [toolCall('slow', 't1', {}), toolCall('fast', 't2', {})],
         stopReason: 'tool_calls',
       }),
       llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1308,16 +1302,13 @@ describe('tracing — reactLoop + reactLoopStream', () => {
       (m: LLMMessage) => m.role === 'tool',
     );
     // 顺序与 toolCalls 声明一致：slow 在前、fast 在后（与完成顺序无关）
-    expect(toolMsgs.map((m: LLMMessage) => m.toolCallId)).toEqual(['slow', 'fast']);
+    expect(toolMsgs.map((m: LLMMessage) => m.tool_call_id)).toEqual(['slow', 'fast']);
   });
 
   it('并行执行时单个 tool 抛错不影响其他 tool 的结果回传', async () => {
     const { provider, completeCalls } = createMockProvider([
       llmResponse({
-        toolCalls: [
-          { id: 'c1', name: 'boom', arguments: {} },
-          { id: 'c2', name: 'ok', arguments: {} },
-        ],
+        toolCalls: [toolCall('c1', 'boom', {}), toolCall('c2', 'ok', {})],
         stopReason: 'tool_calls',
       }),
       llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1350,9 +1341,9 @@ describe('中断恢复（Resume）', () => {
     {
       role: 'assistant',
       content: '',
-      toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+      toolCalls: [toolCall('c1', 't1', {})],
     },
-    { role: 'tool', content: 'r1', toolCallId: 'c1' },
+    { role: 'tool', content: 'r1', tool_call_id: 'c1' },
   ];
 
   describe('config.messages 续跑', () => {
@@ -1473,7 +1464,7 @@ describe('中断恢复（Resume）', () => {
       const controller = new AbortController();
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+          toolCalls: [toolCall('c1', 't1', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'never reached' }),
@@ -1491,7 +1482,7 @@ describe('中断恢复（Resume）', () => {
       expect(err).toBeInstanceOf(AgentAbortError);
       // 完整轮组：assistant.toolCalls 与 tool 结果按 id 配对
       expect(err.messages.map((m: LLMMessage) => m.role)).toEqual(['user', 'assistant', 'tool']);
-      expect(err.messages[2]).toEqual({ role: 'tool', content: 'r1', toolCallId: 'c1' });
+      expect(err.messages[2]).toEqual({ role: 'tool', content: 'r1', tool_call_id: 'c1' });
       // 第二轮 LLM 调用未发起（轮首预检查拦截）
       expect(completeCalls).toHaveBeenCalledTimes(1);
     });
@@ -1557,7 +1548,7 @@ describe('中断恢复（Resume）', () => {
     it('非流式：ReactLoopError.messages 携带完整历史（可提高 maxTurns 后续跑）', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+          toolCalls: [toolCall('c1', 't1', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'never reached' }),
@@ -1578,7 +1569,7 @@ describe('中断恢复（Resume）', () => {
       const { provider } = createMockStreamProvider([
         [
           {
-            toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+            toolCalls: [toolCall('c1', 't1', {})],
             finishReason: 'tool_calls',
           },
         ],

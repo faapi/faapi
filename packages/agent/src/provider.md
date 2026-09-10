@@ -1,6 +1,6 @@
 # provider
 
-一句话概括：LLM Provider 抽象层——统一 `complete` / `stream` 接口，屏蔽 OpenAI / Anthropic 等 LLM 服务差异，让 reactLoop 与 Agent 类对 LLM 无关。
+一句话概括：LLM Provider 抽象层——统一 `complete` / `stream` 接口，messages / tools / message / usage 采用 **OpenAI chat completions 形状作为规范形**，屏蔽 OpenAI / Anthropic 等 LLM 服务差异，让 reactLoop 与 Agent 类对 LLM 无关。
 
 ## 为什么需要
 
@@ -11,6 +11,20 @@
 - Google Gemini → generateContent API
 
 直接在 reactLoop 里 `fetch` OpenAI 会让 LLM 服务耦合死，且未来加 provider 要改 reactLoop。`LLMProvider` 接口把"如何调用 LLM"封装在 provider 适配器里，reactLoop 只看抽象接口。
+
+## 规范形 = OpenAI chat completions 形状
+
+messages / tools / assistant message / usage 的规范形**直接采用 OpenAI chat completions 的线格式**（`tool_calls` / `tool_call_id` / `function.parameters` / `prompt_tokens`），不自创拼写。理由：
+
+1. **OpenAI 形状是生态事实标准**——主流 provider / 网关 / vLLM 均提供 OpenAI 兼容端点，Anthropic 亦有兼容层，消费方零学习成本
+2. **OpenAI provider 退化为恒等变换**——请求 messages / tools 原样透传，无重拼写；Anthropic 等非 OpenAI provider 在各自适配器内做"OpenAI → 该家"翻译，不引入第三种形状
+3. **观测 / 存储 / 展示 / 提取等消费方只需懂一种格式**——recording provider、call log 分析、回放展示直接按 OpenAI 形状处理，无需框架格式兼容层
+
+边界（保持内部抽象，不采用线格式）：
+
+- `LLMStreamChunk` —— provider 的流事件抽象（增量 token 已聚合、tool_calls 累积完成后整体 emit），不是 OpenAI 的分片 delta 线格式
+- `LLMStopReason` —— 词表恰与 OpenAI `finish_reason` 一致（`stop` / `tool_calls` / `length` / `content_filter` / `other`），收窄未知值为 `other`
+- `ReactLoopStreamChunk` / trace 事件 —— reactLoop 层事件（tool 参数已 JSON.parse 为对象），非线格式
 
 ## 使用场景
 
@@ -26,13 +40,48 @@
 
 | 类型 | 说明 |
 | --- | --- |
-| `LLMMessage` | 对话消息（role + content + 可选 tool_calls / toolCallId） |
-| `LLMToolCall` | LLM 请求的 tool 调用（id + name + arguments 已 JSON.parse） |
-| `LLMToolDefinition` | tool 定义（name + description + JSON Schema input） |
+| `LLMMessage` | 对话消息，OpenAI chat completions 形状（role + content + 可选 `tool_calls` / `tool_call_id`） |
+| `LLMToolCall` | assistant 消息内的 tool 调用，OpenAI 形状（`id` + `type: 'function'` + `function: { name, arguments }`，`arguments` 为 JSON 字符串） |
+| `LLMToolDefinition` | tool 定义，OpenAI 形状（`type: 'function'` + `function: { name, description?, parameters? }`） |
 | `LLMCompleteRequest` | complete / stream 的入参（messages + tools + 可选 model / temperature / maxTokens） |
 | `LLMResponse` | complete 的返回（message + stopReason + usage） |
-| `LLMStreamChunk` | stream 的单个 chunk（deltaContent + toolCalls + finishReason + usage） |
-| `LLMUsage` | token 用量（promptTokens + completionTokens + totalTokens） |
+| `LLMStreamChunk` | stream 的单个 chunk（deltaContent + toolCalls + finishReason + usage，provider 内部流抽象） |
+| `LLMUsage` | token 用量，OpenAI 形状（`prompt_tokens` + `completion_tokens` + `total_tokens`） |
+
+```ts
+interface LLMMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_call_id?: string;          // role='tool' 时
+  tool_calls?: LLMToolCall[];     // role='assistant' 时
+}
+
+interface LLMToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;            // JSON 字符串（线格式原样，执行前由 reactLoop JSON.parse）
+  };
+}
+
+interface LLMToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;  // JSON Schema
+  };
+}
+
+interface LLMUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+```
+
+`tool_calls[].function.arguments` 保持线格式的 JSON **字符串**（不预解析）——消息历史可原样透传给 LLM 与原样持久化，解析边界收敛在 reactLoop（执行 / 鉴权钩子 / trace 拿到的都是已 parse 的对象）。
 
 ### `LLMProvider` 接口
 

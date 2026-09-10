@@ -19,6 +19,7 @@ import type {
   LLMUsage,
   LLMMessage,
   LLMToolDefinition,
+  LLMToolCall,
 } from './provider';
 
 // ─── Mock 数据构造器 ─────────────────────────────────
@@ -63,9 +64,15 @@ function toolMeta(opts: Partial<ToolMetadata> = {}): ToolMetadata {
 }
 
 /** 构造 LLMResponse（complete 模式） */
+/** 构造规范形 LLMToolCall（arguments 对象转 JSON 字符串） */
+function toolCall(id: string, name: string, args: Record<string, unknown> = {}): LLMToolCall {
+  return { id, type: 'function', function: { name, arguments: JSON.stringify(args) } };
+}
+
+/** 构造 LLMResponse（complete 模式） */
 function llmResponse(opts: {
   content?: string;
-  toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  toolCalls?: LLMToolCall[];
   stopReason?: LLMStopReason;
   usage?: LLMUsage;
 }): LLMResponse {
@@ -74,7 +81,7 @@ function llmResponse(opts: {
     content: opts.content ?? '',
   };
   if (opts.toolCalls && opts.toolCalls.length > 0) {
-    message.toolCalls = opts.toolCalls;
+    message.tool_calls = opts.toolCalls;
   }
   return {
     message,
@@ -236,7 +243,7 @@ describe('Agent', () => {
       expect(request.messages[0]).toEqual({ role: 'system', content: 'You are helpful' });
       expect(request.model).toBe('gpt-4o');
       expect(request.tools).toHaveLength(1);
-      expect(request.tools[0].name).toBe('weather.getWeather');
+      expect(request.tools[0].function.name).toBe('weather.getWeather');
     });
 
     it('maxTurns 优先级:agent 元数据 > 全局 config', async () => {
@@ -280,7 +287,7 @@ describe('Agent', () => {
       }));
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+          toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -311,7 +318,7 @@ describe('Agent', () => {
     it('tool 未找到时抛错,被 reactLoop catch 后回传 LLM', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'missing.tool', arguments: {} }],
+          toolCalls: [toolCall('c1', 'missing.tool', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'recovered', stopReason: 'stop' }),
@@ -341,7 +348,7 @@ describe('Agent', () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           // LLM 幻觉：调用了已注册但该 agent 未声明的管理类 tool
-          toolCalls: [{ id: 'c1', name: 'admin.dropAll', arguments: {} }],
+          toolCalls: [toolCall('c1', 'admin.dropAll', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'refused', stopReason: 'stop' }),
@@ -386,7 +393,7 @@ describe('Agent', () => {
     it('未声明的 sub-agent 被白名单拒绝', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'agent.hallucinated', arguments: {} }],
+          toolCalls: [toolCall('c1', 'agent.hallucinated', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'refused', stopReason: 'stop' }),
@@ -418,7 +425,7 @@ describe('Agent', () => {
       }));
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: {} }],
+          toolCalls: [toolCall('c1', 'weather.getWeather', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'retry with city', stopReason: 'stop' }),
@@ -458,7 +465,7 @@ describe('Agent', () => {
       }));
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+          toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -501,12 +508,12 @@ describe('Agent', () => {
       const { provider } = createMockProvider([
         // 第一轮：LLM 请求调用 weather tool
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+          toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
           stopReason: 'tool_calls',
         }),
         // 第二轮：LLM 再次请求调用同一 tool
         llmResponse({
-          toolCalls: [{ id: 'c2', name: 'weather.getWeather', arguments: { city: '上海' } }],
+          toolCalls: [toolCall('c2', 'weather.getWeather', { city: '上海' })],
           stopReason: 'tool_calls',
         }),
         // 第三轮：最终答案
@@ -540,7 +547,7 @@ describe('Agent', () => {
       // 父 provider:第一轮请求 agent.writer → 收 sub 结果 → 最终答案
       const { provider: parentProvider, completeCalls: parentCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'agent.writer', arguments: { topic: 'AI' } }],
+          toolCalls: [toolCall('c1', 'agent.writer', { topic: 'AI' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'final', stopReason: 'stop' }),
@@ -592,7 +599,7 @@ describe('Agent', () => {
       // 为隔离,让父 provider 的 mock 序列中预留子 agent 的调用
       const { provider: parentProvider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'agent.writer', arguments: { topic: 'AI' } }],
+          toolCalls: [toolCall('c1', 'agent.writer', { topic: 'AI' })],
           stopReason: 'tool_calls',
         }),
         // 子 agent.run 调 provider.complete 第二次,返回 sub-answer
@@ -635,7 +642,7 @@ describe('Agent', () => {
       // depth=3, maxAgentDepth=3 → 子 agent depth=4 > 3 抛错
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'agent.writer', arguments: {} }],
+          toolCalls: [toolCall('c1', 'agent.writer', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'recovered from recursion error', stopReason: 'stop' }),
@@ -664,7 +671,7 @@ describe('Agent', () => {
     it('depth 未超限时正常递归', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'agent.writer', arguments: { q: 'x' } }],
+          toolCalls: [toolCall('c1', 'agent.writer', { q: 'x' })],
           stopReason: 'tool_calls',
         }),
         // 子 agent.run 调用
@@ -711,7 +718,7 @@ describe('Agent', () => {
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const request = completeCalls.mock.calls[0][0];
-      const toolNames = (request.tools as LLMToolDefinition[]).map((t) => t.name);
+      const toolNames = (request.tools as LLMToolDefinition[]).map((t) => t.function.name);
       expect(toolNames).toContain('shared.ping');
       expect(toolNames).toContain('agent.writer');
       // 无 defaultTools,只有 resolveAgentTools + sub-agent
@@ -748,10 +755,13 @@ describe('Agent', () => {
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
-      const withDef = tools.find((t) => t.name === 'with.schema')!;
-      const noDef = tools.find((t) => t.name === 'no.schema')!;
-      expect(withDef.input).toEqual({ type: 'object', properties: { q: { type: 'string' } } });
-      expect(noDef.input).toEqual({ type: 'object' });
+      const withDef = tools.find((t) => t.function.name === 'with.schema')!;
+      const noDef = tools.find((t) => t.function.name === 'no.schema')!;
+      expect(withDef.function.parameters).toEqual({
+        type: 'object',
+        properties: { q: { type: 'string' } },
+      });
+      expect(noDef.function.parameters).toEqual({ type: 'object' });
     });
 
     it('sub-agent 包装为 agent.<name>,input 为自由 schema', async () => {
@@ -770,9 +780,9 @@ describe('Agent', () => {
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
-      const writerDef = tools.find((t) => t.name === 'agent.writer')!;
-      expect(writerDef.description).toBe('写作');
-      expect(writerDef.input).toEqual({ type: 'object' });
+      const writerDef = tools.find((t) => t.function.name === 'agent.writer')!;
+      expect(writerDef.function.description).toBe('写作');
+      expect(writerDef.function.parameters).toEqual({ type: 'object' });
     });
   });
 
@@ -1431,7 +1441,7 @@ describe('Agent', () => {
               message: {
                 role: 'assistant',
                 content: '',
-                toolCalls: [{ id: 'c1', name: 'agent.writer', arguments: { task: 'write' } }],
+                tool_calls: [toolCall('c1', 'agent.writer', { task: 'write' })],
               },
               stopReason: 'tool_calls' as LLMStopReason,
             };
@@ -1491,7 +1501,7 @@ describe('Agent', () => {
               message: {
                 role: 'assistant',
                 content: '',
-                toolCalls: [{ id: 'c1', name: 'agent.writer', arguments: { task: 'write' } }],
+                tool_calls: [toolCall('c1', 'agent.writer', { task: 'write' })],
               },
               stopReason: 'tool_calls' as LLMStopReason,
             };
@@ -1644,7 +1654,7 @@ describe('Agent', () => {
     function toolCallProvider() {
       return createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+          toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1727,7 +1737,7 @@ describe('Agent', () => {
       const subRun = vi.fn(async () => 'sub result');
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'agent.analyst', arguments: { q: 'x' } }],
+          toolCalls: [toolCall('c1', 'agent.analyst', { q: 'x' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1764,7 +1774,7 @@ describe('Agent', () => {
       const subRun = vi.fn(async () => 'sub result');
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [{ id: 'c1', name: 'agent.analyst', arguments: { q: 'x' } }],
+          toolCalls: [toolCall('c1', 'agent.analyst', { q: 'x' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -1851,7 +1861,7 @@ describe('Agent', () => {
           tools: [toolMeta(), toolMeta({ name: 'admin.deleteUser', functionName: 'deleteUser' })],
           subAgents: [agentMeta({ name: 'analyst' })],
           config: {
-            filterTools: (tools) => tools.filter((t) => !t.name.startsWith('admin.')),
+            filterTools: (tools) => tools.filter((t) => !t.function.name.startsWith('admin.')),
           },
           ctx,
         }),
@@ -1859,7 +1869,7 @@ describe('Agent', () => {
 
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
       const request = completeCalls.mock.calls[0][0];
-      const names = request.tools.map((t: { name: string }) => t.name);
+      const names = request.tools.map((t: { function: { name: string } }) => t.function.name);
       expect(names).toContain('weather.getWeather');
       expect(names).toContain('agent.analyst');
       expect(names).not.toContain('admin.deleteUser');
@@ -1897,9 +1907,9 @@ describe('Agent — 中断恢复（Resume）', () => {
     {
       role: 'assistant',
       content: '',
-      toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+      tool_calls: [toolCall('c1', 't1', {})],
     },
-    { role: 'tool', content: 'r1', toolCallId: 'c1' },
+    { role: 'tool', content: 'r1', tool_call_id: 'c1' },
   ];
 
   it('run(undefined, { messages }) 纯续跑：provider 收到完整历史', async () => {
@@ -1984,7 +1994,7 @@ describe('Agent — 中断恢复（Resume）', () => {
       {
         role: 'assistant',
         content: '',
-        toolCalls: [{ id: 'c1', name: 't1', arguments: {} }],
+        tool_calls: [toolCall('c1', 't1', {})],
       },
       // 缺 tool 结果（截断在轮组中间）
     ];
@@ -2016,7 +2026,7 @@ describe('Agent — 中断恢复（Resume）', () => {
     const controller = new AbortController();
     const { provider } = createMockProvider([
       llmResponse({
-        toolCalls: [{ id: 'c1', name: 'weather.getWeather', arguments: { city: '北京' } }],
+        toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
         stopReason: 'tool_calls',
       }),
       llmResponse({ content: 'never reached' }),
@@ -2043,7 +2053,7 @@ describe('Agent — 中断恢复（Resume）', () => {
     expect(err).toBeInstanceOf(AgentAbortError);
     // 断点历史：完整轮组（assistant.toolCalls + tool 结果配对）
     expect(err.messages.map((m: LLMMessage) => m.role)).toEqual(['user', 'assistant', 'tool']);
-    expect(err.messages[2]).toEqual({ role: 'tool', content: '晴', toolCallId: 'c1' });
+    expect(err.messages[2]).toEqual({ role: 'tool', content: '晴', tool_call_id: 'c1' });
 
     // 续跑：新一次 run，无新输入，从断点历史继续
     const { provider: provider2, completeCalls } = createMockProvider([
@@ -2062,6 +2072,6 @@ describe('Agent — 中断恢复（Resume）', () => {
     expect(result.content).toBe('北京今天晴');
     expect(result.turns).toBe(1); // 续跑轮数重新计数
     const sent = completeCalls.mock.calls[0][0].messages;
-    expect(sent.at(-1)).toEqual({ role: 'tool', content: '晴', toolCallId: 'c1' });
+    expect(sent.at(-1)).toEqual({ role: 'tool', content: '晴', tool_call_id: 'c1' });
   });
 });

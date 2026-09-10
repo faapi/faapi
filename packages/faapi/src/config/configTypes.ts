@@ -316,11 +316,20 @@ export interface AgentConfig {
    * 可见性过滤（authHooks）：LLM 可见 tools 清单组装完成后调用，
    * 返回过滤后的数组（含 agent-as-tool 项）。每次 agent.run / stream 生效——
    * 无权 tool 不进 LLM 视野，比执行时拒绝省一轮 LLM 调用。
+   *
+   * tools 为 OpenAI chat completions 规范形（`type: 'function'` +
+   * `function: { name, description?, parameters? }`），按 `tool.function.name` 过滤。
    */
   filterTools?: (
-    tools: Array<{ name: string; description?: string; input: Record<string, unknown> }>,
+    tools: Array<{
+      type: 'function';
+      function: { name: string; description?: string; parameters?: Record<string, unknown> };
+    }>,
     ctx: FaapiContext | undefined,
-  ) => Array<{ name: string; description?: string; input: Record<string, unknown> }>;
+  ) => Array<{
+    type: 'function';
+    function: { name: string; description?: string; parameters?: Record<string, unknown> };
+  }>;
 }
 
 /**
