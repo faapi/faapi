@@ -223,6 +223,87 @@ describe('createAppBase', () => {
     await app.close();
   });
 
+  describe('inject body 语义（按类型区分）', () => {
+    /** POST 回声 handler：返回收到的 body 与 content-type（unknown 声明跳过 schema 校验） */
+    function writeEchoHandler() {
+      writeHandler(
+        [
+          `export function POST(ctx, body: unknown) {`,
+          `  return { received: body, contentType: ctx.headers.get('content-type') };`,
+          `}`,
+        ].join('\n'),
+      );
+    }
+
+    it('string body 原样透传（默认 text/plain，不二次 JSON 编码）', async () => {
+      writeEchoHandler();
+      await compileArtifacts('dist');
+      const { app } = await createAppBase(options());
+
+      // 传预编码 JSON 字符串：原样发送 → 服务端 JSON 解析一次得对象。
+      // 二次编码会得到 received: '{}'（字符串）+ content-type application/json
+      const res = await app.inject({ method: 'POST', path: '/api/hello', body: '{}' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        data: { received: {}, contentType: 'text/plain' },
+      });
+
+      await app.close();
+    });
+
+    it('string body + 调用方 form content-type → 按表单解析（调用方头优先）', async () => {
+      writeEchoHandler();
+      await compileArtifacts('dist');
+      const { app } = await createAppBase(options());
+
+      const res = await app.inject({
+        method: 'POST',
+        path: '/api/hello',
+        body: 'a=1&b=x',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        data: { received: { a: '1', b: 'x' }, contentType: 'application/x-www-form-urlencoded' },
+      });
+
+      await app.close();
+    });
+
+    it('对象 body 默认 JSON.stringify + application/json（原行为不变）', async () => {
+      writeEchoHandler();
+      await compileArtifacts('dist');
+      const { app } = await createAppBase(options());
+
+      const res = await app.inject({ method: 'POST', path: '/api/hello', body: { a: 1 } });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        data: { received: { a: 1 }, contentType: 'application/json' },
+      });
+
+      await app.close();
+    });
+
+    it('Buffer body 原样透传 + 调用方 form content-type', async () => {
+      writeEchoHandler();
+      await compileArtifacts('dist');
+      const { app } = await createAppBase(options());
+
+      const res = await app.inject({
+        method: 'POST',
+        path: '/api/hello',
+        body: Buffer.from('x=1'),
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        data: { received: { x: '1' }, contentType: 'application/x-www-form-urlencoded' },
+      });
+
+      await app.close();
+    });
+  });
+
   it('FAAPI_DIST 指向 .faapi 时读 dev 产物', async () => {
     writeHandler();
     await compileArtifacts('.faapi');

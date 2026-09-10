@@ -28,6 +28,17 @@ export interface InjectOptions {
   path?: string;
   headers?: Record<string, string>;
   query?: Record<string, string>;
+  /**
+   * 请求体，语义按类型区分（与 fastify inject 约定一致）：
+   * - `string` / `Buffer` / `Uint8Array`：原样透传不二次编码（默认 content-type
+   *   分别为 `text/plain` / `application/octet-stream`）
+   * - 其他值（对象/数组等）：`JSON.stringify` 后发送，默认 content-type `application/json`
+   *
+   * 调用方显式传入的 `content-type` 头优先于默认值（string body +
+   * `application/x-www-form-urlencoded` 可直接测 form 表单路由）。
+   * 注意不要把 `JSON.stringify` 的结果当对象传——那会作为原始文本再被服务端
+   * JSON 解析一次，得到字符串而非对象。
+   */
   body?: unknown;
 }
 
@@ -544,18 +555,38 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           return;
         }
 
+        // body 按类型区分语义（与 fastify inject 一致）：string/Uint8Array 原样透传
+        // 不二次编码，其他值 JSON.stringify；调用方显式 content-type 优先于默认值
+        let payload: Buffer | undefined;
+        let defaultContentType: string | undefined;
+        if (body !== undefined) {
+          if (typeof body === 'string') {
+            payload = Buffer.from(body, 'utf-8');
+            defaultContentType = 'text/plain';
+          } else if (body instanceof Uint8Array) {
+            payload = Buffer.from(body);
+            defaultContentType = 'application/octet-stream';
+          } else {
+            payload = Buffer.from(JSON.stringify(body));
+            defaultContentType = 'application/json';
+          }
+        }
+
         const mockReq: Readable & {
           method?: string;
           url?: string;
           headers?: Record<string, string | undefined>;
           socket?: { remoteAddress?: string };
-        } = Readable.from(body !== undefined ? [Buffer.from(JSON.stringify(body))] : []);
+        } = Readable.from(payload !== undefined ? [payload] : []);
         mockReq.method = method;
         mockReq.url = `${reqPath}${queryStr}`;
+        const hasCallerContentType = 'content-type' in reqHeaders || 'Content-Type' in reqHeaders;
         mockReq.headers = {
           ...reqHeaders,
           host: 'localhost',
-          'content-type': body !== undefined ? 'application/json' : undefined,
+          ...(payload !== undefined && !hasCallerContentType
+            ? { 'content-type': defaultContentType }
+            : {}),
         };
         mockReq.socket = { remoteAddress: '127.0.0.1' };
 

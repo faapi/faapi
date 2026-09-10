@@ -36,13 +36,25 @@ dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`（热�
 |------|------|
 | `listen(port?)` | 执行 `onBoot` 钩子（`server.listen` 之前，抛错 → `listen()` reject 且端口不暴露——启动校验用），启动 HTTP server，打印路由表，执行 `onReady` 钩子（listen 回调内——资源初始化用），注册默认优雅关闭信号（SIGTERM/SIGINT，进程级仅一次） |
 | `close()` | 幂等优雅关闭：断开空闲 keep-alive 连接 → 执行 `onClose` 钩子 → 等**在途请求完成**（drain，SSE/WS 长连接超时 `FAAPI_SHUTDOWN_TIMEOUT_MS`（默认 10000ms）后强制断开）→ `app.server` 置 null。注册表（tool/agent/skill + agent handle 工厂）与单例仅在自身是当前 app 时清理——同进程多 app 场景下，先创建的 app close 不会清掉运行中 app 的注册表 |
-| `inject(options?)` | 无服务器测试注入——构造模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body }`。`listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景（配合 `getApp()` 拿到 app 实例） |
+| `inject(options?)` | 无服务器测试注入——构造模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body }`。`listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景（配合 `getApp()` 拿到 app 实例）。body 语义见下节 |
 
 端口优先级：`listen()` 参数 > `options.port` > `PORT` 环境变量 > 默认 `3000`。
 
 `listen()` 监听 server 的 `error` 事件并 reject 返回的 Promise：端口被占用
 （`EADDRINUSE`）时错误信息包含端口号与排查提示（是否有另一个实例在运行），其余
 listen 错误原样 reject；listen 成功后解除该监听器，运行期错误语义不变。
+
+### inject 的 body 语义
+
+与 fastify inject（light-my-request）约定一致，按 body 类型区分：
+
+| body 类型 | 发送内容 | 默认 content-type |
+|-----------|---------|-------------------|
+| `string` / `Buffer` / `Uint8Array` | 原样透传，不二次编码 | `text/plain` / `application/octet-stream` |
+| 其他值（对象/数组等） | `JSON.stringify` 后发送 | `application/json` |
+
+- 调用方显式传入的 `content-type` 头**优先于默认值**——string body + `application/x-www-form-urlencoded` 可直接测 form 表单路由
+- 预编码的 JSON 字符串（如 `JSON.stringify(obj)` 的结果）会被**原样发送**再由服务端解析一次——传 `body: '{"a":1}'` 服务端收到对象 `{a:1}`；不要传预编码字符串当对象用，直接传原始对象
 
 ### getApp()
 
@@ -98,6 +110,7 @@ async function Page() {
 - `listen` 打印路由表 + tool 清单（有 tool 时），注册默认优雅关闭信号：SIGTERM/SIGINT → `app.close()`（drain 在途请求 + `onClose` 钩子 + 注册表清理）→ `process.exit(0)`。进程级仅注册一次（faapi 单进程单 app 设计），测试多次 listen 不堆积监听器
 - `close` 幂等（`closed` 标志）；`close` 时清理 toolRegistry 单例（与 app 单例清理对称）；HTTP/2 连接清理方法 feature-detect
 - `inject` 无 handler 时 reject；`JSON.parse` 失败回退为字符串
+- `inject` body 按类型区分语义（string/Buffer 原样透传，对象 JSON.stringify），调用方 content-type 优先——见「inject 的 body 语义」
 
 `loadAndHydrateTools(rootDir, dist)` 导出供 `reloadTools` 热替换后重新水合——读 `faapi-tools.js` → `hydrateTools` → `hydrateToolRegistry`。
 
