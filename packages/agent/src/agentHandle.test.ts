@@ -40,7 +40,7 @@ function mockProvider(): LLMProvider {
       return {
         message: { role: 'assistant', content: 'done' },
         stopReason: 'stop',
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       };
     },
     async *stream(): AsyncIterable<LLMStreamChunk> {
@@ -141,7 +141,7 @@ describe('AgentHandle', () => {
           return {
             message: { role: 'assistant', content: 'ok' },
             stopReason: 'stop' as LLMStopReason,
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
           };
         },
         stream: () => {
@@ -173,7 +173,7 @@ describe('AgentHandle', () => {
           return {
             message: { role: 'assistant', content: 'override' },
             stopReason: 'stop' as LLMStopReason,
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
           };
         },
         stream: () => {
@@ -186,7 +186,7 @@ describe('AgentHandle', () => {
           return {
             message: { role: 'assistant', content: 'default' },
             stopReason: 'stop' as LLMStopReason,
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
           };
         },
         stream: () => {

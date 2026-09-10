@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createOpenAIProvider, LLMProviderError } from './openai';
 import { AgentAbortError } from '../provider';
+import type { LLMMessage, LLMToolDefinition } from '../provider';
 import type { LlmConfig } from '@faapi/faapi';
 
 /** 构造 OpenAI chat completions 成功响应 body */
@@ -297,7 +298,7 @@ describe('createOpenAIProvider', () => {
     it('tools 为 OpenAI 形状时恒等透传（不再重拼写）', async () => {
       fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'ok' })));
 
-      const tools = [
+      const tools: LLMToolDefinition[] = [
         {
           type: 'function',
           function: {
@@ -350,7 +351,7 @@ describe('createOpenAIProvider', () => {
     it('assistant + tool 消息恒等透传（多轮 tool 调用,规范形不再重拼写）', async () => {
       fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'done' })));
 
-      const messages = [
+      const messages: LLMMessage[] = [
         { role: 'user', content: 'search foo' },
         {
           role: 'assistant',

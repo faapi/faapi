@@ -349,12 +349,20 @@ describe('reactLoop', () => {
       await reactLoop('hi', {
         provider,
         executeTool: baseConfig.executeTool,
-        tools: [{ name: 'search', description: 'search web', input: { type: 'object' } }],
+        tools: [
+          {
+            type: 'function',
+            function: { name: 'search', description: 'search web', parameters: { type: 'object' } },
+          },
+        ],
       });
 
       const request = completeCalls.mock.calls[0][0];
       expect(request.tools).toEqual([
-        { name: 'search', description: 'search web', input: { type: 'object' } },
+        {
+          type: 'function',
+          function: { name: 'search', description: 'search web', parameters: { type: 'object' } },
+        },
       ]);
     });
 
@@ -751,13 +759,23 @@ describe('reactLoopStream', () => {
           provider,
           systemPrompt: 'be helpful',
           executeTool: baseConfig.executeTool,
-          tools: [{ name: 't', description: 'd', input: { type: 'object' } }],
+          tools: [
+            {
+              type: 'function',
+              function: { name: 't', description: 'd', parameters: { type: 'object' } },
+            },
+          ],
         }),
       );
 
       const request = streamCalls.mock.calls[0][0];
       expect(request.messages[0]).toEqual({ role: 'system', content: 'be helpful' });
-      expect(request.tools).toEqual([{ name: 't', description: 'd', input: { type: 'object' } }]);
+      expect(request.tools).toEqual([
+        {
+          type: 'function',
+          function: { name: 't', description: 'd', parameters: { type: 'object' } },
+        },
+      ]);
     });
   });
 });
@@ -1341,7 +1359,7 @@ describe('中断恢复（Resume）', () => {
     {
       role: 'assistant',
       content: '',
-      toolCalls: [toolCall('c1', 't1', {})],
+      tool_calls: [toolCall('c1', 't1', {})],
     },
     { role: 'tool', content: 'r1', tool_call_id: 'c1' },
   ];
