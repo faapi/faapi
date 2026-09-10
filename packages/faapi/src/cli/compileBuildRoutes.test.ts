@@ -64,6 +64,39 @@ export function GET() { return x; }\n`,
     expect(handler).not.toMatch(/from\s+['"]\.\.\/\.\.\/utils['"]/);
   });
 
+  it('无法解析的相对导入 → 构建失败（fail-explicit，不静默保留）', async () => {
+    writeFile('src/lib/dao/call-logs.ts', `export const logs: string[] = [];\n`);
+    writeFile(
+      'src/api/hello/handler.ts',
+      `import { logs } from '../../dao/call-logs';
+export function GET() { return logs; }\n`,
+    );
+
+    // 笔误路径（模块实际在 ../../lib/dao/call-logs）构建期报错，带 specifier 与定位
+    await expect(compileBuildRoutes({ rootDir: tempDir, dist: 'dist' })).rejects.toThrow(
+      /无法解析的相对导入/,
+    );
+    // 构建失败不产出半成品
+    expect(existsSync(join(tempDir, 'dist/api/hello/handler.js'))).toBe(false);
+  });
+
+  it('修复导入路径后构建恢复通过，产物正确改写补后缀', async () => {
+    writeFile(
+      'src/api/hello/handler.ts',
+      `import { x } from './helper';
+export function GET() { return x; }\n`,
+    );
+    await expect(compileBuildRoutes({ rootDir: tempDir, dist: 'dist' })).rejects.toThrow(
+      /无法解析的相对导入/,
+    );
+
+    writeFile('src/api/hello/helper.ts', `export const x = 1;\n`);
+    await compileBuildRoutes({ rootDir: tempDir, dist: 'dist' });
+
+    const handler = readFileSync(join(tempDir, 'dist/api/hello/handler.js'), 'utf-8');
+    expect(handler).toMatch(/from\s+['"]\.\/helper\.js['"]/);
+  });
+
   it('utils.ts 作为独立产物存在（不 bundle inline）', async () => {
     writeFile(
       'src/utils.ts',
