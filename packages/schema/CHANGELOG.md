@@ -1,5 +1,13 @@
 # @faapi/schema
 
+## 6.0.0
+
+### Patch Changes
+
+- Updated dependencies [c5a6775]
+  - @faapi/faapi@6.0.0
+  - @faapi/mcp@6.0.0
+
 ## 5.4.0
 
 ## 5.3.0
