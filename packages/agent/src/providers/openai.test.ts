@@ -492,7 +492,7 @@ describe('createOpenAIProvider', () => {
         });
 
         expect(res.message.reasoning_content).toBe('openrouter 思考内容');
-        expect((res.message as Record<string, unknown>).reasoning).toBeUndefined();
+        expect(res.message).not.toHaveProperty('reasoning');
       });
 
       it('reasoning_content 与 reasoning 同时存在 → reasoning_content 优先', async () => {
