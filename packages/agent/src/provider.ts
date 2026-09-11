@@ -31,6 +31,15 @@ export interface LLMMessage {
   tool_call_id?: string;
   /** role='assistant' 时:LLM 请求的 tool 调用（reactLoop 据此执行 tool） */
   tool_calls?: LLMToolCall[];
+  /**
+   * role='assistant' 时:thinking 模型的推理内容（DeepSeek 线格式字段名）
+   *
+   * provider 响应解析产物（非流式含完整内容），供业务方展示/审计；
+   * **不回传 LLM API**——OpenAI provider 发送请求时剥离（DeepSeek 多轮回传
+   * 推理内容直接 400，OpenAI 等拒绝未知字段），reactLoop 组装历史时同样剥离。
+   * 兼容解析：线格式 `reasoning_content` 优先，缺失时读 `reasoning`（OpenRouter 形状）。
+   */
+  reasoning_content?: string;
 }
 
 /**
@@ -162,6 +171,8 @@ export interface LLMUsage {
  *
  * provider 内部流抽象（非 OpenAI 分片 delta 线格式）：
  * - 内容流：`deltaContent` 为增量 token
+ * - 推理内容流（thinking 模型）：`deltaReasoning` 为推理增量（与 `deltaContent` 同为
+ *   增量语义，消费方按到达顺序各自拼接）
  * - tool 调用：累积完成后在最终 chunk 一并 emit `toolCalls`（OpenAI 规范形，
  *   `function.arguments` 为 JSON 字符串）
  * - 结束：最终 chunk 含 `finishReason` + 可选 `usage`
@@ -169,6 +180,8 @@ export interface LLMUsage {
 export interface LLMStreamChunk {
   /** 增量内容（streaming token） */
   deltaContent?: string;
+  /** 推理内容增量（thinking 模型，如 DeepSeek `reasoning_content` / OpenRouter `reasoning`） */
+  deltaReasoning?: string;
   /** 累积完成的 tool 调用（在最终 chunk 出现） */
   toolCalls?: LLMToolCall[];
   /** 结束原因（只在最终 chunk 出现） */

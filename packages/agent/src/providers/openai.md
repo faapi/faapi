@@ -30,8 +30,9 @@ OpenAI 的 chat completions API 已成为事实标准——Anthropic、Google、
 2. POST `${baseURL ?? 'https://api.openai.com/v1'}/chat/completions`
 3. Headers：`Authorization: Bearer ${apiKey}` + `Content-Type: application/json`
 4. 解析响应 JSON：取 `choices[0].message`，转换 `tool_calls`（JSON.parse 每个 `arguments` 字符串）
-5. 映射 `finish_reason` → `stopReason`：`stop` → `stop`，`tool_calls` → `tool_calls`，`length` → `length`，`content_filter` → `content_filter`，其他 → `other`
-6. 返回 `LLMResponse`（message + stopReason + usage）
+5. 解析推理内容：`message.reasoning_content`（缺失时读 `message.reasoning`，OpenRouter 形状）→ `LLMMessage.reasoning_content`
+6. 映射 `finish_reason` → `stopReason`：`stop` → `stop`，`tool_calls` → `tool_calls`，`length` → `length`，`content_filter` → `content_filter`，其他 → `other`
+7. 返回 `LLMResponse`（message + stopReason + usage）
 
 ### `stream(request)` 流程
 
@@ -40,6 +41,7 @@ OpenAI 的 chat completions API 已成为事实标准——Anthropic、Google、
 3. 用 `TextDecoder` + 缓冲区解析 SSE：按两个连续行结束符分割事件（SSE 规范允许 LF / CRLF / CR，兼容 CRLF 行尾的 OpenAI 兼容网关），每行 `data: <json>` 或 `data: [DONE]`
 4. 对每个 chunk：
    - `delta.content` → emit `{ deltaContent: chunk }`
+   - `delta.reasoning_content`（缺失时读 `delta.reasoning`）→ emit `{ deltaReasoning: chunk }`
    - `delta.tool_calls` → 按 `index` 累积 `id` / `function.name` / `function.arguments`（字符串拼接）
    - `finish_reason` → 标记结束
 5. 流结束前 emit 最终 chunk：`{ toolCalls: accumulated[] | undefined, finishReason, usage }`
@@ -60,6 +62,13 @@ OpenAI → `LLMMessage`（响应解析）：
 
 - `message.content` → `LLMMessage.content`（可能为 `null`，统一为 `''`）
 - `message.tool_calls` → `LLMMessage.tool_calls`（规范形恒等;校验每个 `arguments` 可 JSON 解析,失败抛错,字符串原样保留——解析边界在 reactLoop）
+- `message.reasoning_content`（或 `message.reasoning`）→ `LLMMessage.reasoning_content`（thinking 模型；不回传，见下方请求侧剥离）
+
+### 请求侧剥离 `reasoning_content`
+
+`LLMMessage.reasoning_content` 是响应解析产物，**不回传给 LLM API**（DeepSeek 多轮回传直接 400，OpenAI 等拒绝未知字段）。构造请求体时对 messages 做浅拷贝剥离：仅当消息带 `reasoning_content` 时才生成副本摘掉该字段，其余消息保持原引用（零拷贝常态路径）。业务方经续跑历史 / 自定义 messages 传入的带推理内容历史同样被剥离——线格式合法性由 provider 边界兜底。
+
+流式推理内容（`delta.reasoning_content` / `delta.reasoning`）→ `LLMStreamChunk.deltaReasoning`（与 `deltaContent` 同为增量语义，消费方按到达顺序各自拼接）。
 
 ### Tool 定义转换
 

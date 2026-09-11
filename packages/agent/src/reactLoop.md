@@ -25,8 +25,8 @@
 | --- | --- |
 | `ToolExecutor` | tool 执行函数 `(name, args) => Promise<unknown>`，由 Agent 类提供 |
 | `ReactLoopConfig` | 循环配置（provider + systemPrompt + tools + executeTool + maxTurns + model 等） |
-| `ReactLoopResult` | 非流式返回（content + messages + turns + stopReason + usage） |
-| `ReactLoopStreamChunk` | 流式 chunk（deltaContent + toolCall + toolResult + done） |
+| `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage） |
+| `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + done） |
 | `ReactLoopError` | 系统级错误（maxTurns 超限，携带中断时 messages 供续跑），tool 执行错误不抛此类型 |
 
 ### `reactLoop(input, config)` 流程
@@ -35,7 +35,7 @@
 2. 进入循环（`turns < maxTurns`）：
    - 调 `provider.complete()` 发送 messages + tools
    - 累积 `usage`（多轮 token 用量累加）
-   - 把 assistant 消息 push 到 messages
+   - 把 assistant 消息 push 到 messages（`reasoning_content` 剥离后，见 thinking 章节）
    - 若 `stopReason !== 'tool_calls'` 或无 `tool_calls` → 返回最终结果
    - 遍历 `tool_calls`，arguments JSON 字符串 parse 后逐个调 `executeTool(name, args)`（解析边界收拢在 reactLoop，tool 执行函数 / 鉴权钩子 / trace 拿到已 parse 对象）
    - tool 执行错误被 catch，错误消息作为 tool 结果回传 LLM（LLM 可自我恢复）
@@ -48,10 +48,11 @@
 2. 进入循环：
    - 调 `provider.stream()` 异步迭代 chunks
    - `deltaContent` chunk → yield `{ deltaContent }`
-   - 累积 `turnContent`（当前轮的全部 token）
+   - `deltaReasoning` chunk → yield `{ deltaReasoning }`（含中间 tool 轮的推理内容）
+   - 累积 `turnContent` / `turnReasoning`（当前轮的全部 token / 推理内容）
    - 终止 chunk（含 `finishReason`）：
      - `tool_calls` → yield 每个 `{ toolCall }`，执行 tool，yield `{ toolResult }`，继续循环
-     - `stop` / 其他 → yield `{ done: { content, turns, stopReason, usage } }`，return
+     - `stop` / 其他 → yield `{ done: { content, reasoning, turns, stopReason, usage } }`，return
 3. 超出 `maxTurns` → 抛 `ReactLoopError`
 
 ### Tool 错误处理策略
@@ -121,16 +122,28 @@ reactLoop 只依赖 [LLMProvider](./provider.md) 接口（`complete` / `stream`�
 interface ReactLoopStreamChunk {
   /** LLM 增量 token（多轮累积，每轮从空开始） */
   deltaContent?: string;
+  /** LLM 推理内容增量（thinking 模型，见 thinking 章节） */
+  deltaReasoning?: string;
   /** tool 开始执行（LLM 请求调用 tool） */
   toolCall?: { name: string; arguments: Record<string, unknown> };
   /** tool 执行完成（含结果，供 UI 展示） */
   toolResult?: { name: string; result: string };
   /** 循环结束（最终结果） */
-  done?: { content: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage };
+  done?: { content: string; reasoning?: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage };
 }
 ```
 
-每个 chunk 至多含一个字段。`deltaContent` 在 LLM 流式输出时多次 yield；`toolCall`/`toolResult` 在 tool 执行时配对 yield；`done` 只在结束时 yield 一次。
+每个 chunk 至多含一个字段。`deltaContent` / `deltaReasoning` 在 LLM 流式输出时多次 yield；`toolCall`/`toolResult` 在 tool 执行时配对 yield；`done` 只在结束时 yield 一次。
+
+### thinking（推理内容）
+
+thinking 模型（DeepSeek-R1 / Qwen-thinking / OpenAI o 系列等）在 `content` 之外返回推理过程。reactLoop 层的策略：**推理内容只透出给调用方，不进入对话历史**。
+
+- **透出**：非流式 `ReactLoopResult.reasoning`（最终轮 assistant 的推理内容，多轮时中间轮的推理不保留）；流式 `deltaReasoning` chunk 逐段透传（含中间 tool 轮——业务方可完整展示"思考中"过程），`done.reasoning` 为最终轮的完整推理内容
+- **历史剥离**：assistant 消息 push 进 `messages` 前剥离 `reasoning_content`——历史是发给 LLM 的（DeepSeek 多轮回传推理内容直接 400）也是持久化 / 续跑 / `AgentAbortError.messages` / `ReactLoopError.messages` 的来源，保持 OpenAI 线格式纯净。剥离在 `reasoning_content` 存在时才浅拷贝，常态零拷贝
+- **trace 保留**：`llm_call` 事件的 `response` 记录该轮 LLM 的**原始**返回（含 `reasoning_content`）——观测/调试需要完整原始数据，与历史的剥离策略互补，详见 [trace.md](./trace.md)
+
+非流式与流式的差异：非流式只有 `ReactLoopResult.reasoning` 一个出口（最终轮）；流式因消费端逐 chunk 消费，中间轮推理经 `deltaReasoning` 已透出，`done.reasoning` 仅覆盖最终轮。
 
 ## 取消（AbortSignal）
 

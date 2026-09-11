@@ -72,6 +72,7 @@ function toolCall(id: string, name: string, args: Record<string, unknown> = {}):
 /** 构造 LLMResponse（complete 模式） */
 function llmResponse(opts: {
   content?: string;
+  reasoningContent?: string;
   toolCalls?: LLMToolCall[];
   stopReason?: LLMStopReason;
   usage?: LLMUsage;
@@ -80,6 +81,9 @@ function llmResponse(opts: {
     role: 'assistant',
     content: opts.content ?? '',
   };
+  if (opts.reasoningContent !== undefined) {
+    message.reasoning_content = opts.reasoningContent;
+  }
   if (opts.toolCalls && opts.toolCalls.length > 0) {
     message.tool_calls = opts.toolCalls;
   }
@@ -263,6 +267,25 @@ describe('Agent', () => {
       // agent.maxTurns=7,全局 20,应取 7。单轮直答无法直接断言 maxTurns,
       // 但可通过让 LLM 连续 tool_call 验证 7 轮后抛 ReactLoopError——此处简化为验证单轮直答不抛错
       expect(completeCalls).toHaveBeenCalledTimes(1);
+    });
+
+    it('thinking:provider 返回 reasoning_content → result.reasoning 透出,历史剥离', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({ content: '答案', reasoningContent: '思考过程', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ model: 'gpt-4o' }),
+        }),
+      );
+
+      const result = await agent.run('hi', { agent: 'researcher' });
+
+      expect(result.reasoning).toBe('思考过程');
+      for (const m of result.messages) {
+        expect(m).not.toHaveProperty('reasoning_content');
+      }
     });
   });
 
@@ -833,6 +856,32 @@ describe('Agent', () => {
       expect(deltas.map((c) => c.deltaContent).join('')).toBe('Hello world');
       const done = chunks.find((c) => c.done !== undefined);
       expect(done!.done!.content).toBe('Hello world');
+    });
+
+    it('thinking:deltaReasoning 透传 + done.reasoning 累积', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          { deltaReasoning: '思考中' },
+          { deltaContent: 'Hello' },
+          { deltaContent: ' world' },
+          { finishReason: 'stop' },
+        ],
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+        }),
+      );
+
+      const chunks = await collect(agent.stream('hi', { agent: 'researcher', model: 'gpt-4o' }));
+      const reasoning = chunks
+        .filter((c) => c.deltaReasoning !== undefined)
+        .map((c) => c.deltaReasoning);
+      expect(reasoning).toEqual(['思考中']);
+      const done = chunks.find((c) => c.done !== undefined);
+      expect(done!.done!.reasoning).toBe('思考中');
     });
   });
 

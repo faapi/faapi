@@ -63,6 +63,12 @@ done(content='最终答案', turns=2, stopReason='stop', usage={...})
 - 内存开销可控（消息对象不复制,只新建外层数组）
 - 与 `messages` 的关系：拼接所有 `llm_call.inputMessages` 的最后一个快照等价于 `result.messages`
 
+### `llm_call.response` 与 thinking（`reasoning_content`）
+
+`response` 记录该轮 LLM 的**原始** assistant 消息——thinking 模型（DeepSeek-R1 / Qwen-thinking 等）返回的 `reasoning_content` **保留在 trace 中**：观测/调试需要完整的原始 LLM 返回,推理内容是定位"模型为什么这么答"的关键依据。
+
+这与对话历史的策略互补：reactLoop push 进 `messages`（发给 LLM / 持久化 / 续跑源）的 assistant 消息**剥离** `reasoning_content`（DeepSeek 多轮回传推理内容直接 400,详见 [reactLoop.md](./reactLoop.md) thinking 章节）——trace 是唯一保留推理内容的完整快照。流式路径的 trace response 同样带 `reasoning_content`（该轮累积的推理内容）。
+
 ## sub-agent 嵌套 trace
 
 reactLoop 只调 `executeTool(name, args)`,**不知道某个 tool 是常规 tool 还是 sub-agent**。识别机制：

@@ -45,7 +45,7 @@ messages / tools / assistant message / usage 的规范形**直接采用 OpenAI c
 | `LLMToolDefinition` | tool 定义，OpenAI 形状（`type: 'function'` + `function: { name, description?, parameters? }`） |
 | `LLMCompleteRequest` | complete / stream 的入参（messages + tools + 可选 model / temperature / maxTokens） |
 | `LLMResponse` | complete 的返回（message + stopReason + usage） |
-| `LLMStreamChunk` | stream 的单个 chunk（deltaContent + toolCalls + finishReason + usage，provider 内部流抽象） |
+| `LLMStreamChunk` | stream 的单个 chunk（deltaContent + deltaReasoning + toolCalls + finishReason + usage，provider 内部流抽象） |
 | `LLMUsage` | token 用量，OpenAI 形状（`prompt_tokens` + `completion_tokens` + `total_tokens`） |
 
 ```ts
@@ -54,6 +54,7 @@ interface LLMMessage {
   content: string;
   tool_call_id?: string;          // role='tool' 时
   tool_calls?: LLMToolCall[];     // role='assistant' 时
+  reasoning_content?: string;     // role='assistant' 时（thinking 模型）——解析产物，不回传 API
 }
 
 interface LLMToolCall {
@@ -82,6 +83,20 @@ interface LLMUsage {
 ```
 
 `tool_calls[].function.arguments` 保持线格式的 JSON **字符串**（不预解析）——消息历史可原样透传给 LLM 与原样持久化，解析边界收敛在 reactLoop（执行 / 鉴权钩子 / trace 拿到的都是已 parse 的对象）。
+
+### thinking（推理内容）
+
+thinking 模型（DeepSeek-R1 / Qwen-thinking / OpenAI o 系列等）在 `content` 之外返回推理内容。规范形的处理策略：
+
+| 方向 | 字段 | 说明 |
+| --- | --- | --- |
+| 响应侧（解析） | `LLMMessage.reasoning_content` | 非流式：assistant 消息携带完整推理内容（DeepSeek 线格式字段名） |
+| 响应侧（解析） | `LLMStreamChunk.deltaReasoning` | 流式：推理内容增量 chunk，与 `deltaContent` 互斥出现 |
+| 请求侧（剥离） | —— | 发送给 LLM 时剥离 `reasoning_content`——DeepSeek 明确要求多轮对话不回传（回传 400），OpenAI 等拒绝未知字段 |
+
+解析兼容两种线格式：优先 `reasoning_content`（DeepSeek / Qwen 事实标准），缺失时读 `reasoning`（OpenRouter 形状），统一映射到 `reasoning_content` / `deltaReasoning`。消费方（SSE 转发、UI"思考中"展示、审计日志）只认规范形字段。
+
+`reasoning_content` 是**解析产物**而非对话内容——进入 `LLMMessage` 仅为让 complete 的返回自包含，provider 发送请求、reactLoop 组装历史时均剥离（剥离责任分层见 [reactLoop.md](./reactLoop.md) 的 thinking 章节）。
 
 ### `LLMProvider` 接口
 

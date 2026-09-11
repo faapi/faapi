@@ -103,6 +103,12 @@ export interface ReactLoopConfig {
 export interface ReactLoopResult {
   /** 最终 assistant 消息内容 */
   content: string;
+  /**
+   * 最终 assistant 的推理内容（thinking 模型，多轮时中间轮的推理不保留；
+   * 无推理内容时不存在）。历史 messages 中的 assistant 消息已剥离推理内容，
+   * 仅此字段与 trace 的 `llm_call.response.reasoning_content` 可读。
+   */
+  reasoning?: string;
   /** 完整对话历史（system + user + assistant + tool 消息） */
   messages: LLMMessage[];
   /** 使用的轮数（含最终轮） */
@@ -123,6 +129,7 @@ export interface ReactLoopResult {
  *
  * 每个 chunk 至多含一个字段：
  * - `deltaContent` — LLM 增量 token（多次 yield）
+ * - `deltaReasoning` — LLM 推理内容增量（thinking 模型，含中间 tool 轮）
  * - `toolCall` — tool 开始执行
  * - `toolResult` — tool 执行完成
  * - `traceEvent` — trace 事件（`enableTracing=true` 时增量推送,与上述字段互斥）
@@ -131,18 +138,22 @@ export interface ReactLoopResult {
 export interface ReactLoopStreamChunk {
   /** LLM 增量 token */
   deltaContent?: string;
+  /** LLM 推理内容增量（thinking 模型，见 reactLoop.md thinking 章节） */
+  deltaReasoning?: string;
   /** tool 开始执行（LLM 请求调用 tool） */
   toolCall?: { name: string; arguments: Record<string, unknown> };
   /** tool 执行完成（含结果） */
   toolResult?: { name: string; result: string };
   /**
    * trace 事件（`enableTracing=true` 时增量推送）。
-   * 与 deltaContent / toolCall / toolResult / done 互斥,一个 chunk 至多一个字段。
+   * 与 deltaContent / deltaReasoning / toolCall / toolResult / done 互斥,一个 chunk 至多一个字段。
    */
   traceEvent?: AgentTraceEvent;
   /** 循环结束 */
   done?: {
     content: string;
+    /** 最终轮的完整推理内容（thinking 模型；无推理内容时不存在） */
+    reasoning?: string;
     turns: number;
     stopReason: LLMStopReason;
     usage?: LLMUsage;
@@ -182,6 +193,20 @@ function stringifyResult(result: unknown): string {
 function stringifyError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/**
+ * 剥离 assistant 消息上的 `reasoning_content`（历史保持 OpenAI 线格式纯净）
+ *
+ * 推理内容只透出给调用方（`ReactLoopResult.reasoning` / `deltaReasoning` / trace 的
+ * `llm_call.response`），不进入对话历史——历史是发给 LLM 的（DeepSeek 多轮回传推理
+ * 内容直接 400）也是持久化 / 续跑 / `AgentAbortError.messages` / `ReactLoopError.messages`
+ * 的来源。无该字段时原引用返回（零拷贝常态路径）。
+ */
+function stripReasoning(message: LLMMessage): LLMMessage {
+  if (message.reasoning_content === undefined) return message;
+  const { reasoning_content: _stripped, ...rest } = message;
+  return rest;
 }
 
 /** 累加 usage */
@@ -227,7 +252,8 @@ function parseToolCallArguments(toolCall: LLMToolCall): Record<string, unknown> 
  */
 function initLoopMessages(input: string | undefined, config: ReactLoopConfig): LLMMessage[] {
   if (config.messages?.length) {
-    const messages = [...config.messages];
+    // 剥离业务方历史上的 reasoning_content（推理内容不进对话历史，见 stripReasoning）
+    const messages = config.messages.map(stripReasoning);
     if (config.systemPrompt && !messages.some((m) => m.role === 'system')) {
       messages.unshift({ role: 'system', content: config.systemPrompt });
     }
@@ -332,7 +358,7 @@ function extractSubAgentName(toolName: string): string {
  *
  * @param input 用户输入（续跑场景可为空，历史经 `config.messages` 提供）
  * @param config 循环配置
- * @returns 最终结果（content + messages + turns + stopReason + usage）
+ * @returns 最终结果（content + reasoning + messages + turns + stopReason + usage）
  * @throws {ReactLoopError} 超出 maxTurns（`error.messages` 携带完整历史，可续跑）
  * @throws {AgentAbortError} 中断（`error.messages` 携带断点历史，可续跑）
  * @throws {Error} provider.complete 抛错时立即传播
@@ -346,6 +372,8 @@ export async function reactLoop(
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
+  /** 最终轮 assistant 的推理内容（thinking 模型；每轮覆盖，循环结束时即最终轮值） */
+  let finalReasoning: string | undefined;
   let turns = 0;
 
   // trace 采集容器（enableTracing=false 时不构造,零开销）
@@ -395,19 +423,23 @@ export async function reactLoop(
         durationMs: llmEndedAt - llmStartedAt,
         model: config.model ?? '',
         inputMessages: inputSnapshot!,
+        // 原始 assistant 消息（含 reasoning_content）——trace 保留完整 LLM 返回，
+        // 与历史剥离策略互补（见 trace.md「llm_call.response 与 thinking」）
         response: response.message,
         stopReason: response.stopReason,
         usage: response.usage,
       });
     }
 
-    // 把 assistant 消息加入历史
-    messages.push(response.message);
+    // 把 assistant 消息加入历史（剥离 reasoning_content——推理内容不进对话历史，
+    // 见 stripReasoning 与 reactLoop.md thinking 章节）
+    finalReasoning = response.message.reasoning_content;
+    messages.push(stripReasoning(response.message));
 
     // 非 tool_calls → 循环结束
     if (response.stopReason !== 'tool_calls' || !response.message.tool_calls) {
       const traceEndedAt = enableTracing ? nowMs() : 0;
-      return {
+      const result: ReactLoopResult = {
         content: response.message.content,
         messages,
         turns,
@@ -426,6 +458,10 @@ export async function reactLoop(
             }
           : undefined,
       };
+      if (finalReasoning !== undefined) {
+        result.reasoning = finalReasoning;
+      }
+      return result;
     }
 
     // 并行执行同轮全部 tool_call——多个独立 tool 的总耗时从「各 tool 之和」
@@ -537,7 +573,7 @@ export async function reactLoop(
 /**
  * 执行 ReAct 循环（流式）
  *
- * 使用 `provider.stream()` 异步迭代 chunks，yield `deltaContent` + `toolCall` + `toolResult` + `done`。
+ * 使用 `provider.stream()` 异步迭代 chunks，yield `deltaContent` + `deltaReasoning` + `toolCall` + `toolResult` + `done`。
  *
  * @param input 用户输入（续跑场景可为空，历史经 `config.messages` 提供）
  * @param config 循环配置
@@ -572,6 +608,7 @@ export async function* reactLoopStream(
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
     const inputSnapshot = enableTracing ? [...outgoing] : undefined;
     let turnContent = '';
+    let turnReasoning = '';
     let toolCalls: LLMToolCall[] | undefined;
     let finishReason: LLMStopReason | undefined;
     let turnUsage: LLMUsage | undefined;
@@ -584,6 +621,12 @@ export async function* reactLoopStream(
         ...extras,
         signal: config.signal,
       })) {
+        // 推理内容增量（thinking 模型，中间 tool 轮同样透出——业务方可完整展示思考过程）
+        if (typeof chunk.deltaReasoning === 'string' && chunk.deltaReasoning.length > 0) {
+          turnReasoning += chunk.deltaReasoning;
+          yield { deltaReasoning: chunk.deltaReasoning };
+        }
+
         // 增量内容
         if (typeof chunk.deltaContent === 'string' && chunk.deltaContent.length > 0) {
           turnContent += chunk.deltaContent;
@@ -612,7 +655,7 @@ export async function* reactLoopStream(
     }
 
     // 把 assistant 消息加入历史（含 tool_calls，供下一轮 LLM 上下文；规范形，
-    // function.arguments 保持线格式 JSON 字符串）
+    // function.arguments 保持线格式 JSON 字符串；本就是新构造对象，天然无推理内容）
     const assistantMessage: LLMMessage = {
       role: 'assistant',
       content: turnContent,
@@ -624,6 +667,11 @@ export async function* reactLoopStream(
 
     if (enableTracing) {
       const llmEndedAt = nowMs();
+      // trace 保留该轮完整 LLM 返回（含累积的推理内容），与历史剥离互补；
+      // 无推理内容时不拷贝（零开销常态路径）
+      const tracedResponse = turnReasoning
+        ? { ...assistantMessage, reasoning_content: turnReasoning }
+        : assistantMessage;
       yield {
         traceEvent: {
           type: 'llm_call',
@@ -632,7 +680,7 @@ export async function* reactLoopStream(
           durationMs: llmEndedAt - llmStartedAt,
           model: config.model ?? '',
           inputMessages: inputSnapshot!,
-          response: assistantMessage,
+          response: tracedResponse,
           stopReason: finishReason ?? 'other',
           usage: turnUsage,
         },
@@ -641,14 +689,16 @@ export async function* reactLoopStream(
 
     // 非 tool_calls → 循环结束
     if (finishReason !== 'tool_calls' || !toolCalls) {
-      yield {
-        done: {
-          content: turnContent,
-          turns,
-          stopReason: finishReason ?? 'other',
-          usage: totalUsage,
-        },
+      const donePayload: NonNullable<ReactLoopStreamChunk['done']> = {
+        content: turnContent,
+        turns,
+        stopReason: finishReason ?? 'other',
+        usage: totalUsage,
       };
+      if (turnReasoning) {
+        donePayload.reasoning = turnReasoning;
+      }
+      yield { done: donePayload };
       return;
     }
 

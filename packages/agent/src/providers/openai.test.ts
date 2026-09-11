@@ -7,12 +7,16 @@ import type { LlmConfig } from '@faapi/faapi';
 /** 构造 OpenAI chat completions 成功响应 body */
 function openaiResponse(opts: {
   content?: string | null;
+  reasoningContent?: string;
+  reasoning?: string;
   toolCalls?: Array<{ id: string; function: { name: string; arguments: string } }>;
   finishReason?: string;
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }): unknown {
   const message: Record<string, unknown> = { role: 'assistant' };
   message.content = opts.content ?? '';
+  if (opts.reasoningContent !== undefined) message.reasoning_content = opts.reasoningContent;
+  if (opts.reasoning !== undefined) message.reasoning = opts.reasoning;
   if (opts.toolCalls) {
     message.tool_calls = opts.toolCalls.map((tc) => ({
       id: tc.id,
@@ -456,6 +460,185 @@ describe('createOpenAIProvider', () => {
       await expect(
         provider.complete({ messages: [{ role: 'user', content: 'hi' }] }),
       ).rejects.toThrowError(/Invalid tool arguments JSON/i);
+    });
+  });
+
+  describe('thinking（推理内容）', () => {
+    describe('complete — 响应解析', () => {
+      it('message.reasoning_content → LLMMessage.reasoning_content（DeepSeek 线格式）', async () => {
+        fetchMock.mockResolvedValue(
+          jsonResponse(
+            openaiResponse({ content: '答案是 4', reasoningContent: '2+2 等于…所以是 4' }),
+          ),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const res = await provider.complete({
+          messages: [{ role: 'user', content: '2+2=?' }],
+        });
+
+        expect(res.message.content).toBe('答案是 4');
+        expect(res.message.reasoning_content).toBe('2+2 等于…所以是 4');
+      });
+
+      it('message.reasoning（OpenRouter 形状）→ 映射为 reasoning_content', async () => {
+        fetchMock.mockResolvedValue(
+          jsonResponse(openaiResponse({ content: 'ok', reasoning: 'openrouter 思考内容' })),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const res = await provider.complete({
+          messages: [{ role: 'user', content: 'hi' }],
+        });
+
+        expect(res.message.reasoning_content).toBe('openrouter 思考内容');
+        expect((res.message as Record<string, unknown>).reasoning).toBeUndefined();
+      });
+
+      it('reasoning_content 与 reasoning 同时存在 → reasoning_content 优先', async () => {
+        fetchMock.mockResolvedValue(
+          jsonResponse(
+            openaiResponse({ content: 'ok', reasoningContent: '标准字段', reasoning: '回退字段' }),
+          ),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const res = await provider.complete({
+          messages: [{ role: 'user', content: 'hi' }],
+        });
+
+        expect(res.message.reasoning_content).toBe('标准字段');
+      });
+
+      it('无推理字段 → reasoning_content 为 undefined（非 thinking 模型行为不变）', async () => {
+        fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'plain' })));
+
+        const provider = createOpenAIProvider(baseConfig);
+        const res = await provider.complete({
+          messages: [{ role: 'user', content: 'hi' }],
+        });
+
+        expect(res.message.reasoning_content).toBeUndefined();
+      });
+    });
+
+    describe('stream — 增量解析', () => {
+      it('delta.reasoning_content → deltaReasoning chunk,与 deltaContent 各自透传', async () => {
+        fetchMock.mockResolvedValue(
+          sseResponse([
+            sseData({ choices: [{ delta: { reasoning_content: '先想' } }] }),
+            sseData({ choices: [{ delta: { reasoning_content: '一下' } }] }),
+            sseData({ choices: [{ delta: { content: '答案' } }] }),
+            sseData({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+            SSE_DONE,
+          ]),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const chunks = [];
+        for await (const chunk of provider.stream({
+          messages: [{ role: 'user', content: 'hi' }],
+        })) {
+          chunks.push(chunk);
+        }
+
+        const reasoning = chunks
+          .filter((c) => c.deltaReasoning !== undefined)
+          .map((c) => c.deltaReasoning);
+        expect(reasoning).toEqual(['先想', '一下']);
+
+        const contents = chunks
+          .filter((c) => c.deltaContent !== undefined)
+          .map((c) => c.deltaContent);
+        expect(contents).toEqual(['答案']);
+      });
+
+      it('delta.reasoning（OpenRouter 形状）→ deltaReasoning', async () => {
+        fetchMock.mockResolvedValue(
+          sseResponse([
+            sseData({ choices: [{ delta: { reasoning: '思考增量' } }] }),
+            sseData({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+            SSE_DONE,
+          ]),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const chunks = [];
+        for await (const chunk of provider.stream({
+          messages: [{ role: 'user', content: 'hi' }],
+        })) {
+          chunks.push(chunk);
+        }
+
+        expect(chunks.filter((c) => c.deltaReasoning !== undefined)).toEqual([
+          { deltaReasoning: '思考增量' },
+        ]);
+      });
+
+      it('无推理字段 → 不产生 deltaReasoning chunk', async () => {
+        fetchMock.mockResolvedValue(
+          sseResponse([
+            sseData({ choices: [{ delta: { content: 'hi' } }] }),
+            sseData({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+            SSE_DONE,
+          ]),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const chunks = [];
+        for await (const chunk of provider.stream({
+          messages: [{ role: 'user', content: 'hi' }],
+        })) {
+          chunks.push(chunk);
+        }
+
+        expect(chunks.some((c) => c.deltaReasoning !== undefined)).toBe(false);
+      });
+    });
+
+    describe('请求侧剥离', () => {
+      it('messages 带 reasoning_content 时不回传（发送 body 已剥离）', async () => {
+        fetchMock.mockResolvedValue(jsonResponse(openaiResponse({ content: 'ok' })));
+
+        const provider = createOpenAIProvider(baseConfig);
+        await provider.complete({
+          messages: [
+            { role: 'system', content: 'sys' },
+            {
+              role: 'assistant',
+              content: 'earlier',
+              reasoning_content: '上一轮的思考内容',
+            },
+            { role: 'user', content: 'hi' },
+          ],
+        });
+
+        const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+        expect(body.messages[0]).toEqual({ role: 'system', content: 'sys' });
+        expect(body.messages[1]).toEqual({ role: 'assistant', content: 'earlier' });
+        expect(body.messages[1]).not.toHaveProperty('reasoning_content');
+        expect(body.messages[2]).toEqual({ role: 'user', content: 'hi' });
+      });
+
+      it('流式请求同样剥离 reasoning_content', async () => {
+        fetchMock.mockResolvedValue(
+          sseResponse([
+            sseData({ choices: [{ delta: { content: 'hi' } }] }),
+            sseData({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+            SSE_DONE,
+          ]),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        for await (const _ of provider.stream({
+          messages: [{ role: 'assistant', content: 'a', reasoning_content: '思考' }],
+        })) {
+          break;
+        }
+
+        const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
+        expect(body.messages[0]).toEqual({ role: 'assistant', content: 'a' });
+      });
     });
   });
 

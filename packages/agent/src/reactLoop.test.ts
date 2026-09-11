@@ -22,6 +22,7 @@ function toolCall(id: string, name: string, args: Record<string, unknown> = {}):
 /** 构造 LLMResponse（complete 模式） */
 function llmResponse(opts: {
   content?: string;
+  reasoningContent?: string;
   toolCalls?: LLMToolCall[];
   stopReason?: LLMStopReason;
   usage?: LLMUsage;
@@ -30,6 +31,9 @@ function llmResponse(opts: {
     role: 'assistant',
     content: opts.content ?? '',
   };
+  if (opts.reasoningContent !== undefined) {
+    message.reasoning_content = opts.reasoningContent;
+  }
   if (opts.toolCalls && opts.toolCalls.length > 0) {
     message.tool_calls = opts.toolCalls;
   }
@@ -1346,6 +1350,146 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     expect(toolMsgs).toHaveLength(2);
     expect(JSON.stringify(toolMsgs[0]?.content)).toContain('tool exploded');
     expect(JSON.stringify(toolMsgs[1]?.content)).toContain('fine');
+  });
+});
+
+// ─── thinking（推理内容）────────────────────────────
+
+describe('thinking（推理内容）', () => {
+  describe('reactLoop — 非流式', () => {
+    it('最终轮 reasoning → result.reasoning,历史消息剥离 reasoning_content', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({ content: '答案', reasoningContent: '思考过程', stopReason: 'stop' }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: baseConfig.executeTool,
+      });
+
+      expect(result.reasoning).toBe('思考过程');
+      expect(result.content).toBe('答案');
+      const assistantMsg = result.messages.find((m) => m.role === 'assistant')!;
+      expect(assistantMsg).not.toHaveProperty('reasoning_content');
+    });
+
+    it('多轮时 result.reasoning 取最终轮,中间轮推理不入历史', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          content: '',
+          reasoningContent: '第一轮思考',
+          toolCalls: [toolCall('c1', 'search', { q: 'x' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: '答案', reasoningContent: '第二轮思考', stopReason: 'stop' }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: async () => 'result',
+      });
+
+      expect(result.reasoning).toBe('第二轮思考');
+      for (const m of result.messages) {
+        expect(m).not.toHaveProperty('reasoning_content');
+      }
+    });
+
+    it('无推理内容 → result.reasoning 为 undefined', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({ content: 'plain', stopReason: 'stop' }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: baseConfig.executeTool,
+      });
+
+      expect(result.reasoning).toBeUndefined();
+    });
+
+    it('trace 的 llm_call.response 保留 reasoning_content（原始快照）', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({ content: '答案', reasoningContent: '思考过程', stopReason: 'stop' }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: baseConfig.executeTool,
+        enableTracing: true,
+      });
+
+      const llmCall = result.trace!.events.find((e) => e.type === 'llm_call') as {
+        response: LLMMessage;
+      };
+      expect(llmCall.response.reasoning_content).toBe('思考过程');
+      // trace 保留原始数据,与历史剥离互补
+      const assistantMsg = result.messages.find((m) => m.role === 'assistant')!;
+      expect(assistantMsg).not.toHaveProperty('reasoning_content');
+    });
+  });
+
+  describe('reactLoopStream — 流式', () => {
+    it('deltaReasoning 逐 chunk 透传,done.reasoning 为最终轮累积', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          { deltaReasoning: '让我想想' },
+          { deltaReasoning: '…好的' },
+          { deltaContent: '答案' },
+          { finishReason: 'stop' },
+        ],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', { provider, executeTool: baseConfig.executeTool }),
+      );
+
+      const reasoningChunks = chunks
+        .filter((c) => c.deltaReasoning !== undefined)
+        .map((c) => c.deltaReasoning);
+      expect(reasoningChunks).toEqual(['让我想想', '…好的']);
+
+      const done = chunks.find((c) => c.done !== undefined)!;
+      expect(done.done!.reasoning).toBe('让我想想…好的');
+      expect(done.done!.content).toBe('答案');
+    });
+
+    it('中间 tool 轮的推理也经 deltaReasoning 透出,done.reasoning 仅含最终轮', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          { deltaReasoning: '第一轮思考' },
+          { toolCalls: [toolCall('c1', 'search', { q: 'x' })] },
+          { finishReason: 'tool_calls' },
+        ],
+        [{ deltaReasoning: '第二轮思考' }, { deltaContent: '答案' }, { finishReason: 'stop' }],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', { provider, executeTool: async () => 'r' }),
+      );
+
+      const reasoning = chunks
+        .filter((c) => c.deltaReasoning !== undefined)
+        .map((c) => c.deltaReasoning);
+      expect(reasoning).toEqual(['第一轮思考', '第二轮思考']);
+
+      const done = chunks.find((c) => c.done !== undefined)!;
+      expect(done.done!.reasoning).toBe('第二轮思考');
+    });
+
+    it('无推理内容 → done.reasoning 为 undefined,历史 assistant 无 reasoning_content', async () => {
+      const { provider } = createMockStreamProvider([
+        [{ deltaContent: 'hi' }, { finishReason: 'stop' }],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', { provider, executeTool: baseConfig.executeTool }),
+      );
+
+      const done = chunks.find((c) => c.done !== undefined)!;
+      expect(done.done!.reasoning).toBeUndefined();
+      expect(chunks.some((c) => c.deltaReasoning !== undefined)).toBe(false);
+    });
   });
 });
 

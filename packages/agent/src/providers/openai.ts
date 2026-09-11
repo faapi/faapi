@@ -94,6 +94,10 @@ interface OpenAIResponseJson {
       role?: string;
       content?: string | null;
       tool_calls?: OpenAIToolCall[];
+      /** thinking 模型推理内容（DeepSeek / Qwen 线格式） */
+      reasoning_content?: string | null;
+      /** thinking 模型推理内容（OpenRouter 线格式） */
+      reasoning?: string | null;
     };
     finish_reason?: string | null;
   }>;
@@ -106,6 +110,10 @@ interface OpenAIStreamChunkJson {
     delta?: {
       content?: string | null;
       tool_calls?: OpenAIToolCall[];
+      /** thinking 模型推理增量（DeepSeek / Qwen 线格式） */
+      reasoning_content?: string | null;
+      /** thinking 模型推理增量（OpenRouter 线格式） */
+      reasoning?: string | null;
     };
     finish_reason?: string | null;
   }>;
@@ -151,8 +159,9 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
 
     const body: OpenAIRequestBody = {
       model: modelName,
-      // 规范形即 OpenAI 形状：messages / tools 恒等透传，无重拼写
-      messages: request.messages,
+      // 规范形即 OpenAI 形状：messages 恒等透传（剥离框架扩展字段 reasoning_content，
+      // 推理内容是解析产物不回传——DeepSeek 多轮回传直接 400，OpenAI 等拒绝未知字段）
+      messages: stripReasoningFromMessages(request.messages),
     };
 
     if (request.tools && request.tools.length > 0) {
@@ -377,6 +386,9 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
     // assistant 消息按规范形构造（OpenAI 形状，tool_calls 原样保留字符串参数）
     const message: LLMMessage = { role: 'assistant', content };
     if (toolCalls) message.tool_calls = toolCalls;
+    // thinking 模型推理内容（解析产物，不回传——发送侧由 stripReasoningFromMessages 剥离）
+    const reasoning = extractReasoning(msg);
+    if (reasoning) message.reasoning_content = reasoning;
 
     return {
       message,
@@ -451,6 +463,11 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
 
           const delta = chunk.choices?.[0]?.delta;
           if (delta) {
+            // 推理内容增量（thinking 模型，先于 content 输出）
+            const reasoning = extractReasoning(delta);
+            if (reasoning) {
+              yield { deltaReasoning: reasoning };
+            }
             // 内容增量
             if (typeof delta.content === 'string' && delta.content.length > 0) {
               yield { deltaContent: delta.content };
@@ -491,6 +508,44 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
 }
 
 // ─── 辅助函数 ──────────────────────────────────────
+
+/**
+ * 提取 thinking 模型的推理内容（规范形映射）
+ *
+ * 兼容两种线格式：`reasoning_content`（DeepSeek / Qwen 事实标准）优先，
+ * 缺失时读 `reasoning`（OpenRouter 形状）。两者皆无/为空返回 `undefined`。
+ */
+function extractReasoning(source: {
+  reasoning_content?: string | null;
+  reasoning?: string | null;
+}): string | undefined {
+  if (typeof source.reasoning_content === 'string' && source.reasoning_content.length > 0) {
+    return source.reasoning_content;
+  }
+  if (typeof source.reasoning === 'string' && source.reasoning.length > 0) {
+    return source.reasoning;
+  }
+  return undefined;
+}
+
+/**
+ * 剥离 messages 上的 `reasoning_content`（请求侧不回传，线格式合法性由 provider 边界兜底）
+ *
+ * `reasoning_content` 是响应解析产物：DeepSeek 明确要求多轮对话不回传（回传 400），
+ * OpenAI 等拒绝未知字段。任一消息都不带该字段时**原数组原样返回**（恒等透传零拷贝）；
+ * 带该字段的消息浅拷贝副本剥离，其余消息保持原引用。业务方经续跑历史 / 自定义
+ * messages 传入的带推理内容历史同样被剥离。
+ */
+function stripReasoningFromMessages(messages: LLMMessage[]): LLMMessage[] {
+  if (!messages.some((m) => m.reasoning_content !== undefined)) {
+    return messages;
+  }
+  return messages.map((m) => {
+    if (m.reasoning_content === undefined) return m;
+    const { reasoning_content: _stripped, ...rest } = m;
+    return rest;
+  });
+}
 
 /**
  * OpenAI tool_calls 数组 → 规范形 LLMToolCall[]
