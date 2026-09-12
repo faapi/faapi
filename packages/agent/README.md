@@ -33,7 +33,7 @@ npm install @faapi/agent
 
 要求 Node.js >= 24。
 
-> 当前为 canary 阶段（Phase 3.x 持续开发中），API 可能在稳定前调整。
+> 当前处于持续开发阶段（Phase 3.x），API 可能在稳定前调整。
 
 ## 启用方式
 

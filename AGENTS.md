@@ -827,7 +827,7 @@ packages/<name>/
 ```json
 {
   "name": "@faapi/<name>",
-  "version": "0.0.0-canary.0",
+  "version": "0.0.0",
   "description": "...",
   "type": "module",
   "main": "./src/index.ts",
@@ -865,7 +865,7 @@ packages/<name>/
 
 要点：
 
-- `version` 固定 `0.0.0-canary.0`，canary 阶段不递增（canary 版本由 CI 基于 git hash 生成）。
+- `version` 初始为 `0.0.0`，发布由 changeset 统一升版（fixed 模式五包同步）。
 - `repository.directory` 指向 `packages/<name>`。
 - `publishConfig.provenance: true` 必填，否则无法通过 Trusted Publisher 发布。
 - 依赖主包时声明为 `peerDependencies`（非 `dependencies`），同时 `devDependencies` 加 `workspace:*` 用于本地开发：`"peerDependencies": { "@faapi/faapi": "workspace:^" }` + `"devDependencies": { "@faapi/faapi": "workspace:*" }`。peerDependencies 用 `workspace:^`（发布时替换为 `^version`），使 minor/patch bump 不触发 changeset 的 peerDependent major bump；devDependencies 用 `workspace:*`（仅本地开发，不影响 changeset 计算）。
@@ -946,8 +946,7 @@ fixed 模式强制所有包统一版本号，新增包必须加入此数组。
 #### 6.5.7 新增 changeset
 
 - 首次发布：创建 `.changeset/<name>-init.md`，frontmatter 声明 `"@faapi/<name>": major`。
-- 日常用户可见变更：新增描述性 `.changeset/*.md`，声明对应版本类型（`major`/`minor`/`patch`）。
-- canary 阶段不执行 `pnpm changeset version`，changeset 累积到首次正式发版时统一消费。
+- 日常用户可见变更：新增描述性 `.changeset/*.md`，声明对应版本类型（`major`/`minor`/`patch`），累积到正式发版时统一消费。
 
 #### 6.5.8 无需修改的文件（已自动化）
 
@@ -972,7 +971,7 @@ fixed 模式强制所有包统一版本号，新增包必须加入此数组。
 
 1. `pnpm install` —— 链接 workspace
 2. `pnpm -r run typecheck` / `lint` / `test` / `build` —— 全部通过
-3. push 到 main 触发 canary 发布，确认新包以 `0.0.0-canary.<hash>` 发布到 npm `canary` tag
+3. 正式发版走 `npm-stable-release` 技能，确认新包发布到 npm `latest` tag
 
 ## 7. 交付完成定义
 
@@ -991,6 +990,5 @@ fixed 模式强制所有包统一版本号，新增包必须加入此数组。
 - CHANGELOG 由 Changesets 生成与维护，不手写。
 - 提交信息遵循 Conventional Commits（由 commitlint 强制）。
 - **major 升版必须二次确认**：changeset 判定（或待消费的 changeset 声明）为 major（如删除公开导出 / 配置字段、破坏性 API 变更）时，执行 `pnpm changeset version` 与打 tag 推送前必须向维护者展示影响包、bump 类型与变更描述并获明确确认——不得自主决定升大版本；minor / patch 不受此限。
-- **Canary 发布**：手动创建并推送 `v{version}-canary.N` 形式的 tag（如 `v1.2.3-canary.0`），CI 自动发布 canary 包（版本号取自 tag，npm tag `canary`）。
-- **正式发布**：手动 `pnpm changeset version` 更新版本和 CHANGELOG → 提交 → 创建 `v{version}` tag（不含 `-canary` 后缀）→ 推送 tag，CI 自动发布正式包（npm tag `latest`）。
+- **正式发布**：手动 `pnpm changeset version` 更新版本和 CHANGELOG → 提交 → 创建 `v{version}` tag → 推送 tag，CI 自动发布正式包（npm tag `latest`）。
 - 发版通过 npm Trusted Publisher（OIDC）自动完成，无需 `NPM_TOKEN` secret；workflow 需 `permissions: id-token: write`，发布命令带 `--provenance`。

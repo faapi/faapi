@@ -1,8 +1,6 @@
 name: Release
 
-# 通过 tag 触发发布：
-#   v1.2.3            → stable（走 changesets publish，版本号由 changeset version 写入 package.json）
-#   v1.2.3-canary.0   → canary（版本号直接取自 tag，npm dist-tag=canary）
+# 通过 tag 触发发布：v1.2.3 → stable（走 changesets publish，版本号由 changeset version 写入 package.json）
 on:
   push:
     tags:
@@ -11,8 +9,7 @@ on:
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  canary:
-    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-canary')
+  stable:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,33 +24,6 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - run: pnpm install --frozen-lockfile
       # 发布门禁：tag 可打在任意 commit（含未过 CI 的），发布前强制 typecheck + 全量测试
-      - run: pnpm typecheck
-      - run: pnpm test
-      - run: pnpm build
-      - name: Set canary version from tag
-        run: |
-          # tag 形如 v1.2.3-canary.0 → 版本号 1.2.3-canary.0
-          TAG=${GITHUB_REF#refs/tags/}
-          VERSION=${TAG#v}
-          pnpm -r exec -- npm version "${VERSION}" --no-git-tag-version
-      - run: pnpm -r publish --access public --tag canary --no-git-checks --provenance
-
-  stable:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-canary')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: pnpm
-          registry-url: 'https://registry.npmjs.org'
-      - run: pnpm install --frozen-lockfile
-      # 发布门禁：同 canary——正式发布前强制 typecheck + 全量测试
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

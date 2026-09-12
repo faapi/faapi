@@ -5,24 +5,24 @@ description: "发布 0.0.0-canary.0 空包到 npm 占位,以便为 @faapi/<name>
 
 # npm 空包占位发布
 
-本流程发布一个最小空包到 npm,让 `@faapi/<name>` 包"存在"于 npm,从而可以在包设置中配置 Trusted Publisher (OIDC),后续 CI 才能以 Trusted Publisher 方式自动发布 canary/正式版。
+本流程发布一个最小空包到 npm,让 `@faapi/<name>` 包"存在"于 npm,从而可以在包设置中配置 Trusted Publisher (OIDC),后续 CI 才能以 Trusted Publisher 方式自动发布正式版。
 
 ## 何时使用
 
 - 用户说"配置 Trusted Publisher"、"npm 包不存在无法配置"、"发布空包占位"
 - `@faapi/<name>` 包在 npm 上不存在(404),需要先发布占位版本
-- CI canary 发布失败,报 403 Forbidden / ENEEDMFA,原因是 Trusted Publisher 未配置(前提是包不存在)
+- CI 正式版发布失败,报 403 Forbidden / ENEEDMFA,原因是 Trusted Publisher 未配置(前提是包不存在)
 
 ## 不适用场景
 
 - 新增 monorepo 子包结构(参照 AGENTS.md 6.5 "新增子包配置清单")
 - 正式版发布(用 `npm-stable-release` skill)
 - DDD 开发某个模块(用 `ddd` skill)
-- 包已存在且 Trusted Publisher 已配置(直接走 CI canary)
+- 包已存在且 Trusted Publisher 已配置(直接走 CI 发布)
 
 ## 背景
 
-npm Trusted Publisher (OIDC) 要求包已存在才能配置。新包首次发布前,需手动发布一个 `0.0.0-canary.0` 占位版本,让包"存在"于 npm,然后才能在包设置中添加 Trusted Publisher 记录。配置完成后,CI 才能 Trusted Publisher 方式自动发布 canary 版本。
+npm Trusted Publisher (OIDC) 要求包已存在才能配置。新包首次发布前,需手动发布一个 `0.0.0-canary.0` 占位版本,让包"存在"于 npm,然后才能在包设置中添加 Trusted Publisher 记录。配置完成后,CI 才能 Trusted Publisher 方式自动发布正式版本。
 
 这与 monorepo 内 `packages/<name>/` 的正式包结构创建是**两个独立步骤**:
 - 本 skill:仅在 npm 上创建占位包,不涉及 monorepo
@@ -83,7 +83,7 @@ npm view @faapi/<name>
 
 | 字段 | 要求 | 原因 |
 |------|------|------|
-| `version` | 固定 `0.0.0-canary.0` | 与 monorepo 一致,后续 CI canary 会以 `0.0.0-canary.<hash>` 覆盖 |
+| `version` | 固定 `0.0.0-canary.0` | 占位版本号,仅用于让包存在于 npm |
 | `publishConfig.access` | `public` | `@faapi` 是 scoped 包,默认 restricted,需显式 public |
 | `publishConfig.provenance` | **不要设置** | 手动发布无 OIDC,设置 provenance 会发布失败 |
 | `files` | `[]` | 不发布任何源码文件,仅 package.json + README |
@@ -114,7 +114,7 @@ npm publish --otp <OTP>
 **注意事项**:
 
 - **不带 `--provenance`**:手动发布无 OIDC,带此参数会失败
-- **不带 `--tag canary`**:默认发布到 `latest` tag。这是预期的——后续 CI canary 发布时会发布到 `canary` tag,正式版发布会覆盖 `latest`
+- **不带 `--tag canary`**:默认发布到 `latest` tag,后续正式版发布会覆盖 `latest`
 - 发布成功后,空包版本 `0.0.0-canary.0` 会保留在 npm 版本历史中(用户已确认不 unpublish)
 
 ### 6. 配置 Trusted Publisher
@@ -133,7 +133,7 @@ npm publish --otp <OTP>
    - Environment: 留空
 4. 保存
 
-未配置会导致 CI canary job 报 403 Forbidden 或 ENEEDMFA。
+未配置会导致 CI 发布 job 报 403 Forbidden 或 ENEEDMFA。
 ```
 
 ### 7. 验证
@@ -154,7 +154,7 @@ Trusted Publisher 配置需用户在 npm 网页确认。
 - 在 monorepo 的 `packages/<name>/` 下按 AGENTS.md 6.5 "新增子包配置清单" 创建正式包结构
 - 加入 `.changeset/config.json` 的 fixed 数组
 - 创建初始 changeset(`.changeset/<name>-init.md`,声明 `major`)
-- push 到 main 触发 CI canary job,自动以 `0.0.0-canary.<hash>` 发布到 npm `canary` tag
+- 后续正式发版打 `v{version}` tag 触发 CI 发布,覆盖 npm `latest` tag
 - 空包版本 `0.0.0-canary.0` 保留在 npm 版本历史中,无需 unpublish
 
 ## 异常处理
@@ -180,14 +180,14 @@ Trusted Publisher 配置需用户在 npm 网页确认。
 
 **处理**:包已存在,跳过空包发布,直接进入步骤 6 配置 Trusted Publisher。
 
-### CI canary 发布失败:403 Forbidden / ENEEDMFA(配置后仍失败)
+### CI 发布失败:403 Forbidden / ENEEDMFA(配置后仍失败)
 
 **原因**:Trusted Publisher 配置字段与 workflow 不匹配。
 
 **处理**:
 1. 检查 npm 包 Settings → Trusted Publishers 是否存在记录
 2. 确认 Repository owner=`faapi`、Repository name=`faapi`、Workflow filename=`.github/workflows/release.yml`、Environment 留空
-3. 确认 `.github/workflows/release.yml` 的 canary job 有 `permissions: id-token: write`
+3. 确认 `.github/workflows/release.yml` 的 stable job 有 `permissions: id-token: write`
 4. 确认 monorepo 内 `packages/<name>/package.json` 的 `publishConfig.provenance: true`(注意:这是 CI 发布用的,与步骤 3 的空包 package.json 不同)
 
 ## 检查清单
@@ -207,6 +207,6 @@ Trusted Publisher 配置需用户在 npm 网页确认。
 ## 参考资料
 
 - AGENTS.md 6.5.9 "npm 端手动配置" — Trusted Publisher 字段单一来源
-- AGENTS.md 7 "发布相关补充约定" — canary/正式版发布路径
+- AGENTS.md 7 "发布相关补充约定" — 正式版发布路径
 - `npm-stable-release` skill — 正式版发布流程
-- `.github/workflows/release.yml` — CI canary/stable workflow
+- `.github/workflows/release.yml` — CI 发布 workflow

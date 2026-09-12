@@ -1,6 +1,6 @@
 ---
 name: "faapi-framework-dev"
-description: "开发 faapi 框架本身。Invoke when 在 faapi 仓库内新增/修改框架功能、修框架 bug、新增 @faapi 子包、发 canary/正式版、处理业务方问题反馈（TODO-faapi-*.md），或需要理解框架架构时。"
+description: "开发 faapi 框架本身。Invoke when 在 faapi 仓库内新增/修改框架功能、修框架 bug、新增 @faapi 子包、发正式版、处理业务方问题反馈（TODO-faapi-*.md），或需要理解框架架构时。"
 ---
 
 # faapi 框架开发
@@ -22,8 +22,7 @@ description: "开发 faapi 框架本身。Invoke when 在 faapi 仓库内新增/
 | 开发框架功能（新增/修改模块、改行为） | 走全局技能库的 `ddd` 技能（本仓库无本地副本，缺失时报错）：文档 → 测试 → 代码 → 通过，不跳过测试声明完成 | AGENTS.md「开发模式 / 文档体系」 |
 | 理解架构 / dev·build·prod 链路 / 产物机制 | 读 AGENTS.md「架构」（统一产物驱动、零入口设计、按需编译），再按需读模块 DDD 文档 | AGENTS.md「架构」 |
 | 新增 `@faapi/<name>` 子包 | 按 AGENTS.md「新增子包配置清单」逐项配置并跑完末节验证；npm 上包不存在时先用 `npm-empty-publish` 技能发占位包、配 Trusted Publisher | AGENTS.md「新增子包配置清单」 |
-| 测试 / 质量门禁 | `pnpm -r run typecheck` / `lint` / `test` / `build`；本地快速反馈用包内 `test:unit`，提交前跑全量 | AGENTS.md「技术栈」/「新增子包配置清单·验证」 |
-| 发 canary 版 | 打 `v{version}-canary.N` tag 推送，CI 以 Trusted Publisher（OIDC）自动发布到 npm `canary` tag | AGENTS.md「交付完成定义·发布相关补充约定」 |
+| 测试 / 质量门禁 | `pnpm -r run typecheck` + `typecheck:test` / `lint` / `test` / `build`——typecheck 与 typecheck:test 是两个独立 script，后者用 tsconfig.test.json 单独严查测试文件，只跑前者会漏掉测试类型错误（CI 两者都跑，已两次因漏跑挂在发布门禁）；本地快速反馈用包内 `test:unit`，提交前跑全量 | AGENTS.md「技术栈」/「新增子包配置清单·验证」 |
 | 发正式版 | 走 `npm-stable-release` 技能（changeset 升版本 + 打 tag） | AGENTS.md「交付完成定义·发布相关补充约定」 |
 | 提交变更 | Conventional Commits（commitlint 强制）；`packages/faapi`、`packages/schema` 的用户可见变更必须随 PR 附 changeset（`pnpm changeset`），CHANGELOG 不手写 | AGENTS.md「交付完成定义」 |
 | 用户可见变更（新能力 / 行为变化 / 配置字段） | **不做自动同步**——个人技能库 `faapi-dev` 的更新由维护者在正式发版后手动同步、自行触发；框架侧不代为同步，也不预测发版版本 | AGENTS.md「交付完成定义」 |

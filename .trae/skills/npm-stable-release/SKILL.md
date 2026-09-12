@@ -11,12 +11,10 @@ description: "发布 npm 正式版,通过 changeset 升版本号 + 打 tag 触�
 
 - 用户说"发正式版"、"发布 stable 版本"、"打 tag 发版"
 - 累积了若干 changeset,准备发版
-- canary 版本验证通过,需要发布到 `latest` tag
 
 ## 前置条件
 
 - 已在 main 分支
-- 上一次 canary 版本在 npm 上验证通过
 
 ## 流程
 
@@ -26,7 +24,7 @@ description: "发布 npm 正式版,通过 changeset 升版本号 + 打 tag 触�
 
 1. 展示：影响包、bump 类型（major）、变更描述、破坏性影响（哪些现有用法会失效）
 2. 获得维护者明确确认后才可继续后续步骤；未确认（或维护者要求改 minor/patch）→ 按其意见调整后重新确认
-3. 未获确认直接中止,不得执行步骤 6（`changeset version`）与打 tag 推送
+3. 未获确认直接中止,不得执行步骤 5（`changeset version`）与打 tag 推送
 
 依据：AGENTS.md「交付完成定义·发布相关补充约定」的 major 二次确认条款。
 minor / patch 不受此限，按本流程正常执行。
@@ -76,60 +74,7 @@ git diff --cached --stat
 
 **禁止自动 commit 用户未确认的改动**,必须询问用户。
 
-### 3. 验证 canary 版本
-
-发正式版前,先验证最新 canary 版本是否可用:
-
-```bash
-# 获取最新 canary 版本号
-CANARY_VERSION=$(npm view @faapi/faapi dist-tags --json | node -p "JSON.parse(require('fs').readFileSync(0))?.canary || ''")
-
-if [ -z "$CANARY_VERSION" ]; then
-  echo "No canary version found. Skip canary verification."
-else
-  echo "Latest canary: $CANARY_VERSION"
-fi
-```
-
-#### 验证 canary 安装与运行
-
-```bash
-# 临时目录验证
-TMPDIR=$(mktemp -d)
-cd "$TMPDIR"
-
-# 初始化并安装 canary 版本
-npm init -y > /dev/null 2>&1
-npm install @faapi/faapi@$CANARY_VERSION @faapi/schema@$CANARY_VERSION @faapi/next@$CANARY_VERSION @faapi/mcp@$CANARY_VERSION > /dev/null 2>&1
-
-# 验证 CLI 可运行
-npx faapi --version 2>&1 || echo "CLI check failed"
-
-# 验证主包可导入
-node -e "import('@faapi/faapi').then(m => console.log('faapi exports:', Object.keys(m).slice(0,5)))" 2>&1
-
-# 验证 schema 包可导入
-node -e "import('@faapi/schema').then(m => console.log('schema default export:', typeof m.default))" 2>&1
-
-# 验证 next 包可导入
-node -e "import('@faapi/next').then(m => console.log('next exports:', Object.keys(m).length > 0))"
-
-# 验证 mcp 包可导入
-node -e "import('@faapi/mcp').then(m => console.log('mcp exports:', Object.keys(m).length > 0))" 2>&1
-
-# 验证 mcp 包可导入
-node -e "import('@faapi/mcp').then(m => console.log('mcp exports:', Object.keys(m).length > 0))" 2>&1
-
-cd - > /dev/null
-rm -rf "$TMPDIR"
-```
-
-**验证失败处理**:
-- CLI 无法运行 → 中止发版,提示用户修复 canary 后重试
-- 导入失败 → 中止发版,提示用户检查构建产物
-- canary 版本不存在 → 警告但继续(可能是首次发版)
-
-### 4. 确保 pending changeset 存在
+### 3. 确保 pending changeset 存在
 
 检查 `.changeset/` 目录下是否有 pending changeset 文件(除 README.md):
 
@@ -253,7 +198,7 @@ git commit -m "chore: add changeset for <描述>"
 
 继续步骤 5。
 
-### 5. 记录当前版本
+### 4. 记录当前版本
 
 ```bash
 node -p "require('./packages/faapi/package.json').version"
@@ -261,7 +206,7 @@ node -p "require('./packages/faapi/package.json').version"
 
 记录为 `OLD_VERSION`,用于后续验证版本号是否真的升级了。
 
-### 6. 运行 changeset version
+### 5. 运行 changeset version
 
 ```bash
 pnpm changeset version
@@ -276,7 +221,7 @@ pnpm changeset version
 
 **fixed 配置保证五包版本同步**:即使 changeset 只标记其中一个包,`.changeset/config.json` 的 `fixed: [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/mcp", "@faapi/agent"]]` 会让五个包版本号保持一致(取最高 bump type)。
 
-### 7. 验证版本升级
+### 6. 验证版本升级
 
 ```bash
 # 读取新版本
@@ -285,7 +230,7 @@ node -p "require('./packages/faapi/package.json').version"
 
 对比 `OLD_VERSION`,确认版本号已升级。若未变,说明 changeset 文件的 bump type 有问题,中止流程。
 
-### 8. 验证五包版本同步
+### 7. 验证五包版本同步
 
 ```bash
 FAAPI_VERSION=$(node -p "require('./packages/faapi/package.json').version")
@@ -297,7 +242,7 @@ AGENT_VERSION=$(node -p "require('./packages/agent/package.json').version")
 
 五个版本必须一致(因 fixed 配置)。若不一致,中止流程并提示检查 changeset config。
 
-### 9. 本地验证(发版前)
+### 8. 本地验证(发版前)
 
 在打 tag 推送前,本地验证构建产物:
 
@@ -305,8 +250,11 @@ AGENT_VERSION=$(node -p "require('./packages/agent/package.json').version")
 # 构建并验证
 pnpm build
 
-# typecheck 通过
+# typecheck 通过——typecheck 与 typecheck:test 是两个独立 script,
+# typecheck:test 用 tsconfig.test.json 单独严查测试文件,CI 两者都跑
+# (已两次因只跑 typecheck 漏掉 typecheck:test 挂在发布门禁)
 pnpm typecheck
+pnpm -r run typecheck:test
 
 # 测试通过
 pnpm test
@@ -316,15 +264,15 @@ pnpm test
 
 #### ⚠️ 本地验证边界——到此为止,不要模拟发布
 
-**本地验证以 build / typecheck / test 全绿为准,不要继续做任何「安装级模拟」**:
+**本地验证以 build / typecheck / typecheck:test / test 全绿为准,不要继续做任何「安装级模拟」**:
 
 - ❌ 不要 `npm pack` 打 tarball 再本地安装验证——tarball 里的 `workspace:` 协议依赖要等 CI `pnpm publish` 时才被 pnpm 改写,`npm pack` 不改写,本地安装必然 404
 - ❌ 不要用裸 `node` import 各包 `dist` 验证——monorepo 内 `package.json` 的 `main`/`exports` 指向 `src/index.ts`(开发态),external 的 workspace 依赖会解析到别的包的 TS 源码,报 `ERR_MODULE_NOT_FOUND` 属**开发态假象**,不是发布 bug
 - ✅ 发布机制(`publishConfig` 改写、workspace 协议替换、OIDC provenance、npm 安装)是 CI 的职责,由 `pnpm changeset publish` 完成,且已被历史发版(4.2.0 / 4.2.1 / 4.3.0 等)反复验证
 
-> 教训(v4.3.0 发版):本地 tarball 模拟连环报错(404 faapi@*、import 解析到 src/index.ts),排查半天全是开发态假象——发布后 npm 验证一次通过。发版前只需要 build/typecheck/test 绿,然后提交、打 tag、推送,**发布正确性交给 CI,发版后走第 13 步在真实 npm 上验证**。
+> 教训(v4.3.0 发版):本地 tarball 模拟连环报错(404 faapi@*、import 解析到 src/index.ts),排查半天全是开发态假象——发布后 npm 验证一次通过。发版前只需要 build/typecheck/typecheck:test/test 绿,然后提交、打 tag、推送,**发布正确性交给 CI,发版后走第 12 步在真实 npm 上验证**。
 
-### 10. 提交版本升级
+### 9. 提交版本升级
 
 ```bash
 git add -A
@@ -337,7 +285,7 @@ git commit -m "chore: version packages to $NEW_VERSION"
 - `packages/*/CHANGELOG.md` 更新
 - 已消费的 changeset 文件删除
 
-### 11. 打 tag
+### 10. 打 tag
 
 ```bash
 git tag "v$NEW_VERSION"
@@ -345,7 +293,7 @@ git tag "v$NEW_VERSION"
 
 **tag 名格式**: `v` + 版本号(如 `v0.0.1`、`v1.2.3`),与 `.github/workflows/release.yml` 的 `tags: ['v*']` 匹配。
 
-### 12. 推送触发 CI
+### 11. 推送触发 CI
 
 ```bash
 git push origin main --tags
@@ -356,7 +304,7 @@ git push origin main --tags
 - stable job 执行 `pnpm changeset publish`
 - 通过 OIDC Trusted Publisher 发布到 npm,tag 为 `latest`
 
-### 13. 验证发布(发版后)
+### 12. 验证发布(发版后)
 
 CI 跑完后(约 2-3 分钟),完整验证:
 
@@ -434,7 +382,7 @@ CI 进度监控: https://github.com/faapi/faapi/actions
 - changeset 文件的 bump type 为 `none`
 - 没有 pending changeset(被之前的发版消费掉了)
 
-**处理**:回到步骤 4,重新生成 changeset,确认选了 patch/minor/major(不是 none)。
+**处理**:回到步骤 3,重新生成 changeset,确认选了 patch/minor/major(不是 none)。
 
 ### 包版本不同步
 
@@ -460,15 +408,6 @@ git push origin :refs/tags/v$VERSION  # 删远程 tag
 ```
 确认版本号正确后重新打 tag。**注意**:不要 force push tag,可能影响已发布的版本。
 
-### canary 验证失败
-
-**症状**:canary 版本 CLI 无法运行或导入失败
-
-**处理**:
-1. 中止发版流程
-2. 提示用户:"canary 版本 $CANARY_VERSION 验证失败,请先修复"
-3. 等待用户修复后重新触发发版流程
-
 ### 发版后验证失败
 
 **症状**:npm 上的 latest 版本无法安装或运行
@@ -485,15 +424,15 @@ git push origin :refs/tags/v$VERSION  # 删远程 tag
 - [ ] 当前在 main 分支
 - [ ] working tree 干净(或已处理脏状态)
 - [ ] **major 升版已获维护者二次确认**(未确认不执行 changeset version / 打 tag;minor/patch 跳过此项)
-- [ ] canary 版本验证通过(或确认跳过)
 - [ ] 至少一个 pending changeset 文件(或已通过步骤 4 自动生成)
 - [ ] `pnpm changeset version` 后版本号升级
 - [ ] 五个包（faapi/agent/mcp/next/schema）版本号一致
 - [ ] 各包 `package.json` 含 `publishConfig.provenance: true`
 - [ ] `pnpm build` 成功
 - [ ] `pnpm typecheck` 通过
+- [ ] `pnpm -r run typecheck:test` 通过（与 typecheck 是独立 script,漏跑已两次挂发布门禁）
 - [ ] `pnpm test` 通过
-- [ ] 本地验证到 build / typecheck / test 全绿为止，未做任何 tarball 安装 / dist 导入模拟
+- [ ] 本地验证到 build / typecheck / typecheck:test / test 全绿为止，未做任何 tarball 安装 / dist 导入模拟
 - [ ] commit message 格式 `chore: version packages to <版本号>`（commitlint 无 release 类型）
 - [ ] tag 名格式 `v$VERSION`
 - [ ] 已 `git push origin main --tags`
