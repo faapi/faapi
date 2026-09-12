@@ -189,15 +189,48 @@ describe('scanAgents', () => {
     }
   });
 
-  it('glob * 不跨 /，仅匹配一级目录', async () => {
+  it('默认 pattern 支持多级嵌套目录，名字规范化为点号', async () => {
     const { dir, write, cleanup } = setupTmp();
-    write('src/agents/researcher/handler.ts', 'export const config = {};\n');
-    // 嵌套目录不应匹配 src/agents/*/handler.ts
-    write('src/agents/researcher/sub/handler.ts', 'export const config = {};\n');
+    write('src/agents/easy-writing/wizard/handler.ts', 'export const config = {};\n');
+    write('src/agents/a/b/c/deep/handler.ts', 'export const config = {};\n');
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents).toHaveLength(1);
-      expect(agents[0]!.name).toBe('researcher');
+      expect(agents).toHaveLength(2);
+      const byName = new Map(agents.map((a) => [a.name, a]));
+      expect(byName.get('easy-writing.wizard')?.filePath).toBe(
+        'src/agents/easy-writing/wizard/handler.ts',
+      );
+      expect(byName.get('a.b.c.deep')?.filePath).toBe('src/agents/a/b/c/deep/handler.ts');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('嵌套与平铺混合扫描，重名跨层级检测生效', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/agents/researcher/handler.ts', 'export const config = {};\n');
+    write('src/agents/researcher/sub/handler.ts', 'export const config = {};\n');
+    write('src/agents/other/deep/handler.ts', 'export const config = {};\n');
+    try {
+      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
+      expect(agents).toHaveLength(3);
+      const byName = new Map(agents.map((a) => [a.name, a]));
+      expect(byName.has('researcher')).toBe(true);
+      expect(byName.has('researcher.sub')).toBe(true);
+      expect(byName.has('other.deep')).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('嵌套同子路径重名报错', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/agents/group/wizard/handler.ts', 'export const config = {};\n');
+    write('backup/agents/group/wizard/handler.ts', 'export const config = {};\n');
+    try {
+      await expect(
+        scanAgents(dir, ['src/agents/**/handler.ts', 'backup/agents/**/handler.ts']),
+      ).rejects.toThrow(/group\.wizard/);
     } finally {
       cleanup();
     }

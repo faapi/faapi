@@ -7,12 +7,14 @@ import type { AgentManifestList } from './agentTypes';
  * 默认 agent 扫描 patterns
  *
  * 与 tool 扫描（[TOOL_PATTERNS](../tools/scanTools.md)）对称——
- * agent 定义文件约定放在 `src/agents/<agentName>/handler.ts`（一级目录）。
+ * agent 定义文件约定放在 `src/agents` 下的任意层级 `handler.ts`，支持多级嵌套目录
+ * （`src/agents/` + `<name>/handler.ts` 平铺与 `<group>/<name>/handler.ts` 分组嵌套）。
+ * `**` 匹配零级或多级目录，平铺场景行为与旧版单段通配 pattern 完全一致。
  *
  * 由 devCommand / buildCommand / createDevApp.reloadAgents（Phase 1.9）共享，
  * 避免多处重复定义。
  */
-export const DEFAULT_AGENT_PATTERNS = ['src/agents/*/handler.ts'];
+export const DEFAULT_AGENT_PATTERNS = ['src/agents/**/handler.ts'];
 
 /**
  * 检测 `run` 函数导出
@@ -35,22 +37,25 @@ const RUN_EXPORT_RE = /export\s+(?:async\s+)?(?:function\s+|const\s+)run\b/;
 /**
  * 从文件路径提取 agent 名
  *
- * 匹配 `src/agents/<agentName>/handler.ts` 模式，提取 `<agentName>`。
+ * 匹配 `agents/<subpath>/handler.ts` 模式（任意前缀），取 `agents/` 之后、`handler.ts`
+ * 之前的完整子路径，`/` 规范化为 `.`（与 asTool 的 `agent.<name>` 工具命名、
+ * 既有平铺点号目录的调用名一致）。
  *
  * - `src/agents/researcher/handler.ts` → `researcher`
- * - `backup/agents/researcher/handler.ts` → `researcher`（任意前缀，只要匹配 agents/<name>/handler.ts）
+ * - `src/agents/easy-writing/wizard/handler.ts` → `easy-writing.wizard`
+ * - `backup/agents/researcher/handler.ts` → `researcher`（任意前缀，只要匹配 agents/.../handler.ts）
  *
  * @throws 路径不匹配 agent 模式时抛错（不应发生——glob pattern 已限制）
  */
 function extractAgentNameFromPath(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');
-  const match = normalized.match(/(?:^|\/)agents\/([^/]+)\/handler\.ts$/);
+  const match = normalized.match(/(?:^|\/)agents\/(.+)\/handler\.ts$/);
   if (!match) {
     throw new Error(
       `Not an agent path: "${filePath}". Expected pattern: src/agents/<name>/handler.ts`,
     );
   }
-  return match[1]!;
+  return match[1]!.replace(/\//g, '.');
 }
 
 /**
