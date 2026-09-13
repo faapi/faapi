@@ -13,6 +13,8 @@ const h = vi.hoisted(() => {
     work: ReturnType<typeof vi.fn>;
     offWork: ReturnType<typeof vi.fn>;
     stop: ReturnType<typeof vi.fn>;
+    cancel: ReturnType<typeof vi.fn>;
+    resume: ReturnType<typeof vi.fn>;
     sent: Array<{ name: string; data: unknown; options: unknown }>;
     workHandlers: Array<{
       options: Record<string, unknown>;
@@ -64,6 +66,8 @@ vi.mock('pg-boss', () => {
     );
     offWork = vi.fn(async (_idOrOptions?: string | Record<string, unknown>) => {});
     stop = vi.fn(async () => {});
+    cancel = vi.fn(async (_name: string, _id: string) => {});
+    resume = vi.fn(async (_name: string, _id: string) => {});
     sent: Array<{ name: string; data: unknown; options: unknown }> = [];
     workHandlers: Array<{
       options: Record<string, unknown>;
@@ -181,5 +185,34 @@ describe('createPgBossDriver', () => {
     expect(boss.offWork).toHaveBeenCalledWith('worker-1');
     await driver.startWorker('a', { concurrency: 1, process: async () => 1 });
     expect(boss.work).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancel 映射 boss.cancel(name, id)（v10 需要显式队列名）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    const boss = fakeBosses()[0]!;
+    await driver.cancel!('mail', 'j1');
+    expect(boss.cancel).toHaveBeenCalledWith('mail', 'j1');
+  });
+
+  it('retry 映射 boss.resume(name, id)（仅 cancelled 任务可恢复）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    const boss = fakeBosses()[0]!;
+    await driver.retry!('mail', 'j1');
+    expect(boss.resume).toHaveBeenCalledWith('mail', 'j1');
+  });
+
+  it('list 未实现——pg-boss v10 无批量列出 jobs 的公开 API（能力缺口显式）', async () => {
+    const driver = createPgBossDriver();
+    expect(driver.list).toBeUndefined();
+  });
+
+  it('stop 后 cancel/retry 显式拒绝（驱动连接已关闭）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    await driver.stop(1000);
+    await expect(driver.cancel!('mail', 'j1')).rejects.toThrow(/stopped/);
+    await expect(driver.retry!('mail', 'j1')).rejects.toThrow(/stopped/);
   });
 });

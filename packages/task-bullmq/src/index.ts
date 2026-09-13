@@ -1,5 +1,5 @@
-import type { TaskDriver, TaskDriverProcess } from '@faapi/faapi';
-import { Queue, Worker, type ConnectionOptions, type Job } from 'bullmq';
+import type { TaskDriver, TaskDriverProcess, TaskDriverRecord, TaskJobStatus } from '@faapi/faapi';
+import { Queue, Worker, type ConnectionOptions, type Job, type JobType } from 'bullmq';
 
 /**
  * BullMQ 驱动选项
@@ -139,6 +139,73 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
       const closes = Array.from(workers.values()).map((w) => w.close());
       workers.clear();
       await Promise.all(closes);
+    },
+
+    async list(opts) {
+      const limit = opts?.limit ?? 50;
+      // 目标队列：指定 name 时按需创建 Queue 实例；不传时遍历本进程已创建的
+      // （BullMQ 队列按 Redis key 寻址，额外实例不影响驱动内的队列）
+      const targets: Queue[] = opts?.name ? [getQueue(opts.name)] : [...queues.values()];
+      // faapi 语义状态 → BullMQ JobType 分组（cancel 为 job.remove，无 cancelled 可查；
+      // 重试等待中的 job 处于 delayed → 归入 pending）
+      const stateTypes: Partial<Record<TaskJobStatus, JobType[]>> = {
+        pending: ['waiting', 'delayed'],
+        running: ['active'],
+        done: ['completed'],
+        failed: ['failed'],
+      };
+      const wanted = (opts?.state ? [opts.state] : ['pending', 'running', 'done', 'failed']).filter(
+        (s): s is TaskJobStatus => (stateTypes[s as TaskJobStatus]?.length ?? 0) > 0,
+      );
+
+      const records: TaskDriverRecord[] = [];
+      for (const status of wanted) {
+        const types = stateTypes[status]!;
+        for (const queue of targets) {
+          const jobs = await queue.getJobs(types, 0, limit - 1);
+          for (const job of jobs) {
+            if (!job) continue;
+            records.push({
+              id: job.id ?? '',
+              name: job.name,
+              payload: job.data,
+              status,
+              attempts: job.attemptsMade ?? 0,
+              ...(job.returnvalue !== undefined && job.returnvalue !== null
+                ? { result: job.returnvalue }
+                : {}),
+              ...(job.failedReason ? { error: job.failedReason } : {}),
+              createdAt: job.timestamp,
+              ...(job.processedOn ? { runAt: job.processedOn } : {}),
+            });
+          }
+        }
+      }
+      return records.sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+    },
+
+    async cancel(name, id) {
+      if (stopped) {
+        throw new Error(
+          '[faapi] Task queue is stopped and no longer accepts management operations',
+        );
+      }
+      // BullMQ 无 cancelled 状态——取消即移除（等待/延迟中的不再执行；active 受锁限制由 BullMQ 抛错）
+      const job = await getQueue(name).getJob(id);
+      if (job) await job.remove();
+    },
+
+    async retry(name, id) {
+      if (stopped) {
+        throw new Error(
+          '[faapi] Task queue is stopped and no longer accepts management operations',
+        );
+      }
+      const job = await getQueue(name).getJob(id);
+      if (!job) {
+        throw new Error(`[faapi] Task "${name}" job "${id}" not found`);
+      }
+      await job.retry(); // 仅 failed 可重试；其余状态由 BullMQ 抛错
     },
   };
 }

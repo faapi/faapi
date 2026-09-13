@@ -70,7 +70,12 @@ export type {
   TaskQueue,
 } from './task/taskTypes';
 export type { TaskRegistry } from './task/taskRegistry';
-export type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './task/driverTypes';
+export type {
+  TaskDriver,
+  TaskDriverJob,
+  TaskDriverProcess,
+  TaskDriverRecord,
+} from './task/driverTypes';
 export { createTaskRegistry } from './task/taskRegistry';
 export { createTaskQueue } from './task/taskQueue';
 export { loadTaskDriver } from './task/loadTaskDriver';

@@ -50,7 +50,13 @@ describe('configTypes', () => {
       routes: [] as RouteManifest,
       server: {} as Server,
       registries: {} as import('../injection/registries').AppRegistries,
-      tasks: { enqueue: async () => ({ id: 'test' }), list: () => [] },
+      tasks: {
+        enqueue: async () => ({ id: 'test' }),
+        list: () => [],
+        listQueued: async () => [],
+        cancel: async () => {},
+        retry: async () => {},
+      },
     };
     expect(ctx.rootDir).toBe('/app');
     expect(ctx.routes).toEqual([]);

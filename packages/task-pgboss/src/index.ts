@@ -135,5 +135,28 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
       }
       workerIds.clear();
     },
+
+    async cancel(name, id) {
+      if (stopped) {
+        throw new Error(
+          '[faapi] Task queue is stopped and no longer accepts management operations',
+        );
+      }
+      const b = await ensureBoss();
+      await b.cancel(name, id);
+    },
+
+    async retry(name, id) {
+      if (stopped) {
+        throw new Error(
+          '[faapi] Task queue is stopped and no longer accepts management operations',
+        );
+      }
+      const b = await ensureBoss();
+      // pg-boss v10 语义：resume 恢复 cancelled 任务；failed 任务无原生重试 API
+      await b.resume(name, id);
+    },
+    // list 未实现：pg-boss v10 无批量列出 jobs 的公开 API（getJobById/getQueueSize 只能单查/计数），
+    // 不硬造内部 SQL 依赖——语义层 listQueued 显式抛错，管理走 pg-boss 自身 API/SQL
   };
 }

@@ -105,8 +105,31 @@ export interface TaskClient {
    * @throws 任务不存在 / 队列已停止 / payload 校验失败（ValidationError）
    */
   enqueue(name: string, payload?: unknown, opts?: { delayMs?: number }): Promise<{ id: string }>;
-  /** 任务记录快照（可按任务名过滤） */
+  /** 任务记录快照（可按任务名过滤）——本进程内存活记录，不含其他实例/重启前历史 */
   list(name?: string): TaskJob[];
+  /**
+   * 持久化队列视图：驱动实现 `TaskDriver.list` 时返回队列侧任务（含其他实例的
+   * 与历史执行），并与本进程记录按 id 合并（本进程观测优先：status/attempts/
+   * result/error 以本进程为准）
+   *
+   * @throws 驱动未实现 TaskDriver.list（能力边界见 driverTypes.md——pgboss 未实现，
+   * 用 pg-boss 自身 API/SQL 旁路；BullMQ 全支持）
+   */
+  listQueued(name?: string): Promise<TaskJob[]>;
+  /**
+   * 取消队列侧任务：等待/延迟中的不再执行（语义随驱动——pgboss 保留 cancelled
+   * 记录，bullmq 为 job.remove 即移除）
+   *
+   * @throws 驱动未实现 TaskDriver.cancel
+   */
+  cancel(name: string, id: string): Promise<void>;
+  /**
+   * 重试队列侧失败/取消的任务（pgboss 仅 cancelled 可 resume；bullmq 仅 failed
+   * 可 retry；任务不存在/状态不允许由驱动抛错）
+   *
+   * @throws 驱动未实现 TaskDriver.retry
+   */
+  retry(name: string, id: string): Promise<void>;
 }
 
 /**

@@ -37,7 +37,12 @@ export function POST(body: { email: string }, tasks: TaskClient) {
   return tasks.enqueue('send-email', { to: body.email, template: 'welcome' });
 }
 
-// 4. 中间件 / 编程式：ctx.tasks（同 TaskClient）、app.tasks、lifecycle 钩子的 { tasks }
+// 4. 管理：查询持久化队列 / 取消 / 重试（能力随驱动，见 driverTypes.md）
+const queued = await tasks.listQueued('send-email'); // 队列侧任务（含其他实例/历史）
+await tasks.cancel('send-email', queued[0].id);      // 取消等待/延迟中的任务
+await tasks.retry('send-email', failed.id);          // 重试失败/取消的任务
+
+// 5. 中间件 / 编程式：ctx.tasks（同 TaskClient）、app.tasks、lifecycle 钩子的 { tasks }
 ```
 
 ## 模块组成

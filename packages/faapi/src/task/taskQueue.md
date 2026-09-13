@@ -22,6 +22,8 @@
   - **隔离执行**（任务声明 `timeoutMs`）：走 taskWorker 独立线程执行，超时两段式取消（abort 信号宽限 → terminate 硬杀）——判定超时即执行真正终止，详见 taskWorker.md
   - 每次执行更新记录 `running`（attempts 递增），返回写 `done`（保留 result），抛错写 `failed`（保留 error）后向上传播——是否重试由驱动决定
 - 任务记录：`pending / running / retry / done / failed / cancelled`，`list(name?)` 返回快照；**取消与失败分流**——执行被框架终止（隔离执行超时终止、停机取消）记 `cancelled`（`TaskCancelledError` 或 job.signal 已 abort），run 自身抛错记 `failed`，两者都向上抛错交驱动按 retries 重试，重试派发后记录回 `running` 继续流转；持久化与历史记录由驱动负责，本层记录为当前进程内存活快照（stop 后未消费的 pending 任务不标记——持久化驱动下重启后继续执行）
+- `listQueued(name?)`：持久化队列视图——驱动实现 `TaskDriver.list` 时返回队列侧任务（含其他实例/历史执行），并与本进程记录按 id 合并（本进程观测优先：status/attempts/result/error 以本进程为准）；驱动未实现时显式抛错（能力边界见 driverTypes.md：pgboss 未实现 list，BullMQ 全支持）
+- `cancel(name, id)` / `retry(name, id)`：透传驱动可选管理方法；本地有该 id 记录时同步更新（cancel → `cancelled`，retry → `pending` 等待重新派发）；驱动未实现时显式抛错
 - `stop(timeoutMs)`：停止接受新任务，透传 `timeoutMs` 给 `driver.stop`（drain/abort 语义由驱动实现；驱动超时后 abort 在跑任务的 signal，进程内任务监听退出，进程退出兜底终止）；停止后 `enqueue`/`start` 抛错
 - `reload()`：调 `driver.stopWorkers?` 后按最新注册表重新注册 worker（dev reloadTasks 热替换路径）
 - 模块加载失败：`failed`（error 为原始异常），不静默吞掉

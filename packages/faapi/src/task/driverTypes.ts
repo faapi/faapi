@@ -10,6 +10,7 @@
  * （loadTaskDriver.ts）；无任务清单时用 idleTaskDriver 占位（enqueue 显式报错）。
  */
 import type { TaskRegistry } from './taskRegistry';
+import type { TaskJobStatus } from './taskTypes';
 
 /** 驱动层交付给语义层执行的单个任务 */
 export interface TaskDriverJob {
@@ -25,6 +26,29 @@ export interface TaskDriverJob {
 
 /** 语义层交给驱动层的执行函数（抛错 = 失败，由驱动按入队时的 retries 重试） */
 export type TaskDriverProcess = (job: TaskDriverJob) => Promise<unknown>;
+
+/**
+ * 驱动侧任务查询记录（TaskDriver.list 的返回项）
+ *
+ * status 由子包从队列系统原生状态映射为 faapi 语义
+ * （pgboss：created→pending、active→running、completed→done、cancelled→cancelled；
+ * bullmq：waiting/delayed→pending、active→running、completed→done、failed→failed），
+ * 语义层零映射直接转 TaskJob。
+ */
+export interface TaskDriverRecord {
+  id: string;
+  name: string;
+  payload: unknown;
+  status: TaskJobStatus;
+  attempts: number;
+  /** 执行返回值（已完成时） */
+  result?: unknown;
+  /** 失败/取消原因 */
+  error?: string;
+  createdAt: number;
+  /** 计划执行时间戳（延迟任务） */
+  runAt?: number;
+}
 
 /**
  * 任务队列驱动接口
@@ -53,6 +77,31 @@ export interface TaskDriver {
   stop(timeoutMs?: number): Promise<void>;
   /** 仅停止 worker 消费（不断开驱动连接），供 dev reloadTasks 重注册用；可选 */
   stopWorkers?(): Promise<void>;
+  /**
+   * 查询持久化队列任务（可选能力）
+   *
+   * 未实现时 TaskClient.listQueued 显式抛错。pg-boss v10 无批量列出 jobs 的公开 API，
+   * task-pgboss 未实现；BullMQ API 完整，task-bullmq 全支持。
+   * 不传 name 时列出本进程已创建队列/已知任务的范围由驱动自行定义。
+   */
+  list?(opts?: {
+    name?: string;
+    /** 按 faapi 语义状态过滤 */
+    state?: TaskJobStatus;
+    /** 返回条数上限（默认由驱动决定，建议 50） */
+    limit?: number;
+  }): Promise<TaskDriverRecord[]>;
+  /**
+   * 取消队列侧任务（可选能力）：等待/延迟中的不再执行。
+   * pgboss → boss.cancel（保留 cancelled 记录）；bullmq → job.remove()（记录随之移除）。
+   */
+  cancel?(name: string, id: string): Promise<void>;
+  /**
+   * 重试失败/取消的任务（可选能力）。
+   * pgboss → boss.resume（仅 cancelled）；bullmq → job.retry()（仅 failed）。
+   * 任务不存在 / 状态不允许时由驱动抛错。
+   */
+  retry?(name: string, id: string): Promise<void>;
 }
 
 /** 创建驱动时可选的工厂签名（loadTaskDriver 按包名动态加载后调用） */

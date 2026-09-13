@@ -434,4 +434,117 @@ describe('createTaskQueue', () => {
     expect(queue.list('light')[0]).toMatchObject({ status: 'done', result: 'in-process' });
     await queue.stop();
   });
+
+  it('listQueued：驱动持久化记录转换为本进程快照形状，并按 id 与本进程记录合并（本地优先）', async () => {
+    const deps = makeDeps({ a: { run: async () => 'local-result' } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: {
+        ...fake.driver,
+        list: async () => [
+          {
+            id: 'ext-1',
+            name: 'a',
+            payload: { from: 'driver' },
+            status: 'done' as const,
+            attempts: 1,
+            result: 'driver-result',
+            createdAt: 111,
+          },
+          {
+            id: 'ext-2',
+            name: 'a',
+            payload: {},
+            status: 'failed' as const,
+            attempts: 2,
+            error: 'driver error',
+            createdAt: 222,
+          },
+        ],
+      },
+    });
+    queue.start();
+    await queue.enqueue('a');
+    await fake.dispatch('a', {}, 1); // 本进程记录 d-1 → done
+
+    const queued = await queue.listQueued('a');
+    // 本进程记录覆盖驱动侧同 id 记录（attempts/result 以本地为准）
+    const local = queued.find((j) => j.id === 'd-1')!;
+    expect(local.status).toBe('done');
+    expect(local.result).toBe('local-result');
+    // 驱动侧独有记录原样转换
+    const ext = queued.find((j) => j.id === 'ext-1')!;
+    expect(ext).toMatchObject({ status: 'done', result: 'driver-result', createdAt: 111 });
+    expect(queued.find((j) => j.id === 'ext-2')).toMatchObject({
+      status: 'failed',
+      error: 'driver error',
+    });
+    // name 过滤生效（三条都是 a——用不存在过滤验证）
+    expect(await queue.listQueued('nonexistent')).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('listQueued：驱动未实现 list 时显式抛错（不静默回退快照）', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await expect(queue.listQueued()).rejects.toThrow(/does not support/);
+    await queue.stop();
+  });
+
+  it('cancel：透传驱动并更新本进程记录为 cancelled', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const cancelCalls: Array<{ name: string; id: string }> = [];
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: {
+        ...fake.driver,
+        cancel: async (name, id) => {
+          cancelCalls.push({ name, id });
+        },
+      },
+    });
+    queue.start();
+    const { id } = await queue.enqueue('a');
+    await queue.cancel('a', id);
+    expect(cancelCalls).toEqual([{ name: 'a', id }]);
+    expect(queue.list('a')[0]).toMatchObject({ status: 'cancelled' });
+    await queue.stop();
+  });
+
+  it('retry：透传驱动并把本进程记录回 pending 等待重新派发', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const retryCalls: Array<{ name: string; id: string }> = [];
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: {
+        ...fake.driver,
+        retry: async (name, id) => {
+          retryCalls.push({ name, id });
+        },
+      },
+    });
+    queue.start();
+    const { id } = await queue.enqueue('a');
+    await fake.dispatch('a', {}, 1); // 制造一条本进程记录（done）
+    expect(queue.list('a')[0]?.status).toBe('done');
+    await queue.retry('a', id);
+    expect(retryCalls).toEqual([{ name: 'a', id }]);
+    expect(queue.list('a')[0]).toMatchObject({ status: 'pending' });
+    await queue.stop();
+  });
+
+  it('cancel/retry：驱动未实现时显式抛错', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await expect(queue.cancel('a', 'x')).rejects.toThrow(/does not support/);
+    await expect(queue.retry('a', 'x')).rejects.toThrow(/does not support/);
+    await queue.stop();
+  });
 });

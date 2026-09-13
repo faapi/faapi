@@ -198,6 +198,59 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       return snapshot;
     },
 
+    async listQueued(name?: string): Promise<TaskJob[]> {
+      if (!driver.list) {
+        throw new Error(
+          "[faapi] Task driver does not support listing queued tasks (TaskDriver.list is not implemented). Use the queue system's own management tools, or see driverTypes.md for per-driver capability.",
+        );
+      }
+      const queued = await driver.list({ name, limit: 50 });
+      const merged = new Map<string, TaskJob>();
+      for (const record of queued) {
+        // name 过滤语义层兜底（不依赖驱动实现的过滤正确性）
+        if (name !== undefined && record.name !== name) continue;
+        merged.set(record.id, {
+          id: record.id,
+          name: record.name,
+          payload: record.payload,
+          status: record.status,
+          attempts: record.attempts,
+          createdAt: record.createdAt,
+          ...(record.result !== undefined ? { result: record.result } : {}),
+          ...(record.error !== undefined ? { error: record.error } : {}),
+          ...(record.runAt !== undefined ? { runAt: record.runAt } : {}),
+        });
+      }
+      // 本进程执行记录优先（attempts/status/result/error 更实时），覆盖驱动侧同 id 记录
+      for (const local of records.values()) {
+        if (name !== undefined && local.name !== name) continue;
+        merged.set(local.id, { ...local });
+      }
+      return [...merged.values()];
+    },
+
+    async cancel(name: string, id: string): Promise<void> {
+      if (!driver.cancel) {
+        throw new Error(
+          '[faapi] Task driver does not support cancelling tasks (TaskDriver.cancel is not implemented).',
+        );
+      }
+      await driver.cancel(name, id);
+      const record = records.get(id);
+      if (record) record.status = 'cancelled';
+    },
+
+    async retry(name: string, id: string): Promise<void> {
+      if (!driver.retry) {
+        throw new Error(
+          '[faapi] Task driver does not support retrying tasks (TaskDriver.retry is not implemented).',
+        );
+      }
+      await driver.retry(name, id);
+      const record = records.get(id);
+      if (record) record.status = 'pending'; // 等待驱动重新派发
+    },
+
     async start() {
       if (stopped) {
         throw new Error('[faapi] Task queue is stopped and cannot be restarted');
