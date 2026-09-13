@@ -68,6 +68,8 @@ export type {
   TaskModule,
   TaskClient,
   TaskQueue,
+  TaskFailedInfo,
+  TaskFailedHandler,
 } from './task/taskTypes';
 export type { TaskRegistry } from './task/taskRegistry';
 export type {
