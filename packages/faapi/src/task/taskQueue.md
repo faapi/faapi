@@ -16,7 +16,8 @@
 - `enqueue(name, payload?, opts?)`：
   - 任务不存在抛错（含可用任务名提示），不触达驱动
   - 有 Payload schema（任务目录 `zod.js` 导出 `${PayloadTypeName}Schema`）时 safeParse，不合法抛 `ValidationError`（HTTP 语义 422）；无 schema 跳过校验（与 tool 对齐）
-  - 校验后的 payload + `retries`（任务 meta）+ `delayMs` 透传给 `driver.enqueue`，返回驱动侧 `{ id }`
+  - 校验后的 payload + `retries`（任务 meta）+ `delayMs`/`dedupId` 透传给 `driver.enqueue`，返回驱动侧 `{ id }`；`dedupId` 为幂等键（同键不重复入队，重复投递返回已存在任务 id），cron 投递自动携带
+- `onFailed` 钩子（`config.task.onFailed`）：每次 process 抛错后触发（含将重试的失败），`info = { task, jobId, attempt, willRetry, cancelled, error }`——`willRetry` 按任务 meta.retries 推算（attempt <= retries）；用于告警/死信上报等副作用，自身抛错被忽略
 - worker 执行（驱动按并发/重试策略调 `process`），按任务 meta 分两条路径：
   - **进程内**（默认）：import 任务模块（缓存），调用 `run(payload, { signal, job, config })`
   - **隔离执行**（任务声明 `timeoutMs`）：走 taskWorker 独立线程执行，超时两段式取消（abort 信号宽限 → terminate 硬杀）——判定超时即执行真正终止，详见 taskWorker.md

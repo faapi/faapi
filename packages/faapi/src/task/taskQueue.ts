@@ -148,6 +148,22 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       const cancelled = err instanceof TaskCancelledError || job.signal.aborted;
       record.status = cancelled ? 'cancelled' : 'failed';
       record.error = err instanceof Error ? err.message : String(err);
+      // onFailed 副作用钩子（告警/死信上报）：willRetry 按 meta.retries 推算，
+      // 自身抛错被忽略——不影响驱动重试决策
+      if (deps.onFailed) {
+        void Promise.resolve()
+          .then(() =>
+            deps.onFailed!({
+              task: job.name,
+              jobId: job.id,
+              attempt: job.attempt,
+              willRetry: job.attempt <= (meta.retries ?? 0),
+              cancelled,
+              error: record.error!,
+            }),
+          )
+          .catch(() => {});
+      }
       throw err; // 交给驱动决定重试
     }
   }
@@ -172,6 +188,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       const id = await driver.enqueue(name, data, {
         delayMs: opts?.delayMs,
         retries: meta.retries ?? 0,
+        dedupId: opts?.dedupId,
       });
       // driver.enqueue 可能已同步触发派发——runJob 已写入
       // running/done 记录时不要用 pending 覆盖

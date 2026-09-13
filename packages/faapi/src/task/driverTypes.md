@@ -15,6 +15,7 @@
 
 - 重试策略在**入队时**由语义层传 `retries`（从任务 meta 取），驱动负责执行（pg-boss：retryLimit/retryBackoff；bullmq：attempts/backoff）
 - `process` 抛错 = 本次执行失败，驱动决定是否重试；语义层在每次 process 调用中更新任务记录（attempt/done/failed）
+- `dedupId`（可选，幂等键）：同键任务在队列系统保留期内不重复入队——pgboss 映射 `send` 的自定义 `id`（**要求 UUID 格式，驱动内做任意字符串 → 确定性 UUID（SHA-1）映射**，主键冲突 DO NOTHING 即跳过投递）；bullmq 映射 `jobId`（waiting/active 等存活期内同键忽略）。cron 投递自动携带（见 cronScheduler.md）
 - `stop(timeoutMs)` 停消费等 in-flight，**超时后 abort 在跑任务的 signal**（任务监听可尽快退出；进程退出兜底终止），子包 pgboss/bullmq 均已实现；`stopWorkers()` 仅停消费不断连接（dev 热替换重注册用，可选实现）
 
 ## 可选管理方法（`list` / `cancel` / `retry`）

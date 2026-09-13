@@ -215,4 +215,34 @@ describe('createPgBossDriver', () => {
     await expect(driver.cancel!('mail', 'j1')).rejects.toThrow(/stopped/);
     await expect(driver.retry!('mail', 'j1')).rejects.toThrow(/stopped/);
   });
+
+  it('dedupId 映射为 send 自定义 id（pg-boss 要求 UUID 格式，驱动内确定性转换）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', { to: 'x' }, { dedupId: 'cron:mail:2026-09-14T10:00:00.000Z' });
+    const boss = fakeBosses()[0]!;
+    const options = boss.sent[0]!.options as { id: string };
+    // 确定性 UUID：任意字符串键 → 合法 UUID 形状，同键必同 UUID
+    expect(options.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    const driver2 = createPgBossDriver();
+    await driver2.enqueue('mail', { to: 'x' }, { dedupId: 'cron:mail:2026-09-14T10:00:00.000Z' });
+    const options2 = fakeBosses()[1]!.sent[0]!.options as { id: string };
+    expect(options2.id).toBe(options.id);
+    // 不同键不同 UUID
+    await driver2.enqueue('mail', { to: 'x' }, { dedupId: 'cron:mail:2026-09-14T10:01:00.000Z' });
+    const options3 = fakeBosses()[1]!.sent[1]!.options as { id: string };
+    expect(options3.id).not.toBe(options.id);
+  });
+
+  it('重复投递（pg-boss 冲突返回 null）时返回幂等键对应的确定性 id', async () => {
+    const driver = createPgBossDriver();
+    // 第一次正常返回
+    const first = await driver.enqueue('mail', { to: 'x' }, { dedupId: 'key-1' });
+    expect(first).toBe('pgb-1');
+    const boss = fakeBosses()[0]!;
+    // 第二次同键：pg-boss ON CONFLICT DO NOTHING → send 返回 null → 返回幂等键映射 id
+    boss.send = vi.fn(async () => null) as never;
+    const second = await driver.enqueue('mail', { to: 'x' }, { dedupId: 'key-1' });
+    expect(second).toBeTypeOf('string');
+    expect(second).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
 });

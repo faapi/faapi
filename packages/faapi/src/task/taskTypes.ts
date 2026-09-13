@@ -101,10 +101,16 @@ export interface TaskClient {
   /**
    * 入队一个任务
    *
+   * @param opts.dedupId 幂等键（可选）——同键任务在队列系统保留期内不重复入队，
+   *   重复投递返回已存在任务 id（驱动语义见 driverTypes.md）；cron 投递自动携带
    * @returns 任务 id
    * @throws 任务不存在 / 队列已停止 / payload 校验失败（ValidationError）
    */
-  enqueue(name: string, payload?: unknown, opts?: { delayMs?: number }): Promise<{ id: string }>;
+  enqueue(
+    name: string,
+    payload?: unknown,
+    opts?: { delayMs?: number; dedupId?: string },
+  ): Promise<{ id: string }>;
   /** 任务记录快照（可按任务名过滤）——本进程内存活记录，不含其他实例/重启前历史 */
   list(name?: string): TaskJob[];
   /**
@@ -168,4 +174,26 @@ export interface TaskQueueDeps {
    * 独立 worker 线程执行 + 超时两段式取消；测试注入 spy 验证执行路径路由
    */
   runIsolated?: TaskWorkerRunner;
+  /**
+   * 执行失败/取消钩子（config.task.onFailed）——每次 process 抛错后触发
+   * （含将重试的失败）；用于告警/死信上报等副作用，自身抛错被忽略
+   */
+  onFailed?: TaskFailedHandler;
 }
+
+/**
+ * 任务失败信息（onFailed 钩子参数）
+ *
+ * willRetry 按任务 meta.retries 推算（attempt <= retries 时驱动会重试）；
+ * cancelled = 执行被框架终止（超时终止/停机取消），与 run 自身失败区分。
+ */
+export interface TaskFailedInfo {
+  task: string;
+  jobId: string;
+  attempt: number;
+  willRetry: boolean;
+  cancelled: boolean;
+  error: string;
+}
+
+export type TaskFailedHandler = (info: TaskFailedInfo) => Promise<void> | void;

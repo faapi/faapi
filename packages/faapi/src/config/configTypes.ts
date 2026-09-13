@@ -103,6 +103,12 @@ export interface TaskConfig {
   enabled?: boolean;
   /** 优雅停机时等待在跑任务的最长时间（毫秒，默认 10000；超时 abort） */
   shutdownTimeoutMs?: number;
+  /**
+   * 任务执行失败/取消钩子——每次 process 抛错后触发（含将重试的失败），
+   * `info.willRetry` 按任务 meta.retries 推算、`info.cancelled` 标记框架终止；
+   * 用于告警/死信上报等副作用，自身抛错被忽略
+   */
+  onFailed?: import('../task/taskTypes.js').TaskFailedHandler;
 }
 
 /**

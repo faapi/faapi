@@ -547,4 +547,79 @@ describe('createTaskQueue', () => {
     await expect(queue.retry('a', 'x')).rejects.toThrow(/does not support/);
     await queue.stop();
   });
+
+  it('enqueue 透传 dedupId 幂等键给驱动', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('a', {}, { dedupId: 'order-confirm:1' });
+    expect(fake.enqueues[0]?.opts).toMatchObject({ dedupId: 'order-confirm:1', retries: 0 });
+    await queue.stop();
+  });
+
+  it('onFailed：执行失败后触发，willRetry 按 meta.retries 推算', async () => {
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'flaky', filePath: 'd.js', retries: 2 }]);
+    const onFailed = vi.fn(async () => {});
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      onFailed,
+      loadTaskModule: async () => ({
+        run: async () => {
+          throw new Error('boom');
+        },
+      }),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    const { id } = await queue.enqueue('flaky');
+    await expect(fake.dispatch('flaky', {}, 1)).rejects.toThrow('boom');
+    expect(onFailed).toHaveBeenCalledWith({
+      task: 'flaky',
+      jobId: id,
+      attempt: 1,
+      willRetry: true,
+      cancelled: false,
+      error: 'boom',
+    });
+    await queue.stop();
+  });
+
+  it('onFailed：取消路径触发且 cancelled 为 true；自身抛错被忽略', async () => {
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'd.js', timeoutMs: 100 }]);
+    const onFailed = vi.fn(async (_info: unknown) => {
+      throw new Error('hook blew up');
+    });
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => {
+      throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
+    });
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      onFailed,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/timed out/);
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    expect(onFailed.mock.calls[0]![0]).toMatchObject({
+      task: 'heavy',
+      attempt: 1,
+      willRetry: false,
+      cancelled: true,
+    });
+    // 记录已写入，钩子抛错不影响队列
+    expect(queue.list('heavy')[0]).toMatchObject({ status: 'cancelled' });
+    await queue.stop();
+  });
 });

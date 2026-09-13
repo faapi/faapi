@@ -68,6 +68,8 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         // BullMQ attempts 含首次执行，retries 是额外重试次数
         attempts: (opts?.retries ?? 0) + 1,
         backoff: { type: 'exponential', delay: 500 },
+        // dedupId 幂等键：同 jobId 的 job 存活期内 add 被忽略（BullMQ 原生去重）
+        ...(opts?.dedupId ? { jobId: opts.dedupId } : {}),
         ...(opts?.delayMs ? { delay: opts.delayMs } : {}),
       });
       return job.id ?? crypto.randomUUID();

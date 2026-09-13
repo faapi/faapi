@@ -32,9 +32,11 @@ export default {
   },
 } satisfies FaapiConfig;
 
-// 3. handler 里入队（tasks 参数注入）
-export function POST(body: { email: string }, tasks: TaskClient) {
-  return tasks.enqueue('send-email', { to: body.email, template: 'welcome' });
+// 3. handler 里入队（tasks 参数注入）；dedupId 幂等键（可选）——同键保留期内不重复入队
+export function POST(body: { email: string; orderId: string }, tasks: TaskClient) {
+  return tasks.enqueue('send-email', { to: body.email, template: 'welcome' }, {
+    dedupId: `order-confirm:${body.orderId}`, // 防重复投递（驱动实现见 driverTypes.md）
+  });
 }
 
 // 4. 管理：查询持久化队列 / 取消 / 重试（能力随驱动，见 driverTypes.md）
@@ -69,6 +71,23 @@ await tasks.retry('send-email', failed.id);          // 重试失败/取消的�
 - **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle `{ tasks }` 全部指向同一 app 实例的 TaskClient；不做外部 HTTP 触发端点。
 - **payload 校验复用 zod 代码生成链路**：`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时 safeParse，不合法抛 `ValidationError`（422）。无 Payload 类型声明则跳过校验（与 tool 行为对齐）。
 - **不实现 handler 返回值隐式投递**：混淆统一响应包装语义。
+- **失败钩子**：`config.task.onFailed` 在每次任务执行失败/取消后触发（含将重试的失败，`info.willRetry` / `info.cancelled` 区分），用于告警/死信上报等副作用；自身抛错被忽略。
+- **管理端点不内置（业务方自建）**：管理 API（`listQueued`/`cancel`/`retry`）必须受鉴权保护，框架内置路由默认无鉴权是安全陷阱。业务方在受保护目录写 handler 即可暴露（见下方示例）——这符合"路由文件约定 + 注入即用"的框架范式。
+
+### 管理端点示例（放在鉴权中间件保护的目录）
+
+```ts
+// src/api/admin/tasks/handler.ts —— api/admin/ 下挂全局鉴权中间件（见 AGENTS.md 5.4）
+import type { TaskClient } from '@faapi/faapi';
+
+export function GET(query: { name?: string }, tasks: TaskClient) {
+  return tasks.listQueued(query.name);
+}
+
+export function DELETE(params: { id: string }, tasks: TaskClient) {
+  return tasks.cancel('send-email', params.id);
+}
+```
 
 ## 相关模块
 

@@ -4,7 +4,7 @@ import { createTaskRegistry } from './taskRegistry';
 import type { TaskMetadata } from './taskTypes';
 
 describe('createCronScheduler', () => {
-  it('到点自动 enqueue 对应任务（秒级 cron）', async () => {
+  it('到点自动 enqueue 对应任务（秒级 cron），投递携带多实例防重幂等键', async () => {
     const registry = createTaskRegistry();
     const tasks: TaskMetadata[] = [
       { name: 'tick', filePath: 'dist/tasks/tick/task.js', cron: '*/1 * * * * *' },
@@ -16,13 +16,30 @@ describe('createCronScheduler', () => {
     scheduler.start();
     await vi.waitFor(
       () => {
-        expect(enqueue).toHaveBeenCalledWith('tick');
+        expect(enqueue).toHaveBeenCalledWith('tick', {
+          dedupId: expect.stringMatching(/^cron:tick:\d{4}-\d{2}-\d{2}T/),
+        });
       },
       { timeout: 3000 },
     );
     const names = enqueue.mock.calls.map((c) => (c as unknown[])[0] as string);
     expect(names).not.toContain('nocr');
     scheduler.stop();
+  });
+
+  it('两次触发的 dedupId 时间窗不同（各自计划触发时刻）', async () => {
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'tick', filePath: 'd.js', cron: '*/1 * * * * *' }]);
+    const keys: string[] = [];
+    const enqueue = vi.fn(async (_name: string, opts: { dedupId?: string }) => {
+      keys.push(opts.dedupId!);
+      return { id: 'x' };
+    });
+    const scheduler = createCronScheduler(registry, enqueue);
+    scheduler.start();
+    await vi.waitFor(() => expect(keys.length).toBeGreaterThanOrEqual(2), { timeout: 3000 });
+    scheduler.stop();
+    expect(new Set(keys).size).toBeGreaterThan(1);
   });
 
   it('stop 后不再投递', async () => {

@@ -58,12 +58,15 @@ export interface TaskDriver {
    * 入队一个任务，返回驱动侧任务 id
    *
    * @param opts.retries 失败重试次数（语义层从任务 meta 取，驱动负责执行重试策略）
+   * @param opts.dedupId 幂等键（可选）——同键任务在队列系统保留期内不重复入队。
+   *   pgboss 映射 send 自定义 id（驱动内做任意字符串 → 确定性 UUID 映射，冲突跳过）；
+   *   bullmq 映射 jobId。重复投递时返回已存在任务的 id。
    * @throws 驱动已停止 / 连接失败等
    */
   enqueue(
     name: string,
     payload: unknown,
-    opts?: { delayMs?: number; retries?: number },
+    opts?: { delayMs?: number; retries?: number; dedupId?: string },
   ): Promise<string>;
   /**
    * 注册某任务的消费 worker（幂等覆盖）。process 抛错 = 本次失败，驱动决定重试。

@@ -4,9 +4,9 @@ import type { TaskRegistry } from './taskRegistry';
 /**
  * cron 定时入队调度器
  *
- * 为注册表中声明了 `cron` 的任务建立 croner 定时器，到点调用 `enqueue(name)`
- * 投递空 payload——定时只是"自动投递者"，复用队列的重试/并发/停机语义。
- * 详见 cronScheduler.md。
+ * 为注册表中声明了 `cron` 的任务建立 croner 定时器，到点调用
+ * `enqueue(name, { dedupId })` 投递空 payload——定时只是"自动投递者"，
+ * 复用队列的重试/并发/停机语义。详见 cronScheduler.md。
  */
 export interface CronScheduler {
   /** 建立全部 cron 定时器（幂等——重复调用先清理旧定时器） */
@@ -15,10 +15,13 @@ export interface CronScheduler {
   stop(): void;
 }
 
-export function createCronScheduler(
-  registry: TaskRegistry,
-  enqueue: (name: string) => Promise<unknown>,
-): CronScheduler {
+/**
+ * cron 投递回调：opts.dedupId 为多实例防重幂等键
+ * （`cron:<任务名>:<计划触发时刻>`——各实例同一触发窗算出同键，驱动按键去重）
+ */
+export type CronEnqueue = (name: string, opts: { dedupId?: string }) => Promise<unknown>;
+
+export function createCronScheduler(registry: TaskRegistry, enqueue: CronEnqueue): CronScheduler {
   let schedules: Cron[] = [];
 
   return {
@@ -27,15 +30,20 @@ export function createCronScheduler(
       for (const task of registry.list()) {
         if (!task.cron) continue;
         // croner 对非法表达式抛错——启动期显式失败，不静默跳过（cronScheduler.md 约定）
-        schedules.push(
-          new Cron(task.cron, () => {
-            void Promise.resolve()
-              .then(() => enqueue(task.name))
-              .catch((err) => {
-                console.error(`[faapi] Cron enqueue failed for task "${task.name}":`, err);
-              });
-          }),
-        );
+        const schedule = new Cron(task.cron, () => {
+          // 计划触发时刻（秒级）做幂等键：多实例时钟同步下同窗同键，驱动按 dedupId 去重
+          const runAt = schedule.currentRun();
+          void Promise.resolve()
+            .then(() =>
+              enqueue(task.name, {
+                dedupId: runAt ? `cron:${task.name}:${runAt.toISOString()}` : undefined,
+              }),
+            )
+            .catch((err) => {
+              console.error(`[faapi] Cron enqueue failed for task "${task.name}":`, err);
+            });
+        });
+        schedules.push(schedule);
       }
     },
 

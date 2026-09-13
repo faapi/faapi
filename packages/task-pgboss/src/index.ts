@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { TaskDriver, TaskDriverProcess } from '@faapi/faapi';
 import PgBoss from 'pg-boss';
 
@@ -29,6 +30,21 @@ export type PgBossDriverOptions = PgBoss.ConstructorOptions;
  * - `stop` → `offWork` + `boss.stop({ close: true, graceful: true, timeout })`；超时后 abort 在跑任务的 signal
  * - 重试 → pg-boss 侧执行（retryLimit + retryBackoff 指数退避）
  */
+/**
+ * dedupId → 确定性 UUID：pg-boss 的 send 自定义 id 要求 UUID 格式（SQL 侧 cast），
+ * 任意字符串键经 SHA-1 映射为合法 UUID——同键必同 UUID（幂等），不同键碰撞可忽略
+ */
+function dedupIdToUuid(dedupId: string): string {
+  const h = createHash('sha1').update(dedupId).digest('hex');
+  return [
+    h.slice(0, 8),
+    h.slice(8, 12),
+    `5${h.slice(13, 16)}`, // version 5
+    `${((parseInt(h.slice(16, 17), 16) & 0x3) | 0x8).toString(16)}${h.slice(17, 20)}`, // variant
+    h.slice(20, 32),
+  ].join('-');
+}
+
 export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDriver {
   let boss: PgBoss | null = null;
   let stopped = false;
@@ -56,11 +72,17 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
         retryLimit: opts?.retries ?? 0,
         retryDelay: 1, // 秒；配合 retryBackoff 指数退避
         retryBackoff: true,
+        ...(opts?.dedupId ? { id: dedupIdToUuid(opts.dedupId) } : {}),
         ...(opts?.delayMs ? { startAfter: new Date(Date.now() + opts.delayMs) } : {}),
       };
       // pg-boss data 形参为 object——基础类型 payload（cron 空任务等）按 JSON 语义透传
       const id = await b.send(name, payload as object, sendOptions);
       if (!id) {
+        // dedupId 幂等投递：同键已存在（主键冲突 DO NOTHING → send 返回 null），
+        // 返回已存在任务的确定性 id；无 dedupId 的失败投递才是异常
+        if (opts?.dedupId) {
+          return dedupIdToUuid(opts.dedupId);
+        }
         throw new Error(`[faapi] pg-boss send failed for task "${name}"`);
       }
       return id;

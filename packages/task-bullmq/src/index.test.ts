@@ -263,4 +263,11 @@ describe('createBullMQDriver', () => {
     expect(retry).toHaveBeenCalledTimes(1);
     await expect(driver.retry!('mail', 'missing')).rejects.toThrow(/not found/);
   });
+
+  it('dedupId 映射为 add 的 jobId（BullMQ 存活期内同键忽略）', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    await driver.enqueue('mail', { to: 'x' }, { dedupId: 'order-confirm:1' });
+    const queue = h.fakeQueues.find((q) => q.name === 'mail')!;
+    expect(queue.adds[0]!.opts).toMatchObject({ jobId: 'order-confirm:1' });
+  });
 });

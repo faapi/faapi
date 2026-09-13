@@ -416,9 +416,10 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     rootDir,
     config,
     driver: taskDriver,
+    onFailed: config?.task?.onFailed,
   });
-  const cronScheduler: CronScheduler = createCronScheduler(registries.task, (name) =>
-    taskQueue.enqueue(name),
+  const cronScheduler: CronScheduler = createCronScheduler(registries.task, (name, opts) =>
+    taskQueue.enqueue(name, undefined, opts),
   );
   const taskEnabled =
     process.env.FAAPI_TASKS_DISABLED === '1' ? false : (config?.task?.enabled ?? true);
