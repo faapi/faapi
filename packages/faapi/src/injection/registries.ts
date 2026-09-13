@@ -1,6 +1,8 @@
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
 import type { FaapiContext } from '../runtime/contextTypes';
+import type { TaskRegistry } from '../task/taskRegistry';
+import { createTaskRegistry } from '../task/taskRegistry';
 
 /**
  * app 级注册表（方案 A：注册表实例化）
@@ -219,6 +221,35 @@ export function createAgentHandleStore(): AgentHandleStore {
   };
 }
 
+// ─── Task handle 工厂 ────────────────────────────────────────────────
+
+/** task 客户端工厂函数（由 createAppBase 注册，返回 TaskClient 门面） */
+export type TaskHandleFactory = (ctx: FaapiContext) => unknown;
+
+export interface TaskHandleStore {
+  /** 注册工厂（null 清理）；二次注册覆盖 */
+  register(factory: TaskHandleFactory | null): void;
+  /** 工厂已注册时返回 TaskClient，未注册返回 undefined */
+  get(ctx: FaapiContext): unknown;
+  clear(): void;
+}
+
+export function createTaskHandleStore(): TaskHandleStore {
+  let currentFactory: TaskHandleFactory | null = null;
+  return {
+    register(factory) {
+      currentFactory = factory;
+    },
+    get(ctx) {
+      if (currentFactory === null) return undefined;
+      return currentFactory(ctx);
+    },
+    clear() {
+      currentFactory = null;
+    },
+  };
+}
+
 // ─── App 级集合 ──────────────────────────────────────────────────────
 
 /** 一个 app 实例持有的全套注册表 */
@@ -226,7 +257,9 @@ export interface AppRegistries {
   tool: ToolRegistry;
   agent: AgentRegistry;
   skill: SkillRegistry;
+  task: TaskRegistry;
   agentHandle: AgentHandleStore;
+  taskHandle: TaskHandleStore;
 }
 
 /** 创建一套 app 级注册表（`createAppBase` 每次调用创建独立实例） */
@@ -234,8 +267,10 @@ export function createAppRegistries(): AppRegistries {
   const tool = createToolRegistry();
   const agent = createAgentRegistry(tool);
   const skill = createSkillRegistry();
+  const task = createTaskRegistry();
   const agentHandle = createAgentHandleStore();
-  return { tool, agent, skill, agentHandle };
+  const taskHandle = createTaskHandleStore();
+  return { tool, agent, skill, task, agentHandle, taskHandle };
 }
 
 /**

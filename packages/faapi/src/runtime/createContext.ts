@@ -186,6 +186,9 @@ export function createContextFromUrl(
   // app 级注册表（方案 A 实例化）——框架请求链路的 tool/agent/agentHandle 读取来源
   if (registries) {
     ctx.registries = registries;
+    // 任务客户端：同一 app 实例的 TaskClient（入队/查询），ctx.tasks 与
+    // `tasks` 参数注入 / app.tasks 指向同一队列
+    ctx.tasks = registries.taskHandle.get(ctx) as FaapiContext['tasks'];
   }
 
   // 执行用户自定义的 ctx 扩展钩子（config.extendContext）

@@ -7,6 +7,8 @@ import { generateToolArtifacts } from './generateToolArtifacts';
 import { scanAgents } from '../agents/scanAgents';
 import { DEFAULT_AGENT_PATTERNS } from '../agents/scanAgents';
 import { generateAgentArtifacts } from './generateAgentArtifacts';
+import { scanTasks, TASK_PATTERNS } from '../task/scanTasks';
+import { generateTaskArtifacts } from './generateTaskArtifacts';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { compileBuildRoutes } from './compileBuildRoutes';
@@ -182,6 +184,14 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   const agentMeta = await generateAgentArtifacts(agents, rootDir, outdir);
   console.log(`  Found ${agentMeta.length} agent(s)`);
   console.log(`  Agent manifest: ${path.resolve(rootDir, outdir, 'faapi-agents.js')}`);
+
+  // 7.5 生成任务清单 + Payload schema（任务源码已由步骤 1 全量编译到 <dist>/tasks/）
+  //    与其他清单同构：无任务文件时写入空清单，运行时任务队列空转
+  console.log('\n[7.5/8] Generating task manifest and schema...');
+  const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+  const taskMeta = await generateTaskArtifacts(tasks, rootDir, outdir);
+  console.log(`  Found ${taskMeta.length} task(s)`);
+  console.log(`  Task manifest: ${path.resolve(rootDir, outdir, 'faapi-tasks.js')}`);
 
   // 8. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
   //    内部 import @faapi/faapi 的 createProdApp + loadEnv + listen

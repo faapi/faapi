@@ -66,6 +66,15 @@ vi.mock('../agents/scanAgents', () => ({
 vi.mock('./generateAgentArtifacts', () => ({
   generateAgentArtifacts: vi.fn(async () => {}),
 }));
+// mock generateTaskArtifactsForDev 的依赖（任务子系统）
+vi.mock('../task/scanTasks', () => ({
+  scanTasks: vi.fn(async () => []),
+  TASK_PATTERNS: ['src/tasks/**/task.ts'],
+}));
+vi.mock('./generateTaskArtifacts', () => ({
+  generateTaskArtifacts: vi.fn(async () => []),
+  TASKS_FILE: 'faapi-tasks.js',
+}));
 
 const {
   devCommand,
@@ -86,6 +95,8 @@ const { scanTools } = await import('../tools/scanTools');
 const { generateToolArtifacts } = await import('./generateToolArtifacts');
 const { scanAgents } = await import('../agents/scanAgents');
 const { generateAgentArtifacts } = await import('./generateAgentArtifacts');
+const { scanTasks: _scanTasks } = await import('../task/scanTasks');
+const { generateTaskArtifacts: _generateTaskArtifacts } = await import('./generateTaskArtifacts');
 
 describe('devCommand', () => {
   const originalCwd = process.cwd;

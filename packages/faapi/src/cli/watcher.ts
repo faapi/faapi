@@ -63,6 +63,9 @@ export function startWatcher(options: WatchOptions): void {
     // 5. 调 app.reloadAgents()（scanAgents + 重生成 faapi-agents.js + 清缓存）
     //    与 reloadTools 分离——agent 清单独立重建，无 agent 文件时 scanAgents 返回空（快速跳过）
     await app.reloadAgents();
+    // 6. 调 app.reloadTasks()（scanTasks + 重编译任务 + 重生成 faapi-tasks.js + 清队列缓存）
+    //    与 reloadAgents 分离——任务清单独立重建，无任务文件时 scanTasks 返回空（快速跳过）
+    await app.reloadTasks();
 
     console.log(
       `- Routes rebuilt${files.length > 0 ? `, ${files.length} file(s) recompiled` : ''}`,

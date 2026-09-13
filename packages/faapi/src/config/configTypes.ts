@@ -48,6 +48,25 @@ export interface LifecycleHooks {
 }
 
 /**
+ * 任务子系统配置（config.task，全部字段可选）
+ *
+ * 第一版为进程内内存队列（重启丢任务、多实例不防重跑——部署职责见 task 子系统文档）。
+ */
+export interface TaskConfig {
+  /** 队列驱动，当前仅 'memory'（默认） */
+  driver?: 'memory';
+  /**
+   * 是否启动任务队列（默认 true）
+   *
+   * 多实例部署时可在非 worker 节点设 `FAAPI_TASKS_DISABLED=1` 或 `task.enabled: false`，
+   * API 节点照常入队（入队能力保留），但不消费执行。
+   */
+  enabled?: boolean;
+  /** 优雅停机时等待在跑任务的最长时间（毫秒，默认 10000；超时 abort） */
+  shutdownTimeoutMs?: number;
+}
+
+/**
  * 生命周期上下文
  */
 export interface LifecycleContext {
@@ -59,6 +78,8 @@ export interface LifecycleContext {
   server: import('node:http').Server;
   /** app 级注册表——skill 等运行时动态注册路径（`registries.skill.upsert(...)`） */
   registries: import('../injection/registries.js').AppRegistries;
+  /** 任务客户端——onBoot/onReady 中投递异步任务（`tasks.enqueue(name, payload)`） */
+  tasks: import('../task/taskTypes.js').TaskClient;
 }
 
 /**
@@ -516,6 +537,20 @@ export interface FaapiConfig {
    * 详见 `src/config/configTypes.md` agent 配置块章节。
    */
   agent?: AgentConfig;
+
+  /**
+   * 任务子系统全局配置（队列驱动、启停、停机超时）
+   *
+   * ```ts
+   * import type { FaapiConfig } from '@faapi/faapi';
+   * export default {
+   *   task: { enabled: true, shutdownTimeoutMs: 10_000 },
+   * } satisfies FaapiConfig;
+   * ```
+   *
+   * 详见 `src/task/README.md`。
+   */
+  task?: TaskConfig;
 
   /**
    * 扩展 ctx：在每次请求创建上下文后调用，可挂载自定义方法（如 ctx.xml、ctx.stream）

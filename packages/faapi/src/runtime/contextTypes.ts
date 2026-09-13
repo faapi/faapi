@@ -72,6 +72,12 @@ export interface FaapiContext {
    * （injectParams 等消费方回退到默认全局实例）
    */
   registries?: AppRegistries;
+  /**
+   * 任务队列客户端（TaskClient：enqueue/list）。
+   * 经 createContext 进入请求链路时由框架从 `registries.taskHandle` 工厂注入；
+   * 无 app 编排（编程式直调 ctx）时为 undefined
+   */
+  tasks?: import('../task/taskTypes.js').TaskClient;
   request: Request;
   params: Record<string, string>;
   query: URLSearchParams;

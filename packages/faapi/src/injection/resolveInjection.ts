@@ -22,6 +22,7 @@ export type InjectionType =
   | 'fields'
   | 'agent'
   | 'agents'
+  | 'tasks'
   | 'unknown';
 
 /**
@@ -62,6 +63,7 @@ export const PARAM_TYPE_MAP: Record<string, InjectionType> = {
   fields: 'fields',
   agent: 'agent', // Phase 2.3
   agents: 'agents', // Phase 2.3
+  tasks: 'tasks', // 任务子系统：TaskClient（入队/查询）
 };
 
 /**

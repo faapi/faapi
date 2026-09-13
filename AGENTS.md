@@ -77,6 +77,8 @@ dev 模式：`faapi dev` 编译 + 调 `createDevApp()` + watcher（调 `app.relo
 @faapi/faapi           核心包：API 路由、中间件、注入、校验、AST 能力公开导出
 @faapi/mcp             MCP Server SDK：纯手写 MCP 协议（Streamable HTTP transport），不依赖 @modelcontextprotocol/sdk
 @faapi/schema          扩展包：路由 schema 生成 + 通过 MCP 协议暴露给 AI 助手（基于 @faapi/mcp）
+@faapi/task-pgboss     任务队列驱动：pg-boss（PostgreSQL 持久化队列），实现主包 TaskDriver 接口
+@faapi/task-bullmq     任务队列驱动：BullMQ（Redis 持久化队列），实现主包 TaskDriver 接口
 ```
 
 `@faapi/mcp` 是独立的 MCP Server SDK，提供 `createMcpServer`（tool 注册 + JSON-RPC 分发）、`handleMcpRequest`（Streamable HTTP transport）、`createMcpHandler`/`createMcpNodeHandler`（faapi 适配器）等能力。仅依赖 zod（v4 内置 `toJSONSchema`，无需 zod-to-json-schema）。
@@ -613,6 +615,7 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 | `agent` | `AgentHandle`（由 `@faapi/agent` 插件注册的工厂 `getAgentHandle(ctx)` 注入，含可调用 `run`/`stream`/`asTool`；无默认 agent——`run`/`stream` 每次显式传 `{ agent, model }`）；插件未注册时返回 `undefined` | `GET(agent)` |
 | `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
+| `tasks` | 任务队列客户端 `TaskClient`（`enqueue(name, payload)` / `list()`），与 `ctx.tasks` / `app.tasks` 指向同一 app 实例队列 | `POST(tasks)` |
 
 `form` 与 `body` 互斥：handler 声明其一即可。`form` 共享 `body` 的解析结果（`resolveInput` 已按 Content-Type 解析 form-urlencoded 为 `Record<string, string>`），差异仅在 schema 校验——`form` 的 schema coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串），`body` 的 schema coerce=false。schema 名仍为 `POSTBody`（form 共享 body 的 schema key），通过 `RouteSchemaSource.coerce=true` 显式覆盖。
 
@@ -703,6 +706,19 @@ it('GET 返回分页数据', async () => {
 `invokeHandler(handler, ctx, body?, middlewares?, injectors?)` 支持传入中间件链和注入器，可测试鉴权拦截、依赖注入等场景。不走 schema 校验（zod.js 由 build 生成）；如需测试完整请求链路（含 schema、全局中间件），用 `createProdApp` + `app.inject()`（需先 `faapi build`）。
 
 详见 `src/testing.md`。
+
+### 5.11 队列式任务子系统（src/task/）
+
+进程内内存队列的异步任务能力：handler / lifecycle / cron 把耗时工作投递到队列，后台 worker 按 task 元信息（并发数、重试）消费执行。
+
+- **任务定义（文件约定）**：`src/tasks/<name>/task.ts`，导出 `task` 元信息对象（`concurrency` / `retries` / `cron`，均可选）+ `run(payload, taskCtx)`；`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`）
+- **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle 钩子的 `{ tasks }` 全部指向同一 app 实例 TaskClient；cron（croner）到点自动入队空 payload，复用同一队列与执行模型
+- **产物**：`faapi-tasks.js`（任务清单）+ `tasks/<dir>/zod.js`（Payload schema）+ `tasks/<dir>/task.js`，dev/prod 一致全量生成；`createAppBase` 水合到 app 实例级 `taskRegistry`，dev watcher 触发 `reloadTasks()` 热替换
+- **生命周期**：队列随 `createAppBase` 启动（`FAAPI_TASKS_DISABLED=1` 或 `config.task.enabled: false` 时只入队不消费，多实例部署的 API 节点用）；`app.close()` 时 drain（停止出队 + 等 in-flight 任务，超时 abort，`config.task.shutdownTimeoutMs` 可调）
+- **驱动抽象**：存储/消费/重试/停机抽象为 `TaskDriver` 接口，默认 memory 驱动（零依赖，重启丢任务——见 `fallback.md`）；持久化驱动为独立子包 `@faapi/task-pgboss`（Postgres）/ `@faapi/task-bullmq`（Redis），主包按 `config.task.driver` 动态加载，未安装显式报错；业务方写法（文件约定任务 + `tasks.enqueue`）跨驱动完全一致
+- **明确取舍（memory 驱动）**：不持久化、不做多实例防重跑——属部署职责或切换持久化驱动解决；HTTP 手动触发端点留给后续
+
+详见 `packages/faapi/src/task/README.md` 与各模块 `.md`。
 
 #### Next.js Server Component 同进程调用（getApp + app.inject）
 

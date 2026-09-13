@@ -1,5 +1,11 @@
 import type { AppBase, CreateAppOptions } from './createAppCore';
-import { createAppBase, loadAndHydrateTools, loadAndHydrateAgents } from './createAppCore';
+import {
+  createAppBase,
+  loadAndHydrateTools,
+  loadAndHydrateAgents,
+  loadAndHydrateTasks,
+} from './createAppCore';
+import path from 'node:path';
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
 import { scanTools } from '../tools/scanTools';
@@ -8,6 +14,9 @@ import { generateToolArtifacts } from './generateToolArtifacts';
 import { scanAgents } from '../agents/scanAgents';
 import { DEFAULT_AGENT_PATTERNS } from '../agents/scanAgents';
 import { generateAgentArtifacts } from './generateAgentArtifacts';
+import { scanTasks, TASK_PATTERNS } from '../task/scanTasks';
+import { generateTaskArtifacts } from './generateTaskArtifacts';
+import { ensureCompiled } from './compileOnDemand';
 import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
 import { invalidateSchemaCache } from '../validator/validateInput';
@@ -27,6 +36,8 @@ export interface DevApp extends AppBase {
   reloadTools(): Promise<void>;
   /** 重新扫描 agents + 重生成 faapi-agents.js + 清缓存（dev 热替换用） */
   reloadAgents(): Promise<void>;
+  /** 重新扫描 tasks + 重编译任务源码 + 重生成 faapi-tasks.js + 清队列缓存（dev 热替换用） */
+  reloadTasks(): Promise<void>;
 }
 
 /**
@@ -124,6 +135,27 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     await generateAgentArtifacts(agents, ctx.rootDir, ctx.dist);
     // 重新水合 faapi-agents.js 到 agentRegistry（reload 后需更新注册表）
     await loadAndHydrateAgents(ctx.rootDir, ctx.dist, ctx.registries);
+  };
+
+  devApp.reloadTasks = async (): Promise<void> => {
+    // 更新模块加载时间戳（ESM import 绕过缓存，让 faapi-tasks.js 重新读取）
+    setLoadTimestamp(Date.now());
+    // 清 Program 缓存（任务源码可能变化，AST 需重新分析）
+    invalidateProgramCache();
+    // 重新扫描任务（零 import，仅读源码 + 正则提取 meta）
+    const tasks = await scanTasks(ctx.rootDir, TASK_PATTERNS);
+    // 重编译任务文件（mtime 缓存：未变化的跳过）——队列派发时 import 产物模块
+    for (const task of tasks) {
+      await ensureCompiled(path.resolve(ctx.rootDir, task.filePath), ctx.rootDir, ctx.dist);
+    }
+    // 重生成 faapi-tasks.js + Payload zod.js（dev/prod 全量一致，任务数量小）
+    await generateTaskArtifacts(tasks, ctx.rootDir, ctx.dist);
+    // 清队列缓存（旧任务模块/schema 失效，下次派发重新加载）+ 按最新注册表重注册 worker
+    ctx.taskQueue.invalidateModules();
+    ctx.taskQueue.invalidateSchemas();
+    await ctx.taskQueue.reload();
+    // 重新水合 faapi-tasks.js 到 taskRegistry（reload 后需更新注册表）
+    await loadAndHydrateTasks(ctx.rootDir, ctx.dist, ctx.registries);
   };
 
   return devApp;

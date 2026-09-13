@@ -54,6 +54,26 @@ export type {
   AgentHandleFactory,
 } from './injection/registries';
 export { createAppRegistries } from './injection/registries';
+// 任务子系统（队列式异步任务，详见 src/task/README.md）
+export type {
+  FaapiTaskMeta,
+  TaskManifest,
+  TaskMetadata,
+  TaskJob,
+  TaskJobStatus,
+  TaskContext,
+  TaskModule,
+  TaskClient,
+  TaskQueue,
+} from './task/taskTypes';
+export type { TaskRegistry } from './task/taskRegistry';
+export type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './task/driverTypes';
+export { createTaskRegistry } from './task/taskRegistry';
+export { createTaskQueue } from './task/taskQueue';
+export { createMemoryDriver } from './task/memoryDriver';
+export { loadTaskDriver } from './task/loadTaskDriver';
+export { createCronScheduler, type CronScheduler } from './task/cronScheduler';
+export { scanTasks, TASK_PATTERNS } from './task/scanTasks';
 export type { AgentModule } from './loader/loadAgentModule';
 export type { ToolModule } from './loader/loadToolModule';
 export type { ToolSchemaModule } from './loader/loadToolSchema';

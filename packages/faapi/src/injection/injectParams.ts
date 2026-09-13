@@ -55,6 +55,9 @@ function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?:
     // Phase 3.5：调 @faapi/agent 插件注册的工厂获取 AgentHandle
     case 'agent':
       return ctx.registries ? ctx.registries.agentHandle.get(ctx) : getAgentHandle(ctx);
+    // 任务子系统：注入 TaskClient（入队/查询）；未注册工厂（无 app 编排）时 undefined
+    case 'tasks':
+      return ctx.registries ? ctx.registries.taskHandle.get(ctx) : undefined;
     default:
       return undefined;
   }

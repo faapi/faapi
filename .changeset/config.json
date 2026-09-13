@@ -2,7 +2,17 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": "@changesets/changelog-git",
   "commit": false,
-  "fixed": [["@faapi/faapi", "@faapi/schema", "@faapi/next", "@faapi/mcp", "@faapi/agent"]],
+  "fixed": [
+    [
+      "@faapi/faapi",
+      "@faapi/schema",
+      "@faapi/next",
+      "@faapi/mcp",
+      "@faapi/agent",
+      "@faapi/task-pgboss",
+      "@faapi/task-bullmq"
+    ]
+  ],
   "linked": [],
   "access": "public",
   "baseBranch": "main",

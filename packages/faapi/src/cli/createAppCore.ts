@@ -11,6 +11,11 @@ import { loadConfig } from '../config/loadConfig';
 import { hydrateRoutes, type SerializedRouteManifest } from './generateRoutes';
 import { hydrateTools, type SerializedToolRecord } from './generateToolArtifacts';
 import { hydrateAgents, type SerializedAgentRecord } from './generateAgentArtifacts';
+import { hydrateTasks, TASKS_FILE } from './generateTaskArtifacts';
+import { createTaskQueue } from '../task/taskQueue';
+import { loadTaskDriver } from '../task/loadTaskDriver';
+import { createCronScheduler, type CronScheduler } from '../task/cronScheduler';
+import type { TaskClient, TaskQueue } from '../task/taskTypes';
 import { loadPlugins } from './loadPlugins';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import {
@@ -111,6 +116,43 @@ export async function loadAndHydrateAgents(
   };
   const hydrated = hydrateAgents(serialized.agents ?? []);
   registries.agent.hydrate(hydrated);
+  return hydrated;
+}
+
+/**
+ * 读取 config.task 中的驱动选项（pgboss/bullmq 的连接配置透传给驱动工厂）
+ */
+function getTaskDriverOptions(config: FaapiConfig | null): unknown {
+  if (!config?.task) return undefined;
+  const taskConfig = config.task as Record<string, unknown>;
+  const driver = taskConfig.driver;
+  if (driver === 'pgboss') return taskConfig.pgboss;
+  if (driver === 'bullmq') return taskConfig.bullmq;
+  return undefined;
+}
+
+/**
+ * 加载 faapi-tasks.js 并水合到 taskRegistry（app 实例）
+ *
+ * 与 `loadAndHydrateTools` 对称——任务是可选能力，无任务的项目清单为空数组，
+ * taskRegistry 保持空，任务队列空转。
+ *
+ * @returns 水合后的 TaskMetadata[]（供调用方日志/调试）
+ */
+export async function loadAndHydrateTasks(
+  rootDir: string,
+  dist: string,
+  registries: AppRegistries = defaultRegistries,
+): Promise<ReturnType<typeof hydrateTasks>> {
+  const tasksPath = path.resolve(rootDir, dist, TASKS_FILE);
+  if (!fs.existsSync(tasksPath)) {
+    return [];
+  }
+  const serialized = (await importWithCacheBust(tasksPath)) as unknown as {
+    tasks: Parameters<typeof hydrateTasks>[0];
+  };
+  const hydrated = hydrateTasks(serialized.tasks ?? []);
+  registries.task.hydrate(hydrated);
   return hydrated;
 }
 
@@ -227,6 +269,7 @@ const FAAPI_CONFIG_KEYS = new Set([
   'http2',
   'trustedProxy',
   'response',
+  'task',
 ]);
 
 function isFaapiConfigKey(key: string): boolean {
@@ -254,6 +297,8 @@ export interface AppBase {
   wsRoutes: WsRouteManifest;
   /** 项目根目录 */
   rootDir: string;
+  /** 任务队列客户端（入队/查询；app 实例级，close 时随队列停机） */
+  tasks: TaskClient;
   /** 启动 HTTP server，打印路由表，执行 onReady 钩子 */
   listen(port?: number): Promise<Server>;
   /** 关闭 server，执行 onClose 钩子 */
@@ -284,6 +329,8 @@ export interface AppContext {
   dist: string;
   /** 扫描 patterns（scanRoutes 用） */
   patterns: string[];
+  /** 任务队列实例（reloadTasks 清模块/schema 缓存用） */
+  taskQueue: TaskQueue;
   /** Node.js Server 实例（未 listen） */
   server: Server;
   /** 路由可变引用容器（createServer 闭包和 reloadRoutes 共享） */
@@ -356,6 +403,32 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   // 水合 agent 清单（可选产物——无 agent 的项目跳过，agent 注册表保持空）
   const agents = await loadAndHydrateAgents(rootDir, dist, registries);
 
+  // 水合任务清单 + 创建任务队列与 cron 调度器（app 实例级，close 时一并停机）
+  // 队列不依赖 HTTP listen——createAppBase 即启动（enabled 时），onBoot 校验失败
+  // 的 listen 路径负责停机
+  const taskMetas = await loadAndHydrateTasks(rootDir, dist, registries);
+  const taskDriver = await loadTaskDriver(config?.task?.driver, getTaskDriverOptions(config));
+  const taskQueue = createTaskQueue({
+    registry: registries.task,
+    rootDir,
+    config,
+    driver: taskDriver,
+  });
+  const cronScheduler: CronScheduler = createCronScheduler(registries.task, (name) =>
+    taskQueue.enqueue(name),
+  );
+  const taskEnabled =
+    process.env.FAAPI_TASKS_DISABLED === '1' ? false : (config?.task?.enabled ?? true);
+  const stopTaskRuntime = async (): Promise<void> => {
+    cronScheduler.stop();
+    await taskQueue.stop(config?.task?.shutdownTimeoutMs ?? 10_000);
+  };
+  if (taskEnabled) {
+    taskQueue.start();
+    cronScheduler.start();
+  }
+  registries.taskHandle.register(() => taskQueue);
+
   // 自定义业务配置（排除内置 key）
   const pluginConfig: Record<string, unknown> = config
     ? Object.fromEntries(Object.entries(config).filter(([k]) => !isFaapiConfigKey(k)))
@@ -407,6 +480,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     routes: sorted,
     wsRoutes,
     rootDir,
+    tasks: taskQueue,
 
     async listen(listenPort?: number): Promise<Server> {
       // 端口优先级：listen() 参数 > options.port > 环境变量 PORT > 默认 3000
@@ -418,9 +492,17 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       // 抛错 → listen() 以原始错误 reject，server.listen 不会被调用，端口不暴露。
       if (config?.lifecycle?.onBoot) {
         try {
-          await config.lifecycle.onBoot({ rootDir, routes: sorted, server, registries });
+          await config.lifecycle.onBoot({
+            rootDir,
+            routes: sorted,
+            server,
+            registries,
+            tasks: taskQueue,
+          });
           console.log('- onBoot hook executed');
         } catch (err) {
+          // 启动校验失败：端口不暴露，同时停掉已启动的任务运行时（cron + worker）
+          await stopTaskRuntime();
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[faapi] onBoot hook failed: ${message}`);
           throw err;
@@ -473,13 +555,26 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
               console.log(`  ${agent.name} [${exports}]  ${agent.filePath}`);
             }
           }
+          if (taskMetas.length > 0) {
+            console.log(`- Loaded ${taskMetas.length} task(s):`);
+            for (const taskMeta of taskMetas) {
+              const schedule = taskMeta.cron ? ` cron=${taskMeta.cron}` : '';
+              console.log(`  ${taskMeta.name}${schedule}  ${taskMeta.filePath}`);
+            }
+          }
 
           // 注册默认优雅关闭信号（进程级仅注册一次，faapi 单进程单 app 设计）
           registerDefaultShutdownHandlers();
 
           // onReady 生命周期钩子
           if (config?.lifecycle?.onReady) {
-            await config.lifecycle.onReady({ rootDir, routes: sorted, server, registries });
+            await config.lifecycle.onReady({
+              rootDir,
+              routes: sorted,
+              server,
+              registries,
+              tasks: taskQueue,
+            });
             console.log('- onReady hook executed');
           }
 
@@ -610,8 +705,18 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       // 此前 closeAllConnections 在等待之前调用，会直接掐断在途请求（硬关，非优雅停机）
       s.closeIdleConnections?.();
 
+      // 任务队列 drain：停止出队 + 停 cron，等在跑任务结束（超时 abort），再执行
+      // onClose——保证业务方清理资源（DB 等）时没有任务还在执行
+      await stopTaskRuntime();
+
       if (config?.lifecycle?.onClose) {
-        await config.lifecycle.onClose({ rootDir, routes: sorted, server, registries });
+        await config.lifecycle.onClose({
+          rootDir,
+          routes: sorted,
+          server,
+          registries,
+          tasks: taskQueue,
+        });
       }
 
       // 注册表（方案 A 实例化）：清理的是 app 自己的实例——多 app 同进程
@@ -619,7 +724,9 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       registries.tool.clear();
       registries.agent.clear();
       registries.skill.clear();
+      registries.task.clear();
       registries.agentHandle.clear();
+      registries.taskHandle.clear();
 
       // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）
       if (!server.listening) {
@@ -676,6 +783,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     registries,
     dist,
     patterns: ROUTE_PATTERNS,
+    taskQueue,
     server,
     routesRef,
     config,

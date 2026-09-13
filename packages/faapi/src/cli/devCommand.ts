@@ -9,6 +9,9 @@ import { generateToolArtifacts } from './generateToolArtifacts';
 import { scanAgents } from '../agents/scanAgents';
 import { DEFAULT_AGENT_PATTERNS } from '../agents/scanAgents';
 import { generateAgentArtifacts } from './generateAgentArtifacts';
+import { scanTasks, TASK_PATTERNS } from '../task/scanTasks';
+import { generateTaskArtifacts } from './generateTaskArtifacts';
+import { ensureCompiled } from './compileOnDemand';
 import { loadConfig } from '../config/loadConfig';
 import { loadEnv } from './loadEnv';
 import { startWatcher } from './watcher';
@@ -93,6 +96,13 @@ export async function devCommand(options?: DevCommandOptions): Promise<void> {
   console.log('- Generating agent manifest...');
   await generateAgentArtifactsForDev(rootDir, devDist);
 
+  // 6.5 编译任务源码 + 生成任务清单与 Payload schema
+  //     任务在队列派发时 import 产物模块——不像 HTTP 请求能把按需编译的失败反馈给
+  //     调用方，故 dev 对任务做启动期全量编译（ensureCompiled 带 mtime 缓存，
+  //     编译依赖闭包），zod.js 与 build 一致全量生成（统一产物驱动）
+  console.log('- Generating task artifacts...');
+  await generateTaskArtifactsForDev(rootDir, devDist);
+
   // 7. 启动 dev 应用（createDevApp + listen，含 reloadRoutes/reloadTools/reloadAgents 热替换能力）
   console.log('- Starting dev app...');
   const app = await createDevApp({ rootDir, port: options?.port });
@@ -145,4 +155,18 @@ export async function generateToolArtifactsForDev(rootDir: string, dist: string)
 export async function generateAgentArtifactsForDev(rootDir: string, dist: string): Promise<void> {
   const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS);
   await generateAgentArtifacts(agents, rootDir, dist);
+}
+
+/**
+ * 生成任务产物：编译任务源码（依赖闭包，mtime 缓存）+ faapi-tasks.js + Payload zod.js
+ *
+ * dev/prod 行为一致（全量生成，见 generateTaskArtifacts.md），差异仅是 dev 用
+ * ensureCompiled 按需闭包编译任务文件、build 由 compileBuildRoutes 全量编译。
+ */
+export async function generateTaskArtifactsForDev(rootDir: string, dist: string): Promise<void> {
+  const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+  for (const task of tasks) {
+    await ensureCompiled(path.resolve(rootDir, task.filePath), rootDir, dist);
+  }
+  await generateTaskArtifacts(tasks, rootDir, dist);
 }

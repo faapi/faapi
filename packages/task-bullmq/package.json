@@ -1,0 +1,68 @@
+{
+  "name": "@faapi/task-bullmq",
+  "version": "0.0.0",
+  "description": "BullMQ task queue driver for faapi — persistent queue on Redis",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@faapi/faapi": "workspace:*",
+    "@types/node": "^24.3.0",
+    "bullmq": "^5.58.5",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11"
+  },
+  "peerDependencies": {
+    "@faapi/faapi": "workspace:^",
+    "bullmq": "^5.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/faapi/faapi.git",
+    "directory": "packages/task-bullmq"
+  },
+  "bugs": {
+    "url": "https://github.com/faapi/faapi/issues"
+  },
+  "keywords": [
+    "faapi",
+    "task-queue",
+    "bullmq",
+    "redis",
+    "driver"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  }
+}
