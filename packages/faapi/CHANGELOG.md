@@ -1,5 +1,12 @@
 # @faapi/faapi
 
+## 6.3.0
+
+### Minor Changes
+
+- 9874ebb: feat(task): 任务队列驱动抽象——存储/消费/重试/停机拆分为 `TaskDriver` 接口（`driverTypes.ts`），原内存队列逻辑下沉为默认 `memoryDriver`（行为不变）；`config.task.driver` 支持 `'pgboss'` / `'bullmq'`（动态加载 `@faapi/task-pgboss` / `@faapi/task-bullmq` 子包，未安装显式报错）与自定义 `TaskDriver` 实例；dev `reloadTasks` 改为 `queue.reload()` 重注册 worker（驱动连接保持）。持久化驱动下任务不丢、多实例防重跑由队列系统保证。
+- 9874ebb: feat(task): 新增队列式异步任务子系统——`src/tasks/<name>/task.ts` 文件约定定义任务（`task` 元信息 + `run(payload, taskCtx)`），进程内内存队列执行，支持并发数、失败重试（指数退避）、cron 定时入队（croner）、payload zod 校验（复用 AST 代码生成链路）、优雅停机 drain。触发入口：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle 钩子 `{ tasks }`；产物新增 `faapi-tasks.js` + `tasks/<dir>/zod.js`，dev watcher 支持 `reloadTasks()` 热替换。新增依赖 `croner`。内存队列不持久化、不做多实例防重跑（部署职责，见 fallback.md）。
+
 ## 6.2.0
 
 ### Minor Changes
