@@ -14,6 +14,66 @@ import { generateTaskArtifacts } from '../cli/generateTaskArtifacts';
 
 const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/tasks-basic');
 
+/**
+ * 测试用最小队列驱动（TaskDriver 实例经 config 注入直通 loadTaskDriver）：
+ * FIFO 顺序执行，无并发上限；验证语义层与驱动的协作，存储/重试语义由子包测试覆盖
+ */
+const DRIVER_MODULE = `
+let seq = 0;
+const jobs = [];
+const workers = new Map();
+let stopped = false;
+let running = 0;
+function pump() {
+  while (!stopped && running < 4 && jobs.length > 0) {
+    const job = jobs.shift();
+    const worker = workers.get(job.name);
+    if (!worker) continue;
+    running += 1;
+    job.attempt += 1;
+    const signal = new AbortController().signal;
+    Promise.resolve()
+      .then(() => worker.process({ id: job.id, name: job.name, payload: job.payload, attempt: job.attempt, signal }))
+      .catch(() => {})
+      .finally(() => {
+        running -= 1;
+        pump();
+      });
+  }
+}
+export const driver = {
+  async enqueue(name, payload) {
+    if (stopped) throw new Error('queue is stopped');
+    seq += 1;
+    const id = 'e2e-' + seq;
+    jobs.push({ id, name, payload, attempt: 0 });
+    pump();
+    return id;
+  },
+  async startWorker(name, opts) {
+    workers.set(name, opts);
+    pump();
+  },
+  async stop() {
+    stopped = true;
+    while (running > 0) await new Promise((r) => setTimeout(r, 10));
+  },
+  async stopWorkers() {
+    workers.clear();
+  },
+};
+`;
+
+/** 写 config 产物：task.driver 注入测试驱动实例（loadTaskDriver 对象直通路径） */
+function writeConfigWithDriver(dist: string): void {
+  fs.writeFileSync(path.join(dist, 'faapi-task-driver.js'), DRIVER_MODULE, 'utf-8');
+  fs.writeFileSync(
+    path.join(dist, 'faapi-config.js'),
+    `import { driver } from './faapi-task-driver.js';\nexport default { task: { driver } };\n`,
+    'utf-8',
+  );
+}
+
 let dist: string;
 let echoTarget: string;
 
@@ -47,6 +107,7 @@ describe('task runtime e2e', () => {
     const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['src/api/**/*.ts']);
     const routesPath = path.resolve(dist, 'faapi-routes.js');
     await writeRoutesModule(serializeRoutes(routes, wsRoutes, FIXTURES_DIR, dist), routesPath);
+    writeConfigWithDriver(dist);
 
     // app 启动（队列随 createAppBase 启动）
     const { app } = await createAppBase({ rootDir: FIXTURES_DIR, dist });
@@ -83,6 +144,7 @@ describe('task runtime e2e', () => {
     await generateSchemaFiles(sorted, FIXTURES_DIR, dist);
     const routesPath = path.resolve(dist, 'faapi-routes.js');
     await writeRoutesModule(serializeRoutes(routes, wsRoutes, FIXTURES_DIR, dist), routesPath);
+    writeConfigWithDriver(dist);
 
     const { app } = await createAppBase({ rootDir: FIXTURES_DIR, dist });
     // handler 参数注入 tasks（不 listen，走 app.inject 完整请求链路）

@@ -118,10 +118,10 @@ export interface TaskQueueDeps {
   /** faapi.config.ts 全量配置，透传给 run 的 TaskContext.config */
   config?: unknown;
   /**
-   * 队列驱动（默认 memoryDriver——进程内数组，重启丢任务）
-   * 外部驱动：`@faapi/task-pgboss` / `@faapi/task-bullmq` 或自定义 TaskDriver 实例
+   * 队列驱动（必填）：`loadTaskDriver` 解析结果（pgboss/bullmq 子包驱动）
+   * 或自定义 TaskDriver 实例；无任务清单时由 createAppBase 传入 idleTaskDriver
    */
-  driver?: TaskDriver;
+  driver: TaskDriver;
   /** 任务模块加载器（默认：import 产物路径） */
   loadTaskModule?: (filePath: string) => Promise<TaskModule>;
   /** payload schema 加载器（默认：import 任务目录 zod.js，取首个 `*Schema` 导出） */

@@ -5,15 +5,15 @@
  * run 执行包装、任务记录（list）；驱动层负责：入队存储、worker 消费、
  * 失败重试、停机 drain。换驱动 = 换存储，业务方写法不变。
  *
- * 内置 memory 驱动（memoryDriver.ts，进程内数组，零依赖）；
- * 外部驱动由独立子包提供：`@faapi/task-pgboss`（Postgres）、`@faapi/task-bullmq`（Redis），
- * 主包不依赖它们——按 config.task.driver 动态加载（loadTaskDriver.ts）。
+ * 框架不内置任何驱动实现：外部驱动由独立子包提供——`@faapi/task-pgboss`（Postgres）、
+ * `@faapi/task-bullmq`（Redis），主包不依赖它们——按 config.task.driver 动态加载
+ * （loadTaskDriver.ts）；无任务清单时用 idleTaskDriver 占位（enqueue 显式报错）。
  */
 import type { TaskRegistry } from './taskRegistry';
 
 /** 驱动层交付给语义层执行的单个任务 */
 export interface TaskDriverJob {
-  /** 队列系统侧任务 id（memory 为 uuid；pg-boss/bullmq 为其自身 id） */
+  /** 队列系统侧任务 id（pg-boss/bullmq 为其自身 id；自定义驱动自行生成） */
   id: string;
   name: string;
   payload: unknown;

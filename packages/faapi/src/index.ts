@@ -12,6 +12,9 @@ export type {
   AgentConfig,
   LlmConfig,
   LlmModelConfig,
+  TaskConfig,
+  TaskPgBossOptions,
+  TaskBullMqOptions,
 } from './config/configTypes';
 export type {
   FaapiPlugin,
@@ -70,7 +73,6 @@ export type { TaskRegistry } from './task/taskRegistry';
 export type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './task/driverTypes';
 export { createTaskRegistry } from './task/taskRegistry';
 export { createTaskQueue } from './task/taskQueue';
-export { createMemoryDriver } from './task/memoryDriver';
 export { loadTaskDriver } from './task/loadTaskDriver';
 export { createCronScheduler, type CronScheduler } from './task/cronScheduler';
 export { scanTasks, TASK_PATTERNS } from './task/scanTasks';

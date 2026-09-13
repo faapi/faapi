@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { ValidationError } from '../errors/httpErrors';
-import { createMemoryDriver } from './memoryDriver';
-import type { TaskDriver, TaskDriverJob } from './driverTypes';
+import type { TaskDriverJob } from './driverTypes';
 import type { TaskContext, TaskJob, TaskModule, TaskQueue, TaskQueueDeps } from './taskTypes';
 
 /**
@@ -10,16 +9,14 @@ import type { TaskContext, TaskJob, TaskModule, TaskQueue, TaskQueueDeps } from 
  * 职责边界（driverTypes.md）：
  * - 本层：任务存在性检查 → payload zod 校验 → 驱动入队；worker 执行包装
  *   （模块加载 + run 调用 + 任务记录更新）；start/stop/reload 生命周期编排
- * - 驱动层（deps.driver，默认 memoryDriver）：入队存储、worker 消费、重试策略、停机 drain
+ * - 驱动层（deps.driver，必填——持久化驱动子包或自定义 TaskDriver）：
+ *   入队存储、worker 消费、重试策略、停机 drain
  *
  * 任务记录（list）由本层维护：enqueue 写 pending，每次 process 写 attempts/running，
  * 返回写 done，抛错写 failed——对任何驱动语义一致。
  */
 export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
-  const { registry, rootDir } = deps;
-
-  /** 驱动（默认内存驱动） */
-  const driver: TaskDriver = deps.driver ?? createMemoryDriver();
+  const { registry, rootDir, driver } = deps;
 
   /** 任务记录（id → job；跨驱动一致的本地快照） */
   const records = new Map<string, TaskJob>();
@@ -154,7 +151,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         delayMs: opts?.delayMs,
         retries: meta.retries ?? 0,
       });
-      // driver.enqueue 可能已同步触发派发（memory 驱动 pump）——runJob 已写入
+      // driver.enqueue 可能已同步触发派发——runJob 已写入
       // running/done 记录时不要用 pending 覆盖
       if (!records.has(id)) {
         records.set(id, {

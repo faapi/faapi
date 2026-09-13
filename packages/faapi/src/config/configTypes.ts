@@ -48,13 +48,52 @@ export interface LifecycleHooks {
 }
 
 /**
- * 任务子系统配置（config.task，全部字段可选）
+ * pg-boss 驱动选项（透传给 @faapi/task-pgboss）
  *
- * 第一版为进程内内存队列（重启丢任务、多实例不防重跑——部署职责见 task 子系统文档）。
+ * 主包不依赖 pg-boss，这里只声明常用连接字段的透传形状；完整项见 pg-boss 文档
+ * （ConstructorOptions）。
+ */
+export interface TaskPgBossOptions {
+  /** PostgreSQL 连接串（如 `postgres://localhost:5432/app`） */
+  connectionString?: string;
+  /** 其余 pg-boss ConstructorOptions 字段原样透传 */
+  [key: string]: unknown;
+}
+
+/**
+ * BullMQ 驱动选项（透传给 @faapi/task-bullmq）
+ */
+export interface TaskBullMqOptions {
+  /** Redis 连接配置（透传给 Queue / Worker 的 connection） */
+  connection?: {
+    host?: string;
+    port?: number;
+    password?: string;
+    db?: number;
+    [key: string]: unknown;
+  };
+  /** 队列名前缀（默认 `faapi`——同一 Redis 下多个 faapi 应用隔离用） */
+  prefix?: string;
+}
+
+/**
+ * 任务子系统配置
+ *
+ * 任务队列由持久化驱动承载（内置 memory 驱动已移除）：存在任务清单
+ * （`src/tasks/` 下的 task.ts）时必须显式配置 `driver`，否则启动报错；
+ * 无任务清单的项目不加载驱动（零任务项目无需安装驱动子包）。
  */
 export interface TaskConfig {
-  /** 队列驱动，当前仅 'memory'（默认） */
-  driver?: 'memory';
+  /**
+   * 队列驱动：'pgboss'（@faapi/task-pgboss，Postgres）| 'bullmq'（@faapi/task-bullmq，Redis）
+   *
+   * 有任务清单时必填；也可在编程式场景传入自定义 TaskDriver 实例
+   */
+  driver?: 'pgboss' | 'bullmq';
+  /** `driver: 'pgboss'` 时的选项（透传给 @faapi/task-pgboss） */
+  pgboss?: TaskPgBossOptions;
+  /** `driver: 'bullmq'` 时的选项（透传给 @faapi/task-bullmq） */
+  bullmq?: TaskBullMqOptions;
   /**
    * 是否启动任务队列（默认 true）
    *

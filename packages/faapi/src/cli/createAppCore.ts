@@ -14,6 +14,7 @@ import { hydrateAgents, type SerializedAgentRecord } from './generateAgentArtifa
 import { hydrateTasks, TASKS_FILE } from './generateTaskArtifacts';
 import { createTaskQueue } from '../task/taskQueue';
 import { loadTaskDriver } from '../task/loadTaskDriver';
+import { createIdleTaskDriver } from '../task/idleTaskDriver';
 import { createCronScheduler, type CronScheduler } from '../task/cronScheduler';
 import type { TaskClient, TaskQueue } from '../task/taskTypes';
 import { loadPlugins } from './loadPlugins';
@@ -124,10 +125,8 @@ export async function loadAndHydrateAgents(
  */
 function getTaskDriverOptions(config: FaapiConfig | null): unknown {
   if (!config?.task) return undefined;
-  const taskConfig = config.task as Record<string, unknown>;
-  const driver = taskConfig.driver;
-  if (driver === 'pgboss') return taskConfig.pgboss;
-  if (driver === 'bullmq') return taskConfig.bullmq;
+  if (config.task.driver === 'pgboss') return config.task.pgboss;
+  if (config.task.driver === 'bullmq') return config.task.bullmq;
   return undefined;
 }
 
@@ -407,7 +406,11 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   // 队列不依赖 HTTP listen——createAppBase 即启动（enabled 时），onBoot 校验失败
   // 的 listen 路径负责停机
   const taskMetas = await loadAndHydrateTasks(rootDir, dist, registries);
-  const taskDriver = await loadTaskDriver(config?.task?.driver, getTaskDriverOptions(config));
+  // 队列驱动：有任务清单时按 config.task.driver 加载（未配置显式报错，不静默降级）；
+  // 无任务清单用空闲占位驱动（零任务项目无需安装驱动子包）
+  const taskDriver = taskMetas.length
+    ? await loadTaskDriver(config?.task?.driver, getTaskDriverOptions(config))
+    : createIdleTaskDriver();
   const taskQueue = createTaskQueue({
     registry: registries.task,
     rootDir,
