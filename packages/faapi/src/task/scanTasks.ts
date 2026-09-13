@@ -25,6 +25,7 @@ const TASK_FILENAME = 'task.ts';
 const CRON_RE = /(?:^|\n)\s*cron:\s*['"`]([^'"`\n]+)['"`]/;
 const CONCURRENCY_RE = /(?:^|\n)\s*concurrency:\s*(\d+)/;
 const RETRIES_RE = /(?:^|\n)\s*retries:\s*(\d+)/;
+const TIMEOUT_MS_RE = /(?:^|\n)\s*timeoutMs:\s*(\d+)/;
 
 /**
  * 从源码相对路径推导任务名
@@ -86,9 +87,11 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
     const cron = CRON_RE.exec(source)?.[1];
     const concurrency = CONCURRENCY_RE.exec(source)?.[1];
     const retries = RETRIES_RE.exec(source)?.[1];
+    const timeoutMs = TIMEOUT_MS_RE.exec(source)?.[1];
     if (cron !== undefined) manifest.cron = cron;
     if (concurrency !== undefined) manifest.concurrency = Number(concurrency);
     if (retries !== undefined) manifest.retries = Number(retries);
+    if (timeoutMs !== undefined) manifest.timeoutMs = Number(timeoutMs);
 
     tasks.push(manifest);
   }

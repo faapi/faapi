@@ -38,13 +38,14 @@ export function run(payload: unknown) {}
     expect(tasks[0]!.name).toBe('a.b');
   });
 
-  it('正则提取 cron / concurrency / retries 字面量', async () => {
+  it('正则提取 cron / concurrency / retries / timeoutMs 字面量', async () => {
     writeTask(
       'src/tasks/cleanup/task.ts',
       `export const task = {
   cron: '0 3 * * *',
   concurrency: 2,
   retries: 3,
+  timeoutMs: 30000,
 };
 export function run() {}
 `,
@@ -55,6 +56,7 @@ export function run() {}
       cron: '0 3 * * *',
       concurrency: 2,
       retries: 3,
+      timeoutMs: 30000,
     });
   });
 

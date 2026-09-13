@@ -155,6 +155,23 @@ describe('createPgBossDriver', () => {
     await expect(driver.enqueue('a', {})).rejects.toThrow('stopped');
   });
 
+  it('stop 后 abort 在跑任务的 signal（run 可感知停机退出）', async () => {
+    const driver = createPgBossDriver();
+    const captured: AbortSignal[] = [];
+    const process = vi.fn(async (job: { signal: AbortSignal }) => {
+      captured.push(job.signal);
+      await new Promise(() => {}); // 挂起：模拟任务仍在执行
+    });
+    await driver.startWorker('a', { concurrency: 1, process });
+    const boss = fakeBosses()[0]!;
+    void boss.workHandlers[0]!.handler([{ id: 'j1', data: null, retryCount: 0 }]);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(captured[0]!.aborted).toBe(false);
+    // fake boss.stop 立即完成 → 停止结束后对残留 in-flight 兜底 abort
+    await driver.stop(20);
+    expect(captured[0]!.aborted).toBe(true);
+  });
+
   it('stopWorkers 仅 offWork 不断连接（reload 场景），可重新注册', async () => {
     const driver = createPgBossDriver();
     await driver.startWorker('a', { concurrency: 1, process: async () => 1 });

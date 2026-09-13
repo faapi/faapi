@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { ValidationError } from '../errors/httpErrors';
+import { runTaskInWorker } from './taskWorker';
 import type { TaskDriverJob } from './driverTypes';
 import type { TaskContext, TaskJob, TaskModule, TaskQueue, TaskQueueDeps } from './taskTypes';
 
@@ -86,6 +87,10 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   /**
    * worker 执行函数（交给驱动调用的 process）：模块加载 + run 调用 + 任务记录更新
    *
+   * 按 meta.timeoutMs 分两条执行路径：
+   * - 声明 timeoutMs → 隔离执行器（独立 worker 线程，超时两段式取消真终止，见 taskWorker.md）
+   * - 未声明 → 进程内执行（零开销；卡住时框架只能不再等待）
+   *
    * 抛错 = 本次失败，由驱动按 retries 决定重试；重试再次进入本函数（attempt 递增）。
    */
   async function runJob(job: TaskDriverJob): Promise<unknown> {
@@ -106,20 +111,34 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     records.set(job.id, record);
 
     try {
-      let mod = moduleCache.get(job.name);
-      if (!mod) {
-        mod = await loadTaskModule(path.resolve(rootDir, meta.filePath));
-        moduleCache.set(job.name, mod);
+      let result: unknown;
+      if (meta.timeoutMs !== undefined && meta.timeoutMs > 0) {
+        result = await (deps.runIsolated ?? runTaskInWorker)({
+          taskModulePath: path.resolve(rootDir, meta.filePath),
+          payload: job.payload,
+          taskCtx: {
+            config: deps.config,
+            job: { id: job.id, name: job.name, attempt: job.attempt },
+          },
+          timeoutMs: meta.timeoutMs,
+          externalSignal: job.signal,
+        });
+      } else {
+        let mod = moduleCache.get(job.name);
+        if (!mod) {
+          mod = await loadTaskModule(path.resolve(rootDir, meta.filePath));
+          moduleCache.set(job.name, mod);
+        }
+        if (typeof mod.run !== 'function') {
+          throw new Error(`Task "${job.name}" module has no run export`);
+        }
+        const taskCtx: TaskContext = {
+          signal: job.signal,
+          config: deps.config,
+          job: { id: job.id, name: job.name, attempt: job.attempt },
+        };
+        result = await mod.run(job.payload, taskCtx);
       }
-      if (typeof mod.run !== 'function') {
-        throw new Error(`Task "${job.name}" module has no run export`);
-      }
-      const taskCtx: TaskContext = {
-        signal: job.signal,
-        config: deps.config,
-        job: { id: job.id, name: job.name, attempt: job.attempt },
-      };
-      const result = await mod.run(job.payload, taskCtx);
       record.status = 'done';
       record.result = result;
       return result;

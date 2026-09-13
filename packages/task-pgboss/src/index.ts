@@ -26,7 +26,7 @@ export type PgBossDriverOptions = PgBoss.ConstructorOptions;
  * 语义映射（详见包根 README）：
  * - `enqueue` → `boss.send(name, payload, { retryLimit, retryDelay, retryBackoff, startAfter })`
  * - `startWorker` → `boss.work(name, { batchSize: concurrency, includeMetadata: true }, handler)`
- * - `stop` → `offWork` + `boss.stop({ close: true, graceful: true, timeout })`
+ * - `stop` → `offWork` + `boss.stop({ close: true, graceful: true, timeout })`；超时后 abort 在跑任务的 signal
  * - 重试 → pg-boss 侧执行（retryLimit + retryBackoff 指数退避）
  */
 export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDriver {
@@ -34,6 +34,8 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
   let stopped = false;
   /** 已创建的 pg-boss worker id（stopWorkers 时 offWork） */
   const workerIds = new Map<string, string>();
+  /** 在跑任务的取消控制器（stop 超时 abort——run 监听 signal 可尽快退出） */
+  const inflight = new Map<string, AbortController>();
 
   async function ensureBoss(): Promise<PgBoss> {
     if (!boss) {
@@ -79,13 +81,20 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
           for (const job of jobs) {
             // retryCount 从 0 起（首次执行为 0）→ faapi attempt 从 1 起
             const attempt = job.retryCount + 1;
-            await process({
-              id: job.id,
-              name,
-              payload: job.data,
-              attempt,
-              signal: new AbortController().signal, // pg-boss 不提供执行中任务的取消信号
-            });
+            // 信号由驱动自管：stop 超时 abort（pg-boss 自身不提供执行中任务的取消能力）
+            const controller = new AbortController();
+            inflight.set(job.id, controller);
+            try {
+              await process({
+                id: job.id,
+                name,
+                payload: job.data,
+                attempt,
+                signal: controller.signal,
+              });
+            } finally {
+              inflight.delete(job.id);
+            }
           }
           // handler 正常返回 = 本批全部完成；抛错 = 整批失败由 pg-boss 按 retryLimit 重试
         },
@@ -95,15 +104,25 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
 
     async stop(timeoutMs = 10_000) {
       stopped = true;
-      const b = boss;
-      if (b) {
-        for (const workerId of workerIds.values()) {
-          await b.offWork(workerId).catch(() => {});
+      // 等待超时到点 abort 在跑任务（run 监听 signal 尽快退出）；等待结束后兜底 abort 残留
+      const abortTimer = setTimeout(() => {
+        for (const controller of inflight.values()) controller.abort();
+      }, timeoutMs);
+      try {
+        const b = boss;
+        if (b) {
+          for (const workerId of workerIds.values()) {
+            await b.offWork(workerId).catch(() => {});
+          }
+          workerIds.clear();
+          // graceful: 等 in-flight 任务完成；timeout 秒后强制处置
+          await b.stop({ close: true, graceful: true, timeout: Math.floor(timeoutMs / 1000) });
+          boss = null;
         }
-        workerIds.clear();
-        // graceful: 等 in-flight 任务完成；timeout 秒后强制处置
-        await b.stop({ close: true, graceful: true, timeout: Math.floor(timeoutMs / 1000) });
-        boss = null;
+      } finally {
+        clearTimeout(abortTimer);
+        for (const controller of inflight.values()) controller.abort();
+        inflight.clear();
       }
     },
 

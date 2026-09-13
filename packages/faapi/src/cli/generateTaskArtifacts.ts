@@ -38,6 +38,7 @@ export interface SerializedTaskRecord {
   cron?: string;
   concurrency?: number;
   retries?: number;
+  timeoutMs?: number;
 }
 
 /**
@@ -53,6 +54,7 @@ export function serializeTasks(
     ...(t.cron !== undefined ? { cron: t.cron } : {}),
     ...(t.concurrency !== undefined ? { concurrency: t.concurrency } : {}),
     ...(t.retries !== undefined ? { retries: t.retries } : {}),
+    ...(t.timeoutMs !== undefined ? { timeoutMs: t.timeoutMs } : {}),
   }));
 }
 
@@ -79,6 +81,7 @@ export function hydrateTasks(manifest: SerializedTaskRecord[]): TaskMetadata[] {
     cron: t.cron ?? undefined,
     concurrency: t.concurrency ?? undefined,
     retries: t.retries ?? undefined,
+    timeoutMs: t.timeoutMs ?? undefined,
   }));
 }
 

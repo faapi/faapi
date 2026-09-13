@@ -131,6 +131,22 @@ describe('createBullMQDriver', () => {
     await expect(driver.enqueue('a', {})).rejects.toThrow('stopped');
   });
 
+  it('stop 后 abort 在跑任务的 signal（run 可感知停机退出）', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const captured: AbortSignal[] = [];
+    const process = vi.fn(async (job: { signal: AbortSignal }) => {
+      captured.push(job.signal);
+      await new Promise(() => {}); // 挂起：模拟任务仍在执行
+    });
+    await driver.startWorker('a', { concurrency: 1, process });
+    void h.fakeWorkers[0]!.handler({ id: 'j1', data: null });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(captured[0]!.aborted).toBe(false);
+    // close 立即完成 → race 结束后对残留 in-flight abort
+    await driver.stop(20);
+    expect(captured[0]!.aborted).toBe(true);
+  });
+
   it('stopWorkers 仅关 Worker（reload 场景），Queue 不创建', async () => {
     const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
     await driver.startWorker('a', { concurrency: 1, process: async () => 1 });

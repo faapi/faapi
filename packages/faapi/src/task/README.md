@@ -17,6 +17,7 @@ export interface Payload {
 export const task = {
   concurrency: 2,   // 并发数，默认 1
   retries: 3,       // 失败重试次数，默认 0
+  // timeoutMs: 30_000, // 执行超时：超时真终止（隔离线程执行，两段式取消）
   // cron: '0 3 * * *',  // 定时入队（croner 表达式），到点自动 enqueue 空 payload
 } satisfies FaapiTaskMeta;
 export function run(payload: Payload, taskCtx: TaskContext) {
@@ -50,11 +51,13 @@ export function POST(body: { email: string }, tasks: TaskClient) {
 | `driverTypes.ts` | `TaskDriver` 驱动抽象（存储/消费/重试/停机的边界接口） |
 | `loadTaskDriver.ts` | 按 `config.task.driver` 动态加载子包驱动 / 透传自定义实例，缺失显式抛错 |
 | `idleTaskDriver.ts` | 空闲占位驱动（无任务清单时使用，enqueue 显式报错引导配置驱动） |
+| `taskWorker.ts` | 隔离执行器：`timeoutMs` 任务在独立线程执行，超时两段式取消（真终止） |
 | `cronScheduler.ts` | cron 表达式到点自动入队（croner） |
 | `../cli/generateTaskArtifacts.ts` | 生成 `faapi-tasks.js` 清单 + 各任务的 `zod.js`（Payload schema） |
 
 ## 设计决策
 
+- **超时取消必须真终止（worker 隔离执行）**：Node 主线程无法强杀协程——进程内"不再等待"式的超时是假取消（控制侧记失败、重试已投递，旧协程仍在跑）。因此任务声明 `task.timeoutMs` 后走 `taskWorker.ts` 隔离线程执行，超时两段式取消：先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀——判定超时即执行真正终止。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、`taskCtx.config` 为可克隆纯数据快照（详见 taskWorker.md）。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。
 - **驱动必填（memory 内置驱动已移除）**：队列语义（存储/消费/重试/停机）抽象为 `TaskDriver` 接口（driverTypes.md），由独立子包提供实现——`@faapi/task-pgboss`（Postgres）、`@faapi/task-bullmq`（Redis），主包零依赖、按 `config.task.driver` 动态加载（loadTaskDriver.ts），未安装/未配置显式报错不静默降级。**存在任务清单时必须显式配置 driver**，否则 `createAppBase` 启动报错；无任务清单的项目不加载驱动（零任务项目无需安装驱动子包，`createAppBase` 用空闲占位驱动 idleTaskDriver）。进程内重启丢任务/多实例不防重跑的问题由持久化驱动天然解决——框架不再提供"可丢任务"的默认实现。
 - **统一产物驱动**：dev/prod 产物集一致（`faapi-tasks.js` + `tasks/**/zod.js` + `tasks/**/task.js`），`createAppBase` 无 `if (isDev)` 分支。dev 与 handler 不同，任务文件启动时全量编译（任务数量小，且 worker 运行时 import 失败无法像 HTTP 请求那样反馈给调用方）。
 - **任务与定时一条线**：cron 只是"自动投递者"，到点调 `enqueue`，复用同一队列与执行模型，不做第二套执行器。

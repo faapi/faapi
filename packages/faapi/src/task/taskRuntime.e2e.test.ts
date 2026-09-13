@@ -97,7 +97,7 @@ describe('task runtime e2e', () => {
   it('app.tasks.enqueue 走完整产物链路执行任务', async () => {
     // 产物准备（build 阶段职责的等效操作）
     const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
-    expect(tasks.map((t) => t.name)).toEqual(['echo']);
+    expect(tasks.map((t) => t.name)).toEqual(['echo', 'timeout']);
     await compileSourceFiles({
       rootDir: FIXTURES_DIR,
       dist,
@@ -156,6 +156,31 @@ describe('task runtime e2e', () => {
     expect(res.status).toBe(200);
     await viWaitFor(() => fs.existsSync(echoTarget));
     expect(fs.readFileSync(echoTarget, 'utf8')).toBe('via-inject');
+    await app.close();
+  });
+
+  it('timeoutMs 任务超时后真终止并记 failed（隔离线程两段式取消）', async () => {
+    // 产物准备（同上，含 timeout 任务——echo 已验证隔离 happy path，本用例验证超时取消）
+    const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
+    await compileSourceFiles({
+      rootDir: FIXTURES_DIR,
+      dist,
+      files: tasks.map((t) => path.resolve(FIXTURES_DIR, t.filePath)),
+    });
+    await generateTaskArtifacts(tasks, FIXTURES_DIR, dist);
+    const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['src/api/**/*.ts']);
+    const routesPath = path.resolve(dist, 'faapi-routes.js');
+    await writeRoutesModule(serializeRoutes(routes, wsRoutes, FIXTURES_DIR, dist), routesPath);
+    writeConfigWithDriver(dist);
+
+    const { app } = await createAppBase({ rootDir: FIXTURES_DIR, dist });
+    // 任务自然结束需 10s——若框架没有真终止，viWaitFor 会以 5s 超时失败
+    const start = Date.now();
+    await app.tasks.enqueue('timeout');
+    await viWaitFor(() => app.tasks.list('timeout')[0]?.status === 'failed');
+    const job = app.tasks.list('timeout')[0]!;
+    expect(job.error).toMatch(/timed out/);
+    expect(Date.now() - start).toBeLessThan(5000);
     await app.close();
   });
 });

@@ -1,5 +1,6 @@
 import type { TaskRegistry } from './taskRegistry';
 import type { TaskDriver } from './driverTypes';
+import type { TaskWorkerRunner } from './taskWorker';
 
 /**
  * 任务元信息（业务方在 task.ts 中 `export const task = {...}` 声明）
@@ -11,6 +12,12 @@ export interface FaapiTaskMeta {
   concurrency?: number;
   /** 失败重试次数（默认 0——失败即 failed，不重试） */
   retries?: number;
+  /**
+   * 单次执行超时（毫秒）。声明后该任务在独立 worker 线程执行，超时两段式取消
+   * （先 abort 信号宽限 5s，未退出 terminate 硬杀）——判定超时即执行真正终止。
+   * 未声明走进程内执行（零开销，但卡住时框架只能不再等待）。
+   */
+  timeoutMs?: number;
   /** cron 表达式（croner 语法，支持秒级）——到点自动入队空 payload */
   cron?: string;
 }
@@ -26,6 +33,7 @@ export interface TaskManifest {
   cron?: string;
   concurrency?: number;
   retries?: number;
+  timeoutMs?: number;
 }
 
 /**
@@ -38,6 +46,7 @@ export interface TaskMetadata {
   cron?: string;
   concurrency?: number;
   retries?: number;
+  timeoutMs?: number;
 }
 
 /** 任务记录状态 */
@@ -126,4 +135,9 @@ export interface TaskQueueDeps {
   loadTaskModule?: (filePath: string) => Promise<TaskModule>;
   /** payload schema 加载器（默认：import 任务目录 zod.js，取首个 `*Schema` 导出） */
   loadPayloadSchema?: (filePath: string) => Promise<unknown>;
+  /**
+   * 隔离执行器（默认 runTaskInWorker）——任务声明 timeoutMs 时由语义层调用，
+   * 独立 worker 线程执行 + 超时两段式取消；测试注入 spy 验证执行路径路由
+   */
+  runIsolated?: TaskWorkerRunner;
 }

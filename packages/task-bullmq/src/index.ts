@@ -29,7 +29,7 @@ export interface BullMQDriverOptions {
  * 语义映射（详见包根 README）：
  * - `enqueue` → `queue.add(name, payload, { delay, attempts, backoff })`（每任务一个 Queue）
  * - `startWorker` → `new Worker(name, handler, { connection, concurrency })`
- * - `stop` → workers.close() + queues.close()（等 in-flight；超时由 BullMQ 处置）
+ * - `stop` → workers.close() + queues.close()（等 in-flight；超时 abort 在跑任务的 signal）
  * - 重试 → BullMQ 侧执行（attempts = retries + 1，指数退避 500ms 起）
  */
 export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
@@ -43,6 +43,8 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
   const queues = new Map<string, Queue>();
   /** 已创建的 Worker（stopWorkers / stop 时关闭） */
   const workers = new Map<string, Worker>();
+  /** 在跑任务的取消控制器（stop 超时 abort——run 监听 signal 可尽快退出） */
+  const inflight = new Map<string, AbortController>();
 
   function getQueue(name: string): Queue {
     let q = queues.get(name);
@@ -81,15 +83,23 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
       const worker = new Worker(
         name,
         async (job: Job) => {
-          const attempt = (attemptCounts.get(job.id ?? '') ?? 0) + 1;
-          attemptCounts.set(job.id ?? '', attempt);
-          return await process({
-            id: job.id ?? '',
-            name,
-            payload: job.data,
-            attempt,
-            signal: new AbortController().signal, // BullMQ 不提供执行中任务的取消信号
-          });
+          const id = job.id ?? '';
+          const attempt = (attemptCounts.get(id) ?? 0) + 1;
+          attemptCounts.set(id, attempt);
+          // 信号由驱动自管：stop 超时 abort（BullMQ 自身不提供执行中任务的取消能力）
+          const controller = new AbortController();
+          inflight.set(id, controller);
+          try {
+            return await process({
+              id,
+              name,
+              payload: job.data,
+              attempt,
+              signal: controller.signal,
+            });
+          } finally {
+            inflight.delete(id);
+          }
         },
         { connection: options.connection, concurrency: workerOpts.concurrency, prefix },
       );
@@ -102,17 +112,27 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
 
     async stop(timeoutMs = 10_000) {
       stopped = true;
-      const closes = [
-        ...Array.from(workers.values()).map((w) => w.close()),
-        ...Array.from(queues.values()).map((q) => q.close()),
-      ];
-      workers.clear();
-      const timeout = new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, timeoutMs);
-        timer.unref?.();
-      });
-      await Promise.race([Promise.all(closes), timeout]);
-      attemptCounts.clear();
+      // 等待超时到点 abort 在跑任务（run 监听 signal 尽快退出）；等待结束后兜底 abort 残留
+      const abortTimer = setTimeout(() => {
+        for (const controller of inflight.values()) controller.abort();
+      }, timeoutMs);
+      try {
+        const closes = [
+          ...Array.from(workers.values()).map((w) => w.close()),
+          ...Array.from(queues.values()).map((q) => q.close()),
+        ];
+        workers.clear();
+        const timeout = new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, timeoutMs);
+          timer.unref?.();
+        });
+        await Promise.race([Promise.all(closes), timeout]);
+      } finally {
+        clearTimeout(abortTimer);
+        for (const controller of inflight.values()) controller.abort();
+        inflight.clear();
+        attemptCounts.clear();
+      }
     },
 
     async stopWorkers() {

@@ -299,4 +299,78 @@ describe('createTaskQueue', () => {
     expect(queue.list()).toHaveLength(2);
     await queue.stop();
   });
+
+  it('声明 timeoutMs 的任务走隔离执行器（runIsolated），进程内 run 不被调用', async () => {
+    const run = vi.fn(async () => 'in-process');
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 3000 }]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({ run }),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await queue.enqueue('heavy', { a: 1 });
+    await fake.dispatch('heavy', { a: 1 }, 1);
+    expect(runIsolated).toHaveBeenCalledTimes(1);
+    const call = runIsolated.mock.calls[0]![0] as {
+      taskModulePath: string;
+      payload: unknown;
+      timeoutMs: number;
+      externalSignal: AbortSignal;
+    };
+    expect(call.taskModulePath).toContain('heavy');
+    expect(call.timeoutMs).toBe(3000);
+    expect(call.payload).toEqual({ a: 1 });
+    expect(call.externalSignal).toBeInstanceOf(AbortSignal);
+    expect(run).not.toHaveBeenCalled();
+    expect(queue.list('heavy')[0]).toMatchObject({ status: 'done', result: 'from-worker' });
+    await queue.stop();
+  });
+
+  it('隔离执行抛错：记 failed 并向上传播（驱动重试语义不变）', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => {
+      throw new Error('worker terminated');
+    });
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 }]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow('worker terminated');
+    expect(queue.list('heavy')[0]).toMatchObject({ status: 'failed', error: 'worker terminated' });
+    await queue.stop();
+  });
+
+  it('未声明 timeoutMs 的任务走进程内路径，不触达 runIsolated', async () => {
+    const run = vi.fn(async () => 'in-process');
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => 'from-worker');
+    const deps = makeDeps({ light: { run } });
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+    });
+    queue.start();
+    await queue.enqueue('light');
+    await fake.dispatch('light', {}, 1);
+    expect(runIsolated).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(queue.list('light')[0]).toMatchObject({ status: 'done', result: 'in-process' });
+    await queue.stop();
+  });
 });

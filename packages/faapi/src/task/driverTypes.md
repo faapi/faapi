@@ -15,10 +15,11 @@
 
 - 重试策略在**入队时**由语义层传 `retries`（从任务 meta 取），驱动负责执行（pg-boss：retryLimit/retryBackoff；bullmq：attempts/backoff）
 - `process` 抛错 = 本次执行失败，驱动决定是否重试；语义层在每次 process 调用中更新任务记录（attempt/done/failed）
-- `stop(timeoutMs)` 停消费等 in-flight；`stopWorkers()` 仅停消费不断连接（dev 热替换重注册用，可选实现）
+- `stop(timeoutMs)` 停消费等 in-flight，**超时后 abort 在跑任务的 signal**（任务监听可尽快退出；进程退出兜底终止），子包 pgboss/bullmq 均已实现；`stopWorkers()` 仅停消费不断连接（dev 热替换重注册用，可选实现）
 
 ## 相关模块
 
 - `src/task/loadTaskDriver.ts` — 按 config.task.driver 动态加载子包驱动
 - `src/task/idleTaskDriver.ts` — 无任务清单时的占位实现
+- `src/task/taskWorker.ts` — 隔离执行器（timeoutMs 任务的真终止能力）
 - `src/task/taskQueue.ts` — 语义层消费方

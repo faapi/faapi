@@ -711,7 +711,8 @@ it('GET 返回分页数据', async () => {
 
 基于外部队列驱动的异步任务能力：handler / lifecycle / cron 把耗时工作投递到队列，驱动 worker 按 task 元信息（并发数、重试）消费执行。
 
-- **任务定义（文件约定）**：`src/tasks/<name>/task.ts`，导出 `task` 元信息对象（`concurrency` / `retries` / `cron`，均可选）+ `run(payload, taskCtx)`；`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`）
+- **任务定义（文件约定）**：`src/tasks/<name>/task.ts`，导出 `task` 元信息对象（`concurrency` / `retries` / `timeoutMs` / `cron`，均可选）+ `run(payload, taskCtx)`；`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`）
+- **超时取消真终止（worker 隔离执行）**：任务声明 `task.timeoutMs` 后在独立 worker 线程执行，超时两段式取消——先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀，判定超时即执行真正终止（Node 主线程无法强杀协程，进程内"不再等待"式超时是假取消）。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、`taskCtx.config` 为可克隆纯数据快照。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。详见 `packages/faapi/src/task/taskWorker.md`
 - **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle 钩子的 `{ tasks }` 全部指向同一 app 实例 TaskClient；cron（croner）到点自动入队空 payload，复用同一队列与执行模型
 - **产物**：`faapi-tasks.js`（任务清单）+ `tasks/<dir>/zod.js`（Payload schema）+ `tasks/<dir>/task.js`，dev/prod 一致全量生成；`createAppBase` 水合到 app 实例级 `taskRegistry`，dev watcher 触发 `reloadTasks()` 热替换
 - **生命周期**：队列随 `createAppBase` 启动（`FAAPI_TASKS_DISABLED=1` 或 `config.task.enabled: false` 时只入队不消费，多实例部署的 API 节点用）；`app.close()` 时 drain（停止出队 + 等 in-flight 任务，超时 abort，`config.task.shutdownTimeoutMs` 可调）

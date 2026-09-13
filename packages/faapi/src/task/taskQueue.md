@@ -1,6 +1,6 @@
 # taskQueue
 
-一句话概括：任务队列语义层——enqueue 入队（payload zod 校验）交由驱动存储，worker 执行由驱动派发回调本层包装（模块加载 + run 调用 + 任务记录），stop 优雅停机透传驱动 drain。
+一句话概括：任务队列语义层——enqueue 入队（payload zod 校验）交由驱动存储，worker 执行由驱动派发回调本层包装（模块加载 + run 调用 + 任务记录，声明超时的任务走隔离线程真终止），stop 优雅停机透传驱动 drain。
 
 ## 为什么需要
 
@@ -17,14 +17,18 @@
   - 任务不存在抛错（含可用任务名提示），不触达驱动
   - 有 Payload schema（任务目录 `zod.js` 导出 `${PayloadTypeName}Schema`）时 safeParse，不合法抛 `ValidationError`（HTTP 语义 422）；无 schema 跳过校验（与 tool 对齐）
   - 校验后的 payload + `retries`（任务 meta）+ `delayMs` 透传给 `driver.enqueue`，返回驱动侧 `{ id }`
-- worker 执行（驱动按并发/重试策略调 `process`）：import 任务模块（缓存），调用 `run(payload, { signal, job, config })`；每次 process 更新记录 `running`（attempts 递增），返回写 `done`（保留 result），抛错写 `failed`（保留 error）后向上传播——是否重试由驱动决定
+- worker 执行（驱动按并发/重试策略调 `process`），按任务 meta 分两条路径：
+  - **进程内**（默认）：import 任务模块（缓存），调用 `run(payload, { signal, job, config })`
+  - **隔离执行**（任务声明 `timeoutMs`）：走 taskWorker 独立线程执行，超时两段式取消（abort 信号宽限 → terminate 硬杀）——判定超时即执行真正终止，详见 taskWorker.md
+  - 每次执行更新记录 `running`（attempts 递增），返回写 `done`（保留 result），抛错写 `failed`（保留 error）后向上传播——是否重试由驱动决定
 - 任务记录：`pending / running / retry / done / failed`，`list(name?)` 返回快照；持久化与历史记录由驱动负责，本层记录为当前进程内存活快照
-- `stop(timeoutMs)`：停止接受新任务，透传 `timeoutMs` 给 `driver.stop`（drain/abort 语义由驱动实现）；停止后 `enqueue`/`start` 抛错
+- `stop(timeoutMs)`：停止接受新任务，透传 `timeoutMs` 给 `driver.stop`（drain/abort 语义由驱动实现；驱动超时后 abort 在跑任务的 signal，进程内任务监听退出，进程退出兜底终止）；停止后 `enqueue`/`start` 抛错
 - `reload()`：调 `driver.stopWorkers?` 后按最新注册表重新注册 worker（dev reloadTasks 热替换路径）
 - 模块加载失败：`failed`（error 为原始异常），不静默吞掉
 
 ## 相关模块
 
+- `src/task/taskWorker.ts` — 隔离执行器（timeoutMs 任务）
 - `src/task/driverTypes.ts` — 驱动边界（并发/重试/停机语义在驱动侧）
 - `src/task/taskRegistry.ts` — 派发时查任务 meta
 - `src/cli/generateTaskArtifacts.ts` — zod.js 路径规则（与任务模块同目录）

@@ -8,6 +8,7 @@ export interface Payload {
 export const task = {
   concurrency: 1,
   retries: 0,
+  timeoutMs: 5000,
 };
 
 export function run(payload: Payload): { echoed: string } {
