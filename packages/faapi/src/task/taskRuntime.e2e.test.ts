@@ -159,7 +159,7 @@ describe('task runtime e2e', () => {
     await app.close();
   });
 
-  it('timeoutMs 任务超时后真终止并记 failed（隔离线程两段式取消）', async () => {
+  it('timeoutMs 任务超时后真终止并记 cancelled（隔离线程两段式取消）', async () => {
     // 产物准备（同上，含 timeout 任务——echo 已验证隔离 happy path，本用例验证超时取消）
     const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
     await compileSourceFiles({
@@ -177,8 +177,10 @@ describe('task runtime e2e', () => {
     // 任务自然结束需 10s——若框架没有真终止，viWaitFor 会以 5s 超时失败
     const start = Date.now();
     await app.tasks.enqueue('timeout');
-    await viWaitFor(() => app.tasks.list('timeout')[0]?.status === 'failed');
+    // 取消与失败分流：超时终止记 cancelled（非 failed）
+    await viWaitFor(() => app.tasks.list('timeout')[0]?.status === 'cancelled');
     const job = app.tasks.list('timeout')[0]!;
+    expect(job.status).toBe('cancelled');
     expect(job.error).toMatch(/timed out/);
     expect(Date.now() - start).toBeLessThan(5000);
     await app.close();

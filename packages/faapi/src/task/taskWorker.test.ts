@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runTaskInWorker } from './taskWorker';
+import { runTaskInWorker, TaskCancelledError } from './taskWorker';
 
 /**
  * taskWorker 真实 worker 线程集成测试：
@@ -135,7 +135,7 @@ describe('runTaskInWorker', () => {
         timeoutMs: 100,
         killGraceMs: 60,
       }),
-    ).rejects.toThrow(/timed out.*terminated/s);
+    ).rejects.toBeInstanceOf(TaskCancelledError);
     // 100ms 超时 + 60ms 宽限 ≈ 160ms——远小于任务自然结束的 10s，证明执行被真终止
     expect(Date.now() - started).toBeLessThan(2000);
   });
@@ -162,7 +162,7 @@ describe('runTaskInWorker', () => {
         timeoutMs: 100,
         killGraceMs: 5000,
       }),
-    ).rejects.toThrow(/timed out/);
+    ).rejects.toBeInstanceOf(TaskCancelledError);
     // 任务在宽限内退出 → 立即返回，不等满 5s 宽限期
     expect(Date.now() - started).toBeLessThan(2000);
   });
@@ -187,7 +187,7 @@ describe('runTaskInWorker', () => {
         timeoutMs: 100,
         killGraceMs: 200,
       }),
-    ).rejects.toThrow(/timed out/);
+    ).rejects.toBeInstanceOf(TaskCancelledError);
   });
 
   it('externalSignal abort 触发取消（驱动停机路径）', async () => {
@@ -213,6 +213,7 @@ describe('runTaskInWorker', () => {
       killGraceMs: 1000,
     });
     setTimeout(() => controller.abort(), 50);
+    await expect(pending).rejects.toBeInstanceOf(TaskCancelledError);
     await expect(pending).rejects.toThrow(/cancelled/);
   });
 });

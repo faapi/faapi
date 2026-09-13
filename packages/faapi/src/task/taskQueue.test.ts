@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createTaskQueue } from './taskQueue';
 import { createTaskRegistry } from './taskRegistry';
+import { TaskCancelledError } from './taskWorker';
 import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
 import type { TaskModule } from './taskTypes';
 
@@ -23,7 +24,12 @@ function makeFakeDriver(options: { syncDispatch?: boolean } = {}) {
   let lastId = '';
   let seq = 0;
 
-  const dispatch = async (name: string, payload: unknown, attempt = 1): Promise<unknown> => {
+  const dispatch = async (
+    name: string,
+    payload: unknown,
+    attempt = 1,
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
     const worker = workers.get(name);
     if (!worker) throw new Error(`no worker registered for "${name}"`);
     const job: TaskDriverJob = {
@@ -31,7 +37,7 @@ function makeFakeDriver(options: { syncDispatch?: boolean } = {}) {
       name,
       payload,
       attempt,
-      signal: new AbortController().signal,
+      signal: signal ?? new AbortController().signal,
     };
     return worker.process(job);
   };
@@ -352,6 +358,61 @@ describe('createTaskQueue', () => {
     await queue.enqueue('heavy');
     await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow('worker terminated');
     expect(queue.list('heavy')[0]).toMatchObject({ status: 'failed', error: 'worker terminated' });
+    await queue.stop();
+  });
+
+  it('隔离执行抛 TaskCancelledError：记 cancelled（区别于 run 自身失败）', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => {
+      throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
+    });
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 }]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/timed out/);
+    expect(queue.list('heavy')[0]).toMatchObject({
+      status: 'cancelled',
+      error: 'Task "heavy" timed out after 100ms and was terminated',
+    });
+    await queue.stop();
+  });
+
+  it('停机取消：job.signal 已 abort 时执行终止记 cancelled（进程内路径）', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('aborted mid-run');
+    });
+    const deps = makeDeps({ light: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('light');
+    const controller = new AbortController();
+    controller.abort(); // 停机超时后驱动 abort（任务收到 signal 退出）
+    await expect(fake.dispatch('light', {}, 1, controller.signal)).rejects.toThrow('aborted');
+    expect(queue.list('light')[0]).toMatchObject({ status: 'cancelled' });
+    await queue.stop();
+  });
+
+  it('signal 已 abort 但 run 正常完成：仍记 done（取消不覆盖成功执行）', async () => {
+    const run = vi.fn(async () => 'finished anyway');
+    const deps = makeDeps({ light: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('light');
+    const controller = new AbortController();
+    controller.abort();
+    await fake.dispatch('light', {}, 1, controller.signal);
+    expect(queue.list('light')[0]).toMatchObject({ status: 'done', result: 'finished anyway' });
     await queue.stop();
   });
 

@@ -20,6 +20,17 @@ import { pathToFileURL } from 'node:url';
 const KILL_GRACE_MS = 5_000;
 
 /**
+ * 取消错误：任务执行被框架终止（执行超时两段式取消 / 停机取消）。
+ * 语义层以此区分"取消"与 run 自身的失败——任务记录记 'cancelled' 而非 'failed'。
+ */
+export class TaskCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskCancelledError';
+  }
+}
+
+/**
  * 隔离执行器签名（taskQueue 按任务 meta.timeoutMs 调用；测试可注入 spy）
  */
 export type TaskWorkerRunner = typeof runTaskInWorker;
@@ -130,7 +141,9 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
       cancelReason = reason;
       worker.postMessage({ type: 'abort', reason });
       graceTimer = setTimeout(() => {
-        finish(() => reject(new Error(`Task "${taskCtx.job.name}" ${reason} and was terminated`)));
+        finish(() =>
+          reject(new TaskCancelledError(`Task "${taskCtx.job.name}" ${reason} and was terminated`)),
+        );
       }, killGraceMs);
     };
 
@@ -154,13 +167,13 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         if (msg?.type === 'done') {
           finish(() =>
             reject(
-              new Error(
+              new TaskCancelledError(
                 `Task "${taskCtx.job.name}" ${cancelReason} (task completed after the timeout)`,
               ),
             ),
           );
         } else if (msg?.type === 'error') {
-          finish(() => reject(new Error(msg.message ?? cancelReason)));
+          finish(() => reject(new TaskCancelledError(msg.message ?? cancelReason)));
         }
         return;
       }
@@ -177,7 +190,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
     worker.on('exit', (code: number) => {
       // 宽限阶段 worker 意外退出（任务进程死亡、未发结束消息）——保持取消失败终局
       if (phase === 'grace') {
-        finish(() => reject(new Error(`Task "${taskCtx.job.name}" ${cancelReason}`)));
+        finish(() => reject(new TaskCancelledError(`Task "${taskCtx.job.name}" ${cancelReason}`)));
       } else if (phase === 'running') {
         finish(() => reject(new Error(`Task worker exited unexpectedly (code ${code})`)));
       }

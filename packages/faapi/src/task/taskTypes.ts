@@ -49,8 +49,13 @@ export interface TaskMetadata {
   timeoutMs?: number;
 }
 
-/** 任务记录状态 */
-export type TaskJobStatus = 'pending' | 'running' | 'retry' | 'done' | 'failed';
+/**
+ * 任务记录状态
+ *
+ * cancelled = 执行被框架终止（超时两段式取消 / 停机取消），区别于 run 自身抛错的 failed；
+ * 驱动重试时记录回到 running 继续流转。
+ */
+export type TaskJobStatus = 'pending' | 'running' | 'retry' | 'done' | 'failed' | 'cancelled';
 
 /**
  * 任务执行记录（内存快照）

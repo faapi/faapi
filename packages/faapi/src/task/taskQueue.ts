@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { ValidationError } from '../errors/httpErrors';
-import { runTaskInWorker } from './taskWorker';
+import { runTaskInWorker, TaskCancelledError } from './taskWorker';
 import type { TaskDriverJob } from './driverTypes';
 import type { TaskContext, TaskJob, TaskModule, TaskQueue, TaskQueueDeps } from './taskTypes';
 
@@ -143,7 +143,10 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       record.result = result;
       return result;
     } catch (err) {
-      record.status = 'failed';
+      // 取消（执行被框架终止：隔离执行超时终止 / 停机取消）与 run 自身失败分开记，
+      // list() 可区分"任务被取消"与"任务出错"；两者都向上抛错交驱动按 retries 重试
+      const cancelled = err instanceof TaskCancelledError || job.signal.aborted;
+      record.status = cancelled ? 'cancelled' : 'failed';
       record.error = err instanceof Error ? err.message : String(err);
       throw err; // 交给驱动决定重试
     }
