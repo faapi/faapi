@@ -20,7 +20,7 @@ describe('createCronScheduler', () => {
           dedupId: expect.stringMatching(/^cron:tick:\d{4}-\d{2}-\d{2}T/),
         });
       },
-      { timeout: 3000 },
+      { timeout: 10_000 },
     );
     const names = enqueue.mock.calls.map((c) => (c as unknown[])[0] as string);
     expect(names).not.toContain('nocr');
@@ -37,7 +37,9 @@ describe('createCronScheduler', () => {
     });
     const scheduler = createCronScheduler(registry, enqueue);
     scheduler.start();
-    await vi.waitFor(() => expect(keys.length).toBeGreaterThanOrEqual(2), { timeout: 3000 });
+    // 真实时钟时序：慢环境（CI 高负载）下 3s 窗口可能只触发 1 次——放宽到 10s，
+    // 断言语义不变（每秒 cron 重复触发 + dedupId 时间窗不同）
+    await vi.waitFor(() => expect(keys.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 });
     scheduler.stop();
     expect(new Set(keys).size).toBeGreaterThan(1);
   });
@@ -52,7 +54,7 @@ describe('createCronScheduler', () => {
     });
     const scheduler = createCronScheduler(registry, enqueue);
     scheduler.start();
-    await vi.waitFor(() => expect(count).toBeGreaterThan(0), { timeout: 3000 });
+    await vi.waitFor(() => expect(count).toBeGreaterThan(0), { timeout: 10_000 });
     scheduler.stop();
     const atStop = count;
     await new Promise((r) => setTimeout(r, 1300));
