@@ -25,8 +25,8 @@ export type PgBossDriverOptions = PgBoss.ConstructorOptions;
  * ```
  *
  * 语义映射（详见包根 README）：
- * - `enqueue` → `boss.send(name, payload, { retryLimit, retryDelay, retryBackoff, startAfter })`
- * - `startWorker` → `boss.work(name, { batchSize: concurrency, includeMetadata: true }, handler)`
+ * - `enqueue` → 幂等 ensureQueue + `boss.send(name, payload, { retryLimit, retryDelay, retryBackoff, startAfter })`
+ * - `startWorker` → 幂等 ensureQueue + `boss.work(name, { batchSize: concurrency, includeMetadata: true }, handler)`
  * - `stop` → `offWork` + `boss.stop({ close: true, graceful: true, timeout })`；超时后 abort 在跑任务的 signal
  * - 重试 → pg-boss 侧执行（retryLimit + retryBackoff 指数退避）
  */
@@ -52,14 +52,51 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
   const workerIds = new Map<string, string>();
   /** 在跑任务的取消控制器（stop 超时 abort——run 监听 signal 可尽快退出） */
   const inflight = new Map<string, AbortController>();
+  /** 已建队列名缓存（每任务名每进程一次真实 createQueue，之后短路） */
+  const ensuredQueues = new Set<string>();
+  /** 并发首次投递同名任务的 in-flight 去重 */
+  const ensuring = new Map<string, Promise<void>>();
+  /** boss.start() in-flight 共享 promise（并发首调等待同一次建连，不出现半启动实例） */
+  let bossStarting: Promise<PgBoss> | null = null;
 
   async function ensureBoss(): Promise<PgBoss> {
-    if (!boss) {
-      boss = new PgBoss(options);
-      // pg-boss 惰性连接：start 后才连库；驱动在首次 enqueue/startWorker 前建立
-      await boss.start();
+    if (boss) return boss;
+    if (!bossStarting) {
+      bossStarting = (async () => {
+        const b = new PgBoss(options);
+        // pg-boss 惰性连接：start 后才连库；驱动在首次 enqueue/startWorker 前建立。
+        // start 完成前实例不外借——pre-open 的 executeSql 静默 no-op（返回 undefined），
+        // 建连中并发调用会在半启动实例上跑 SQL
+        await b.start();
+        boss = b;
+        return b;
+      })();
+      // start 失败清空 in-flight：下次调用重新建连（坏实例不入缓存）
+      void bossStarting.catch(() => {
+        bossStarting = null;
+      });
     }
-    return boss;
+    return bossStarting;
+  }
+
+  /**
+   * pg-boss v10 不再隐式建队列（v9 行为）：send() 的 INSERT JOIN queue 对未创建队列
+   * 静默返回 null，work() 只注册进程内轮询器同样不建队列——投递/注册 worker 前先建队列。
+   * create_queue plpgsql 幂等（INSERT ON CONFLICT DO NOTHING，已存在直接返回），
+   * 重复/并发调用安全；失败不入缓存，下次投递重试。
+   */
+  async function ensureQueue(b: PgBoss, name: string): Promise<void> {
+    if (ensuredQueues.has(name)) return;
+    const pending = ensuring.get(name);
+    if (pending) return pending;
+    const promise = (async () => {
+      await b.createQueue(name);
+      ensuredQueues.add(name);
+    })().finally(() => {
+      ensuring.delete(name);
+    });
+    ensuring.set(name, promise);
+    return promise;
   }
 
   return {
@@ -68,6 +105,7 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
         throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
       }
       const b = await ensureBoss();
+      await ensureQueue(b, name);
       const sendOptions: PgBoss.SendOptions = {
         retryLimit: opts?.retries ?? 0,
         retryDelay: 1, // 秒；配合 retryBackoff 指数退避
@@ -90,6 +128,7 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
 
     async startWorker(name, workerOpts) {
       const b = await ensureBoss();
+      await ensureQueue(b, name);
       const process: TaskDriverProcess = workerOpts.process;
       // 二次注册（reload 场景）先 offWork 旧 worker
       const existing = workerIds.get(name);
@@ -132,6 +171,7 @@ export function createPgBossDriver(options: PgBossDriverOptions = {}): TaskDrive
       }, timeoutMs);
       try {
         const b = boss;
+        bossStarting = null; // 停机后 ensureBoss 不再复用旧实例/旧建连 promise
         if (b) {
           for (const workerId of workerIds.values()) {
             await b.offWork(workerId).catch(() => {});

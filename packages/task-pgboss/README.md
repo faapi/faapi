@@ -37,13 +37,13 @@ export function POST(body, tasks) {
 
 | faapi 驱动接口 | pg-boss |
 | --- | --- |
-| `enqueue(name, payload, { retries, delayMs })` | `boss.send(name, payload, { retryLimit, retryDelay: 1, retryBackoff: true, startAfter })` |
-| `startWorker(name, { concurrency, process })` | `boss.work(name, { batchSize: concurrency }, handler)` |
+| `enqueue(name, payload, { retries, delayMs })` | 幂等 `createQueue(name)`（每任务名每进程一次，缓存短路）→ `boss.send(name, payload, { retryLimit, retryDelay: 1, retryBackoff: true, startAfter })` |
+| `startWorker(name, { concurrency, process })` | 幂等 `createQueue(name)` → `boss.work(name, { batchSize: concurrency }, handler)` |
 | `stop(timeoutMs)` | 停 work + `boss.stop({ close: true, timeout })` |
 | `stopWorkers()` | `offWork()`（不断开连接，dev 热替换重注册用） |
 | 失败重试 | pg-boss 侧执行（retryLimit + retryBackoff 指数退避） |
 
-注意：pg-boss 不提供执行中任务的取消信号——`run` 的 `taskCtx.signal` 永不 abort，长任务请自行做超时控制。
+注意：pg-boss v10 不再隐式建队列（`send()` 对未创建队列静默返回 null）——驱动在投递/注册 worker 前自动幂等建队列，业务方无需预建；pg-boss 也不提供执行中任务的取消信号——`run` 的 `taskCtx.signal` 永不 abort，长任务请自行做超时控制。
 
 ## License
 

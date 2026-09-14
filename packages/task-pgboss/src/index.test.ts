@@ -15,6 +15,7 @@ const h = vi.hoisted(() => {
     stop: ReturnType<typeof vi.fn>;
     cancel: ReturnType<typeof vi.fn>;
     resume: ReturnType<typeof vi.fn>;
+    createQueue: ReturnType<typeof vi.fn>;
     sent: Array<{ name: string; data: unknown; options: unknown }>;
     workHandlers: Array<{
       options: Record<string, unknown>;
@@ -23,6 +24,7 @@ const h = vi.hoisted(() => {
   }> = [];
   let sendCounter = 0;
   let workerCounter = 0;
+  let failStartCounter = 0;
   return {
     fakeBosses,
     counters: {
@@ -38,6 +40,12 @@ const h = vi.hoisted(() => {
       set worker(v: number) {
         workerCounter = v;
       },
+      get failStart() {
+        return failStartCounter;
+      },
+      set failStart(v: number) {
+        failStartCounter = v;
+      },
     },
   };
 });
@@ -47,7 +55,12 @@ vi.mock('pg-boss', () => {
     constructor() {
       h.fakeBosses.push(this as never);
     }
-    start = vi.fn(async () => {});
+    start = vi.fn(async () => {
+      if (h.counters.failStart > 0) {
+        h.counters.failStart -= 1;
+        throw new Error('db down');
+      }
+    });
     send = vi.fn(async (name: string, data: unknown, options: unknown) => {
       (this as never as { sent: unknown[] }).sent.push({ name, data, options });
       h.counters.send += 1;
@@ -68,6 +81,7 @@ vi.mock('pg-boss', () => {
     stop = vi.fn(async () => {});
     cancel = vi.fn(async (_name: string, _id: string) => {});
     resume = vi.fn(async (_name: string, _id: string) => {});
+    createQueue = vi.fn(async (_name: string) => {});
     sent: Array<{ name: string; data: unknown; options: unknown }> = [];
     workHandlers: Array<{
       options: Record<string, unknown>;
@@ -85,6 +99,7 @@ beforeEach(() => {
   h.fakeBosses.length = 0;
   h.counters.send = 0;
   h.counters.worker = 0;
+  h.counters.failStart = 0;
 });
 
 describe('createPgBossDriver', () => {
@@ -244,5 +259,110 @@ describe('createPgBossDriver', () => {
     const second = await driver.enqueue('mail', { to: 'x' }, { dedupId: 'key-1' });
     expect(second).toBeTypeOf('string');
     expect(second).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
+  it('enqueue 首次投递前自动 createQueue（pg-boss v10 对未创建队列 send 返回 null）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', { to: 'x' });
+    const boss = fakeBosses()[0]!;
+    expect(boss.createQueue).toHaveBeenCalledTimes(1);
+    expect(boss.createQueue).toHaveBeenCalledWith('mail');
+    // 建队列先于投递：先 ensureQueue 再 send
+    expect(boss.createQueue.mock.invocationCallOrder[0]).toBeLessThan(
+      boss.send.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('同名任务第二次 enqueue 不重复 createQueue（进程内缓存短路）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', { to: 'x' });
+    await driver.enqueue('mail', { to: 'y' });
+    const boss = fakeBosses()[0]!;
+    expect(boss.createQueue).toHaveBeenCalledTimes(1);
+    expect(boss.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('不同任务名各自建队列一次', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    await driver.enqueue('log-analysis', {});
+    await driver.enqueue('mail', {});
+    const boss = fakeBosses()[0]!;
+    expect(boss.createQueue).toHaveBeenCalledTimes(2);
+    expect(boss.createQueue).toHaveBeenNthCalledWith(1, 'mail');
+    expect(boss.createQueue).toHaveBeenNthCalledWith(2, 'log-analysis');
+  });
+
+  it('startWorker 同样先 createQueue 再 work（启动即对任务清单建齐队列）', async () => {
+    const driver = createPgBossDriver();
+    await driver.startWorker('mail', { concurrency: 1, process: async () => 1 });
+    const boss = fakeBosses()[0]!;
+    expect(boss.createQueue).toHaveBeenCalledWith('mail');
+    expect(boss.createQueue.mock.invocationCallOrder[0]).toBeLessThan(
+      boss.work.mock.invocationCallOrder[0],
+    );
+    // enqueue 与 startWorker 共享缓存：混合调用不重复建队列
+    await driver.enqueue('mail', {});
+    expect(boss.createQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('send 返回 null 且无 dedupId 时仍显式抛错（ensureQueue 后 null 只能是异常）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {}); // 先建队列并缓存
+    const boss = fakeBosses()[0]!;
+    boss.send = vi.fn(async () => null) as never;
+    await expect(driver.enqueue('mail', {})).rejects.toThrow('pg-boss send failed');
+  });
+
+  it('createQueue 抛错时 enqueue 向外传播底层错误（不静默降级）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('warmup', {}); // 惰性建连：先触发一次投递让 FakeBoss 实例化
+    const boss = fakeBosses()[0]!;
+    boss.createQueue = vi.fn(async () => {
+      throw new Error('connection refused');
+    }) as never;
+    await expect(driver.enqueue('mail', {})).rejects.toThrow('connection refused');
+    expect(boss.send).toHaveBeenCalledTimes(1); // 仅 warmup 那次，失败投递未触达 send
+    // 失败不入缓存：下次投递重试建队列
+    boss.createQueue = vi.fn(async () => {}) as never;
+    await driver.enqueue('mail', {});
+    expect(boss.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('并发首次投递同名任务只触发一次 createQueue（in-flight 去重）', async () => {
+    const driver = createPgBossDriver();
+    await Promise.all([
+      driver.enqueue('mail', { to: 'a' }),
+      driver.enqueue('mail', { to: 'b' }),
+      driver.enqueue('mail', { to: 'c' }),
+    ]);
+    const boss = fakeBosses()[0]!;
+    expect(boss.createQueue).toHaveBeenCalledTimes(1);
+    expect(boss.send).toHaveBeenCalledTimes(3);
+  });
+
+  it('并发首次调用共享同一次 boss.start（in-flight 建连去重，半启动实例不外借）', async () => {
+    const driver = createPgBossDriver();
+    await Promise.all([
+      driver.enqueue('mail', { to: 'a' }),
+      driver.enqueue('mail', { to: 'b' }),
+      driver.startWorker('mail', { concurrency: 1, process: async () => 1 }),
+    ]);
+    // 单实例：第二个调用等待同一 start 完成，而不是跳过 start 直接跑 SQL
+    expect(fakeBosses()).toHaveLength(1);
+    expect(fakeBosses()[0]!.start).toHaveBeenCalledTimes(1);
+    expect(fakeBosses()[0]!.send).toHaveBeenCalledTimes(2);
+    expect(fakeBosses()[0]!.work).toHaveBeenCalledTimes(1);
+  });
+
+  it('boss.start 失败后下次调用重建实例（坏实例不入缓存，可重试）', async () => {
+    const driver = createPgBossDriver();
+    h.counters.failStart = 1;
+    await expect(driver.enqueue('mail', {})).rejects.toThrow('db down');
+    // 失败后 boss 保持 null：下次调用重新 new PgBoss + start（而不是复用坏实例）
+    await driver.enqueue('mail', {});
+    expect(fakeBosses()).toHaveLength(2);
+    expect(fakeBosses()[1]!.start).toHaveBeenCalledTimes(1);
+    expect(fakeBosses()[1]!.send).toHaveBeenCalledTimes(1);
   });
 });
