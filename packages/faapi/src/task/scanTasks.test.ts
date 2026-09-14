@@ -81,6 +81,14 @@ export function run() {}
     expect(tasks).toHaveLength(1);
   });
 
+  it('多任务结果按任务名字母序排序（glob 顺序无关）', async () => {
+    // fast-glob 不保证文件顺序——清单顺序本无语义，按 name 排序保证产物与断言稳定
+    writeTask('src/tasks/timeout/task.ts', `export function run() {}\n`);
+    writeTask('src/tasks/echo/task.ts', `export function run() {}\n`);
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks.map((t) => t.name)).toEqual(['echo', 'timeout']);
+  });
+
   it('无任务文件返回空数组', async () => {
     const tasks = await scanTasks(rootDir, TASK_PATTERNS);
     expect(tasks).toEqual([]);

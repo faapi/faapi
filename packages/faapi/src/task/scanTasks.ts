@@ -96,5 +96,7 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
     tasks.push(manifest);
   }
 
-  return tasks;
+  // fast-glob 不保证文件顺序——清单顺序无语义，按任务名字母序排序
+  // （与路由清单 sortRoutes 的字母序对称），保证 faapi-tasks.js 产物内容确定
+  return tasks.sort((a, b) => a.name.localeCompare(b.name));
 }
