@@ -23,6 +23,10 @@
 
 注意：默认实例与 app 实例相互独立——经全局函数水合的数据不会出现在任何 app 的请求链路中；多 app 场景下默认实例无隔离语义（等同旧全局行为）。框架自身链路不读写默认实例。
 
+## 任务侧只读视图（TaskRegistriesView）
+
+`createTaskRegistriesView(registries)` 把 AppRegistries 投影为**只读视图**（agent 的 get/getEntry/list/asTool/resolve* + tool/skill 的 get/list），注入任务执行上下文（`TaskContext.registries`）——任务执行侧（进程内或隔离 worker）不在 handler 请求链路上，拿不到 `FaapiContext.registries`；`getApp()` 在隔离线程内也不可用（worker globalThis 独立）。视图刻意不暴露 `hydrate`/`clear` 写接口：任务不是注册表的所有者。隔离路径经 `TaskRegistriesSnapshot` 纯数据快照跨线程、worker 内重建视图（详见 `../task/taskTypes.md`）。
+
 ## 相关模块
 
 - `toolRegistry.ts` / `agentRegistry.ts` / `skillRegistry.ts` / `agentHandle.ts` - 默认实例便捷访问器（委托层）

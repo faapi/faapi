@@ -216,4 +216,156 @@ describe('runTaskInWorker', () => {
     await expect(pending).rejects.toBeInstanceOf(TaskCancelledError);
     await expect(pending).rejects.toThrow(/cancelled/);
   });
+
+  it('注册表快照传入：taskCtx.registries 在 worker 内可查 agent/tool/skill 元数据', async () => {
+    const modulePath = writeTaskModule(
+      'registry',
+      `export function run(_payload, taskCtx) {
+        const r = taskCtx.registries;
+        return {
+          agent: r.agent.getAgent('log-analyzer'),
+          entry: r.agent.getAgentEntry('log-analyzer'),
+          agents: r.agent.listAgents().map((a) => a.name),
+          tool: r.tool.get('parse'),
+          tools: r.tool.list().map((t) => t.name),
+          skill: r.skill.get('db-skill'),
+          skills: r.skill.list().map((s) => s.name),
+          viewHasNoHydrate: r.agent.hydrate === undefined && r.tool.hydrate === undefined,
+        };
+      }`,
+    );
+    const result = (await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      registries: {
+        agents: [
+          {
+            name: 'log-analyzer',
+            description: 'analyzer',
+            filePath: 'dist/agents/log-analyzer/handler.js',
+            hasRun: false,
+            systemPrompt: 'p',
+            tools: ['parse'],
+            agents: ['helper'],
+            model: 'gpt-4o',
+            maxTurns: 5,
+          },
+          { name: 'helper', filePath: 'dist/agents/helper/handler.js', hasRun: true },
+        ],
+        tools: [{ name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' }],
+        skills: [{ name: 'db-skill', systemPrompt: 's' }],
+      },
+      timeoutMs: 5000,
+    })) as Record<string, unknown>;
+
+    expect(result.agent).toMatchObject({ name: 'log-analyzer', systemPrompt: 'p' });
+    // getAgentEntry 返回完整元数据（含 filePath/hasRun，供 worker 内 import agent 产物跑 run）
+    expect(result.entry).toEqual({
+      name: 'log-analyzer',
+      description: 'analyzer',
+      filePath: 'dist/agents/log-analyzer/handler.js',
+      hasRun: false,
+      systemPrompt: 'p',
+      tools: ['parse'],
+      agents: ['helper'],
+      model: 'gpt-4o',
+      maxTurns: 5,
+    });
+    expect(result.agents).toEqual(['log-analyzer', 'helper']);
+    expect(result.tool).toMatchObject({ name: 'parse' });
+    expect(result.tools).toEqual(['parse']);
+    expect(result.skill).toMatchObject({ name: 'db-skill' });
+    expect(result.skills).toEqual(['db-skill']);
+    expect(result.viewHasNoHydrate).toBe(true);
+  });
+
+  it('快照视图派生方法与主进程语义一致：asTool 构造描述符、resolve* 未找到静默跳过', async () => {
+    const modulePath = writeTaskModule(
+      'derive',
+      `export function run(_payload, taskCtx) {
+        const r = taskCtx.registries;
+        return {
+          asTool: r.agent.asTool('log-analyzer'),
+          asToolMissing: r.agent.asTool('nope'),
+          resolvedTools: r.agent.resolveAgentTools('log-analyzer').map((t) => t.name),
+          resolvedToolsNoDecl: r.agent.resolveAgentTools('helper'),
+          resolvedSubs: r.agent.resolveSubAgents('log-analyzer').map((a) => a.name),
+          resolvedSubsMissing: r.agent.resolveSubAgents('helper'),
+        };
+      }`,
+    );
+    const result = (await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      registries: {
+        agents: [
+          {
+            name: 'log-analyzer',
+            filePath: 'dist/agents/log-analyzer/handler.js',
+            hasRun: false,
+            tools: ['parse', 'missing-tool'],
+            agents: ['helper', 'missing-sub'],
+          },
+          { name: 'helper', filePath: 'dist/agents/helper/handler.js', hasRun: true },
+        ],
+        tools: [{ name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' }],
+        skills: [],
+      },
+      timeoutMs: 5000,
+    })) as Record<string, unknown>;
+
+    expect(result.asTool).toEqual({
+      kind: 'agent',
+      name: 'agent.log-analyzer',
+      agentName: 'log-analyzer',
+      description: undefined,
+      metadata: {
+        name: 'log-analyzer',
+        filePath: 'dist/agents/log-analyzer/handler.js',
+        hasRun: false,
+        tools: ['parse', 'missing-tool'],
+        agents: ['helper', 'missing-sub'],
+      },
+    });
+    expect(result.asToolMissing).toBeUndefined();
+    // 不存在的 tool 名静默跳过（与 agentRegistry 语义一致）
+    expect(result.resolvedTools).toEqual(['parse']);
+    expect(result.resolvedToolsNoDecl).toEqual([]);
+    // 不存在的 sub-agent 名静默跳过
+    expect(result.resolvedSubs).toEqual(['helper']);
+    expect(result.resolvedSubsMissing).toEqual([]);
+  });
+
+  it('不传 registries：taskCtx.registries 为空视图（查询返回空，不抛错）', async () => {
+    const modulePath = writeTaskModule(
+      'emptyview',
+      `export function run(_payload, taskCtx) {
+        const r = taskCtx.registries;
+        return {
+          agent: r.agent.getAgent('x'),
+          agents: r.agent.listAgents(),
+          tool: r.tool.get('x'),
+          tools: r.tool.list(),
+          skill: r.skill.get('x'),
+          skills: r.skill.list(),
+        };
+      }`,
+    );
+    const result = (await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    })) as Record<string, unknown>;
+    expect(result).toEqual({
+      agent: undefined,
+      agents: [],
+      tool: undefined,
+      tools: [],
+      skill: undefined,
+      skills: [],
+    });
+  });
 });

@@ -1,6 +1,9 @@
+import type { ToolMetadata } from '../ast/extractToolMetadata';
+import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
 import type { TaskRegistry } from './taskRegistry';
 import type { TaskDriver } from './driverTypes';
 import type { TaskWorkerRunner } from './taskWorker';
+import type { TaskRegistriesView } from '../injection/registries';
 
 /**
  * 任务元信息（业务方在 task.ts 中 `export const task = {...}` 声明）
@@ -77,6 +80,19 @@ export interface TaskJob {
 }
 
 /**
+ * 隔离执行跨线程传递的注册表快照（纯数据，结构化克隆安全）
+ *
+ * 注册表对象含函数闭包不可 postMessage；元数据本身是纯数据——语义层从
+ * `TaskRegistriesView` 生成快照，worker wrapper 内重建只读视图。
+ */
+export interface TaskRegistriesSnapshot {
+  /** agent 完整元数据（含 filePath/hasRun，非仅 LLM 可见字段） */
+  agents: AgentMetadata[];
+  tools: ToolMetadata[];
+  skills: AgentCore[];
+}
+
+/**
  * 传给任务 run 函数的第二参数
  */
 export interface TaskContext {
@@ -85,6 +101,14 @@ export interface TaskContext {
   /** faapi.config.ts 全量配置（含自定义业务配置） */
   config: unknown;
   job: { id: string; name: string; attempt: number };
+  /**
+   * app 注册表只读视图（agent/tool/skill 元数据查询，不含 hydrate/clear 写接口）
+   *
+   * 进程内执行为活引用；隔离执行为派发时刻的快照视图（worker 内重建）——
+   * 执行中途的 reload/DB skill 变更不影响当次执行。
+   * 任务内组装 agent 用 `registries.agent.getAgentEntry(name)`（含 filePath/hasRun）。
+   */
+  registries: TaskRegistriesView;
 }
 
 /**
@@ -160,6 +184,11 @@ export interface TaskQueueDeps {
   rootDir: string;
   /** faapi.config.ts 全量配置，透传给 run 的 TaskContext.config */
   config?: unknown;
+  /**
+   * app 注册表只读视图（`createTaskRegistriesView`）——注入两条执行路径的
+   * TaskContext.registries；缺省为空视图（直接构造队列的测试/嵌入场景）
+   */
+  registries?: TaskRegistriesView;
   /**
    * 队列驱动（必填）：`loadTaskDriver` 解析结果（pgboss/bullmq 子包驱动）
    * 或自定义 TaskDriver 实例；无任务清单时由 createAppBase 传入 idleTaskDriver

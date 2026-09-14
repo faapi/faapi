@@ -21,6 +21,7 @@ import { loadPlugins } from './loadPlugins';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import {
   createAppRegistries,
+  createTaskRegistriesView,
   defaultRegistries,
   type AppRegistries,
 } from '../injection/registries';
@@ -418,6 +419,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     registry: registries.task,
     rootDir,
     config,
+    registries: createTaskRegistriesView(registries),
     driver: taskDriver,
     onFailed: config?.task?.onFailed,
   });

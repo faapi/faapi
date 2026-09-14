@@ -8,9 +8,19 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 ## 使用场景
 
-- 业务方 `import type { FaapiTaskMeta, TaskClient, TaskContext, TaskJob } from '@faapi/faapi'`
+- 业务方 `import type { FaapiTaskMeta, TaskClient, TaskContext, TaskJob, TaskRegistriesSnapshot } from '@faapi/faapi'`
 - 框架内部 scanTasks → generateTaskArtifacts → taskRegistry → taskQueue 传递
+
+## TaskContext.registries（任务侧注册表只读视图）
+
+`TaskContext.registries: TaskRegistriesView` 为任务执行侧提供 app 已水合注册表的**只读访问**（agent/tool/skill 元数据查询），任务内组装 agent（如跑 LLM 循环）不再依赖 `getApp()`。两条执行路径都注入：
+
+- **进程内路径**：注入 `createTaskRegistriesView(appRegistries)` 活引用（createAppBase 创建队列时传入）
+- **隔离路径**（声明 `timeoutMs`）：语义层从视图生成 `TaskRegistriesSnapshot` 纯数据快照，postMessage 传入 worker 线程内重建视图（注册表含函数闭包不可跨线程，元数据本身是纯数据可克隆）；**快照语义**——视图反映派发时刻的注册表，执行中途的 reload 不影响当次执行
+
+视图只暴露查询方法（`get` / `list` / `resolve*`），不暴露 `hydrate` / `clear` 写接口——任务不是注册表的所有者。
 
 ## 相关模块
 
 - 被本目录所有模块与 `src/config/configTypes.ts`（TaskConfig）、`src/injection/registries.ts`（TaskRegistry）引用
+- `src/injection/registries.ts` — `TaskRegistriesView` 类型与 `createTaskRegistriesView` 视图工厂（AppRegistries 的只读投影）

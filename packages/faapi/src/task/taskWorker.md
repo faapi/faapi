@@ -23,6 +23,19 @@ export function run(payload, taskCtx) {
 }
 ```
 
+隔离任务同样可访问 app 注册表（只读视图）——在 worker 线程内组装/调用 agent：
+
+```ts
+// src/tasks/log-analysis/task.ts
+export const task = { timeoutMs: 30 * 60_000 };
+export async function run(payload, taskCtx) {
+  const agent = taskCtx.registries.agent.getAgent('log-analyzer');
+  if (!agent) throw new Error('agent not registered');
+  // 组装 agent 跑 LLM 循环（agent 元数据含 systemPrompt/tools/model 等）
+  return analyzeAll(payload, agent);
+}
+```
+
 ## 行为约定
 
 - 执行：每次 dispatch 新建一个 worker（data URL wrapper 动态 import 任务产物模块）；worker 模块图独立——天然加载最新产物，dev 热替换后无需 cache-bust
@@ -30,6 +43,7 @@ export function run(payload, taskCtx) {
 - 超时判定即终局：宽限期内 worker 迟到的完成/错误一律忽略，不翻案
 - 结果传导：worker 内 run 的返回值/抛错经 postMessage 回传；worker 顶层异常（如模块 import 失败）经 `error` 事件回传，均由语义层记 `failed` 并交驱动重试。**所有取消路径（超时终止/外部取消/宽限内结束）reject `TaskCancelledError`**——语义层据此把任务记录记为 `cancelled`（区别于 run 自身失败的 `failed`）
 - `taskCtx.config` 为可克隆快照：structuredClone 优先，失败退化 JSON round-trip（丢函数字段），再失败传 `undefined`——任务收到的配置是纯数据
+- `taskCtx.registries` 为注册表只读视图：宿主从 app 注册表生成 `TaskRegistriesSnapshot` 纯数据快照（agents 含 `filePath`/`hasRun` 完整元数据 + tools + skills）随 postMessage 传入，wrapper 内重建视图——注册表对象含函数闭包不可跨线程，元数据本身可克隆。**快照语义**：视图反映派发时刻的注册表（每次 dispatch 重新生成），执行中途的 reload/DB skill 变更不影响当次执行；`taskCtx.registries.agent.getAgentEntry(name)` 拿到的 `filePath` 为产物路径，worker 线程内可按需 import agent 产物执行 run
 - 返回值必须可结构化克隆（纯数据）；不可克隆视为执行错误
 
 ## 边界取舍（文档必须显眼）

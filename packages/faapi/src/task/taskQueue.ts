@@ -1,8 +1,17 @@
 import path from 'node:path';
 import { ValidationError } from '../errors/httpErrors';
 import { runTaskInWorker, TaskCancelledError } from './taskWorker';
+import { createEmptyTaskRegistriesView } from '../injection/registries';
+import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { TaskDriverJob } from './driverTypes';
-import type { TaskContext, TaskJob, TaskModule, TaskQueue, TaskQueueDeps } from './taskTypes';
+import type {
+  TaskContext,
+  TaskJob,
+  TaskModule,
+  TaskQueue,
+  TaskQueueDeps,
+  TaskRegistriesSnapshot,
+} from './taskTypes';
 
 /**
  * 任务队列语义层
@@ -18,6 +27,9 @@ import type { TaskContext, TaskJob, TaskModule, TaskQueue, TaskQueueDeps } from 
  */
 export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   const { registry, rootDir, driver } = deps;
+
+  /** 任务侧注册表只读视图（缺省空视图——直接构造队列的测试/嵌入场景） */
+  const registriesView = deps.registries ?? createEmptyTaskRegistriesView();
 
   /** 任务记录（id → job；跨驱动一致的本地快照） */
   const records = new Map<string, TaskJob>();
@@ -56,6 +68,21 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           .join(', ') || '(none)';
       throw new Error(`[faapi] Unknown task "${name}". Registered tasks: ${known}`);
     }
+  }
+
+  /**
+   * 注册表纯数据快照（隔离路径 postMessage 用）——agent 取完整元数据
+   * （getAgentEntry 含 filePath/hasRun，非仅 LLM 可见字段），派发时刻生成
+   */
+  function snapshotRegistries(): TaskRegistriesSnapshot {
+    return {
+      agents: registriesView.agent
+        .listAgents()
+        .map((core) => registriesView.agent.getAgentEntry(core.name))
+        .filter((entry): entry is AgentMetadata => entry !== undefined),
+      tools: registriesView.tool.list(),
+      skills: registriesView.skill.list(),
+    };
   }
 
   async function validatePayload(name: string, payload: unknown): Promise<unknown> {
@@ -120,6 +147,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             config: deps.config,
             job: { id: job.id, name: job.name, attempt: job.attempt },
           },
+          registries: snapshotRegistries(),
           timeoutMs: meta.timeoutMs,
           externalSignal: job.signal,
         });
@@ -136,6 +164,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           signal: job.signal,
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
+          registries: registriesView,
         };
         result = await mod.run(job.payload, taskCtx);
       }

@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { pathToFileURL } from 'node:url';
+import type { TaskRegistriesSnapshot } from './taskTypes';
 
 /**
  * 任务隔离执行器
@@ -43,6 +44,11 @@ export interface TaskWorkerOptions {
   taskCtx: { config: unknown; job: { id: string; name: string; attempt: number } };
   /** 单次执行超时（毫秒） */
   timeoutMs: number;
+  /**
+   * 注册表快照（纯数据，postMessage 结构化克隆传入，worker 内重建只读视图注入
+   * taskCtx.registries）——语义层从 `TaskRegistriesView` 生成，缺省为空视图
+   */
+  registries?: TaskRegistriesSnapshot;
   /** 外部取消信号（驱动停机超时 abort）——abort 同样触发两段式取消 */
   externalSignal?: AbortSignal;
   /** 宽限期覆盖（默认 KILL_GRACE_MS）——测试注入短值用，业务不配置 */
@@ -69,11 +75,76 @@ function safeConfig(config: unknown): unknown {
   }
 }
 
+/**
+ * worker 内重建注册表只读视图的内联源码（语义与 agentRegistry/toolRegistry/skillRegistry
+ * 的查询方法一致：不存在的 tool/agent 名静默跳过、resolveAgentTools 按解析后 name 去重）
+ *
+ * 注册表对象含函数闭包不可跨线程——快照为纯数据，视图必须在 worker 内重建；
+ * wrapper 是 data URL 模块无法 import 主包，故内联实现（测试断言两边语义一致）。
+ */
+const BUILD_VIEW_SOURCE = `
+function buildRegistriesView(snapshot) {
+  var agents = new Map(((snapshot && snapshot.agents) || []).map(function (a) { return [a.name, a]; }));
+  var tools = new Map(((snapshot && snapshot.tools) || []).map(function (t) { return [t.name, t]; }));
+  var skills = new Map(((snapshot && snapshot.skills) || []).map(function (s) { return [s.name, s]; }));
+  return {
+    agent: {
+      getAgent: function (name) { return agents.get(name); },
+      getAgentEntry: function (name) { return agents.get(name); },
+      listAgents: function () { return Array.from(agents.values()); },
+      asTool: function (name) {
+        var agent = agents.get(name);
+        if (!agent) return undefined;
+        return {
+          kind: 'agent',
+          name: 'agent.' + agent.name,
+          agentName: agent.name,
+          description: agent.description,
+          metadata: agent,
+        };
+      },
+      resolveAgentTools: function (name) {
+        var agent = agents.get(name);
+        var result = new Map();
+        if (agent && agent.tools) {
+          agent.tools.forEach(function (toolName) {
+            var resolved = tools.get(toolName);
+            if (resolved) result.set(resolved.name, resolved);
+          });
+        }
+        return Array.from(result.values());
+      },
+      resolveSubAgents: function (name) {
+        var agent = agents.get(name);
+        var result = [];
+        if (agent && agent.agents) {
+          agent.agents.forEach(function (subName) {
+            var sub = agents.get(subName);
+            if (sub) result.push(sub);
+          });
+        }
+        return result;
+      },
+    },
+    tool: {
+      get: function (name) { return tools.get(name); },
+      list: function () { return Array.from(tools.values()); },
+    },
+    skill: {
+      get: function (name) { return skills.get(name); },
+      list: function () { return Array.from(skills.values()); },
+    },
+  };
+}
+`;
+
 /** worker 内执行的 wrapper 源码（data URL，ESM）——import 任务产物并桥接 run */
 function buildWrapperSource(moduleUrl: string): string {
   return `
 import { parentPort } from 'node:worker_threads';
 import * as mod from '${moduleUrl}';
+
+${BUILD_VIEW_SOURCE}
 
 const run = mod.run;
 if (typeof run !== 'function') {
@@ -89,7 +160,8 @@ if (typeof run !== 'function') {
     controller = new AbortController();
     const { payload, taskCtx } = msg;
     try {
-      const result = await run(payload, { ...taskCtx, signal: controller.signal });
+      const registries = buildRegistriesView(msg.registries);
+      const result = await run(payload, { ...taskCtx, signal: controller.signal, registries });
       parentPort.postMessage({ type: 'done', result });
     } catch (err) {
       parentPort.postMessage({
@@ -196,12 +268,15 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
       }
     });
 
-    // taskCtx.config 为可克隆快照（含函数的配置项 JSON 快照兜底）；postMessage 不可克隆时按错误处理
+    // taskCtx.config 为可克隆快照（含函数的配置项 JSON 快照兜底）；registries 为纯数据
+    // 快照（registries?: TaskRegistriesSnapshot，缺省 undefined → worker 内空视图）
+    // postMessage 不可克隆时按错误处理
     try {
       worker.postMessage({
         type: 'run',
         payload,
         taskCtx: { config: safeConfig(taskCtx.config), job: taskCtx.job },
+        registries: options.registries,
       });
     } catch (err) {
       finish(() =>

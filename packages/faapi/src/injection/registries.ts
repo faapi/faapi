@@ -262,6 +262,65 @@ export interface AppRegistries {
   taskHandle: TaskHandleStore;
 }
 
+/**
+ * 任务侧注册表只读视图（AppRegistries 的查询投影）
+ *
+ * 注入任务执行上下文（`TaskContext.registries`）——任务执行侧不在 handler 请求链路上
+ * （拿不到 `FaapiContext.registries`），`getApp()` 在隔离 worker 线程内也不可用
+ * （globalThis 独立）。刻意不暴露 `hydrate`/`clear` 写接口：任务不是注册表的所有者。
+ */
+export interface TaskRegistriesView {
+  agent: Pick<
+    AgentRegistry,
+    | 'getAgent'
+    | 'getAgentEntry'
+    | 'listAgents'
+    | 'asTool'
+    | 'resolveAgentTools'
+    | 'resolveSubAgents'
+  >;
+  tool: Pick<ToolRegistry, 'get' | 'list'>;
+  skill: Pick<SkillRegistry, 'get' | 'list'>;
+}
+
+/** 从 AppRegistries 构造任务侧只读视图（活引用——进程内执行路径直接使用） */
+export function createTaskRegistriesView(registries: AppRegistries): TaskRegistriesView {
+  return {
+    agent: {
+      getAgent: (name) => registries.agent.getAgent(name),
+      getAgentEntry: (name) => registries.agent.getAgentEntry(name),
+      listAgents: () => registries.agent.listAgents(),
+      asTool: (name) => registries.agent.asTool(name),
+      resolveAgentTools: (name) => registries.agent.resolveAgentTools(name),
+      resolveSubAgents: (name) => registries.agent.resolveSubAgents(name),
+    },
+    tool: {
+      get: (name) => registries.tool.get(name),
+      list: () => registries.tool.list(),
+    },
+    skill: {
+      get: (name) => registries.skill.get(name),
+      list: () => registries.skill.list(),
+    },
+  };
+}
+
+/** 空视图（`createTaskQueue` 未传 registries 时的兜底——直接构造队列的测试/嵌入场景） */
+export function createEmptyTaskRegistriesView(): TaskRegistriesView {
+  return {
+    agent: {
+      getAgent: () => undefined,
+      getAgentEntry: () => undefined,
+      listAgents: () => [],
+      asTool: () => undefined,
+      resolveAgentTools: () => [],
+      resolveSubAgents: () => [],
+    },
+    tool: { get: () => undefined, list: () => [] },
+    skill: { get: () => undefined, list: () => [] },
+  };
+}
+
 /** 创建一套 app 级注册表（`createAppBase` 每次调用创建独立实例） */
 export function createAppRegistries(): AppRegistries {
   const tool = createToolRegistry();

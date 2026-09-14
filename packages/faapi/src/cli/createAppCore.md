@@ -108,6 +108,7 @@ async function Page() {
 - tool 清单缺失（`<dist>/faapi-tools.js` 不存在）→ 跳过水合，toolRegistry 保持空（tool 是可选能力，纯 API 项目无 tool）
 - 路由冲突 → 仅 `console.warn`，不阻断启动
 - 任务队列 await 启动（`config.task.enabled` 且未被 `FAAPI_TASKS_DISABLED=1` 关闭时）：`createAppBase` 等任务 runtime 就绪（worker 注册/驱动建连/队列创建）后才返回，listen 时首次 enqueue 不会早于 worker 注册（pg-boss v10 对未创建队列 `send` 静默返回 null）；驱动启动失败（队列库不可达等）→ `createAppBase` reject，端口不暴露（fail fast）
+- 创建任务队列时传入 `createTaskRegistriesView(registries)`（app 注册表只读视图）——任务执行侧经 `TaskContext.registries` 访问已水合的 agent/tool/skill 元数据（进程内活引用；隔离 worker 传纯数据快照，见 `../task/taskTypes.md`）
 - `listen` 打印路由表 + tool 清单（有 tool 时），注册默认优雅关闭信号：SIGTERM/SIGINT → `app.close()`（drain 在途请求 + `onClose` 钩子 + 注册表清理）→ `process.exit(0)`。进程级仅注册一次（faapi 单进程单 app 设计），测试多次 listen 不堆积监听器
 - `close` 幂等（`closed` 标志）；`close` 时清理 toolRegistry 单例（与 app 单例清理对称）；HTTP/2 连接清理方法 feature-detect
 - `inject` 无 handler 时 reject；`JSON.parse` 失败回退为字符串

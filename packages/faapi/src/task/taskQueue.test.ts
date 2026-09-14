@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createTaskQueue } from './taskQueue';
 import { createTaskRegistry } from './taskRegistry';
 import { TaskCancelledError } from './taskWorker';
+import { createAppRegistries, createTaskRegistriesView } from '../injection/registries';
 import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
 import type { TaskModule } from './taskTypes';
 
@@ -620,6 +621,139 @@ describe('createTaskQueue', () => {
     });
     // 记录已写入，钩子抛错不影响队列
     expect(queue.list('heavy')[0]).toMatchObject({ status: 'cancelled' });
+    await queue.stop();
+  });
+
+  it('进程内执行注入注册表只读视图：run 的 taskCtx.registries 可查已水合元数据', async () => {
+    const appRegistries = createAppRegistries();
+    appRegistries.agent.hydrate([
+      { name: 'log-analyzer', filePath: 'dist/agents/log-analyzer/handler.js', hasRun: false },
+    ]);
+    appRegistries.tool.hydrate([
+      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
+    ]);
+    appRegistries.skill.hydrate([{ name: 'db-skill', systemPrompt: 's' }]);
+
+    const run = vi.fn(async (_payload: unknown, taskCtx: unknown) => taskCtx);
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      registries: createTaskRegistriesView(appRegistries),
+    });
+    queue.start();
+
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    const [, taskCtx] = run.mock.calls[0] as unknown as [
+      unknown,
+      {
+        registries: {
+          agent: { getAgent: (n: string) => unknown; listAgents: () => unknown[] };
+          tool: { get: (n: string) => unknown };
+          skill: { get: (n: string) => unknown };
+        };
+      },
+    ];
+    expect(taskCtx.registries.agent.getAgent('log-analyzer')).toMatchObject({
+      name: 'log-analyzer',
+    });
+    expect(taskCtx.registries.agent.listAgents()).toHaveLength(1);
+    expect(taskCtx.registries.tool.get('parse')).toMatchObject({ name: 'parse' });
+    expect(taskCtx.registries.skill.get('db-skill')).toMatchObject({ name: 'db-skill' });
+    await queue.stop();
+  });
+
+  it('隔离执行传注册表纯数据快照：runIsolated 收到 agents（完整元数据）/tools/skills', async () => {
+    const appRegistries = createAppRegistries();
+    appRegistries.agent.hydrate([
+      {
+        name: 'log-analyzer',
+        description: 'analyzer',
+        filePath: 'dist/agents/log-analyzer/handler.js',
+        hasRun: false,
+        systemPrompt: 'p',
+      },
+    ]);
+    appRegistries.tool.hydrate([
+      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
+    ]);
+    appRegistries.skill.hydrate([{ name: 'db-skill', systemPrompt: 's' }]);
+
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 3000 }]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      registries: createTaskRegistriesView(appRegistries),
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await fake.dispatch('heavy', {}, 1);
+
+    const call = runIsolated.mock.calls[0]![0] as {
+      registries: {
+        agents: Array<{ name: string; filePath?: string; hasRun?: boolean; systemPrompt?: string }>;
+        tools: Array<{ name: string }>;
+        skills: Array<{ name: string }>;
+      };
+    };
+    // agents 为完整元数据快照（含 filePath/hasRun，非仅 LLM 可见字段）
+    expect(call.registries.agents).toEqual([
+      {
+        name: 'log-analyzer',
+        description: 'analyzer',
+        filePath: 'dist/agents/log-analyzer/handler.js',
+        hasRun: false,
+        systemPrompt: 'p',
+      },
+    ]);
+    expect(call.registries.tools).toEqual([
+      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
+    ]);
+    expect(call.registries.skills).toEqual([{ name: 'db-skill', systemPrompt: 's' }]);
+    await queue.stop();
+  });
+
+  it('未传 registries 的 deps：两条路径均以空视图兜底（直接构造队列的测试场景不破坏）', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: unknown) => {
+      const r = (taskCtx as { registries: { agent: { listAgents: () => unknown[] } } }).registries;
+      return { agentCount: r.agent.listAgents().length };
+    });
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (opts: { registries: unknown }) => opts.registries);
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'hello', filePath: 'dist/tasks/hello/task.js' },
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({ run }),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    // 空视图：查询可用且返回空（任务调用 listAgents() 得 0）
+    expect(run).toHaveResolvedWith({ agentCount: 0 });
+
+    await queue.enqueue('heavy');
+    await fake.dispatch('heavy', {}, 1);
+    expect(runIsolated.mock.calls[0]![0]).toMatchObject({
+      registries: { agents: [], tools: [], skills: [] },
+    });
     await queue.stop();
   });
 });

@@ -55,8 +55,9 @@ export type {
   SkillRegistry,
   AgentHandleStore,
   AgentHandleFactory,
+  TaskRegistriesView,
 } from './injection/registries';
-export { createAppRegistries } from './injection/registries';
+export { createAppRegistries, createTaskRegistriesView } from './injection/registries';
 // 任务子系统（队列式异步任务，详见 src/task/README.md）
 export type {
   FaapiTaskMeta,
@@ -68,6 +69,7 @@ export type {
   TaskModule,
   TaskClient,
   TaskQueue,
+  TaskRegistriesSnapshot,
   TaskFailedInfo,
   TaskFailedHandler,
 } from './task/taskTypes';
