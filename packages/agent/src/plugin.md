@@ -125,32 +125,17 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 
 ### resolveToolSchema 实现
 
-`resolveToolSchemaImpl` 是模块级函数（非 setup 内闭包）——setup 时用 `rootDir` 偏函数绑定一次,工厂内直接复用,避免每次请求重建闭包。
+setup 调用 [createToolSchemaResolver](./toolSchemaResolver.md)（传 `ctx.rootDir`）创建闭包级 resolver——`loadToolSchema` 加载 zod.js → `z.toJSONSchema` 生成 JSON Schema + `safeParse` 校验函数，带 mtime 跨请求缓存（dev reloadTools 自愈 / 并发去重）。实现细节与行为约定见该文档，此处不重复。
 
-它加载 tool 的 `zod.js`（由 faapi 核心 [loadToolSchema](../../faapi/src/loader/loadToolSchema.md) 加载），用 zod v4 内置的 `z.toJSONSchema` 生成 JSON Schema 发给 LLM，`schema.safeParse` 校验 LLM 返回的参数：
-
-- `jsonSchema`：`z.toJSONSchema(schema)` → tool 参数的 JSON Schema（发给 LLM）
-- `validate`：`schema.safeParse(input)` → 成功返回 coerce 后的 value，失败返回 error 消息
-
-> Agent 类内部按 `tool.name` 缓存 schema 解析结果（[agent.md](./agent.md) 的 schema 缓存章节）,`buildToolDefinitions` 与 `executeTool` 共用——`resolveToolSchemaImpl` 对同一 tool 只被调用一次。
-
-#### 跨请求缓存（setup 闭包级）
-
-Agent 工厂**每请求构造新实例**,实例级缓存随实例丢弃——若无跨请求缓存,每个请求都要重新 `loadToolSchema`（dynamic import + `existsSync`）+ `z.toJSONSchema`（CPU 密集）。因此 setup 在闭包级维护 `Map<key, { mtimeMs, resolution }>` 跨请求缓存:
-
-- **缓存键**：`getToolSchemaPath(tool, rootDir)#inputTypeName`（zod.js 绝对路径 + schema 导出名）
-- **失效策略**：mtime 自校验——每次查找 `statSync` 一次（与原 `loadToolSchema` 内部的 `existsSync` 同级开销,非新增 IO）,mtime 变化即重新解析。dev `reloadTools` 重生成 zod.js 后下次请求自动重新解析（自愈）;prod 产物固化永远命中。无需 faapi 核心 reload 链路通知本插件
-- **并发去重**：in-flight Promise 直接入缓存,同一 tool 的并发请求共享同一次解析
-- **作用域**：setup 闭包——root + sub-agent 共享（sub-agent 通过 deps 展开复用同一个 `resolveToolSchema` 闭包）
-
-校验失败时 `executeTool` 返回 `{ error }` 对象（不调 handler），reactLoop stringify 后回传 LLM 重试。
-
-zod.js 缺失（tool 无 `inputTypeName` 或 `zod.js` 不存在）时 `loadToolSchema` 返回 `undefined`，`resolveToolSchemaImpl` 也返回 `undefined`，agent 用自由 schema `{ type: 'object' }`，LLM 自由传参。
+```ts
+const resolveToolSchema = createToolSchemaResolver({ rootDir }); // setup 内创建,工厂内复用
+```
 
 ## 相关模块
 
 - [agent](./agent.md) —— Agent 类,工厂返回的实例
 - [agentHandle](./agentHandle.md) —— AgentHandle 接口,Agent 满足此接口
+- [toolSchemaResolver](./toolSchemaResolver.md) —— createToolSchemaResolver 工厂,setup 内创建 resolver
 - [provider](./provider.md) —— LLM provider 抽象 + createProvider 工厂
 - faapi 核心 [agentHandle 工厂](../../faapi/src/injection/agentHandle.md) —— registerAgentHandleFactory / getAgentHandle
 - faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) / [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— 注册表访问器

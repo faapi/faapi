@@ -36,6 +36,8 @@ export async function run(payload, taskCtx) {
 }
 ```
 
+组装完整 `AgentDeps`（含 `resolveToolSchema`）的示例见 [taskTypes.md](./taskTypes.md) 的「任务内组装 Agent」章节。
+
 ## 行为约定
 
 - 执行：每次 dispatch 新建一个 worker（data URL wrapper 动态 import 任务产物模块）；worker 模块图独立——天然加载最新产物，dev 热替换后无需 cache-bust

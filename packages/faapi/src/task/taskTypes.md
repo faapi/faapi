@@ -20,6 +20,38 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 视图只暴露查询方法（`get` / `list` / `resolve*`），不暴露 `hydrate` / `clear` 写接口——任务不是注册表的所有者。
 
+### 任务内组装 Agent（完整 deps）
+
+任务内 new `Agent` 跑 LLM 循环时，deps 从 `registries` 视图 + 包级导出组装；`resolveToolSchema` 用 `@faapi/agent` 公开的 `createToolSchemaResolver` 工厂（不要直连 `loadToolSchema`——它返回 `{ schema, schemaName }` 原始 zod 模块，不满足 `AgentDeps.resolveToolSchema` 契约的 `{ jsonSchema, validate }`）：
+
+```ts
+// src/tasks/log-analysis/task.ts
+import { Agent, createToolSchemaResolver } from '@faapi/agent';
+import { loadToolModule, loadAgentModule } from '@faapi/faapi';
+
+// 模块级创建一次（rootDir 缺省 process.cwd()，faapi 服务进程 cwd 即项目根）
+const resolveToolSchema = createToolSchemaResolver();
+
+export async function run(payload, taskCtx) {
+  const agent = new Agent({
+    providers,                       // 外部 provider 模式：调用方传 provider 实例
+    llms,                            // config.agent.llms（可空对象）
+    rootDir: process.cwd(),
+    getAgent: taskCtx.registries.agent.getAgent,
+    getAgentEntry: taskCtx.registries.agent.getAgentEntry,
+    getTool: taskCtx.registries.tool.get,
+    resolveAgentTools: taskCtx.registries.agent.resolveAgentTools,
+    resolveSubAgents: taskCtx.registries.agent.resolveSubAgents,
+    loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, process.cwd()),
+    loadAgentModule: (filePath, hasRun) => loadAgentModule(filePath, hasRun, process.cwd()),
+    resolveToolSchema,               // zod.js → JSON Schema + safeParse 校验（带 mtime 缓存）
+  });
+  return agent.run(payload.input, { agent: 'log-analyzer', provider });
+}
+```
+
+工厂行为（缓存、`undefined` 语义）见 `@faapi/agent` 的 [toolSchemaResolver.md](../../../agent/src/toolSchemaResolver.md)；`AgentDeps` 各字段见 [agent.md](../../../agent/src/agent.md)。
+
 ## 相关模块
 
 - 被本目录所有模块与 `src/config/configTypes.ts`（TaskConfig）、`src/injection/registries.ts`（TaskRegistry）引用

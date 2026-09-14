@@ -25,7 +25,8 @@
  * 1. 遍历 `config.agent.llms`（可选）→ 每项调 `createProvider` → `Map<providerKey, LLMProvider>`
  * 2. 读 `config.agent.maxTurns` / `maxAgentDepth`
  * 3. 从 `@faapi/faapi` import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools /
- *    resolveSubAgents / loadAgentModule / loadToolModule）
+ *    resolveSubAgents / loadAgentModule / loadToolModule）,tool schema 解析用
+ *    [createToolSchemaResolver](./toolSchemaResolver.md)（setup 闭包级缓存）
  * 4. `registerAgentHandleFactory` 注册工厂——每次请求时构造 [Agent](./agent.md) 实例注入到
  *    handler 的 `agent` 参数
  *
@@ -41,49 +42,14 @@
 import {
   loadAgentModule,
   loadToolModule,
-  loadToolSchema,
-  getToolSchemaPath,
   type FaapiPlugin,
   type PluginContext,
   type AgentConfig,
-  type ToolMetadata,
 } from '@faapi/faapi';
-import { statSync } from 'node:fs';
-import { z } from 'zod';
-import { Agent, type AgentRuntimeConfig, type ToolSchemaResolution } from './agent';
+import { Agent, type AgentRuntimeConfig } from './agent';
+import { createToolSchemaResolver } from './toolSchemaResolver';
 import type { LLMProvider } from './provider';
 import { createProvider } from './provider';
-
-/**
- * 加载 tool 的 zod.js → 生成 JSON Schema + 校验函数
- *
- * 模块级函数（非 setup 内闭包）——setup 时用 `rootDir` 偏函数绑定一次,
- * 工厂内直接复用,避免每次请求重建闭包。
- *
- * 详见 [plugin.md](./plugin.md) 的 resolveToolSchema 实现。
- *
- * @param tool tool 元数据（含 filePath / inputTypeName）
- * @param rootDir 项目根目录（用于 dev 按需编译模式）
- * @returns `ToolSchemaResolution` 或 `undefined`（zod.js 不存在 / tool 无 inputTypeName）
- */
-async function resolveToolSchemaImpl(
-  tool: ToolMetadata,
-  rootDir: string,
-): Promise<ToolSchemaResolution | undefined> {
-  const schemaMod = await loadToolSchema(tool, rootDir);
-  if (!schemaMod) return undefined;
-  const schema = schemaMod.schema as z.ZodType;
-  return {
-    jsonSchema: z.toJSONSchema(schema),
-    validate: (input) => {
-      const result = schema.safeParse(input);
-      if (result.success) {
-        return { ok: true as const, value: result.data as Record<string, unknown> };
-      }
-      return { ok: false as const, error: result.error.message };
-    },
-  } satisfies ToolSchemaResolution;
-}
 
 /**
  * 从 PluginContext.config 读取 agent 配置
@@ -146,36 +112,9 @@ const agentPlugin: FaapiPlugin = {
     };
 
     const rootDir = ctx.rootDir;
-    // 跨请求 schema 缓存（setup 闭包级,工厂每次请求 new Agent 但共享此缓存）
-    //
-    // Agent 工厂每请求构造新实例,实例级 schemaCache（agent.ts）随实例丢弃——
-    // 若无此缓存,每个请求都要重新 loadToolSchema（dynamic import + existsSync）+
-    // z.toJSONSchema（CPU 密集）。缓存键为 `zodPath#inputTypeName`,值携带 zod.js 的
-    // mtime：每次查找 statSync 一次（与原 loadToolSchema 内部的 existsSync 同级开销,
-    // 非新增 IO）,mtime 变化即重新解析——dev reloadTools 重生成 zod.js 后自愈,
-    // prod 产物固化下永远命中,无需 faapi 核心 reload 链路通知本插件。
-    const schemaCache = new Map<
-      string,
-      { mtimeMs: number; resolution: Promise<ToolSchemaResolution | undefined> }
-    >();
-    const resolveToolSchema = (tool: ToolMetadata): Promise<ToolSchemaResolution | undefined> => {
-      const zodPath = getToolSchemaPath(tool, rootDir);
-      const key = `${zodPath}#${tool.inputTypeName ?? ''}`;
-      let mtimeMs = -1;
-      try {
-        mtimeMs = statSync(zodPath).mtimeMs;
-      } catch {
-        // zod.js 不存在（无 inputTypeName / 尚未生成）→ mtimeMs 保持 -1
-      }
-      const hit = schemaCache.get(key);
-      if (hit && hit.mtimeMs === mtimeMs) {
-        return hit.resolution;
-      }
-      // in-flight Promise 直接缓存:同一 tool 的并发请求共享同一次解析
-      const resolution = resolveToolSchemaImpl(tool, rootDir);
-      schemaCache.set(key, { mtimeMs, resolution });
-      return resolution;
-    };
+    // tool schema 解析器（setup 闭包级缓存——root + sub-agent 共享）
+    // 实现与行为约定见 [toolSchemaResolver.md](./toolSchemaResolver.md)
+    const resolveToolSchema = createToolSchemaResolver({ rootDir });
 
     // 注册 agent handle 工厂——每次请求时构造 Agent 实例
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生
