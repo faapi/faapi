@@ -403,8 +403,11 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   const agents = await loadAndHydrateAgents(rootDir, dist, registries);
 
   // 水合任务清单 + 创建任务队列与 cron 调度器（app 实例级，close 时一并停机）
-  // 队列不依赖 HTTP listen——createAppBase 即启动（enabled 时），onBoot 校验失败
-  // 的 listen 路径负责停机
+  // 队列启动 await 完成（enabled 时）才继续后续启动步骤——listen 时 worker 注册/
+  // 队列创建已就绪，冷启动首次 enqueue 不会早于 worker 注册投递（pg-boss v10 空库
+  // 队列不存在时 send 静默返回 null）；驱动启动失败（队列库不可达等）向外抛，
+  // createAppBase reject、端口不暴露（fail fast），onBoot 校验失败的 listen 路径
+  // 负责停掉已启动的任务运行时
   const taskMetas = await loadAndHydrateTasks(rootDir, dist, registries);
   // 队列驱动：有任务清单时按 config.task.driver 加载（未配置显式报错，不静默降级）；
   // 无任务清单用空闲占位驱动（零任务项目无需安装驱动子包）
@@ -428,7 +431,9 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     await taskQueue.stop(config?.task?.shutdownTimeoutMs ?? 10_000);
   };
   if (taskEnabled) {
-    taskQueue.start();
+    // await 启动：任务 runtime 就绪是后续 listen 的前置条件；不 await 的浮动 promise
+    // 除时序竞态外，驱动启动失败还会变成 unhandled rejection（listen 照常、进程崩溃）
+    await taskQueue.start();
     cronScheduler.start();
   }
   registries.taskHandle.register(() => taskQueue);

@@ -9,7 +9,7 @@
 ## 使用场景
 
 - handler / 中间件 / lifecycle 钩子 / cron 通过 TaskClient（队列的门面）入队
-- `createAppBase` 创建并启动（不依赖 HTTP listen）；`app.close()` 时 drain
+- `createAppBase` 创建并 await 启动完成后才继续后续启动步骤（listen 时 worker 注册/队列创建已就绪，冷启动首次 enqueue 不会早于 worker 注册；驱动启动失败 → createAppBase reject，端口不暴露）；`app.close()` 时 drain
 
 ## 行为约定
 

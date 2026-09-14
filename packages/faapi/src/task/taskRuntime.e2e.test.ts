@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import fg from 'fast-glob';
 import { createAppBase } from '../cli/createAppCore';
 import { scanRoutes } from '../router/scanRoutes';
@@ -24,6 +25,7 @@ const jobs = [];
 const workers = new Map();
 let stopped = false;
 let running = 0;
+export const driverState = { startedWorkers: [] };
 function pump() {
   while (!stopped && running < 4 && jobs.length > 0) {
     const job = jobs.shift();
@@ -51,6 +53,10 @@ export const driver = {
     return id;
   },
   async startWorker(name, opts) {
+    // 模拟驱动建连/注册耗时——createAppBase 必须 await 启动完成才能继续
+    //（若启动是浮动 promise，resolve 后立即断言会看到空的 startedWorkers）
+    await new Promise((r) => setTimeout(r, 25));
+    driverState.startedWorkers.push(name);
     workers.set(name, opts);
     pump();
   },
@@ -64,9 +70,22 @@ export const driver = {
 };
 `;
 
+/** startWorker 即失败的驱动——验证驱动不可用时启动 fail fast */
+const FAILING_DRIVER_MODULE = `
+export const driver = {
+  async enqueue() {
+    return 'failing-1';
+  },
+  async startWorker() {
+    throw new Error('db unreachable');
+  },
+  async stop() {},
+};
+`;
+
 /** 写 config 产物：task.driver 注入测试驱动实例（loadTaskDriver 对象直通路径） */
-function writeConfigWithDriver(dist: string): void {
-  fs.writeFileSync(path.join(dist, 'faapi-task-driver.js'), DRIVER_MODULE, 'utf-8');
+function writeConfigWithDriver(dist: string, driverModule: string = DRIVER_MODULE): void {
+  fs.writeFileSync(path.join(dist, 'faapi-task-driver.js'), driverModule, 'utf-8');
   fs.writeFileSync(
     path.join(dist, 'faapi-config.js'),
     `import { driver } from './faapi-task-driver.js';\nexport default { task: { driver } };\n`,
@@ -184,6 +203,47 @@ describe('task runtime e2e', () => {
     expect(job.error).toMatch(/timed out/);
     expect(Date.now() - start).toBeLessThan(5000);
     await app.close();
+  });
+
+  it('createAppBase resolve 时任务 runtime 已就绪（worker 注册完成，listen 前时序确定）', async () => {
+    // 产物准备（同上）
+    const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
+    await compileSourceFiles({
+      rootDir: FIXTURES_DIR,
+      dist,
+      files: tasks.map((t) => path.resolve(FIXTURES_DIR, t.filePath)),
+    });
+    await generateTaskArtifacts(tasks, FIXTURES_DIR, dist);
+    const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['src/api/**/*.ts']);
+    const routesPath = path.resolve(dist, 'faapi-routes.js');
+    await writeRoutesModule(serializeRoutes(routes, wsRoutes, FIXTURES_DIR, dist), routesPath);
+    writeConfigWithDriver(dist);
+
+    await createAppBase({ rootDir: FIXTURES_DIR, dist }).then(({ app }) => app.close());
+    // 驱动 startWorker 每次耗时 25ms——createAppBase 必须 await 启动完成，
+    // resolve 时全部任务 worker 已注册（回归保护：浮动 promise 启动则此处为空）
+    const mod = (await import(pathToFileURL(path.join(dist, 'faapi-task-driver.js')).href)) as {
+      driverState: { startedWorkers: string[] };
+    };
+    expect([...mod.driverState.startedWorkers].sort()).toEqual(['echo', 'timeout']);
+  });
+
+  it('任务驱动启动失败 → createAppBase 直接 reject（fail fast，端口不暴露）', async () => {
+    // 产物准备（同上）
+    const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
+    await compileSourceFiles({
+      rootDir: FIXTURES_DIR,
+      dist,
+      files: tasks.map((t) => path.resolve(FIXTURES_DIR, t.filePath)),
+    });
+    await generateTaskArtifacts(tasks, FIXTURES_DIR, dist);
+    const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['src/api/**/*.ts']);
+    const routesPath = path.resolve(dist, 'faapi-routes.js');
+    await writeRoutesModule(serializeRoutes(routes, wsRoutes, FIXTURES_DIR, dist), routesPath);
+    writeConfigWithDriver(dist, FAILING_DRIVER_MODULE);
+
+    // 驱动 startWorker 抛错（如队列库不可达）→ 启动失败外抛，不 listen
+    await expect(createAppBase({ rootDir: FIXTURES_DIR, dist })).rejects.toThrow('db unreachable');
   });
 });
 
