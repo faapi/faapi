@@ -31,17 +31,25 @@ afterEach(() => {
 describe('serializeTasks / hydrateTasks', () => {
   it('filePath 转产物形式，meta 透传，roundtrip 还原', () => {
     const manifests: TaskManifest[] = [
-      { name: 'a', filePath: 'src/tasks/a/task.ts', concurrency: 2, retries: 1 },
+      { name: 'a', filePath: 'src/tasks/a/task.ts', concurrency: 2, retries: 1, graceMs: 15_000 },
       { name: 'b', filePath: 'src/tasks/b/task.ts', cron: '0 3 * * *' },
     ];
     const serialized = serializeTasks(manifests, 'dist');
     expect(serialized).toEqual([
-      { name: 'a', filePath: 'dist/tasks/a/task.js', concurrency: 2, retries: 1 },
+      {
+        name: 'a',
+        filePath: 'dist/tasks/a/task.js',
+        concurrency: 2,
+        retries: 1,
+        graceMs: 15_000,
+      },
       { name: 'b', filePath: 'dist/tasks/b/task.js', cron: '0 3 * * *' },
     ]);
     const hydrated = hydrateTasks(JSON.parse(JSON.stringify(serialized)));
     expect(hydrated[0]!.name).toBe('a');
+    expect(hydrated[0]!.graceMs).toBe(15_000);
     expect(hydrated[1]!.cron).toBe('0 3 * * *');
+    expect(hydrated[1]!.graceMs).toBeUndefined();
   });
 });
 

@@ -8,3 +8,19 @@ DDD 规范要求：确有必须降级的场景（显式抛错会让业务完全�
 - **为什么必须降**：无类型声明即无校验契约是框架既有语义（路由 handler 无类型声明的方法不导出 Schema、tool 无 inputTypeName 跳过 schema）。任务 payload 属于进程内数据（不像 HTTP 请求来自外部），若强制要求类型声明，无参 cron 任务等合法场景将直接不可用。
 - **降级后的实际行为**：`enqueue` 原样入队 payload，不做 zod 校验；有 `zod.js`（导出 `*Schema`）时才 safeParse，不合法抛 `ValidationError`。
 - **恢复条件**：任务文件为 `run` 首参补充 interface 类型声明并重新构建/热重载，`zod.js` 生成后校验自动生效。
+
+## 隔离任务错误的自定义属性不可克隆时丢弃 props（taskWorker）
+
+- **场景**：worker 内 run 抛错的 Error 带自定义可枚举属性，其中含不可结构化克隆的值（函数、class 实例等）——如 `err.onRetry = () => {}`。
+- **为什么必须降**：错误回传本身经 postMessage 结构化克隆，`props` 不可克隆会让 postMessage 抛 `DataCloneError`——若此时显式抛错，错误根本无法上报，宿主只能空等到 timeoutMs 才失败，比信息缺失严重得多。错误上报必须尽力送达。
+- **降级后的实际行为**：丢弃 `props`（自定义属性），保底回传 `{ name, message, stack }`；宿主重建的 Error 仍有错误名、消息与 worker 侧堆栈，仅丢失不可克隆的自定义属性。
+- **恢复条件**：业务错误类的自定义属性改为可克隆纯数据（字符串错误码 / 数字状态码而非函数、类实例），恢复全量保真。
+
+## 隔离任务 config 含不可克隆字段时退化为 JSON 快照（taskWorker.safeConfig）
+
+- **场景**：`faapi.config.ts` 全量配置经 postMessage 传入隔离 worker 时，含函数字段（如 lifecycle 钩子、自定义 `response.ok` 包装函数）——函数不可结构化克隆。
+- **为什么必须降**：隔离任务必须拿到 config（业务方经 `taskCtx.config` 读取业务配置是基础能力），显式抛错会让任何含函数字段的配置（即所有声明了 lifecycle 钩子的项目）的隔离任务完全不可用。
+- **降级后的实际行为**：三级探测——structuredClone 可克隆则原样传入；不可克隆退化 JSON round-trip（**丢函数字段、Date 变 ISO 字符串、Map/Set 丢失**，纯数据字段完整保留）；JSON 也失败（循环引用等）传 `undefined`。任务收到的 config 始终是纯数据快照。
+- **恢复条件**：无——隔离线程的 config 只能是可克隆纯数据，属结构约束；业务方需将隔离任务依赖的可执行配置改为数据描述（如字符串枚举），任务内在 worker 侧自行映射行为。
+
+

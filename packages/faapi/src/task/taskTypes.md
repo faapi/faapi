@@ -20,6 +20,15 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 视图只暴露查询方法（`get` / `list` / `resolve*`），不暴露 `hydrate` / `clear` 写接口——任务不是注册表的所有者。
 
+## TaskContext.progress 与 TaskJob.progress（任务进度上报）
+
+`TaskContext.progress?(value: unknown): void` 为可选能力：任务执行中主动上报进度，语义层记入 `TaskJob.progress`（`list()` 快照可见），供管理视图/日志观测长任务执行进展。两条路径语义一致：
+
+- **进程内路径**：`progress` 直写本进程任务记录（仅 `running` 状态时生效，终态后调用被忽略）
+- **隔离路径**（声明 `timeoutMs`）：worker 内经 `{ type: 'progress' }` 消息回传宿主 `onProgress` 回调，宿主写记录；取消判定后（宽限期内）到达的 progress 忽略
+
+`progress` 不做持久化（驱动侧无此概念）、不参与重试恢复——每次派发清空上一轮的 progress，本轮执行重新写入（终态后调用被忽略）；值必须可结构化克隆（隔离路径经 postMessage，不可克隆按执行错误处理）。不调用 `progress` 的任务零开销，`TaskJob.progress` 不出现。
+
 ### 任务内组装 Agent（完整 deps）
 
 任务内 new `Agent` 跑 LLM 循环时，deps 从 `registries` 视图 + 包级导出组装；`resolveToolSchema` 用 `@faapi/agent` 公开的 `createToolSchemaResolver` 工厂（不要直连 `loadToolSchema`——它返回 `{ schema, schemaName }` 原始 zod 模块，不满足 `AgentDeps.resolveToolSchema` 契约的 `{ jsonSchema, validate }`）：

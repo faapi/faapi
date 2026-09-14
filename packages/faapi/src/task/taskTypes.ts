@@ -16,11 +16,23 @@ export interface FaapiTaskMeta {
   /** 失败重试次数（默认 0——失败即 failed，不重试） */
   retries?: number;
   /**
-   * 单次执行超时（毫秒）。声明后该任务在独立 worker 线程执行，超时两段式取消
-   * （先 abort 信号宽限 5s，未退出 terminate 硬杀）——判定超时即执行真正终止。
-   * 未声明走进程内执行（零开销，但卡住时框架只能不再等待）。
+   * 单次执行超时（毫秒，最小 60000 即 1 分钟——低于阈值在扫描期报错）。声明后该
+   * 任务在独立 worker 线程执行，超时两段式取消（先 abort 信号宽限，未退出
+   * terminate 硬杀）——判定超时即执行真正终止。未声明走进程内执行（零开销）。
+   *
+   * 最小值的理由：声明 timeoutMs 的语义是"这是需要真取消的长任务"，一分钟内能
+   * 跑完的任务没必要声明超时（走进程内，需要 deadline 自行用 Promise.race 实现）；
+   * 且超时从派发起算、包含 worker 冷启动（线程创建 + 模块加载），过小的超时会在
+   * 任务做任何事之前就被取消。
    */
   timeoutMs?: number;
+  /**
+   * 取消宽限期（毫秒，仅声明 `timeoutMs` 的隔离任务生效）：两段式取消第一段
+   * 发出 abort 信号后等待任务自行退出的最长时间，超时未退出 `terminate()` 硬杀。
+   * 默认 5000（5s）；`0` 表示不留宽限期（判定取消即硬杀）。
+   * 未声明 `timeoutMs` 的任务无取消流程，本字段被忽略。
+   */
+  graceMs?: number;
   /** cron 表达式（croner 语法，支持秒级）——到点自动入队空 payload */
   cron?: string;
 }
@@ -37,6 +49,7 @@ export interface TaskManifest {
   concurrency?: number;
   retries?: number;
   timeoutMs?: number;
+  graceMs?: number;
 }
 
 /**
@@ -50,6 +63,8 @@ export interface TaskMetadata {
   concurrency?: number;
   retries?: number;
   timeoutMs?: number;
+  /** 取消宽限期（毫秒，仅隔离任务生效），未声明用框架默认 5s */
+  graceMs?: number;
 }
 
 /**
@@ -74,6 +89,8 @@ export interface TaskJob {
   result?: unknown;
   /** 错误消息（failed 时） */
   error?: string;
+  /** 最近一次进度上报值（run 内 `taskCtx.progress(value)` 写入；派发时清空上一轮） */
+  progress?: unknown;
   createdAt: number;
   /** 计划执行时间戳（重试/延迟任务与 createdAt 不同） */
   runAt?: number;
@@ -109,6 +126,13 @@ export interface TaskContext {
    * 任务内组装 agent 用 `registries.agent.getAgentEntry(name)`（含 filePath/hasRun）。
    */
   registries: TaskRegistriesView;
+  /**
+   * 进度上报（可选）：执行中主动上报进度，记入 `TaskJob.progress`（`list()` 可见）
+   *
+   * 进程内直写记录；隔离路径经 postMessage 回传宿主（值必须可结构化克隆，
+   * 不可克隆按执行错误处理）。仅 running 状态生效，终态后调用被忽略。
+   */
+  progress?: (value: unknown) => void;
 }
 
 /**

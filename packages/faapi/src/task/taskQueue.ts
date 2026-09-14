@@ -7,11 +7,22 @@ import type { TaskDriverJob } from './driverTypes';
 import type {
   TaskContext,
   TaskJob,
+  TaskJobStatus,
   TaskModule,
   TaskQueue,
   TaskQueueDeps,
   TaskRegistriesSnapshot,
 } from './taskTypes';
+
+/** 终态（内存护栏的计数范围）：pending/running/retry 永不淘汰 */
+const TERMINAL_STATUSES: ReadonlySet<TaskJobStatus> = new Set(['done', 'failed', 'cancelled']);
+
+/**
+ * 终态记录内存上限：`list()` 为进程内观测快照而非持久化历史，长驻进程的
+ * done/failed/cancelled 记录超限时按最旧优先淘汰（更早的历史由驱动侧视图
+ * `listQueued` 承担——驱动实现 `TaskDriver.list` 时）
+ */
+const MAX_FINISHED_RECORDS = 1_000;
 
 /**
  * 任务队列语义层
@@ -40,6 +51,31 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
 
   let started = false;
   let stopped = false;
+
+  /** 终态记录数（done/failed/cancelled）——淘汰护栏的计数器 */
+  let finishedCount = 0;
+
+  /** 记录状态流转：维护终态计数（终态↔非终态迁移时增减），避免每次终态写入全量计数 */
+  function transitionStatus(record: TaskJob, status: TaskJobStatus): void {
+    const wasTerminal = TERMINAL_STATUSES.has(record.status);
+    const nowTerminal = TERMINAL_STATUSES.has(status);
+    if (!wasTerminal && nowTerminal) finishedCount++;
+    else if (wasTerminal && !nowTerminal) finishedCount--;
+    record.status = status;
+  }
+
+  /** 终态记录超上限按最旧优先淘汰（Map 迭代序 = 插入序；O(n) 单次扫描） */
+  function evictFinishedRecords(): void {
+    let toEvict = finishedCount - MAX_FINISHED_RECORDS;
+    for (const [id, job] of records) {
+      if (toEvict <= 0) break;
+      if (TERMINAL_STATUSES.has(job.status)) {
+        records.delete(id);
+        finishedCount--;
+        toEvict--;
+      }
+    }
+  }
 
   const loadTaskModule =
     deps.loadTaskModule ?? (async (filePath: string) => (await import(filePath)) as TaskModule);
@@ -133,7 +169,9 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       createdAt: Date.now(),
     };
     record.attempts = job.attempt;
-    record.status = 'running';
+    transitionStatus(record, 'running');
+    // 派发清空上一轮的进度（本轮执行经 taskCtx.progress 重新写入）
+    delete record.progress;
     record.error = undefined;
     records.set(job.id, record);
 
@@ -149,7 +187,11 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           },
           registries: snapshotRegistries(),
           timeoutMs: meta.timeoutMs,
+          graceMs: meta.graceMs,
           externalSignal: job.signal,
+          onProgress: (value) => {
+            if (record.status === 'running') record.progress = value;
+          },
         });
       } else {
         let mod = moduleCache.get(job.name);
@@ -165,18 +207,23 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
           registries: registriesView,
+          progress: (value) => {
+            if (record.status === 'running') record.progress = value;
+          },
         };
         result = await mod.run(job.payload, taskCtx);
       }
-      record.status = 'done';
+      transitionStatus(record, 'done');
       record.result = result;
+      evictFinishedRecords();
       return result;
     } catch (err) {
       // 取消（执行被框架终止：隔离执行超时终止 / 停机取消）与 run 自身失败分开记，
       // list() 可区分"任务被取消"与"任务出错"；两者都向上抛错交驱动按 retries 重试
       const cancelled = err instanceof TaskCancelledError || job.signal.aborted;
-      record.status = cancelled ? 'cancelled' : 'failed';
+      transitionStatus(record, cancelled ? 'cancelled' : 'failed');
       record.error = err instanceof Error ? err.message : String(err);
+      evictFinishedRecords();
       // onFailed 副作用钩子（告警/死信上报）：willRetry 按 meta.retries 推算，
       // 自身抛错被忽略——不影响驱动重试决策
       if (deps.onFailed) {
@@ -283,7 +330,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       }
       await driver.cancel(name, id);
       const record = records.get(id);
-      if (record) record.status = 'cancelled';
+      if (record) transitionStatus(record, 'cancelled');
+      evictFinishedRecords();
     },
 
     async retry(name: string, id: string): Promise<void> {
@@ -294,7 +342,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       }
       await driver.retry(name, id);
       const record = records.get(id);
-      if (record) record.status = 'pending'; // 等待驱动重新派发
+      if (record) transitionStatus(record, 'pending'); // 等待驱动重新派发
     },
 
     async start() {

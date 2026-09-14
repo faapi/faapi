@@ -23,9 +23,25 @@ const TASK_FILENAME = 'task.ts';
  * meta 是静态声明，动态计算的 cron/并发数不支持（显式约束，不静默降级）。
  */
 const CRON_RE = /(?:^|\n)\s*cron:\s*['"`]([^'"`\n]+)['"`]/;
-const CONCURRENCY_RE = /(?:^|\n)\s*concurrency:\s*(\d+)/;
-const RETRIES_RE = /(?:^|\n)\s*retries:\s*(\d+)/;
-const TIMEOUT_MS_RE = /(?:^|\n)\s*timeoutMs:\s*(\d+)/;
+// 数字字面量含下划线分隔符（TS 惯用写法 60_000）——不支持则被截断成 60，静默错值
+const NUM_LITERAL = '(\\d+(?:_\\d+)*)';
+const CONCURRENCY_RE = new RegExp(`(?:^|\\n)\\s*concurrency:\\s*${NUM_LITERAL}`);
+const RETRIES_RE = new RegExp(`(?:^|\\n)\\s*retries:\\s*${NUM_LITERAL}`);
+const TIMEOUT_MS_RE = new RegExp(`(?:^|\\n)\\s*timeoutMs:\\s*${NUM_LITERAL}`);
+const GRACE_MS_RE = new RegExp(`(?:^|\\n)\\s*graceMs:\\s*${NUM_LITERAL}`);
+
+/** 数字字面量解析（剥离下划线分隔符——Number() 不接受 `60_000`） */
+function parseNumericLiteral(raw: string): number {
+  return Number(raw.replace(/_/g, ''));
+}
+
+/**
+ * timeoutMs 最小值（60s）：声明 timeoutMs 的语义是"这是需要真取消的长任务"——
+ * 一分钟内能跑完的任务没必要声明超时（走进程内执行，需要 deadline 自行用
+ * Promise.race 实现）；且超时从派发起算、包含 worker 冷启动（线程创建 + 任务
+ * 模块图加载），过小的超时会在任务做任何事之前就被取消。
+ */
+export const MIN_ISOLATED_TIMEOUT_MS = 60_000;
 
 /**
  * 从源码相对路径推导任务名
@@ -88,10 +104,23 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
     const concurrency = CONCURRENCY_RE.exec(source)?.[1];
     const retries = RETRIES_RE.exec(source)?.[1];
     const timeoutMs = TIMEOUT_MS_RE.exec(source)?.[1];
+    const graceMs = GRACE_MS_RE.exec(source)?.[1];
     if (cron !== undefined) manifest.cron = cron;
-    if (concurrency !== undefined) manifest.concurrency = Number(concurrency);
-    if (retries !== undefined) manifest.retries = Number(retries);
-    if (timeoutMs !== undefined) manifest.timeoutMs = Number(timeoutMs);
+    if (concurrency !== undefined) manifest.concurrency = parseNumericLiteral(concurrency);
+    if (retries !== undefined) manifest.retries = parseNumericLiteral(retries);
+    if (timeoutMs !== undefined) {
+      const value = parseNumericLiteral(timeoutMs);
+      if (value < MIN_ISOLATED_TIMEOUT_MS) {
+        throw new Error(
+          `[faapi] Task "${name}" timeoutMs ${value} is below the minimum ${MIN_ISOLATED_TIMEOUT_MS}ms (1 minute). ` +
+            'Declaring a timeout means this is a long-running task that needs real cancellation — tasks finishing ' +
+            'within a minute do not need one: remove timeoutMs to run in-process (implement your own deadline with ' +
+            'Promise.race if needed), or raise it.',
+        );
+      }
+      manifest.timeoutMs = value;
+    }
+    if (graceMs !== undefined) manifest.graceMs = parseNumericLiteral(graceMs);
 
     tasks.push(manifest);
   }

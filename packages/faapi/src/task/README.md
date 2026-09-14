@@ -17,7 +17,8 @@ export interface Payload {
 export const task = {
   concurrency: 2,   // 并发数，默认 1
   retries: 3,       // 失败重试次数，默认 0
-  // timeoutMs: 30_000, // 执行超时：超时真终止（隔离线程执行，两段式取消）
+  // timeoutMs: 10 * 60_000, // 执行超时（最小 60s）：超时真终止（隔离线程执行，两段式取消）
+  // graceMs: 15_000,        // 取消宽限期（默认 5s）：abort 信号后等待自行退出的时长
   // cron: '0 3 * * *',  // 定时入队（croner 表达式），到点自动 enqueue 空 payload
 } satisfies FaapiTaskMeta;
 export function run(payload: Payload, taskCtx: TaskContext) {

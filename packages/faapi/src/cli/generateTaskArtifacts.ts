@@ -39,6 +39,7 @@ export interface SerializedTaskRecord {
   concurrency?: number;
   retries?: number;
   timeoutMs?: number;
+  graceMs?: number;
 }
 
 /**
@@ -55,6 +56,7 @@ export function serializeTasks(
     ...(t.concurrency !== undefined ? { concurrency: t.concurrency } : {}),
     ...(t.retries !== undefined ? { retries: t.retries } : {}),
     ...(t.timeoutMs !== undefined ? { timeoutMs: t.timeoutMs } : {}),
+    ...(t.graceMs !== undefined ? { graceMs: t.graceMs } : {}),
   }));
 }
 
@@ -82,6 +84,7 @@ export function hydrateTasks(manifest: SerializedTaskRecord[]): TaskMetadata[] {
     concurrency: t.concurrency ?? undefined,
     retries: t.retries ?? undefined,
     timeoutMs: t.timeoutMs ?? undefined,
+    graceMs: t.graceMs ?? undefined,
   }));
 }
 

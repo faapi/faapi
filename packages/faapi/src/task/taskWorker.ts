@@ -10,14 +10,15 @@ import type { TaskRegistriesSnapshot } from './taskTypes';
  * worker 线程的 `terminate()` 是 Node 唯一能硬终止执行的机制——判定超时即执行真正终止。
  *
  * 取消为两段式：先向 worker 发 abort 信号（任务监听 taskCtx.signal 可优雅退出），
- * KILL_GRACE_MS 内未退出则 terminate 硬杀。超时判定即终局——宽限期内 worker
+ * 宽限期内未退出则 terminate 硬杀（宽限期经 task meta `graceMs` 配置，默认
+ * KILL_GRACE_MS 5s）。超时判定即终局——宽限期内 worker
  * 迟到的完成/错误一律按超时失败返回，不翻案。
  *
  * 每次 dispatch 新建 worker：worker 模块图独立，天然加载最新任务产物
  * （dev 热替换后无需 cache-bust）；代价是每次执行的冷启动开销（仅声明超时的任务承担）。
  */
 
-/** abort 宽限期：发出优雅取消信号后等待任务自行退出的最长时间 */
+/** abort 宽限期默认值：发出优雅取消信号后等待任务自行退出的最长时间（task meta `graceMs` 可按任务覆盖） */
 const KILL_GRACE_MS = 5_000;
 
 /**
@@ -45,14 +46,23 @@ export interface TaskWorkerOptions {
   /** 单次执行超时（毫秒） */
   timeoutMs: number;
   /**
+   * 取消宽限期（毫秒）——两段式取消第一段发出 abort 信号后等待任务自行退出的
+   * 最长时间，超时未退出 `terminate()` 硬杀。来自 task meta `graceMs`，
+   * 未声明用 `KILL_GRACE_MS`（5s）；`0` 表示不留宽限期（判定取消即硬杀）
+   */
+  graceMs?: number;
+  /**
    * 注册表快照（纯数据，postMessage 结构化克隆传入，worker 内重建只读视图注入
    * taskCtx.registries）——语义层从 `TaskRegistriesView` 生成，缺省为空视图
    */
   registries?: TaskRegistriesSnapshot;
   /** 外部取消信号（驱动停机超时 abort）——abort 同样触发两段式取消 */
   externalSignal?: AbortSignal;
-  /** 宽限期覆盖（默认 KILL_GRACE_MS）——测试注入短值用，业务不配置 */
-  killGraceMs?: number;
+  /**
+   * 进度回调：worker 内 `taskCtx.progress(value)` 的值经 `{ type: 'progress' }`
+   * 消息回传宿主（语义层记入 `TaskJob.progress`）；不传则进度消息被忽略
+   */
+  onProgress?: (value: unknown) => void;
 }
 
 /**
@@ -138,6 +148,26 @@ function buildRegistriesView(snapshot) {
 }
 `;
 
+/**
+ * worker 内错误序列化（错误保真）：Error 按 `{ name, message, stack, props }` 回传——
+ * `props` 收集自定义可枚举属性（业务错误类的 code/statusCode 等），宿主侧重建时回填；
+ * 非 Error 值按 String(err) 归一。结构化克隆只保 message（name/自定义属性丢失、
+ * stack 重新生成），不序列化就无法跨线程保真。
+ */
+const SERIALIZE_ERROR_SOURCE = `
+function serializeError(err) {
+  if (err instanceof Error) {
+    var props = {};
+    var keys = Object.keys(err);
+    for (var i = 0; i < keys.length; i++) {
+      props[keys[i]] = err[keys[i]];
+    }
+    return { name: err.name, message: err.message, stack: err.stack, props: props };
+  }
+  return { name: 'Error', message: String(err), stack: undefined, props: {} };
+}
+`;
+
 /** worker 内执行的 wrapper 源码（data URL，ESM）——import 任务产物并桥接 run */
 function buildWrapperSource(moduleUrl: string): string {
   return `
@@ -146,9 +176,14 @@ import * as mod from '${moduleUrl}';
 
 ${BUILD_VIEW_SOURCE}
 
+${SERIALIZE_ERROR_SOURCE}
+
 const run = mod.run;
 if (typeof run !== 'function') {
-  parentPort.postMessage({ type: 'error', message: 'Task module has no run export' });
+  parentPort.postMessage({
+    type: 'error',
+    error: { name: 'Error', message: 'Task module has no run export', stack: undefined, props: {} },
+  });
 } else {
   let controller = null;
   parentPort.on('message', async (msg) => {
@@ -161,22 +196,62 @@ if (typeof run !== 'function') {
     const { payload, taskCtx } = msg;
     try {
       const registries = buildRegistriesView(msg.registries);
-      const result = await run(payload, { ...taskCtx, signal: controller.signal, registries });
+      const progress = (value) => parentPort.postMessage({ type: 'progress', value });
+      const result = await run(payload, { ...taskCtx, signal: controller.signal, registries, progress });
       parentPort.postMessage({ type: 'done', result });
     } catch (err) {
-      parentPort.postMessage({
-        type: 'error',
-        message: err instanceof Error ? err.message : String(err),
-      });
+      const serialized = serializeError(err);
+      try {
+        parentPort.postMessage({ type: 'error', error: serialized });
+      } catch (_) {
+        // props 含不可克隆值（函数等）时丢弃 props，保底 name/message/stack
+        parentPort.postMessage({
+          type: 'error',
+          error: { name: serialized.name, message: serialized.message, stack: serialized.stack, props: {} },
+        });
+      }
     }
   });
 }
 `;
 }
 
+/** worker 错误回传负载（serializeError 的结构化克隆产物） */
+interface WorkerErrorPayload {
+  name?: string;
+  message?: string;
+  stack?: string;
+  props?: Record<string, unknown>;
+}
+
+/**
+ * 宿主侧错误重建：new Error 后回填 name/stack/props——错误信息（含业务错误码、
+ * worker 侧堆栈）跨线程保留；class 身份不跨线程（重建对象是 Error 实例），
+ * `instanceof 自定义子类` 不成立，跨线程判错用 err.name / 自定义属性。
+ */
+function reviveError(payload: WorkerErrorPayload | undefined): Error {
+  const err = new Error(payload?.message ?? 'task worker error');
+  if (payload?.name !== undefined) err.name = payload.name;
+  if (payload?.stack !== undefined) err.stack = payload.stack;
+  if (payload?.props) {
+    for (const [key, value] of Object.entries(payload.props)) {
+      (err as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+  return err;
+}
+
 export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unknown> {
   const { taskModulePath, payload, taskCtx, timeoutMs, externalSignal } = options;
-  const killGraceMs = options.killGraceMs ?? KILL_GRACE_MS;
+  const killGraceMs = options.graceMs ?? KILL_GRACE_MS;
+
+  // 预取消快速失败：驱动停机信号在派发时已触发（停机竞态），不创建 worker
+  // ——省掉线程冷启动，也不必空等宽限期
+  if (externalSignal?.aborted) {
+    throw new TaskCancelledError(
+      `Task "${taskCtx.job.name}" cancelled before start (driver stop signal already aborted)`,
+    );
+  }
 
   const moduleUrl = pathToFileURL(taskModulePath).href;
   const wrapperUrl = new URL(
@@ -232,29 +307,41 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
       timeoutMs,
     );
 
-    worker.on('message', (msg: { type?: string; result?: unknown; message?: string }) => {
-      if (phase === 'grace') {
-        // 宽限期内收到消息 = run 已结束（worker 因 parentPort 监听不会自行 exit）——
-        // 保持取消失败终局，立即返回；迟到的完成结果不采纳（超时判定即终局）
-        if (msg?.type === 'done') {
-          finish(() =>
-            reject(
-              new TaskCancelledError(
-                `Task "${taskCtx.job.name}" ${cancelReason} (task completed after the timeout)`,
+    worker.on(
+      'message',
+      (msg: { type?: string; result?: unknown; error?: WorkerErrorPayload; value?: unknown }) => {
+        if (phase === 'grace') {
+          // 宽限期内收到消息 = run 已结束（worker 因 parentPort 监听不会自行 exit）——
+          // 保持取消失败终局，立即返回；迟到的完成结果/进度不采纳（超时判定即终局）
+          if (msg?.type === 'done') {
+            finish(() =>
+              reject(
+                new TaskCancelledError(
+                  `Task "${taskCtx.job.name}" ${cancelReason} (task completed after the timeout)`,
+                ),
               ),
-            ),
-          );
-        } else if (msg?.type === 'error') {
-          finish(() => reject(new TaskCancelledError(msg.message ?? cancelReason)));
+            );
+          } else if (msg?.type === 'error') {
+            finish(() => reject(new TaskCancelledError(msg.error?.message ?? cancelReason)));
+          }
+          return;
         }
-        return;
-      }
-      if (phase !== 'running') return;
-      if (msg?.type === 'done') {
-        finish(() => resolve(msg.result));
-      } else if (msg?.type === 'error') {
-        finish(() => reject(new Error(msg.message ?? 'task worker error')));
-      }
+        if (phase !== 'running') return;
+        if (msg?.type === 'done') {
+          finish(() => resolve(msg.result));
+        } else if (msg?.type === 'error') {
+          finish(() => reject(reviveError(msg.error)));
+        } else if (msg?.type === 'progress') {
+          options.onProgress?.(msg.value);
+        }
+      },
+    );
+    worker.on('messageerror', () => {
+      // 消息反序列化失败（罕见——能通过发送端序列化的消息极少在接收端失败），
+      // 按执行错误终局，不悬挂等待超时
+      finish(() =>
+        reject(new Error(`Task "${taskCtx.job.name}" worker message could not be deserialized`)),
+      );
     });
     worker.on('error', (err) => {
       finish(() => reject(err));

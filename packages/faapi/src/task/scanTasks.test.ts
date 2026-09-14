@@ -38,14 +38,15 @@ export function run(payload: unknown) {}
     expect(tasks[0]!.name).toBe('a.b');
   });
 
-  it('正则提取 cron / concurrency / retries / timeoutMs 字面量', async () => {
+  it('正则提取 cron / concurrency / retries / timeoutMs / graceMs 字面量', async () => {
     writeTask(
       'src/tasks/cleanup/task.ts',
       `export const task = {
   cron: '0 3 * * *',
   concurrency: 2,
   retries: 3,
-  timeoutMs: 30000,
+  timeoutMs: 90000,
+  graceMs: 15000,
 };
 export function run() {}
 `,
@@ -56,8 +57,36 @@ export function run() {}
       cron: '0 3 * * *',
       concurrency: 2,
       retries: 3,
-      timeoutMs: 30000,
+      timeoutMs: 90000,
+      graceMs: 15000,
     });
+  });
+
+  it('timeoutMs 低于最小值 60s 时扫描期报错（短任务无需超时，走进程内）', async () => {
+    writeTask(
+      'src/tasks/too-fast/task.ts',
+      `export const task = {
+  timeoutMs: 30000,
+};
+export function run() {}
+`,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /timeoutMs 30000 is below the minimum 60000ms/,
+    );
+  });
+
+  it('timeoutMs 恰为最小值时通过；数字分隔符字面量（60_000）正确解析', async () => {
+    writeTask(
+      'src/tasks/edge/task.ts',
+      `export const task = {
+  timeoutMs: 60_000,
+};
+export function run() {}
+`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks[0]!.timeoutMs).toBe(60000);
   });
 
   it('未声明 meta 时字段缺省为 undefined', async () => {

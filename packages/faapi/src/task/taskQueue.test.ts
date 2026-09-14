@@ -4,7 +4,7 @@ import { createTaskRegistry } from './taskRegistry';
 import { TaskCancelledError } from './taskWorker';
 import { createAppRegistries, createTaskRegistriesView } from '../injection/registries';
 import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
-import type { TaskModule } from './taskTypes';
+import type { TaskContext, TaskModule } from './taskTypes';
 
 interface EnqueueCall {
   name: string;
@@ -293,6 +293,71 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
+  it('进程内执行：taskCtx.progress 记入记录（list 可见），派发清空上一轮，终态后调用被忽略', async () => {
+    let lateProgress: ((value: unknown) => void) | undefined;
+    let calls = 0;
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
+      calls += 1;
+      if (calls === 1) {
+        taskCtx.progress?.({ pct: 30 });
+        taskCtx.progress?.({ pct: 60 });
+        lateProgress = taskCtx.progress;
+      }
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(queue.list('hello')[0]).toMatchObject({ status: 'done', progress: { pct: 60 } });
+    // 终态后调用被忽略：不抛错、记录不变
+    expect(() => lateProgress?.({ pct: 100 })).not.toThrow();
+    expect(queue.list('hello')[0]?.progress).toEqual({ pct: 60 });
+    // 重新派发清空上一轮 progress；本轮不调用则保持 undefined
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 2);
+    const second = queue.list('hello').find((j) => j.attempts === 2);
+    expect(second).toMatchObject({ status: 'done' });
+    expect(second?.progress).toBeUndefined();
+    await queue.stop();
+  });
+
+  it('终态记录超上限（1000）按最旧优先淘汰，pending 记录永不淘汰', async () => {
+    const run = vi.fn(async () => 'ok');
+    const deps = makeDeps({ bulk: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const ids: string[] = [];
+    for (let i = 0; i < 1002; i++) {
+      const { id } = await queue.enqueue('bulk', { i });
+      ids.push(id);
+      await fake.dispatch('bulk', { i });
+    }
+    let list = queue.list('bulk');
+    expect(list).toHaveLength(1000);
+    expect(list.find((j) => j.id === ids[0])).toBeUndefined();
+    expect(list.find((j) => j.id === ids[1])).toBeUndefined();
+    expect(list.find((j) => j.id === ids[2])).toBeDefined();
+
+    // pending 记录不受终态上限影响
+    const pendingIds: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const { id } = await queue.enqueue('bulk', { pending: i });
+      pendingIds.push(id);
+    }
+    await queue.enqueue('bulk', { more: 1 });
+    await fake.dispatch('bulk', { more: 1 });
+    list = queue.list('bulk');
+    expect(list.filter((j) => j.status === 'pending')).toHaveLength(3);
+    for (const pid of pendingIds) {
+      expect(list.find((j) => j.id === pid)).toBeDefined();
+    }
+    await queue.stop();
+  });
+
   it('list 不传 name 返回全部任务记录', async () => {
     const deps = makeDeps({
       a: { run: async () => 1 },
@@ -337,6 +402,36 @@ describe('createTaskQueue', () => {
     expect(call.externalSignal).toBeInstanceOf(AbortSignal);
     expect(run).not.toHaveBeenCalled();
     expect(queue.list('heavy')[0]).toMatchObject({ status: 'done', result: 'from-worker' });
+    await queue.stop();
+  });
+
+  it('隔离执行透传 meta.graceMs（宽限期），未声明时不传', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 1000, graceMs: 8000 },
+      { name: 'default', filePath: 'dist/tasks/default/task.js', timeoutMs: 1000 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await queue.enqueue('default');
+    await fake.dispatch('heavy', {});
+    await fake.dispatch('default', {});
+    const opts = runIsolated.mock.calls.map((call) => call[0]) as Array<{
+      taskModulePath: string;
+      graceMs?: number;
+    }>;
+    expect(opts.find((o) => o.taskModulePath.includes('heavy'))?.graceMs).toBe(8000);
+    expect(opts.find((o) => o.taskModulePath.includes('default'))?.graceMs).toBeUndefined();
     await queue.stop();
   });
 

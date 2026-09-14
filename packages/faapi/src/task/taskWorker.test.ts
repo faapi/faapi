@@ -1,8 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runTaskInWorker, TaskCancelledError } from './taskWorker';
+import {
+  createToolRegistry,
+  createAgentRegistry,
+  createSkillRegistry,
+  createAgentHandleStore,
+  createTaskHandleStore,
+  createTaskRegistriesView,
+} from '../injection/registries';
+import { createTaskRegistry } from './taskRegistry';
+import type { AgentMetadata } from '../ast/extractAgentMetadata';
 
 /**
  * taskWorker 真实 worker 线程集成测试：
@@ -95,6 +105,242 @@ describe('runTaskInWorker', () => {
     ).rejects.toThrow('boom inside worker');
   });
 
+  it('错误保真：自定义 Error 子类的 name/stack/自定义属性回传宿主（不再只剩 message）', async () => {
+    const modulePath = writeTaskModule(
+      'rich-error',
+      `export function run() {
+        class PaymentDeclinedError extends Error {
+          code = 'PAYMENT_DECLINED';
+          statusCode = 402;
+          constructor(message) {
+            super(message);
+            this.name = 'PaymentDeclinedError';
+          }
+        }
+        throw new PaymentDeclinedError('card was declined');
+      }`,
+    );
+    const err: Error = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    }).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: Error) => e,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe('card was declined');
+    expect(err.name).toBe('PaymentDeclinedError');
+    expect((err as Error & { code?: string }).code).toBe('PAYMENT_DECLINED');
+    expect((err as Error & { statusCode?: number }).statusCode).toBe(402);
+    // stack 为 worker 侧原始抛出堆栈（含任务模块路径），非宿主重建点
+    expect(err.stack).toContain('rich-error');
+  });
+
+  it('错误保真：run 抛非 Error 值按 String(err) 回传为 Error', async () => {
+    const modulePath = writeTaskModule(
+      'throw-string',
+      `export function run() { throw 'plain string failure'; }`,
+    );
+    const err: Error = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    }).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: Error) => e,
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe('plain string failure');
+  });
+
+  it('错误保真：自定义属性含不可克隆值（函数）时丢弃 props、保底 name/message', async () => {
+    const modulePath = writeTaskModule(
+      'bad-props',
+      `export function run() {
+        const err = new Error('db down');
+        err.name = 'DbError';
+        err.onRetry = () => {};
+        throw err;
+      }`,
+    );
+    const err: Error = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    }).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: Error) => e,
+    );
+    expect(err.message).toBe('db down');
+    expect(err.name).toBe('DbError');
+    expect((err as Error & { onRetry?: unknown }).onRetry).toBeUndefined();
+  });
+
+  it('进度上报：taskCtx.progress 的值经 onProgress 按序回传宿主，不影响结果', async () => {
+    const modulePath = writeTaskModule(
+      'progress',
+      `export async function run(_payload, taskCtx) {
+         taskCtx.progress({ step: 1, total: 3 });
+         taskCtx.progress({ step: 2, total: 3 });
+         return { step: 3 };
+       }`,
+    );
+    const progressValues: unknown[] = [];
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      onProgress: (value) => progressValues.push(value),
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({ step: 3 });
+    expect(progressValues).toEqual([
+      { step: 1, total: 3 },
+      { step: 2, total: 3 },
+    ]);
+  });
+
+  it('不调用 progress：onProgress 不触发，行为与无进度任务一致', async () => {
+    const modulePath = writeTaskModule('no-progress', `export function run() { return 'ok'; }`);
+    const onProgress = vi.fn();
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      onProgress,
+      timeoutMs: 5000,
+    });
+    expect(result).toBe('ok');
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('externalSignal 派发时已 aborted：快速失败，不创建 worker（任务不执行）', async () => {
+    const markerPath = path.join(dir, 'ran.txt');
+    const modulePath = writeTaskModule(
+      'never-runs',
+      `import fs from 'node:fs';
+       export function run() {
+         fs.writeFileSync('${markerPath.replace(/\\/g, '\\\\')}', 'x');
+         return 'ran';
+       }`,
+    );
+    const controller = new AbortController();
+    controller.abort();
+    const started = Date.now();
+    await expect(
+      runTaskInWorker({
+        taskModulePath: modulePath,
+        payload: {},
+        taskCtx: baseCtx,
+        timeoutMs: 10_000,
+        externalSignal: controller.signal,
+        graceMs: 3000,
+      }),
+    ).rejects.toBeInstanceOf(TaskCancelledError);
+    // 快速失败（若走旧路径会空等 3s 宽限期）
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(fs.existsSync(markerPath)).toBe(false);
+  });
+
+  it('视图一致性：worker 重建视图与宿主 createTaskRegistriesView 输出一致（同一份注册表数据）', async () => {
+    const toolRegistry = createToolRegistry();
+    const agentRegistry = createAgentRegistry(toolRegistry);
+    const skillRegistry = createSkillRegistry();
+    const metas: AgentMetadata[] = [
+      {
+        name: 'log-analyzer',
+        description: 'analyzer',
+        filePath: 'dist/agents/log-analyzer/handler.js',
+        hasRun: false,
+        systemPrompt: 'p',
+        tools: ['parse', 'missing-tool'],
+        agents: ['helper', 'missing-sub'],
+        model: 'gpt-4o',
+        maxTurns: 5,
+      },
+      { name: 'helper', filePath: 'dist/agents/helper/handler.js', hasRun: true },
+    ];
+    agentRegistry.hydrate(metas);
+    toolRegistry.hydrate([
+      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
+    ]);
+    skillRegistry.hydrate([{ name: 'db-skill', systemPrompt: 's' }]);
+    const hostView = createTaskRegistriesView({
+      tool: toolRegistry,
+      agent: agentRegistry,
+      skill: skillRegistry,
+      task: createTaskRegistry(),
+      agentHandle: createAgentHandleStore(),
+      taskHandle: createTaskHandleStore(),
+    });
+    // 与 taskQueue.snapshotRegistries 同构的快照生成
+    const snapshot = {
+      agents: hostView.agent
+        .listAgents()
+        .map((core) => hostView.agent.getAgentEntry(core.name))
+        .filter((entry): entry is AgentMetadata => entry !== undefined),
+      tools: hostView.tool.list(),
+      skills: hostView.skill.list(),
+    };
+
+    const modulePath = writeTaskModule(
+      'view-parity',
+      `export function run(_payload, taskCtx) {
+        const r = taskCtx.registries;
+        return {
+          getAgent: r.agent.getAgent('log-analyzer'),
+          getAgentEntry: r.agent.getAgentEntry('log-analyzer'),
+          listAgents: r.agent.listAgents(),
+          asTool: r.agent.asTool('log-analyzer'),
+          asToolMissing: r.agent.asTool('nope'),
+          resolveAgentTools: r.agent.resolveAgentTools('log-analyzer'),
+          resolveAgentToolsNoDecl: r.agent.resolveAgentTools('helper'),
+          resolveSubAgents: r.agent.resolveSubAgents('log-analyzer'),
+          resolveSubAgentsMissing: r.agent.resolveSubAgents('helper'),
+          toolGet: r.tool.get('parse'),
+          toolList: r.tool.list(),
+          skillGet: r.skill.get('db-skill'),
+          skillList: r.skill.list(),
+        };
+      }`,
+    );
+    const workerResult = (await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      registries: snapshot,
+      timeoutMs: 5000,
+    })) as Record<string, unknown>;
+
+    // 宿主侧对同一份注册表数据做同样的方法调用，逐字段对照
+    const hostResult: Record<string, unknown> = {
+      getAgent: hostView.agent.getAgent('log-analyzer'),
+      getAgentEntry: hostView.agent.getAgentEntry('log-analyzer'),
+      listAgents: hostView.agent.listAgents(),
+      asTool: hostView.agent.asTool('log-analyzer'),
+      asToolMissing: hostView.agent.asTool('nope'),
+      resolveAgentTools: hostView.agent.resolveAgentTools('log-analyzer'),
+      resolveAgentToolsNoDecl: hostView.agent.resolveAgentTools('helper'),
+      resolveSubAgents: hostView.agent.resolveSubAgents('log-analyzer'),
+      resolveSubAgentsMissing: hostView.agent.resolveSubAgents('helper'),
+      toolGet: hostView.tool.get('parse'),
+      toolList: hostView.tool.list(),
+      skillGet: hostView.skill.get('db-skill'),
+      skillList: hostView.skill.list(),
+    };
+    expect(workerResult).toEqual(hostResult);
+  });
+
   it('模块无 run 导出：报错回传', async () => {
     const modulePath = writeTaskModule('norun', `export const x = 1;`);
     await expect(
@@ -133,7 +379,7 @@ describe('runTaskInWorker', () => {
         payload: {},
         taskCtx: baseCtx,
         timeoutMs: 100,
-        killGraceMs: 60,
+        graceMs: 60,
       }),
     ).rejects.toBeInstanceOf(TaskCancelledError);
     // 100ms 超时 + 60ms 宽限 ≈ 160ms——远小于任务自然结束的 10s，证明执行被真终止
@@ -160,7 +406,7 @@ describe('runTaskInWorker', () => {
         payload: {},
         taskCtx: baseCtx,
         timeoutMs: 100,
-        killGraceMs: 5000,
+        graceMs: 5000,
       }),
     ).rejects.toBeInstanceOf(TaskCancelledError);
     // 任务在宽限内退出 → 立即返回，不等满 5s 宽限期
@@ -185,7 +431,7 @@ describe('runTaskInWorker', () => {
         payload: {},
         taskCtx: baseCtx,
         timeoutMs: 100,
-        killGraceMs: 200,
+        graceMs: 200,
       }),
     ).rejects.toBeInstanceOf(TaskCancelledError);
   });
@@ -210,7 +456,7 @@ describe('runTaskInWorker', () => {
       taskCtx: baseCtx,
       timeoutMs: 10_000,
       externalSignal: controller.signal,
-      killGraceMs: 1000,
+      graceMs: 1000,
     });
     setTimeout(() => controller.abort(), 50);
     await expect(pending).rejects.toBeInstanceOf(TaskCancelledError);

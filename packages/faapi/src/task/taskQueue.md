@@ -20,9 +20,9 @@
 - `onFailed` 钩子（`config.task.onFailed`）：每次 process 抛错后触发（含将重试的失败），`info = { task, jobId, attempt, willRetry, cancelled, error }`——`willRetry` 按任务 meta.retries 推算（attempt <= retries）；用于告警/死信上报等副作用，自身抛错被忽略
 - worker 执行（驱动按并发/重试策略调 `process`），按任务 meta 分两条路径，**均注入 `taskCtx.registries`（app 注册表只读视图，任务侧组装 agent 用，见 taskTypes.md）**：
   - **进程内**（默认）：import 任务模块（缓存），调用 `run(payload, { signal, job, config, registries })`——registries 为活引用视图（`createAppBase` 创建队列时传入）
-  - **隔离执行**（任务声明 `timeoutMs`）：走 taskWorker 独立线程执行，超时两段式取消（abort 信号宽限 → terminate 硬杀）——判定超时即执行真正终止，详见 taskWorker.md；registries 以纯数据快照传入（worker 内重建视图，派发时刻快照语义）
-  - 每次执行更新记录 `running`（attempts 递增），返回写 `done`（保留 result），抛错写 `failed`（保留 error）后向上传播——是否重试由驱动决定
-- 任务记录：`pending / running / retry / done / failed / cancelled`，`list(name?)` 返回快照；**取消与失败分流**——执行被框架终止（隔离执行超时终止、停机取消）记 `cancelled`（`TaskCancelledError` 或 job.signal 已 abort），run 自身抛错记 `failed`，两者都向上抛错交驱动按 retries 重试，重试派发后记录回 `running` 继续流转；持久化与历史记录由驱动负责，本层记录为当前进程内存活快照（stop 后未消费的 pending 任务不标记——持久化驱动下重启后继续执行）
+  - **隔离执行**（任务声明 `timeoutMs`，最小 60s——扫描期校验，理由见 taskWorker.md）：走 taskWorker 独立线程执行，超时两段式取消（abort 信号宽限 → terminate 硬杀）——判定超时即执行真正终止，宽限期默认 5s、经 task meta `graceMs` 按任务配置（详见 taskWorker.md）；registries 以纯数据快照传入（worker 内重建视图，派发时刻快照语义）
+  - 每次执行更新记录 `running`（attempts 递增），返回写 `done`（保留 result），抛错写 `failed`（保留 error）后向上传播——是否重试由驱动决定；执行中 `taskCtx.progress(value)` 上报的进度记入记录 `progress` 字段（仅 running 状态生效，两条执行路径语义一致，见 taskTypes.md）
+- 任务记录：`pending / running / retry / done / failed / cancelled`，`list(name?)` 返回快照；**取消与失败分流**——执行被框架终止（隔离执行超时终止、停机取消）记 `cancelled`（`TaskCancelledError` 或 job.signal 已 abort），run 自身抛错记 `failed`，两者都向上抛错交驱动按 retries 重试，重试派发后记录回 `running` 继续流转；持久化与历史记录由驱动负责，本层记录为当前进程内存活快照（stop 后未消费的 pending 任务不标记——持久化驱动下重启后继续执行）。**终态记录有内存上限**（1000 条，超限按最旧优先淘汰 done/failed/cancelled——pending/running/retry 永不淘汰）：`list()` 为进程内观测快照而非持久化历史，更早的终态记录交由驱动侧视图（`listQueued`，驱动实现 `list` 时）承担
 - `listQueued(name?)`：持久化队列视图——驱动实现 `TaskDriver.list` 时返回队列侧任务（含其他实例/历史执行），并与本进程记录按 id 合并（本进程观测优先：status/attempts/result/error 以本进程为准）；驱动未实现时显式抛错（能力边界见 driverTypes.md：pgboss 未实现 list，BullMQ 全支持）
 - `cancel(name, id)` / `retry(name, id)`：透传驱动可选管理方法；本地有该 id 记录时同步更新（cancel → `cancelled`，retry → `pending` 等待重新派发）；驱动未实现时显式抛错
 - `stop(timeoutMs)`：停止接受新任务，透传 `timeoutMs` 给 `driver.stop`（drain/abort 语义由驱动实现；驱动超时后 abort 在跑任务的 signal，进程内任务监听退出，进程退出兜底终止）；停止后 `enqueue`/`start` 抛错

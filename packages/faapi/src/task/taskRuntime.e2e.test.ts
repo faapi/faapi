@@ -23,6 +23,7 @@ const DRIVER_MODULE = `
 let seq = 0;
 const jobs = [];
 const workers = new Map();
+const inflight = new Map();
 let stopped = false;
 let running = 0;
 export const driverState = { startedWorkers: [] };
@@ -33,12 +34,14 @@ function pump() {
     if (!worker) continue;
     running += 1;
     job.attempt += 1;
-    const signal = new AbortController().signal;
+    const controller = new AbortController();
+    inflight.set(job.id, controller);
     Promise.resolve()
-      .then(() => worker.process({ id: job.id, name: job.name, payload: job.payload, attempt: job.attempt, signal }))
+      .then(() => worker.process({ id: job.id, name: job.name, payload: job.payload, attempt: job.attempt, signal: controller.signal }))
       .catch(() => {})
       .finally(() => {
         running -= 1;
+        inflight.delete(job.id);
         pump();
       });
   }
@@ -60,8 +63,13 @@ export const driver = {
     workers.set(name, opts);
     pump();
   },
-  async stop() {
+  async stop(timeoutMs = 10000) {
     stopped = true;
+    // 与真实驱动（pgboss/bullmq）语义对齐：drain 等待，超时 abort 在跑任务的 signal
+    if (running > 0) {
+      await new Promise((r) => setTimeout(r, timeoutMs));
+      for (const controller of inflight.values()) controller.abort();
+    }
     while (running > 0) await new Promise((r) => setTimeout(r, 10));
   },
   async stopWorkers() {
@@ -178,8 +186,10 @@ describe('task runtime e2e', () => {
     await app.close();
   });
 
-  it('timeoutMs 任务超时后真终止并记 cancelled（隔离线程两段式取消）', async () => {
-    // 产物准备（同上，含 timeout 任务——echo 已验证隔离 happy path，本用例验证超时取消）
+  it('停机取消真终止隔离任务并记 cancelled（externalSignal → 两段式 → terminate）', async () => {
+    // 产物准备（同上）。timeout fixture 刻意不配合取消（不监听 signal）——
+    // 只能靠 graceMs 宽限到点后的 terminate() 硬杀结束；timeoutMs 本身（60s 最小）
+    // 不会到点，取消由驱动停机 drain 超时 abort 触发（externalSignal 路径）
     const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
     await compileSourceFiles({
       rootDir: FIXTURES_DIR,
@@ -193,15 +203,20 @@ describe('task runtime e2e', () => {
     writeConfigWithDriver(dist);
 
     const { app } = await createAppBase({ rootDir: FIXTURES_DIR, dist });
-    // 任务自然结束需 10s——若框架没有真终止，viWaitFor 会以 5s 超时失败
+    // 任务自然结束需 10s——若框架没有真终止，stop 的 abort + 宽限 terminate 后
+    // 任务记录不会落定，本用例会以 viWaitFor 超时失败
     const start = Date.now();
     await app.tasks.enqueue('timeout');
-    // 取消与失败分流：超时终止记 cancelled（非 failed）
+    // 停机 drain 50ms 后 abort 在跑任务（externalSignal）→ graceMs 宽限 500ms
+    // → 任务不配合 → terminate 硬杀
+    await app.tasks.stop(50);
+    // 取消与失败分流：停机取消记 cancelled（非 failed）
     await viWaitFor(() => app.tasks.list('timeout')[0]?.status === 'cancelled');
     const job = app.tasks.list('timeout')[0]!;
     expect(job.status).toBe('cancelled');
-    expect(job.error).toMatch(/timed out/);
-    expect(Date.now() - start).toBeLessThan(5000);
+    expect(job.error).toMatch(/cancelled/);
+    // 50ms drain + 500ms 宽限 + terminate——远小于任务自然结束的 10s，证明执行被真终止
+    expect(Date.now() - start).toBeLessThan(3000);
     await app.close();
   });
 
