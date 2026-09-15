@@ -1,7 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { logger } from './logger';
 import { invokeHandler } from '../runtime/invokeHandler';
 import { createTestContext } from '../runtime/createContext';
+import { configureLogging, flushLogging } from '../logger/logger';
+import type { LogEntry } from '../logger/loggerTypes';
 import type { FaapiMiddleware } from './middlewareTypes';
 
 describe('logger middleware', () => {
@@ -115,5 +120,151 @@ describe('logger middleware', () => {
     expect(match).not.toBeNull();
     const duration = parseInt(match![1], 10);
     expect(duration).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('logger middleware 与统一日志管道（config.log.accessLog）', () => {
+  const makeCtx = (method = 'GET', path = '/api/test') => createTestContext({ method, path });
+
+  it('config.log.accessLog: true（sink 模式）时默认 logger 请求条目并入统一管道，level 按 status 映射', async () => {
+    delete process.env.LOG_LEVEL;
+    const entries: LogEntry[] = [];
+    configureLogging({ sink: (e) => entries.push(e), accessLog: true });
+    try {
+      const mw = logger();
+      const handler = () => new Response(null, { status: 404 });
+      await invokeHandler(handler, makeCtx('GET', '/api/missing'), undefined, [mw]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].level).toBe('warn');
+      expect(entries[0].scope).toBe('access');
+      expect(entries[0].message).toMatch(/^GET \/api\/missing 404 \d+ms$/);
+      expect(entries[0].fields).toMatchObject({
+        requestId: expect.any(String),
+        method: 'GET',
+        path: '/api/missing',
+        status: 404,
+      });
+    } finally {
+      configureLogging(undefined);
+      delete process.env.LOG_LEVEL;
+    }
+  });
+
+  it('sink 模式缺省 accessLog 时不并入：请求日志走 console.log（行为不变）', async () => {
+    delete process.env.LOG_LEVEL;
+    const entries: LogEntry[] = [];
+    const consoleLogs: unknown[] = [];
+    configureLogging({ sink: (e) => entries.push(e) });
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      consoleLogs.push(...args);
+    });
+    try {
+      const mw = logger();
+      await invokeHandler(() => ({ ok: true }), makeCtx(), undefined, [mw]);
+      expect(entries).toHaveLength(0);
+      expect(consoleLogs).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      configureLogging(undefined);
+      delete process.env.LOG_LEVEL;
+    }
+  });
+
+  it('dir 模式（accessLog 缺省）请求日志写入文件（scope access），与业务日志同文件', async () => {
+    delete process.env.LOG_LEVEL;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-access-'));
+    configureLogging({ dir, stdout: false });
+    try {
+      const mw = logger();
+      await invokeHandler(() => ({ ok: true }), makeCtx('POST', '/api/users'), undefined, [mw]);
+      await flushLogging();
+      const content = fs.readFileSync(path.join(dir, 'app.log'), 'utf8');
+      expect(content).toMatch(/INFO \[access\] POST \/api\/users 200 \d+ms/);
+    } finally {
+      configureLogging(undefined);
+      delete process.env.LOG_LEVEL;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('dir 模式 5xx 请求日志按 status 映射 error 级别，dup 进 error.log', async () => {
+    delete process.env.LOG_LEVEL;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-access-'));
+    configureLogging({ dir, stdout: false });
+    try {
+      const mw = logger();
+      const handler = () => {
+        throw new Error('boom');
+      };
+      await expect(
+        invokeHandler(handler, makeCtx('POST', '/api/broken'), undefined, [mw]),
+      ).rejects.toThrow('boom');
+      await flushLogging();
+      const content = fs.readFileSync(path.join(dir, 'error.log'), 'utf8');
+      expect(content).toMatch(/ERROR \[access\] POST \/api\/broken 500 \d+ms - boom/);
+    } finally {
+      configureLogging(undefined);
+      delete process.env.LOG_LEVEL;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('dir 模式显式 accessLog: false 时请求日志回落 console.log，不写文件', async () => {
+    delete process.env.LOG_LEVEL;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-access-'));
+    const consoleLogs: unknown[] = [];
+    configureLogging({ dir, stdout: false, accessLog: false });
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      consoleLogs.push(...args);
+    });
+    try {
+      const mw = logger();
+      await invokeHandler(() => ({ ok: true }), makeCtx(), undefined, [mw]);
+      await flushLogging();
+      const content = fs.existsSync(path.join(dir, 'app.log'))
+        ? fs.readFileSync(path.join(dir, 'app.log'), 'utf8')
+        : '';
+      expect(content).not.toContain('[access]');
+      expect(consoleLogs).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      configureLogging(undefined);
+      delete process.env.LOG_LEVEL;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('config.log: false（业务全静默）时请求日志仍走 console.log（存量行为）', async () => {
+    delete process.env.LOG_LEVEL;
+    const consoleLogs: unknown[] = [];
+    configureLogging(false);
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      consoleLogs.push(...args);
+    });
+    try {
+      const mw = logger();
+      await invokeHandler(() => ({ ok: true }), makeCtx(), undefined, [mw]);
+      expect(consoleLogs).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      configureLogging(undefined);
+      delete process.env.LOG_LEVEL;
+    }
+  });
+
+  it('显式 options.log 优先于统一管道（用户接管不再并入）', async () => {
+    delete process.env.LOG_LEVEL;
+    const entries: LogEntry[] = [];
+    const custom: string[] = [];
+    configureLogging({ sink: (e) => entries.push(e), accessLog: true });
+    try {
+      const mw = logger({ log: (_obj, msg) => custom.push(msg ?? '') });
+      await invokeHandler(() => ({ ok: true }), makeCtx(), undefined, [mw]);
+      expect(custom).toHaveLength(1);
+      expect(entries).toHaveLength(0);
+    } finally {
+      configureLogging(undefined);
+      delete process.env.LOG_LEVEL;
+    }
   });
 });

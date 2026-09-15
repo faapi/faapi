@@ -61,9 +61,10 @@ export interface TaskWorkerOptions {
    * 任务日志配置（纯数据，postMessage 传入，worker 内联重建日志器注入 taskCtx.log；
    * 缺省时 taskCtx.log 为 undefined）：scope/fields 与进程内路径一致（`task:<name>`
    * + jobId/task/attempt），level 为宿主侧生效的全局级别（worker 侧预过滤，
-   * 宿主 writeLogEntry 再次过滤）
+   * 宿主 writeLogEntry 再次过滤；undefined = 宿主未配置阈值——文件管道默认全量，
+   * worker 侧同样不过滤）
    */
-  log?: { level: LogLevel; scope?: string; fields?: Record<string, unknown> };
+  log?: { level?: LogLevel; scope?: string; fields?: Record<string, unknown> };
   /** 外部取消信号（驱动停机超时 abort）——abort 同样触发两段式取消 */
   externalSignal?: AbortSignal;
   /**
@@ -183,7 +184,8 @@ function serializeError(err) {
 `;
 
 /**
- * worker 内任务日志器（内联源码）：级别预过滤 + scope/fields 组装，条目作为纯数据
+ * worker 内任务日志器（内联源码）：级别预过滤（level 为 undefined 时不过滤——
+ * 宿主文件管道默认全量）+ scope/fields 组装，条目作为纯数据
  * 经 `{ type: 'log' }` 消息回传宿主、由宿主统一 sink 输出——wrapper 是 data URL 模块
  * 无法 import 主包，故内联实现（语义与主包 createLogger 对齐：child scope `:` 合并、
  * 调用处 fields 覆盖构造字段；格式化在宿主侧，不跨线程复制格式代码）。
@@ -196,7 +198,7 @@ var LOG_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
 function createTaskLogger(level, scope, fields) {
   function make(suffix) {
     function write(lvl, message, callFields) {
-      if (LOG_RANK[lvl] < LOG_RANK[level]) return;
+      if (level !== undefined && LOG_RANK[lvl] < LOG_RANK[level]) return;
       var entry = { level: lvl, message: message, time: new Date().toISOString() };
       var fullScope = suffix === undefined ? scope : scope === undefined ? suffix : scope + ':' + suffix;
       if (fullScope !== undefined) entry.scope = fullScope;

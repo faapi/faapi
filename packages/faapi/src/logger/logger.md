@@ -64,7 +64,24 @@ export async function run(payload, taskCtx) {
 
 进程内执行与隔离执行（声明 `timeoutMs` 的任务）行为一致：隔离路径下日志条目作为纯数据经 postMessage 回传宿主、由宿主统一的 sink 输出——自定义 sink 同样覆盖隔离任务。宽限期（取消判定后）产生的日志与进度同语义：不采纳（超时判定即终局）。
 
-### 4. 接管输出目标（业务方接入 pino / 写文件）
+### 4. egg 风格文件输出（`config.log.dir`，一条配置得文件日志）
+
+传统部署按文件采集日志、error 需要单独文件盘查的场景，不需要手写 sink——配置 `dir` 即启用内置文件管道（详见 `fileSink.md`），且**请求日志自动并入同一管道**（一份配置管全部输出）：
+
+```ts
+// faapi.config.ts
+export default {
+  log: {
+    dir: 'logs',           // logs/app.log 全量 + logs/error.log 仅 error（egg dup 语义）
+    // splitByLevel: true, // 或按级别四文件：debug.log / info.log / warn.log / error.log
+    // stdout: true,       // 默认写文件同时保留 console；false 纯文件
+  },
+} satisfies FaapiConfig;
+```
+
+`dir` 模式**未显式配置 `level`（含 `LOG_LEVEL` env）时不过滤**——全量条目落盘，debug/info/warn/error 的分流由文件布局决定（`splitByLevel`），不在管道层丢数据；显式配置 `level` 时阈值照常生效。未配置 `dir` 的模式（console / 自定义 sink）未显式配置时仍默认 `info` 阈值（行为不变）。
+
+### 5. 接管输出目标（业务方接入 pino / 写文件）
 
 框架**不内置 pino**（不新增依赖、不代替业务选型）——`config.log.sink` 就是业务方接入 pino 的官方入口，一次赋值完成整条管道接管（`ctx.log` / `createLogger` / `taskCtx.log` 全部走 sink，隔离任务也覆盖）：
 
@@ -105,7 +122,7 @@ export default {
 注意点：
 
 - **级别过滤归属**：faapi 侧过滤发生在 sink 调用之前，pino 收到的条目都已过阈值——pino level 设最低避免双重过滤配置漂移
-- **请求日志统一进 pino**（可选）：请求日志中间件是独立管道，要一并接管用既有配置 `logger: { log: (entry, msg) => pinoLogger.info(entry, msg) }`（条目含 requestId/status/durationMs）
+- **请求日志统一进 pino**（可选）：配置 `log: { sink, accessLog: true }` 请求日志即并入同一管道（scope `access`），或沿用 `logger: { log: (entry, msg) => pinoLogger.info(entry, msg) }` 自定义接线（条目含 requestId/status/durationMs）
 - **绝对不丢日志**（审计类）：`pino(pino.destination({ sync: true }))` 同步写，牺牲吞吐换确定性；常规场景默认异步 + `onClose` flush 足够
 - 本地开发美化输出：`pino({ transport: { target: 'pino-pretty' } })`（需安装 pino-pretty）或命令行管道 `node dist/main | npx pino-pretty`；`transport` 模式下进程退出前用 `pino.final` 处理 flush，不影响容器内的 JSON 采集
 
@@ -145,20 +162,24 @@ services:
 
 ### 与请求日志中间件（`config.logger`）的关系
 
-两条独立管道，职责不同：
+`config.log.accessLog` 控制请求日志是否并入统一管道（缺省随 `config.log.dir` 启用）：
 
-| 配置 | 管道 | 内容 | 输出 |
-|------|------|------|------|
-| `config.log` | 业务日志器（本模块） | `ctx.log` / `createLogger` / `taskCtx.log` 的业务日志 | 级别过滤 + `config.log.sink`（默认 console 文本） |
-| `config.logger` | 请求日志中间件 | 每请求一行 method/path/status/duration | `logger.log` 自定义函数（默认 console.log，格式不变） |
+| 配置组合 | 请求日志输出 |
+|------|------|
+| 未配置 `config.log` / `true` / `{ sink }` | `console.log`（默认，格式不变） |
+| `{ dir }`（缺省 `accessLog`） | **并入统一管道**（与业务日志同文件/同 sink） |
+| `{ sink, accessLog: true }` | **并入统一管道** |
+| `{ dir, accessLog: false }` | `console.log`（显式关闭） |
+| `config.log: false` | `console.log`（全静默只作用于业务日志，关闭请求日志用 `config.logger: false`） |
+| `config.logger: { log }` | 用户接管（最高优先，见 `../middleware/logger.md`） |
 
-请求日志条目已附带 `requestId` 字段（取自 `ctx.requestId`），自定义 log 函数（如接 pino）时业务日志与请求日志可经 requestId 关联。不做隐式统一（请求中间件默认输出格式保持不变，零破坏）；需要统一时业务方用 `logger: { log: (entry, msg) => mySink(...) }` 自行接线。
+并入的条目形状：`{ level: 2xx/3xx→'info'、4xx→'warn'、5xx→'error'，message: 'GET /api/users 200 12ms'，scope: 'access'，fields: { requestId, method, path, status, durationMs, error? } }`——按 status 映射级别，文件模式下 5xx 自动进 `error.log`；scope `access` 与业务日志的 `http` 区分，`requestId` 关联两者。显式 `logger: { log }` 自定义时不再并入（显式接管优先）。
 
 ## 行为约定
 
 - **级别阈值**：`debug(0) < info(1) < warn(2) < error(3)`，低于阈值的条目在构造 entry 之前丢弃（零序列化开销）
-- **级别解析**：logger 实例级 `options.level` 覆盖全局；全局取 `config.log.level` 显式值 > `LOG_LEVEL` 环境变量 > `'info'`。非法级别（config 或 env）在 `configureLogging` 时显式抛错（启动期 fail fast），不降级为默认值
-- **sink 解析**：logger 实例级 `options.sink` 优先（显式接管，不受全局 `log: false` 影响）→ 全局 sink → 默认 console
+- **级别解析**：logger 实例级 `options.level` 覆盖全局；全局取 `config.log.level` 显式值 > `LOG_LEVEL` 环境变量 > 模式默认。非法级别（config 或 env）在 `configureLogging` 时显式抛错（启动期 fail fast），不降级为默认值。**模式默认分档**：`config.log.dir` 文件模式默认**不过滤**（全量条目进管道，分流由 `splitByLevel` 文件布局承担）；console / 自定义 sink 模式默认 `'info'`（行为与既有版本一致）
+- **sink 解析**：logger 实例级 `options.sink` 优先（显式接管，不受全局 `log: false` 影响）→ 全局 sink → 文件管道（`dir`）→ 默认 console。`dir` 模式 `stdout` 非 false 时文件与 console 双写。`sink` 与 `dir` 互斥，同时配置抛错
 - **`child(scope)`**：scope 以 `:` 合并（`createLogger('http').child('user')` → `http:user`，可多层嵌套），fields 浅合并（child 覆盖同名键）；返回新 Logger，父子互不影响
 - **`configureLogging(undefined)`** 重置为默认（level 走 env/默认 info、无自定义 sink）——编程式多 app 切换全局配置用
 - 日志调用**永不抛错**：fields 序列化失败（循环引用等）降级为提示文本输出（已记入 `fallback.md`），不影响业务流程
@@ -166,11 +187,13 @@ services:
 ## 相关模块
 
 - `loggerTypes.ts` - `LogLevel`/`LogEntry`/`LogSink`/`Logger`/`LogConfig` 类型契约
+- `fileSink.ts` - egg 风格文件输出 sink（`config.log.dir`，含 `splitByLevel` 分级文件）
+- `formatEntry.ts` - 默认文本格式化（console 与文件共用）
 - `runtime/createContext.ts` - 每请求创建 `ctx.requestId` + `ctx.log`
 - `runtime/contextTypes.ts` - `FaapiContext.requestId`/`FaapiContext.log` 字段声明
 - `injection/injectParams.ts` + `injection/resolveInjection.ts` - 参数名 `log` 注入 `ctx.log`
 - `task/taskQueue.ts` - 进程内任务注入 `taskCtx.log`
 - `task/taskWorker.ts` - 隔离任务的内联日志桥（postMessage 回传宿主）
 - `cli/createAppCore.ts` - `createAppBase` 读 `config.log` 调 `configureLogging`；`log` 列入内置 config key
-- `middleware/logger.ts` - 请求日志中间件（独立管道，entry 附带 requestId）
+- `middleware/logger.ts` - 请求日志中间件（`accessLog` 并入统一管道，scope `access`）
 - `config/configTypes.ts` - `log?: LogConfig | boolean` 配置项

@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLogger, configureLogging, writeLogEntry } from './logger';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  createLogger,
+  configureLogging,
+  flushLogging,
+  getEffectiveLogLevel,
+  writeLogEntry,
+} from './logger';
 import { resolveInjection } from '../injection/resolveInjection';
 import { injectParamsAsync } from '../injection/injectParams';
 import { createTestContext } from '../runtime/createContext';
@@ -240,6 +249,102 @@ describe('logger 自定义 sink', () => {
     expect(mine).toHaveLength(1);
     expect(global).toHaveLength(1);
     expect(global[0].scope).toBe('other');
+  });
+});
+
+describe('logger dir 文件模式（egg 风格文件输出）', () => {
+  let dir: string;
+  let lines: string[];
+
+  beforeEach(() => {
+    delete process.env.LOG_LEVEL;
+    configureLogging(undefined);
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-logger-'));
+    lines = spyConsole();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.LOG_LEVEL;
+    configureLogging(undefined);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const readAppLog = async (): Promise<string[]> => {
+    await flushLogging();
+    return fs.readFileSync(path.join(dir, 'app.log'), 'utf8').trim().split('\n');
+  };
+
+  it('业务日志写入 app.log，stdout 双写（默认）', async () => {
+    configureLogging({ dir });
+    createLogger('db').info('connected');
+    expect((await readAppLog())[0]).toMatch(/ INFO \[db\] connected$/);
+    expect(lines).toHaveLength(1);
+  });
+
+  it('未配置 level 时不过滤：debug 也落盘（文件管道全量，分流由文件布局承担）', async () => {
+    configureLogging({ dir });
+    createLogger('app').debug('detail');
+    expect((await readAppLog())[0]).toMatch(/ DEBUG \[app\] detail$/);
+  });
+
+  it('显式 level 在 dir 模式照常生效（info 被过滤）', () => {
+    configureLogging({ dir, level: 'warn' });
+    createLogger('app').info('hidden');
+    expect(fs.existsSync(path.join(dir, 'app.log'))).toBe(false);
+  });
+
+  it('LOG_LEVEL env 在 dir 模式同样生效', () => {
+    process.env.LOG_LEVEL = 'error';
+    configureLogging({ dir });
+    createLogger('app').info('hidden');
+    expect(fs.existsSync(path.join(dir, 'app.log'))).toBe(false);
+  });
+
+  it('stdout: false 时纯文件输出，console 静默', async () => {
+    configureLogging({ dir, stdout: false });
+    createLogger('app').error('file only');
+    expect((await readAppLog())[0]).toMatch(/ ERROR \[app\] file only$/);
+    expect(lines).toHaveLength(0);
+  });
+
+  it('splitByLevel: true 时按级别分文件', async () => {
+    configureLogging({ dir, splitByLevel: true, stdout: false });
+    createLogger('app').warn('w');
+    await flushLogging();
+    expect(fs.readFileSync(path.join(dir, 'warn.log'), 'utf8')).toMatch(/ WARN \[app\] w/);
+  });
+
+  it('sink 与 dir 同时配置抛错（互斥，fail fast）', () => {
+    expect(() => configureLogging({ dir, sink: () => {} })).toThrow(/sink.*dir|dir.*sink/);
+  });
+
+  it('configureLogging(undefined) 关闭文件流，后续输出回落 console', async () => {
+    configureLogging({ dir });
+    createLogger('app').info('to file');
+    await flushLogging();
+    configureLogging(undefined);
+    createLogger('app').info('back to console');
+    // 两条都进 console（dir 模式默认 stdout 双写 + 关闭后回落 console）
+    expect(lines).toHaveLength(2);
+    expect(fs.existsSync(path.join(dir, 'app.log'))).toBe(true);
+  });
+
+  it('getEffectiveLogLevel：dir 模式未配 level 返回 undefined（不过滤），console 模式返回 info', () => {
+    configureLogging({ dir });
+    expect(getEffectiveLogLevel()).toBeUndefined();
+    configureLogging(undefined);
+    expect(getEffectiveLogLevel()).toBe('info');
+  });
+
+  it('getEffectiveLogLevel：显式 level 优先于模式默认', () => {
+    configureLogging({ dir, level: 'debug' });
+    expect(getEffectiveLogLevel()).toBe('debug');
+  });
+
+  it('writeLogEntry 在 dir 模式无阈值（任务桥接条目全量落盘）', async () => {
+    configureLogging({ dir, stdout: false });
+    writeLogEntry({ level: 'debug', message: 'from task', time: '2026-09-16T08:00:00.000Z' });
+    expect((await readAppLog())[0]).toBe('[2026-09-16T08:00:00.000Z] DEBUG from task');
   });
 });
 

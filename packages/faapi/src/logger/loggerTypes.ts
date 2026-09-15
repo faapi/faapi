@@ -61,9 +61,23 @@ export interface CreateLoggerOptions {
 /**
  * `config.log` 的对象形状（config 侧另接受 boolean：false 全静默、true 默认）
  *
- * level 解析顺序：显式值 > `LOG_LEVEL` 环境变量 > `'info'`（非法值启动报错）。
+ * level 解析顺序：显式值 > `LOG_LEVEL` 环境变量 > 模式默认（`dir` 文件模式不过滤，
+ * 其余模式 `'info'`；非法值启动报错）。`sink` 与 `dir` 互斥，同时配置启动报错。
  */
 export interface LogConfig {
+  /** 实例级级别（覆盖全局 level） */
   level?: LogLevel;
+  /** 自定义输出管道（整体接管，与 `dir` 互斥） */
   sink?: LogSink;
+  /**
+   * 文件日志目录（egg 风格）：配置即启用内置文件管道——默认 `app.log` 全量 +
+   * `error.log` 仅 error（dup 语义）；请求日志自动并入（`accessLog` 缺省 true）
+   */
+  dir?: string;
+  /** true 时按级别四文件 `debug.log`/`info.log`/`warn.log`/`error.log`（各只含对应级别） */
+  splitByLevel?: boolean;
+  /** 文件模式下是否保留 console 双写（默认 true；false 纯文件） */
+  stdout?: boolean;
+  /** 请求日志是否并入统一管道；缺省 = `dir` 配置时 true（见 middleware/logger.md） */
+  accessLog?: boolean;
 }

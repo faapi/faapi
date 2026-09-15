@@ -450,20 +450,26 @@ export interface FaapiConfig {
   /** 日志中间件配置 */
   logger?: LoggerOptions | boolean;
   /**
-   * 业务日志器全局配置（与 `logger` 请求日志中间件是两条独立管道，详见 logger/logger.md）
+   * 业务日志器全局配置（详见 logger/logger.md）
    *
-   * - `false`：完全静默（含 error，测试降噪）
+   * - `false`：完全静默（含 error，测试降噪；不影响请求日志，关闭用 `logger: false`）
    * - `true` / 缺省：默认级别（显式 level > LOG_LEVEL env > 'info'）+ console 文本输出
-   * - `LogConfig`：精细配置 level 与 sink（sink 可整体接管接 pino/winston/文件）
+   * - `LogConfig`：精细配置——`sink` 自定义管道（接 pino/winston）或 `dir` egg 风格
+   *   文件输出（app.log 全量 + error.log 仅 error，splitByLevel 按级别四文件），
+   *   两者互斥；`dir` 模式请求日志自动并入（`accessLog` 缺省 true），未显式配置
+   *   level 时不过滤（全量落盘）
    *
-   * 生效范围：`ctx.log` / 参数注入 `log` / `createLogger` / `taskCtx.log`。
+   * 生效范围：`ctx.log` / 参数注入 `log` / `createLogger` / `taskCtx.log`，
+   * `dir`/`accessLog` 模式下含请求日志中间件。
    * 日志全局配置是进程级资源，多 app 同进程时后启动覆盖先启动。
    *
    * ```ts
    * export default {
    *   log: {
-   *     level: 'debug',
-   *     sink: (entry) => pinoLogger[entry.level]({ scope: entry.scope, ...entry.fields }, entry.message),
+   *     // 方式一：egg 风格文件输出（请求日志自动并入）
+   *     dir: 'logs',
+   *     // 方式二：自定义管道接管
+   *     // sink: (entry) => pinoLogger[entry.level]({ scope: entry.scope, ...entry.fields }, entry.message),
    *   },
    * } satisfies FaapiConfig;
    * ```

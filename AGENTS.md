@@ -555,8 +555,10 @@ handler `throw err`                       → formatErrorResponse      → 走 f
 配置（`config.log`，`createAppBase` 启动时应用）：
 
 - 缺省 / `true`：console 文本输出（`[ISO 时间] LEVEL [scope] message fields-JSON`），级别取 `config.log.level` > 环境变量 `LOG_LEVEL` > `'info'`（非法值启动报错，fail fast）
-- `false`：完全静默（含 error，测试降噪）
+- `false`：完全静默（含 error，测试降噪；不影响请求日志，关闭请求日志用 `config.logger: false`）
 - `{ level, sink }`：精细配置；`sink` 整体接管输出管道（实例级 `createLogger` 的 `options.sink` 同理，显式接管不受全局关闭影响）
+- `{ dir, splitByLevel?, stdout?, accessLog? }`：egg 风格文件输出（详见 `packages/faapi/src/logger/fileSink.md`）——默认 `app.log` 全量 + `error.log` 仅 error（dup 语义）；`splitByLevel: true` 改为按级别四文件（各只含对应级别）；`stdout` 默认 true 保留 console 双写；**未显式配置 level（含 LOG_LEVEL）时不过滤**（全量落盘，分流由文件布局承担），显式配置则阈值照常生效；`sink` 与 `dir` 互斥，同时配置启动报错；`flushLogging()` 供 `lifecycle.onClose` 刷盘
+- 请求日志并入：`config.log.accessLog` 控制请求日志中间件是否并入统一管道（缺省随 `dir` 启用）——并入时条目转 `LogEntry`（level 按 status 映射 2xx/3xx→info、4xx→warn、5xx→error，scope `access`，fields 携带 requestId/method/path/status/durationMs）与业务日志同文件/同 sink；`{ sink }` 模式缺省不并入（`console.log` 行为不变），显式 `accessLog: true` 开启；`config.logger: { log }` 显式接管优先级最高。详见 `packages/faapi/src/middleware/logger.md` 的关系矩阵
 
 `ctx.requestId`：请求头 `x-request-id` 第一段优先（网关透传场景跨服务串联），否则 `crypto.randomUUID()` 生成；请求日志中间件的结构化条目同样附带该字段，业务日志与请求日志可经 requestId 关联。
 
