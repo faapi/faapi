@@ -29,6 +29,15 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 `progress` 不做持久化（驱动侧无此概念）、不参与重试恢复——每次派发清空上一轮的 progress，本轮执行重新写入（终态后调用被忽略）；值必须可结构化克隆（隔离路径经 postMessage，不可克隆按执行错误处理）。不调用 `progress` 的任务零开销，`TaskJob.progress` 不出现。
 
+## TaskContext.log（任务级日志器）
+
+`TaskContext.log?: Logger` 为可选字段（直接构造 TaskContext 的测试/自定义执行器可不传；框架两条执行路径均注入）：scope `task:<name>`，字段自动携带 `jobId`/`task`/`attempt`，输出走 `config.log` 全局管道。两条路径语义一致：
+
+- **进程内路径**：`createLogger` 直接构造，条目直写全局管道
+- **隔离路径**（声明 `timeoutMs`）：日志配置（level/scope/fields，纯数据）随派发下发，worker 内联日志器做级别预过滤后把条目经 `{ type: 'log' }` 消息回传宿主 `onLog`（即 `writeLogEntry`）统一输出——自定义 sink 同样覆盖隔离任务；取消判定后（宽限期内）到达的条目不采纳（超时判定即终局）；fields 不可克隆时丢弃 fields 保底输出 warning 标记（已记入项目根 `fallback.md`）
+
+详见 `src/logger/logger.md`。
+
 ### 任务内组装 Agent（完整 deps）
 
 任务内 new `Agent` 跑 LLM 循环时，deps 从 `registries` 视图 + 包级导出组装；`resolveToolSchema` 用 `@faapi/agent` 公开的 `createToolSchemaResolver` 工厂（不要直连 `loadToolSchema`——它返回 `{ schema, schemaName }` 原始 zod 模块，不满足 `AgentDeps.resolveToolSchema` 契约的 `{ jsonSchema, validate }`）：

@@ -123,6 +123,17 @@ export { helmet } from './middleware/helmet';
 export { loadConfig } from './config/loadConfig';
 export { loadEnv } from './cli/loadEnv';
 
+// 日志器（级别/scope/结构化字段/可插拔 sink，config.log 全局配置，详见 src/logger/logger.md）
+export { createLogger, configureLogging } from './logger/logger';
+export type {
+  Logger,
+  LogLevel,
+  LogEntry,
+  LogSink,
+  LogConfig,
+  CreateLoggerOptions,
+} from './logger/loggerTypes';
+
 // 错误类（供业务侧 instanceof 判定与自定义错误中间件使用）
 export {
   ValidationError,

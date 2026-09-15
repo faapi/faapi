@@ -293,7 +293,78 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('进程内执行：taskCtx.progress 记入记录（list 可见），派发清空上一轮，终态后调用被忽略', async () => {
+  it('进程内执行注入 taskCtx.log：scope task:<name>，字段带 jobId/task/attempt，走全局管道', async () => {
+    const { configureLogging } = await import('../logger/logger');
+    const entries: Array<{
+      level: string;
+      message: string;
+      scope?: string;
+      fields?: Record<string, unknown>;
+    }> = [];
+    configureLogging({ sink: (e) => entries.push(e as never) });
+    try {
+      const run = vi.fn(
+        async (
+          _payload: unknown,
+          taskCtx: {
+            log?: {
+              info: (m: string) => void;
+              child: (s: string) => { debug: (m: string) => void };
+            };
+          },
+        ) => {
+          taskCtx.log!.info('settling');
+          taskCtx.log!.child('db').debug('cache miss');
+          return 'ok';
+        },
+      );
+      const deps = makeDeps({ mailer: { run } });
+      const fake = makeFakeDriver();
+      const queue = createTaskQueue({ ...deps, driver: fake.driver });
+      queue.start();
+      await queue.enqueue('mailer', {});
+      await fake.dispatch('mailer', {}, 1);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].level).toBe('info');
+      expect(entries[0].message).toBe('settling');
+      expect(entries[0].scope).toBe('task:mailer');
+      expect(entries[0].fields).toEqual({ jobId: 'd-1', task: 'mailer', attempt: 1 });
+      await queue.stop();
+    } finally {
+      configureLogging(undefined);
+    }
+  });
+
+  it('进程内 taskCtx.log 受全局级别过滤（默认 info 时 debug 不输出）', async () => {
+    const { configureLogging } = await import('../logger/logger');
+    const entries: unknown[] = [];
+    configureLogging({ sink: (e) => entries.push(e) });
+    try {
+      const run = vi.fn(
+        async (
+          _payload: unknown,
+          taskCtx: { log?: { debug: (m: string) => void; info: (m: string) => void } },
+        ) => {
+          taskCtx.log!.debug('hidden');
+          taskCtx.log!.info('shown');
+        },
+      );
+      const deps = makeDeps({ mailer: { run } });
+      const fake = makeFakeDriver();
+      const queue = createTaskQueue({ ...deps, driver: fake.driver });
+      queue.start();
+      await queue.enqueue('mailer', {});
+      await fake.dispatch('mailer', {}, 1);
+      expect(entries).toHaveLength(1);
+      expect((entries[0] as { message: string }).message).toBe('shown');
+      await queue.stop();
+    } finally {
+      configureLogging(undefined);
+    }
+  });
+
+  it('进程内 taskCtx.progress 记入记录（list 可见），派发清空上一轮，终态后调用被忽略', async () => {
     let lateProgress: ((value: unknown) => void) | undefined;
     let calls = 0;
     const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {

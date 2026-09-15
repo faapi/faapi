@@ -23,6 +23,7 @@ export type InjectionType =
   | 'agent'
   | 'agents'
   | 'tasks'
+  | 'log'
   | 'unknown';
 
 /**
@@ -64,6 +65,7 @@ export const PARAM_TYPE_MAP: Record<string, InjectionType> = {
   agent: 'agent', // Phase 2.3
   agents: 'agents', // Phase 2.3
   tasks: 'tasks', // 任务子系统：TaskClient（入队/查询）
+  log: 'log', // 请求级日志器（ctx.log 同一实例：scope http，自动带 requestId 等字段）
 };
 
 /**

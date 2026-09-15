@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { cors } from './cors';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { ResponseMeta } from '../runtime/contextTypes';
+import { createLogger } from '../logger/logger';
 
 function createMockContext(
   method = 'GET',
@@ -28,6 +29,8 @@ function createMockContext(
     headers,
     method,
     path: '/test',
+    requestId: '',
+    log: createLogger('test'),
     ip: '',
     ua: '',
     cookies,

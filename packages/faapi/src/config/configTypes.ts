@@ -449,6 +449,26 @@ export interface FaapiConfig {
   bodyLimit?: number;
   /** 日志中间件配置 */
   logger?: LoggerOptions | boolean;
+  /**
+   * 业务日志器全局配置（与 `logger` 请求日志中间件是两条独立管道，详见 logger/logger.md）
+   *
+   * - `false`：完全静默（含 error，测试降噪）
+   * - `true` / 缺省：默认级别（显式 level > LOG_LEVEL env > 'info'）+ console 文本输出
+   * - `LogConfig`：精细配置 level 与 sink（sink 可整体接管接 pino/winston/文件）
+   *
+   * 生效范围：`ctx.log` / 参数注入 `log` / `createLogger` / `taskCtx.log`。
+   * 日志全局配置是进程级资源，多 app 同进程时后启动覆盖先启动。
+   *
+   * ```ts
+   * export default {
+   *   log: {
+   *     level: 'debug',
+   *     sink: (entry) => pinoLogger[entry.level]({ scope: entry.scope, ...entry.fields }, entry.message),
+   *   },
+   * } satisfies FaapiConfig;
+   * ```
+   */
+  log?: import('../logger/loggerTypes.js').LogConfig | boolean;
   /** HTTP/2 配置，false 禁用（默认 http/1.1） */
   http2?: Http2Options | boolean;
   /**

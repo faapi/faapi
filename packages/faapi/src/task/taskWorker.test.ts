@@ -615,3 +615,118 @@ describe('runTaskInWorker', () => {
     });
   });
 });
+
+describe('runTaskInWorker - taskCtx.log 日志桥', () => {
+  it('log 配置下发：taskCtx.log 可用，条目回传宿主（scope/fields/level/message/time）', async () => {
+    const modulePath = writeTaskModule(
+      'log-basic',
+      `export async function run(payload, taskCtx) {
+        taskCtx.log.info('settling', { orderId: payload.orderId });
+        return taskCtx.log ? 'has-log' : 'no-log';
+      }`,
+    );
+    const entries: any[] = [];
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: { orderId: 'o-1' },
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      log: {
+        level: 'debug',
+        scope: 'task:t',
+        fields: { jobId: 'j1', task: 't', attempt: 1 },
+      },
+      onLog: (e) => entries.push(e),
+    });
+    expect(result).toBe('has-log');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].level).toBe('info');
+    expect(entries[0].message).toBe('settling');
+    expect(entries[0].scope).toBe('task:t');
+    expect(entries[0].fields).toEqual({ jobId: 'j1', task: 't', attempt: 1, orderId: 'o-1' });
+    expect(entries[0].time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  });
+
+  it('worker 侧级别预过滤：level info 时 debug 条目不回传', async () => {
+    const modulePath = writeTaskModule(
+      'log-filter',
+      `export async function run(_payload, taskCtx) {
+        taskCtx.log.debug('hidden');
+        taskCtx.log.warn('shown');
+      }`,
+    );
+    const entries: any[] = [];
+    await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      log: { level: 'info', scope: 'task:t', fields: {} },
+      onLog: (e) => entries.push(e),
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].level).toBe('warn');
+  });
+
+  it('child 合并 scope（task:t:db），调用处 fields 覆盖构造字段', async () => {
+    const modulePath = writeTaskModule(
+      'log-child',
+      `export async function run(_payload, taskCtx) {
+        taskCtx.log.child('db').info('miss', { attempt: 99, extra: 1 });
+      }`,
+    );
+    const entries: any[] = [];
+    await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      log: { level: 'debug', scope: 'task:t', fields: { jobId: 'j1', task: 't', attempt: 1 } },
+      onLog: (e) => entries.push(e),
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0].scope).toBe('task:t:db');
+    expect(entries[0].fields).toEqual({ jobId: 'j1', task: 't', attempt: 99, extra: 1 });
+  });
+
+  it('fields 不可克隆：丢弃 fields 保底输出 warning 标记，不中断任务执行', async () => {
+    const modulePath = writeTaskModule(
+      'log-uncloneable',
+      `export async function run(_payload, taskCtx) {
+        taskCtx.log.info('with fn', { fn: () => 'x' });
+        return 'still-ok';
+      }`,
+    );
+    const entries: any[] = [];
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      log: { level: 'debug', scope: 'task:t', fields: { jobId: 'j1' } },
+      onLog: (e) => entries.push(e),
+    });
+    expect(result).toBe('still-ok');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].message).toBe('with fn');
+    expect(entries[0].fields).toEqual({
+      warning: 'log fields not cloneable across worker boundary, dropped',
+    });
+  });
+
+  it('未传 log 配置：taskCtx.log 为 undefined，任务不崩溃', async () => {
+    const modulePath = writeTaskModule(
+      'log-absent',
+      `export function run(_payload, taskCtx) {
+        return { hasLog: taskCtx.log !== undefined };
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({ hasLog: false });
+  });
+});

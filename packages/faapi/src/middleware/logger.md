@@ -10,6 +10,8 @@
 
 作为洋葱模型中间件使用,在 `await next()` 前后记录日志；支持自定义 log 函数。前记录 method/path,后追加 status/duration。
 
+结构化条目（传给自定义 log 函数的第一参数）附带 `requestId`（取自 `ctx.requestId`，请求头 `x-request-id` 优先、否则自动生成）——与业务日志器（`ctx.log`，见 `../logger/logger.md`）的条目经 requestId 关联。文本格式不变。
+
 通过 `faapi.config.ts` 的 `logger` 字段配置:
 
 - `undefined` / `true` → 启用默认 logger()（console.log）

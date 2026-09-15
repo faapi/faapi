@@ -4,6 +4,7 @@ import type { FaapiContext } from '../runtime/contextTypes';
 import type { MultipartResult } from '../utils/parseMultipart';
 import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
 import { hydrateAgentRegistry, clearAgentRegistry } from './agentRegistry';
+import { createLogger } from '../logger/logger';
 
 describe('injectParams', () => {
   beforeEach(() => {
@@ -23,6 +24,8 @@ describe('injectParams', () => {
       headers: new Headers({ authorization: 'Bearer token' }),
       method: 'GET',
       path: '/test',
+      requestId: '',
+      log: createLogger('test'),
       // 以下字段在 injectParams 测试中不会被读取，提供空实现以满足 FaapiContext 类型
       cookies: {},
       config: {} as Record<string, unknown>,

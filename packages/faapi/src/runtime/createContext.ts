@@ -1,6 +1,18 @@
 import type { FaapiContext, ResponseMeta, CookieOptions, FailOptions } from './contextTypes';
 import { createSseWriter, type SseWriter } from './sse';
 import { wrapOkResult, formatFailResponse, jsonOk } from '../response/responseFormatter';
+import { createLogger } from '../logger/logger';
+
+/**
+ * 解析请求 ID：请求头 `x-request-id` 第一段（逗号分隔取首段，网关透传场景跨服务
+ * 串联），缺失或空白时 crypto.randomUUID() 生成（参考 Fastify genReqId 默认语义）
+ */
+function resolveRequestId(request: Request): string {
+  const header = request.headers.get('x-request-id');
+  const first = header?.split(',')[0]?.trim();
+  if (first) return first;
+  return crypto.randomUUID();
+}
 
 /**
  * 解析 Cookie 请求头为 Map
@@ -75,7 +87,16 @@ export function createContextFromUrl(
     cookiesObj[key] = val;
   }
 
+  // 请求级日志器：scope http，字段自动携带 requestId/method/path（业务日志与请求
+  // 日志经 requestId 关联）；每请求构造一次，child 派生更细分类时字段继承
+  const requestId = resolveRequestId(request);
+  const log = createLogger('http', {
+    fields: { requestId, method: request.method, path: url.pathname },
+  });
+
   const ctx = {
+    requestId,
+    log,
     request,
     params,
     query: url.searchParams,

@@ -379,12 +379,18 @@ export default {
   // true：ctx.ip 取 XFF 第一个 IP（nginx/CDN 场景）；false：直取 socket 地址（直连防伪造）
   trustedProxy: false,
 
+  // 业务日志器全局配置（级别/scope/结构化字段/可插拔 sink，见 5.5.4；请求日志中间件用 config.logger 单独配）
+  // 缺省：console 文本输出，级别取 config.log.level > 环境变量 LOG_LEVEL > 'info'
+  log: { level: 'info' },
+
   // 全局中间件：对所有路由（HTTP + WebSocket 握手）生效，最外层
   // 顺序：CORS → helmet → logger → 全局 → 目录（根→路由）→ handler
   // CORS/logger 默认启用（config.cors/config.logger 配置），helmet 显式启用（config.helmet）
   middlewares: [
     async (ctx, next) => {
-      ctx.requestId = crypto.randomUUID(); // 塞值，handler/目录中间件可读
+      // ctx.requestId 内置（x-request-id 头优先，否则自动生成），业务日志 ctx.log 与
+      // 请求日志条目均携带该字段；示例：回写响应头便于链路排查
+      ctx.setHeader('x-request-id', ctx.requestId);
       await next();
     },
   ],
@@ -536,6 +542,26 @@ handler `throw err`                       → formatErrorResponse      → 走 f
 
 > `formatErrorResponse` 现在读取 `ctx.config.response.fail` 自定义包装函数，确保抛错兜底与 `ctx.fail()` 主动错误响应的格式完全一致。业务方无需在两处分别定义格式。
 
+#### 5.5.4 日志能力（log）
+
+框架提供业务侧日志器：级别（debug/info/warn/error）+ scope 分类 + 结构化字段 + 可插拔 sink，零依赖（默认 console 文本输出，可整体接管接 pino/winston/文件）。与请求日志中间件（`config.logger`）是两条独立管道——请求日志格式保持稳定不破坏存量，需要统一输出时业务方用 `logger: { log }` 自行接线。
+
+| 入口 | 说明 |
+|------|------|
+| `createLogger(scope?, options?)` | 任意位置创建（模块顶层 / 工具函数），方法 `debug/info/warn/error(message, fields?)` + `child(scope)`（scope `:` 合并、fields 继承） |
+| `ctx.log` / 参数注入 `log` | 请求级日志器，scope `http`，自动携带 `requestId`/`method`/`path` 字段 |
+| `taskCtx.log` | 任务级日志器，scope `task:<name>`，自动携带 `jobId`/`task`/`attempt`；隔离执行（声明 `timeoutMs`）经 postMessage 回传宿主统一输出 |
+
+配置（`config.log`，`createAppBase` 启动时应用）：
+
+- 缺省 / `true`：console 文本输出（`[ISO 时间] LEVEL [scope] message fields-JSON`），级别取 `config.log.level` > 环境变量 `LOG_LEVEL` > `'info'`（非法值启动报错，fail fast）
+- `false`：完全静默（含 error，测试降噪）
+- `{ level, sink }`：精细配置；`sink` 整体接管输出管道（实例级 `createLogger` 的 `options.sink` 同理，显式接管不受全局关闭影响）
+
+`ctx.requestId`：请求头 `x-request-id` 第一段优先（网关透传场景跨服务串联），否则 `crypto.randomUUID()` 生成；请求日志中间件的结构化条目同样附带该字段，业务日志与请求日志可经 requestId 关联。
+
+日志调用永不抛错（fields 序列化失败降级提示文本）；日志全局配置为进程级资源（多 app 同进程后启动覆盖先启动）。详见 `packages/faapi/src/logger/logger.md`。
+
 ### 5.6 设计决策
 
 TypeScript 的 `interface` 在运行时会被擦除。第一版通过 TypeScript AST 分析类型声明，生成运行时校验规则，不以手写 schema 为主路径。
@@ -616,6 +642,7 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 | `agent` | `AgentHandle`（由 `@faapi/agent` 插件注册的工厂 `getAgentHandle(ctx)` 注入，含可调用 `run`/`stream`/`asTool`；无默认 agent——`run`/`stream` 每次显式传 `{ agent, model }`）；插件未注册时返回 `undefined` | `GET(agent)` |
 | `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
 | `tasks` | 任务队列客户端 `TaskClient`（`enqueue(name, payload)` / `list()`），与 `ctx.tasks` / `app.tasks` 指向同一 app 实例队列 | `POST(tasks)` |
+| `log` | 请求级日志器（与 `ctx.log` 同一实例，scope `http`，自动携带 `requestId`/`method`/`path` 字段，详见 5.5.4） | `GET(log)` |
 
 `form` 与 `body` 互斥：handler 声明其一即可。`form` 共享 `body` 的解析结果（`resolveInput` 已按 Content-Type 解析 form-urlencoded 为 `Record<string, string>`），差异仅在 schema 校验——`form` 的 schema coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串），`body` 的 schema coerce=false。schema 名仍为 `POSTBody`（form 共享 body 的 schema key），通过 `RouteSchemaSource.coerce=true` 显式覆盖。
 

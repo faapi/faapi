@@ -1,0 +1,176 @@
+# logger
+
+一句话概括：框架级结构化日志器——带级别（debug/info/warn/error）、scope 分类、结构化字段与可插拔 sink 的 `createLogger` 工厂，注入 handler（`ctx.log` / 参数 `log`）、任务（`taskCtx.log`）与任意业务代码，全局行为由 `config.log` 配置。
+
+## 为什么需要
+
+框架此前只有请求日志中间件（`middleware/logger.ts`，记录 method/path/status/duration）：业务代码（handler、中间件、任务、lifecycle 钩子）要输出自己的日志只能裸用 `console.log`——无级别过滤（生产想关 debug 只能改代码删语句）、无分类（海量日志分不清来自哪个模块）、无结构化字段（接日志采集系统要自己拼 JSON）、无法统一替换输出目标（写文件/接 pino 要各处手写）。参考 NestJS（内置 Logger 的级别过滤与 context 分类、`useLogger` 替换实现）与 Fastify（`request.log` 请求级 child logger 自动绑定 requestId）补齐这一层：**零依赖内核 + 可插拔 sink**——默认输出到 console（开箱即用），业务可整体接管（接 pino/winston/文件），不引入任何日志库依赖。
+
+## 使用场景
+
+### 1. 任意位置创建分类日志器（模块顶层 / 工具函数内）
+
+```ts
+import { createLogger } from '@faapi/faapi';
+
+const log = createLogger('db');
+
+export async function connect() {
+  log.debug('connecting', { host });           // 生产（默认 info 级）被过滤
+  await pool.connect();
+  log.info('db connected', { host, port });
+  try {
+    migrate();
+  } catch (err) {
+    log.error('migration failed', { error: err }); // Error 值自动展开 name/message/stack
+    throw err;
+  }
+}
+```
+
+### 2. handler 内用请求级日志器（`ctx.log` / 参数注入 `log`）
+
+`ctx.log` 是每请求自动创建的 child logger：scope `http`，字段自动携带 `requestId`/`method`/`path`，业务日志与请求日志可通过 requestId 关联：
+
+```ts
+export function GET(ctx) {
+  ctx.log.info('listing users');               // 自动带 requestId/method/path 字段
+  return listUsers();
+}
+
+// 或参数名注入（与 tasks/agent 同机制）
+export function POST(log, body) {
+  log.warn('slow import requested', { rows: body.rows.length });
+  return { queued: true };
+}
+```
+
+`ctx.requestId` 同步暴露：优先取请求头 `x-request-id`（逗号分隔取第一段，网关透传场景跨服务串联），无则 `crypto.randomUUID()` 生成。
+
+需要更细分类时从 `ctx.log` 派生 child（scope 合并为 `http:user`，requestId 等字段继承）：
+
+```ts
+ctx.log.child('user').debug('cache miss');     // [ISO] DEBUG [http:user] cache miss {"requestId":...}
+```
+
+### 3. 任务内记录日志（`taskCtx.log`）
+
+```ts
+// src/tasks/settle-payment/task.ts
+export async function run(payload, taskCtx) {
+  taskCtx.log?.info('settling', { orderId: payload.orderId }); // 自动带 jobId/task/attempt 字段
+}
+```
+
+进程内执行与隔离执行（声明 `timeoutMs` 的任务）行为一致：隔离路径下日志条目作为纯数据经 postMessage 回传宿主、由宿主统一的 sink 输出——自定义 sink 同样覆盖隔离任务。宽限期（取消判定后）产生的日志与进度同语义：不采纳（超时判定即终局）。
+
+### 4. 接管输出目标（业务方接入 pino / 写文件）
+
+框架**不内置 pino**（不新增依赖、不代替业务选型）——`config.log.sink` 就是业务方接入 pino 的官方入口，一次赋值完成整条管道接管（`ctx.log` / `createLogger` / `taskCtx.log` 全部走 sink，隔离任务也覆盖）：
+
+```ts
+// faapi.config.ts
+import pino from 'pino';
+import type { LogEntry } from '@faapi/faapi';
+
+// pino 级别放到最低，过滤统一交给 config.log.level / LOG_LEVEL（单一过滤源）
+const pinoLogger = pino({ level: 'trace' });
+
+// entry.fields 里的 Error 是原始实例（Error 展开是默认 console sink 的职责），
+// 自定义 sink 自行序列化——用 pino.stdSerializers.err
+const serializeFields = (fields: Record<string, unknown>) =>
+  Object.fromEntries(
+    Object.entries(fields).map(([k, v]) => [k, v instanceof Error ? pino.stdSerializers.err(v) : v]),
+  );
+
+export default {
+  log: {
+    sink: (entry: LogEntry) => {
+      pinoLogger[entry.level](
+        { scope: entry.scope, ...(entry.fields ? serializeFields(entry.fields) : {}) },
+        entry.message,
+      );
+    },
+  },
+
+  lifecycle: {
+    // pino 默认 sync:false 异步缓冲，优雅停机时 flush（faapi 收到 SIGTERM 自动走 onClose）
+    onClose() {
+      pinoLogger.flush();
+    },
+  },
+} satisfies FaapiConfig;
+```
+
+注意点：
+
+- **级别过滤归属**：faapi 侧过滤发生在 sink 调用之前，pino 收到的条目都已过阈值——pino level 设最低避免双重过滤配置漂移
+- **请求日志统一进 pino**（可选）：请求日志中间件是独立管道，要一并接管用既有配置 `logger: { log: (entry, msg) => pinoLogger.info(entry, msg) }`（条目含 requestId/status/durationMs）
+- **绝对不丢日志**（审计类）：`pino(pino.destination({ sync: true }))` 同步写，牺牲吞吐换确定性；常规场景默认异步 + `onClose` flush 足够
+- 本地开发美化输出：`pino({ transport: { target: 'pino-pretty' } })`（需安装 pino-pretty）或命令行管道 `node dist/main | npx pino-pretty`；`transport` 模式下进程退出前用 `pino.final` 处理 flush，不影响容器内的 JSON 采集
+
+## 与 Docker 配合
+
+日志能力按 12-factor 设计，容器场景零改造：
+
+- **输出到 stdout/stderr**：默认 console sink 的 debug/info 走 stdout、warn/error 走 stderr，`docker logs` 直接可见；容器内**不写日志文件**，采集交给 Docker logging driver（json-file / fluentd / loki 等）或 k8s 采集器
+- **结构化采集**：接 Loki/ELK/Datadog 时按上一节接 pino sink——JSON 行到 stdout，单流（pino 不像默认 console 分流 stderr）对采集器更友好；`requestId` 已在每条业务日志与请求日志条目中，跨服务串联可用，多副本部署可在 sink 里补 `hostname` 等 Pod 维度字段
+- **级别调整不改镜像**：`docker run -e LOG_LEVEL=debug`（compose `environment:` / k8s `env` 同理）。faapi 的 `loadEnv` 也会把镜像内 `.env` 加载进 `process.env`，但运行期注入用 `-e` 最常见。注意优先级：`config.log.level` 显式值 > `LOG_LEVEL` env > `'info'`——容器场景建议 config 只写 `sink` 不写死 level，级别交给环境变量
+- **优雅停机不丢日志**：`docker stop` 发 SIGTERM → faapi（listen 时已注册 SIGTERM/SIGINT handler）自动优雅关闭——drain 在跑任务、执行 `lifecycle.onClose` 后退出 → pino 的 flush 挂在 `onClose`（见上节示例）；Docker 默认 10s 宽限期足够，超时 SIGKILL 强杀时异步缓冲仍可能丢（同所有 Node 进程）
+
+```yaml
+# docker-compose.yml 示例
+services:
+  api:
+    build: .
+    environment:
+      - PORT=3000
+      - LOG_LEVEL=info        # 级别运行期可调，无需改镜像
+      - NODE_ENV=production
+    # logging driver 按需选配（默认 json-file）
+    # logging:
+    #   driver: loki
+```
+
+`log: false` 完全静默（含 error，测试场景降噪）；`log` 未配置或 `true` 时默认 console 输出，级别取 `config.log.level` > 环境变量 `LOG_LEVEL` > `'info'`（非法值启动报错，不静默兜底）。日志全局配置是**进程级资源**（stdout/文件本就进程唯一）：多 app 同进程时后启动的 app 覆盖先启动的，与注册表的 app 实例级隔离不同。
+
+### 默认文本格式
+
+```
+[2026-09-15T08:00:00.000Z] INFO [db] connected {"host":"localhost"}
+[2026-09-15T08:00:00.000Z] DEBUG [http] listing users {"requestId":"...","method":"GET","path":"/api/users"}
+```
+
+`[ISO 时间] LEVEL [scope] message fields-JSON`，scope/fields 缺省时对应段省略。级别映射 console.debug/info/warn/error（warn/error 走 stderr）。fields 中的 `Error` 值序列化为 `{ name, message, stack }`。
+
+### 与请求日志中间件（`config.logger`）的关系
+
+两条独立管道，职责不同：
+
+| 配置 | 管道 | 内容 | 输出 |
+|------|------|------|------|
+| `config.log` | 业务日志器（本模块） | `ctx.log` / `createLogger` / `taskCtx.log` 的业务日志 | 级别过滤 + `config.log.sink`（默认 console 文本） |
+| `config.logger` | 请求日志中间件 | 每请求一行 method/path/status/duration | `logger.log` 自定义函数（默认 console.log，格式不变） |
+
+请求日志条目已附带 `requestId` 字段（取自 `ctx.requestId`），自定义 log 函数（如接 pino）时业务日志与请求日志可经 requestId 关联。不做隐式统一（请求中间件默认输出格式保持不变，零破坏）；需要统一时业务方用 `logger: { log: (entry, msg) => mySink(...) }` 自行接线。
+
+## 行为约定
+
+- **级别阈值**：`debug(0) < info(1) < warn(2) < error(3)`，低于阈值的条目在构造 entry 之前丢弃（零序列化开销）
+- **级别解析**：logger 实例级 `options.level` 覆盖全局；全局取 `config.log.level` 显式值 > `LOG_LEVEL` 环境变量 > `'info'`。非法级别（config 或 env）在 `configureLogging` 时显式抛错（启动期 fail fast），不降级为默认值
+- **sink 解析**：logger 实例级 `options.sink` 优先（显式接管，不受全局 `log: false` 影响）→ 全局 sink → 默认 console
+- **`child(scope)`**：scope 以 `:` 合并（`createLogger('http').child('user')` → `http:user`，可多层嵌套），fields 浅合并（child 覆盖同名键）；返回新 Logger，父子互不影响
+- **`configureLogging(undefined)`** 重置为默认（level 走 env/默认 info、无自定义 sink）——编程式多 app 切换全局配置用
+- 日志调用**永不抛错**：fields 序列化失败（循环引用等）降级为提示文本输出（已记入 `fallback.md`），不影响业务流程
+
+## 相关模块
+
+- `loggerTypes.ts` - `LogLevel`/`LogEntry`/`LogSink`/`Logger`/`LogConfig` 类型契约
+- `runtime/createContext.ts` - 每请求创建 `ctx.requestId` + `ctx.log`
+- `runtime/contextTypes.ts` - `FaapiContext.requestId`/`FaapiContext.log` 字段声明
+- `injection/injectParams.ts` + `injection/resolveInjection.ts` - 参数名 `log` 注入 `ctx.log`
+- `task/taskQueue.ts` - 进程内任务注入 `taskCtx.log`
+- `task/taskWorker.ts` - 隔离任务的内联日志桥（postMessage 回传宿主）
+- `cli/createAppCore.ts` - `createAppBase` 读 `config.log` 调 `configureLogging`；`log` 列入内置 config key
+- `middleware/logger.ts` - 请求日志中间件（独立管道，entry 附带 requestId）
+- `config/configTypes.ts` - `log?: LogConfig | boolean` 配置项

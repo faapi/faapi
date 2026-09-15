@@ -362,3 +362,66 @@ describe('createTestContext', () => {
     expect((ctx as any).custom).toBe('value');
   });
 });
+
+describe('createContext - requestId 与请求级日志器', () => {
+  it('无 x-request-id 头时生成 UUID', () => {
+    const ctx = createContext(new Request('http://localhost/'), {});
+    expect(ctx.requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
+  it('复用 x-request-id 请求头（网关透传场景）', () => {
+    const ctx = createContext(
+      new Request('http://localhost/', { headers: { 'x-request-id': 'gw-abc-123' } }),
+      {},
+    );
+    expect(ctx.requestId).toBe('gw-abc-123');
+  });
+
+  it('x-request-id 多值时取第一段并 trim', () => {
+    const ctx = createContext(
+      new Request('http://localhost/', { headers: { 'x-request-id': ' first , second ' } }),
+      {},
+    );
+    expect(ctx.requestId).toBe('first');
+  });
+
+  it('空白 x-request-id 回落生成 UUID', () => {
+    const ctx = createContext(
+      new Request('http://localhost/', { headers: { 'x-request-id': '   ' } }),
+      {},
+    );
+    expect(ctx.requestId).toMatch(/^[0-9a-f]{8}-/);
+  });
+
+  it('ctx.log 输出自动携带 requestId/method/path 字段', async () => {
+    const { configureLogging } = await import('../logger/logger');
+    const entries: any[] = [];
+    configureLogging({ sink: (e) => entries.push(e) });
+    try {
+      const ctx = createContext(
+        new Request('http://localhost/api/users', { headers: { 'x-request-id': 'r-9' } }),
+        {},
+      );
+      ctx.log.info('listing');
+      expect(entries).toHaveLength(1);
+      expect(entries[0].scope).toBe('http');
+      expect(entries[0].fields).toEqual({ requestId: 'r-9', method: 'GET', path: '/api/users' });
+    } finally {
+      configureLogging(undefined);
+    }
+  });
+
+  it('ctx.log.child 派生更细分类（scope 合并、requestId 继承）', async () => {
+    const { configureLogging } = await import('../logger/logger');
+    const entries: any[] = [];
+    configureLogging({ sink: (e) => entries.push(e) });
+    try {
+      const ctx = createContext(new Request('http://localhost/api/users'), {});
+      ctx.log.child('user').info('cache miss', { userId: 7 });
+      expect(entries[0].scope).toBe('http:user');
+      expect(entries[0].fields).toMatchObject({ requestId: ctx.requestId, userId: 7 });
+    } finally {
+      configureLogging(undefined);
+    }
+  });
+});

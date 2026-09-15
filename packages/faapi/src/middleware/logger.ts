@@ -35,6 +35,7 @@ export function logger(options: LoggerOptions = {}): FaapiMiddleware {
       const response = await next();
       const duration = Date.now() - start;
       const entry = {
+        requestId: ctx.requestId,
         method: ctx.method,
         path: ctx.path,
         status: response.status,
@@ -47,6 +48,7 @@ export function logger(options: LoggerOptions = {}): FaapiMiddleware {
       const message = err instanceof Error ? err.message : String(err);
       const status = (err as { statusCode?: number })?.statusCode ?? 500;
       const entry = {
+        requestId: ctx.requestId,
         method: ctx.method,
         path: ctx.path,
         status,

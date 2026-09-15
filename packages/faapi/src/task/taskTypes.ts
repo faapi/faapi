@@ -4,6 +4,7 @@ import type { TaskRegistry } from './taskRegistry';
 import type { TaskDriver } from './driverTypes';
 import type { TaskWorkerRunner } from './taskWorker';
 import type { TaskRegistriesView } from '../injection/registries';
+import type { Logger } from '../logger/loggerTypes';
 
 /**
  * 任务元信息（业务方在 task.ts 中 `export const task = {...}` 声明）
@@ -133,6 +134,13 @@ export interface TaskContext {
    * 不可克隆按执行错误处理）。仅 running 状态生效，终态后调用被忽略。
    */
   progress?: (value: unknown) => void;
+  /**
+   * 任务级日志器（可选字段；框架两条执行路径均注入，直接构造 TaskContext 的
+   * 测试/自定义执行器可不传）——scope `task:<name>`，字段自动携带
+   * jobId/task/attempt，输出走 `config.log` 统一管道（详见 logger/logger.md）。
+   * 隔离执行时条目经 postMessage 回传宿主输出，fields 需可结构化克隆。
+   */
+  log?: Logger;
 }
 
 /**

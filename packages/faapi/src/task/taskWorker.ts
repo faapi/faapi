@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { pathToFileURL } from 'node:url';
 import type { TaskRegistriesSnapshot } from './taskTypes';
+import type { LogEntry, LogLevel } from '../logger/loggerTypes';
 
 /**
  * 任务隔离执行器
@@ -56,6 +57,13 @@ export interface TaskWorkerOptions {
    * taskCtx.registries）——语义层从 `TaskRegistriesView` 生成，缺省为空视图
    */
   registries?: TaskRegistriesSnapshot;
+  /**
+   * 任务日志配置（纯数据，postMessage 传入，worker 内联重建日志器注入 taskCtx.log；
+   * 缺省时 taskCtx.log 为 undefined）：scope/fields 与进程内路径一致（`task:<name>`
+   * + jobId/task/attempt），level 为宿主侧生效的全局级别（worker 侧预过滤，
+   * 宿主 writeLogEntry 再次过滤）
+   */
+  log?: { level: LogLevel; scope?: string; fields?: Record<string, unknown> };
   /** 外部取消信号（驱动停机超时 abort）——abort 同样触发两段式取消 */
   externalSignal?: AbortSignal;
   /**
@@ -63,6 +71,12 @@ export interface TaskWorkerOptions {
    * 消息回传宿主（语义层记入 `TaskJob.progress`）；不传则进度消息被忽略
    */
   onProgress?: (value: unknown) => void;
+  /**
+   * 日志回调：worker 内 taskCtx.log 的条目经 `{ type: 'log' }` 消息回传宿主，
+   * 由语义层接 writeLogEntry 走统一管道（自定义 sink 同样覆盖隔离任务）；
+   * 不传则日志条目被忽略。宽限期（取消判定后）到达的条目不采纳（超时判定即终局）
+   */
+  onLog?: (entry: LogEntry) => void;
 }
 
 /**
@@ -168,6 +182,46 @@ function serializeError(err) {
 }
 `;
 
+/**
+ * worker 内任务日志器（内联源码）：级别预过滤 + scope/fields 组装，条目作为纯数据
+ * 经 `{ type: 'log' }` 消息回传宿主、由宿主统一 sink 输出——wrapper 是 data URL 模块
+ * 无法 import 主包，故内联实现（语义与主包 createLogger 对齐：child scope `:` 合并、
+ * 调用处 fields 覆盖构造字段；格式化在宿主侧，不跨线程复制格式代码）。
+ *
+ * fields 含不可克隆值时丢弃 fields、保底 level/message/scope（降级已记入 fallback.md）
+ * ——日志永不中断任务执行，与 progress 的"不可克隆按执行错误处理"不同。
+ */
+const BUILD_LOGGER_SOURCE = `
+var LOG_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
+function createTaskLogger(level, scope, fields) {
+  function make(suffix) {
+    function write(lvl, message, callFields) {
+      if (LOG_RANK[lvl] < LOG_RANK[level]) return;
+      var entry = { level: lvl, message: message, time: new Date().toISOString() };
+      var fullScope = suffix === undefined ? scope : scope === undefined ? suffix : scope + ':' + suffix;
+      if (fullScope !== undefined) entry.scope = fullScope;
+      if (fields !== undefined || callFields !== undefined) {
+        entry.fields = Object.assign({}, fields, callFields);
+      }
+      try {
+        parentPort.postMessage({ type: 'log', entry: entry });
+      } catch (_) {
+        entry.fields = { warning: 'log fields not cloneable across worker boundary, dropped' };
+        parentPort.postMessage({ type: 'log', entry: entry });
+      }
+    }
+    return {
+      debug: function (m, f) { write('debug', m, f); },
+      info: function (m, f) { write('info', m, f); },
+      warn: function (m, f) { write('warn', m, f); },
+      error: function (m, f) { write('error', m, f); },
+      child: function (cs) { return make(suffix === undefined ? cs : suffix + ':' + cs); },
+    };
+  }
+  return make(undefined);
+}
+`;
+
 /** worker 内执行的 wrapper 源码（data URL，ESM）——import 任务产物并桥接 run */
 function buildWrapperSource(moduleUrl: string): string {
   return `
@@ -177,6 +231,8 @@ import * as mod from '${moduleUrl}';
 ${BUILD_VIEW_SOURCE}
 
 ${SERIALIZE_ERROR_SOURCE}
+
+${BUILD_LOGGER_SOURCE}
 
 const run = mod.run;
 if (typeof run !== 'function') {
@@ -197,7 +253,8 @@ if (typeof run !== 'function') {
     try {
       const registries = buildRegistriesView(msg.registries);
       const progress = (value) => parentPort.postMessage({ type: 'progress', value });
-      const result = await run(payload, { ...taskCtx, signal: controller.signal, registries, progress });
+      const taskLog = msg.log ? createTaskLogger(msg.log.level, msg.log.scope, msg.log.fields) : undefined;
+      const result = await run(payload, { ...taskCtx, signal: controller.signal, registries, progress, log: taskLog });
       parentPort.postMessage({ type: 'done', result });
     } catch (err) {
       const serialized = serializeError(err);
@@ -309,7 +366,13 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
 
     worker.on(
       'message',
-      (msg: { type?: string; result?: unknown; error?: WorkerErrorPayload; value?: unknown }) => {
+      (msg: {
+        type?: string;
+        result?: unknown;
+        error?: WorkerErrorPayload;
+        value?: unknown;
+        entry?: LogEntry;
+      }) => {
         if (phase === 'grace') {
           // 宽限期内收到消息 = run 已结束（worker 因 parentPort 监听不会自行 exit）——
           // 保持取消失败终局，立即返回；迟到的完成结果/进度不采纳（超时判定即终局）
@@ -333,6 +396,8 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
           finish(() => reject(reviveError(msg.error)));
         } else if (msg?.type === 'progress') {
           options.onProgress?.(msg.value);
+        } else if (msg?.type === 'log') {
+          options.onLog?.(msg.entry!);
         }
       },
     );
@@ -364,6 +429,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         payload,
         taskCtx: { config: safeConfig(taskCtx.config), job: taskCtx.job },
         registries: options.registries,
+        log: options.log,
       });
     } catch (err) {
       finish(() =>

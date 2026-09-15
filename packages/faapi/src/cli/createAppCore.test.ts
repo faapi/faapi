@@ -895,3 +895,115 @@ export default {
     expect(app.server).toBeNull();
   });
 });
+
+describe('createAppBase - config.log 全局日志接线', () => {
+  let tempDir: string;
+  let savedDist: string | undefined;
+
+  beforeEach(() => {
+    tempDir = join(
+      tmpdir(),
+      `faapi-appcore-log-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(tempDir, { recursive: true });
+    savedDist = process.env.FAAPI_DIST;
+    delete process.env.LOG_LEVEL;
+    invalidateMiddlewareCache();
+    invalidateProgramCache();
+  });
+
+  afterEach(async () => {
+    if (savedDist === undefined) delete process.env.FAAPI_DIST;
+    else process.env.FAAPI_DIST = savedDist;
+    delete process.env.LOG_LEVEL;
+    const { configureLogging } = await import('../logger/logger');
+    configureLogging(undefined);
+    invalidateSchemaCache();
+    invalidateMiddlewareCache();
+    invalidateProgramCache();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function writeProject(configSource: string) {
+    const filePath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
+    mkdirSync(join(filePath, '..'), { recursive: true });
+    writeFileSync(filePath, `export function GET() { return { hello: 'world' }; }\n`, 'utf-8');
+    writeFileSync(join(tempDir, 'faapi.config.ts'), configSource, 'utf-8');
+  }
+
+  async function compileArtifacts() {
+    await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], 'dist');
+    const sorted = sortRoutes(routes);
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'dist');
+    await writeRoutesModule(serialized, join(tempDir, 'dist', 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, 'dist');
+  }
+
+  it('config.log.level 全局生效：level error 时 info 被过滤、error 输出', async () => {
+    writeProject(
+      `import type { FaapiConfig } from '@faapi/faapi';\nexport default { log: { level: 'error' } } satisfies FaapiConfig;\n`,
+    );
+    await compileArtifacts();
+    const { app } = await createAppBase({ rootDir: tempDir });
+    try {
+      const { createLogger } = await import('../logger/logger');
+      const lines: string[] = [];
+      const spy = spyConsoleMethod('error', lines);
+      try {
+        createLogger('t').info('filtered');
+        expect(lines).toHaveLength(0);
+        createLogger('t').error('shown');
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain(' ERROR [t] shown');
+      } finally {
+        spy.mockRestore();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('config.log.sink 接管输出（config 模块的 sink 跨边界生效）', async () => {
+    writeProject(
+      `import type { FaapiConfig } from '@faapi/faapi';\n` +
+        `const g = globalThis as unknown as { __logSinkEntries: unknown[] };\n` +
+        `g.__logSinkEntries = [];\n` +
+        `export default { log: { level: 'info', sink: (e) => g.__logSinkEntries.push(e) } } satisfies FaapiConfig;\n`,
+    );
+    await compileArtifacts();
+    const { app } = await createAppBase({ rootDir: tempDir });
+    try {
+      const { createLogger } = await import('../logger/logger');
+      createLogger('t').info('via config sink');
+      const entries = (globalThis as unknown as { __logSinkEntries: Array<{ message: string }> })
+        .__logSinkEntries;
+      expect(entries).toHaveLength(1);
+      expect(entries[0].message).toBe('via config sink');
+    } finally {
+      delete (globalThis as unknown as { __logSinkEntries?: unknown[] }).__logSinkEntries;
+      await app.close();
+    }
+  });
+
+  it('config.log 非法 level 启动报错（fail fast）', async () => {
+    writeProject(
+      `import type { FaapiConfig } from '@faapi/faapi';\nexport default { log: { level: 'trace' as never } } satisfies FaapiConfig;\n`,
+    );
+    await compileArtifacts();
+    await expect(createAppBase({ rootDir: tempDir })).rejects.toThrow(/level/);
+  });
+});
+
+function spyConsoleMethod(method: 'info' | 'error' | 'warn' | 'debug', lines: string[]) {
+  const original = console[method];
+  console[method] = (...args: unknown[]) => {
+    lines.push(args.map(String).join(' '));
+  };
+  return {
+    mockRestore: () => {
+      console[method] = original;
+    },
+  };
+}

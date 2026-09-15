@@ -23,4 +23,19 @@ DDD 规范要求：确有必须降级的场景（显式抛错会让业务完全�
 - **降级后的实际行为**：三级探测——structuredClone 可克隆则原样传入；不可克隆退化 JSON round-trip（**丢函数字段、Date 变 ISO 字符串、Map/Set 丢失**，纯数据字段完整保留）；JSON 也失败（循环引用等）传 `undefined`。任务收到的 config 始终是纯数据快照。
 - **恢复条件**：无——隔离线程的 config 只能是可克隆纯数据，属结构约束；业务方需将隔离任务依赖的可执行配置改为数据描述（如字符串枚举），任务内在 worker 侧自行映射行为。
 
+## 日志 fields 不可序列化时降级为提示文本（logger 默认 console sink）
+
+- **场景**：业务调用 `log.info(msg, fields)` 时 fields 含循环引用等 `JSON.stringify` 无法序列化的值。
+- **为什么必须降**：日志是诊断手段，因一条坏 fields 抛错会中断业务请求/任务流程——"日志调用永不抛错"是日志器的基本契约，信息缺失远好于业务失败。
+- **降级后的实际行为**：该条日志正常输出级别/scope/message，fields 部分替换为 `[unserializable fields: <错误原因>]` 提示文本；其余日志不受影响。自定义 sink 不受影响（序列化是默认 sink 的职责，自定义 sink 自行决定如何处理不可序列化值）。
+- **恢复条件**：业务方修正 fields 中的循环引用/不可序列化值，该条日志即恢复完整 JSON 输出。
+
+## 隔离任务日志 fields 不可克隆时丢弃 fields（taskWorker 内联日志桥）
+
+- **场景**：隔离执行（声明 `timeoutMs`）的任务在 run 内调用 `taskCtx.log.info(msg, fields)`，fields 含函数、class 实例等不可结构化克隆的值。
+- **为什么必须降**：worker 内日志条目只能经 postMessage 回传宿主输出（sink 闭包不可跨线程），fields 不可克隆会让 postMessage 抛 `DataCloneError`——若按执行错误处理（与 progress 同语义），一条日志的字段会终止整个任务执行，与"日志永不中断业务"的契约冲突。
+- **降级后的实际行为**：丢弃 fields，条目保底 `level/message/scope/time` 照常回传输出，fields 替换为 `{ warning: 'log fields not cloneable across worker boundary, dropped' }` 标记（非静默）。进程内任务不受影响（无克隆边界）。
+- **恢复条件**：业务方将 fields 改为可克隆纯数据（字符串/数字/普通对象），即恢复全量字段输出。
+
+
 

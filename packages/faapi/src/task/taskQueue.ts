@@ -2,6 +2,7 @@ import path from 'node:path';
 import { ValidationError } from '../errors/httpErrors';
 import { runTaskInWorker, TaskCancelledError } from './taskWorker';
 import { createEmptyTaskRegistriesView } from '../injection/registries';
+import { createLogger, getEffectiveLogLevel, writeLogEntry } from '../logger/logger';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { TaskDriverJob } from './driverTypes';
 import type {
@@ -186,12 +187,20 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             job: { id: job.id, name: job.name, attempt: job.attempt },
           },
           registries: snapshotRegistries(),
+          // 日志配置随 workerData 下发（纯数据），worker 内联重建 taskCtx.log，
+          // 条目回传宿主走统一管道（scope/fields 与进程内路径一致）
+          log: {
+            level: getEffectiveLogLevel(),
+            scope: `task:${job.name}`,
+            fields: { jobId: job.id, task: job.name, attempt: job.attempt },
+          },
           timeoutMs: meta.timeoutMs,
           graceMs: meta.graceMs,
           externalSignal: job.signal,
           onProgress: (value) => {
             if (record.status === 'running') record.progress = value;
           },
+          onLog: writeLogEntry,
         });
       } else {
         let mod = moduleCache.get(job.name);
@@ -207,6 +216,9 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
           registries: registriesView,
+          log: createLogger(`task:${job.name}`, {
+            fields: { jobId: job.id, task: job.name, attempt: job.attempt },
+          }),
           progress: (value) => {
             if (record.status === 'running') record.progress = value;
           },

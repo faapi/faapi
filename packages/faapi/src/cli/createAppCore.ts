@@ -16,6 +16,7 @@ import { createTaskQueue } from '../task/taskQueue';
 import { loadTaskDriver } from '../task/loadTaskDriver';
 import { createIdleTaskDriver } from '../task/idleTaskDriver';
 import { createCronScheduler, type CronScheduler } from '../task/cronScheduler';
+import { configureLogging } from '../logger/logger';
 import type { TaskClient, TaskQueue } from '../task/taskTypes';
 import { loadPlugins } from './loadPlugins';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
@@ -266,6 +267,7 @@ const FAAPI_CONFIG_KEYS = new Set([
   'etag',
   'bodyLimit',
   'logger',
+  'log',
   'http2',
   'trustedProxy',
   'response',
@@ -375,6 +377,10 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
 
   // 加载配置（统一读 <dist>/faapi-config.js）
   const config = await loadConfig(rootDir, dist);
+
+  // 全局日志配置（进程级资源，多 app 同进程时后启动覆盖先启动；LOG_LEVEL env 在此解析，
+  // 非法值启动期报错）——之后所有 createLogger / ctx.log / taskCtx.log 走统一管道
+  configureLogging(config?.log);
 
   // 水合路由清单（统一路径，无 dev/prod 分支）
   const serialized = (await importWithCacheBust(routesPath)) as unknown as SerializedRouteManifest;
