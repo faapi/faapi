@@ -55,7 +55,7 @@ describe('logger 默认 console sink', () => {
   });
 
   it('debug/warn/error 分别走 console.debug/warn/error', () => {
-    configureLogging({ level: 'debug' });
+    configureLogging({ consoleLevel: 'debug' });
     const log = createLogger('app');
     log.debug('d');
     log.warn('w');
@@ -112,8 +112,8 @@ describe('logger 级别过滤', () => {
     expect(lines[0]).toContain(' INFO [app] shown');
   });
 
-  it('configureLogging({ level }) 提高全局阈值：info 被过滤', () => {
-    configureLogging({ level: 'warn' });
+  it('configureLogging({ consoleLevel }) 提高 console 出口阈值：info 被过滤', () => {
+    configureLogging({ consoleLevel: 'warn' });
     const log = createLogger('app');
     log.info('hidden');
     log.warn('shown');
@@ -121,19 +121,67 @@ describe('logger 级别过滤', () => {
     expect(lines[0]).toContain(' WARN');
   });
 
-  it('configureLogging({ level: "debug" }) 降低全局阈值：debug 输出', () => {
-    configureLogging({ level: 'debug' });
+  it('consoleLevel: false 关闭 console 出口（sink/文件照常输出）', () => {
+    const entries: LogEntry[] = [];
+    configureLogging({ consoleLevel: false, sink: (e) => entries.push(e) });
+    createLogger('app').error('file only');
+    expect(lines).toHaveLength(0);
+    expect(entries).toHaveLength(1);
+  });
+
+  it('level 只管 sink 出口：sink 收到的条目被过滤（console 不参与 sink 模式）', () => {
+    const entries: LogEntry[] = [];
+    configureLogging({ level: 'warn', sink: (e) => entries.push(e) });
+    createLogger('app').info('dropped');
+    createLogger('app').error('shown');
+    expect(lines).toHaveLength(0);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].level).toBe('error');
+  });
+
+  it('logger 实例级 level 是入口预滤：低于阈值不构造条目（实例 sink 直连验证）', () => {
+    const seen: LogEntry[] = [];
+    const noisy = createLogger('noisy', { level: 'debug', sink: (e) => seen.push(e) });
+    const quiet = createLogger('quiet', { level: 'warn', sink: (e) => seen.push(e) });
+    noisy.debug('shown');
+    quiet.debug('hidden');
+    quiet.info('hidden too');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].scope).toBe('noisy');
+  });
+
+  it('configureLogging({ consoleLevel: "debug" }) 降低 console 出口阈值：debug 输出', () => {
+    configureLogging({ consoleLevel: 'debug' });
     createLogger('app').debug('shown');
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(' DEBUG');
   });
 
-  it('logger 实例级 level 覆盖全局（降级单实例打开 debug）', () => {
-    configureLogging({ level: 'warn' });
-    createLogger('noisy', { level: 'debug' }).debug('shown');
-    createLogger('quiet').debug('hidden');
+  it('level 与 consoleLevel 互不牵扯：文件只存 warn+，console 照常看 info', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-pipe-threshold-'));
+    try {
+      configureLogging({ dir: tmpDir, level: 'warn' });
+      createLogger('app').info('console shows, file drops');
+      createLogger('app').error('both show');
+      expect(lines).toHaveLength(2);
+      await flushLogging();
+      const fileLines = fs.readFileSync(path.join(tmpDir, 'app.log'), 'utf8').trim().split('\n');
+      expect(fileLines).toHaveLength(1);
+      expect(fileLines[0]).toContain(' ERROR');
+    } finally {
+      configureLogging(undefined);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('单实例打开 debug 的等价解：consoleLevel: debug 或实例级 sink（绕过全局出口）', () => {
+    configureLogging({ consoleLevel: 'debug' });
+    createLogger('noisy').debug('shown');
+    const seen: LogEntry[] = [];
+    createLogger('explicit', { sink: (e) => seen.push(e) }).debug('also shown');
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain(' DEBUG [noisy] shown');
+    expect(seen).toHaveLength(1);
   });
 
   it('configureLogging(false) 全部静默（含 error）', () => {
@@ -165,9 +213,9 @@ describe('logger 级别过滤', () => {
 });
 
 describe('LOG_LEVEL 环境变量', () => {
-  let lines: string[];
   beforeEach(() => {
-    lines = spyConsole();
+    delete process.env.LOG_LEVEL;
+    configureLogging(undefined);
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -175,20 +223,22 @@ describe('LOG_LEVEL 环境变量', () => {
     configureLogging(undefined);
   });
 
-  it('config.level 未显式给出时读 LOG_LEVEL env', () => {
+  it('config.level 未显式给出时读 LOG_LEVEL env（管道出口）', () => {
     process.env.LOG_LEVEL = 'error';
-    configureLogging(true);
+    const entries: LogEntry[] = [];
+    configureLogging({ sink: (e) => entries.push(e) });
     createLogger('app').info('hidden');
     createLogger('app').error('shown');
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain(' ERROR');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].level).toBe('error');
   });
 
   it('config.level 显式值优先于 LOG_LEVEL env', () => {
     process.env.LOG_LEVEL = 'error';
-    configureLogging({ level: 'debug' });
+    const entries: LogEntry[] = [];
+    configureLogging({ level: 'debug', sink: (e) => entries.push(e) });
     createLogger('app').debug('shown');
-    expect(lines).toHaveLength(1);
+    expect(entries).toHaveLength(1);
   });
 
   it('非法 LOG_LEVEL env 抛错（启动期 fail fast，不静默兜底）', () => {
@@ -329,14 +379,14 @@ describe('logger dir 文件模式（egg 风格文件输出）', () => {
     expect(fs.existsSync(path.join(dir, 'app.log'))).toBe(true);
   });
 
-  it('getEffectiveLogLevel：dir 模式未配 level 返回 undefined（不过滤），console 模式返回 info', () => {
+  it('getEffectiveLogLevel：未配 level 返回 undefined（管道不过滤，dir 与 console 模式一致）', () => {
     configureLogging({ dir });
     expect(getEffectiveLogLevel()).toBeUndefined();
     configureLogging(undefined);
-    expect(getEffectiveLogLevel()).toBe('info');
+    expect(getEffectiveLogLevel()).toBeUndefined();
   });
 
-  it('getEffectiveLogLevel：显式 level 优先于模式默认', () => {
+  it('getEffectiveLogLevel：显式 level 优先生效', () => {
     configureLogging({ dir, level: 'debug' });
     expect(getEffectiveLogLevel()).toBe('debug');
   });
@@ -407,7 +457,7 @@ describe('logger options.fields', () => {
     vi.spyOn(console, 'debug').mockImplementation((...args: unknown[]) => {
       lines.push(args.map(String).join(' '));
     });
-    configureLogging({ level: 'info' });
+    configureLogging({ level: 'info', consoleLevel: 'debug' });
     createLogger('app', { level: 'debug' }).child('sub').debug('shown');
     expect(lines).toHaveLength(1);
   });

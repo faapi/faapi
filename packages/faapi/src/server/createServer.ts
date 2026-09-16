@@ -30,7 +30,7 @@ import { helmet, type HelmetOptions } from '../middleware/helmet';
 import { compression, type CompressionOptions } from '../middleware/compression';
 import { etag, type EtagOptions } from '../middleware/etag';
 import type { AppRegistries } from '../injection/registries';
-import { logger as loggerMiddleware, type LoggerOptions } from '../middleware/logger';
+import { logger as loggerMiddleware } from '../middleware/logger';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import { attachWebSocket } from './handleWsUpgrade';
@@ -216,8 +216,6 @@ export interface CreateServerOptions {
   etag?: EtagOptions | boolean;
   /** app 级注册表（tool/agent/skill/agentHandle）——经 FaapiContext 进入请求链路 */
   registries?: AppRegistries;
-  /** 请求日志配置,默认启用（与 cors 一致） */
-  logger?: LoggerOptions | boolean;
   /** 请求体大小限制（字节） */
   bodyLimit?: number;
   /** HTTP/2 配置，启用时需提供 SSL 证书路径 */
@@ -260,7 +258,6 @@ export function createServer(options: CreateServerOptions): {
     compression: compressionOption,
     etag: etagOption,
     registries,
-    logger: loggerOption,
     bodyLimit = DEFAULT_BODY_LIMIT,
     http2: http2Option,
     trustedProxy = false,
@@ -293,14 +290,9 @@ export function createServer(options: CreateServerOptions): {
     configMiddlewares.push(helmet(helmOpts));
   }
 
-  // Logger — 默认启用（与 cors 一致），false 禁用，LoggerOptions 自定义
-  const loggerMiddlewareInst: FaapiMiddleware | null =
-    loggerOption === false
-      ? null
-      : loggerOption === true || loggerOption === undefined
-        ? loggerMiddleware()
-        : loggerMiddleware(loggerOption);
-  if (loggerMiddlewareInst) configMiddlewares.push(loggerMiddlewareInst);
+  // Logger — 默认启用，请求日志无条件并入统一日志管道（config.log.accessLog: false 关闭，
+  // config.log: false 随管道全静默；编程式自定义输出经 middlewares: [logger({ log })]
+  configMiddlewares.push(loggerMiddleware());
 
   // ETag — 显式启用；位于 compression 内层：先算 ETag/304 再压缩，
   // 弱 ETag 基于未压缩表示计算（304 无 body 时压缩自动跳过）

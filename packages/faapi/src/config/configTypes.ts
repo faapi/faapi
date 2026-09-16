@@ -5,7 +5,6 @@ import type { PluginDeclaration } from './pluginTypes';
 import type { HelmetOptions } from '../middleware/helmet';
 import type { CompressionOptions } from '../middleware/compression';
 import type { EtagOptions } from '../middleware/etag';
-import type { LoggerOptions } from '../middleware/logger';
 import type { Http2Options } from '../server/createServer';
 
 /**
@@ -447,21 +446,19 @@ export interface FaapiConfig {
   etag?: EtagOptions | boolean;
   /** 请求体大小限制（字节），默认 10MB（10 * 1024 * 1024） */
   bodyLimit?: number;
-  /** 日志中间件配置 */
-  logger?: LoggerOptions | boolean;
   /**
-   * 业务日志器全局配置（详见 logger/logger.md）
+   * 日志全局配置——唯一日志配置入口，业务日志与请求日志同管道（egg 模型，
+   * 详见 logger/logger.md；`config.logger` 独立配置已废除）
    *
-   * - `false`：完全静默（含 error，测试降噪；不影响请求日志，关闭用 `logger: false`）
-   * - `true` / 缺省：默认级别（显式 level > LOG_LEVEL env > 'info'）+ console 文本输出
-   * - `LogConfig`：精细配置——`sink` 自定义管道（接 pino/winston）或 `dir` egg 风格
-   *   文件输出（app.log 全量 + error.log 仅 error，splitByLevel 按级别四文件），
-   *   两者互斥；`dir` 模式请求日志自动并入（`accessLog` 缺省 true），未显式配置
-   *   level 时不过滤（全量落盘）
+   * - `false`：全部静默（含 error 与请求日志，测试降噪）
+   * - `true` / 缺省：console 输出（consoleLevel 默认 'info'），管道不过滤
+   * - `LogConfig`：`dir` egg 风格文件输出（app.log 全量 + error.log 仅 error，
+   *   splitByLevel 按级别四文件）或 `sink` 自定义管道接管（接 pino/winston），
+   *   两者互斥；`level` 管道阈值（不配不过滤）、`consoleLevel` console 出口阈值
+   *   （不配 'info'，false 关 console）；请求日志无条件并入（`accessLog: false` 关闭）
    *
-   * 生效范围：`ctx.log` / 参数注入 `log` / `createLogger` / `taskCtx.log`，
-   * `dir`/`accessLog` 模式下含请求日志中间件。
-   * 日志全局配置是进程级资源，多 app 同进程时后启动覆盖先启动。
+   * 生效范围：`ctx.log` / 参数注入 `log` / `createLogger` / `taskCtx.log` /
+   * 请求日志中间件。日志全局配置是进程级资源，多 app 同进程时后启动覆盖先启动。
    *
    * ```ts
    * export default {

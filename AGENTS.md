@@ -552,13 +552,12 @@ handler `throw err`                       → formatErrorResponse      → 走 f
 | `ctx.log` / 参数注入 `log` | 请求级日志器，scope `http`，自动携带 `requestId`/`method`/`path` 字段 |
 | `taskCtx.log` | 任务级日志器，scope `task:<name>`，自动携带 `jobId`/`task`/`attempt`；隔离执行（声明 `timeoutMs`）经 postMessage 回传宿主统一输出 |
 
-配置（`config.log`，`createAppBase` 启动时应用）：
+配置（`config.log`，`createAppBase` 启动时应用；**唯一日志配置入口**——egg 模型，业务日志与请求日志同管道，`config.logger` 独立配置已废除）：
 
-- 缺省 / `true`：console 文本输出（`[ISO 时间] LEVEL [scope] message fields-JSON`），级别取 `config.log.level` > 环境变量 `LOG_LEVEL` > `'info'`（非法值启动报错，fail fast）
-- `false`：完全静默（含 error，测试降噪；不影响请求日志，关闭请求日志用 `config.logger: false`）
-- `{ level, sink }`：精细配置；`sink` 整体接管输出管道（实例级 `createLogger` 的 `options.sink` 同理，显式接管不受全局关闭影响）
-- `{ dir, splitByLevel?, stdout?, accessLog? }`：egg 风格文件输出（详见 `packages/faapi/src/logger/fileSink.md`）——默认 `app.log` 全量 + `error.log` 仅 error（dup 语义）；`splitByLevel: true` 改为按级别四文件（各只含对应级别）；`stdout` 默认 true 保留 console 双写；**未显式配置 level（含 LOG_LEVEL）时不过滤**（全量落盘，分流由文件布局承担），显式配置则阈值照常生效；`sink` 与 `dir` 互斥，同时配置启动报错；`flushLogging()` 供 `lifecycle.onClose` 刷盘
-- 请求日志并入：`config.log.accessLog` 控制请求日志中间件是否并入统一管道（缺省随 `dir` 启用）——并入时条目转 `LogEntry`（level 按 status 映射 2xx/3xx→info、4xx→warn、5xx→error，scope `access`，fields 携带 requestId/method/path/status/durationMs）与业务日志同文件/同 sink；`{ sink }` 模式缺省不并入（`console.log` 行为不变），显式 `accessLog: true` 开启；`config.logger: { log }` 显式接管优先级最高。详见 `packages/faapi/src/middleware/logger.md` 的关系矩阵
+- 缺省 / `true`：console 输出（`[ISO 时间] LEVEL [scope] message fields-JSON`，console 出口阈值 `consoleLevel` 默认 `'info'`，warn/error 走 stderr）
+- `false`：全部静默（含 error 与请求日志，测试降噪）
+- `LogConfig`：双出口独立阈值（egg transport 模型）——`level` 管管道出口（文件/sink 收到的条目，**不配不过滤**，`LOG_LEVEL` env 同源）；`consoleLevel` 管 console 出口（不配 `'info'`，`false` 关 console）；两者互不牵扯（文件可只存 error、console 看全）。输出目标二选一：`dir` egg 风格文件输出（默认 `app.log` 全量 + `error.log` 仅 error dup；`splitByLevel: true` 按级别四文件；`stdout` 默认 true 双写）或 `sink` 自定义管道接管（接 pino/winston），互斥同时配置报错；`flushLogging()` 供 `lifecycle.onClose` 刷盘
+- 请求日志无条件并入管道：条目转 `LogEntry`（level 按 status 映射 2xx/3xx→info、4xx→warn、5xx→error，scope `access`，fields 携带 requestId/method/path/status/durationMs）与业务日志同文件/同 sink/console 出口；`config.log.accessLog: false` 关闭请求日志。编程式自定义输出经 `middlewares: [logger({ log })]` 自行组装（`logger` 中间件仍导出）
 
 `ctx.requestId`：请求头 `x-request-id` 第一段优先（网关透传场景跨服务串联），否则 `crypto.randomUUID()` 生成；请求日志中间件的结构化条目同样附带该字段，业务日志与请求日志可经 requestId 关联。
 

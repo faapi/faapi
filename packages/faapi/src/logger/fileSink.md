@@ -14,8 +14,9 @@ export default {
   log: {
     dir: 'logs',              // 配置即启用：logs/app.log 全量 + logs/error.log 仅 error
     // splitByLevel: true,    // 改为按级别四文件：logs/debug.log | info.log | warn.log | error.log（各只含对应级别）
-    // stdout: true,          // 默认 true：写文件同时保留 console 输出；false 纯文件
-    // level: 'debug',        // 显式阈值；不配置时文件管道不过滤（全量落盘，分流由文件布局决定）
+    // stdout: true,          // 默认 true：写文件同时保留 console 输出（受 consoleLevel 管）；false 纯文件
+    // level: 'warn',         // 文件出口阈值；不配置时不过滤（全量落盘，分流由文件布局决定）
+    // consoleLevel: 'info',  // console 出口阈值（与文件阈值互不牵扯，egg transport 模型）
   },
 } satisfies FaapiConfig;
 ```

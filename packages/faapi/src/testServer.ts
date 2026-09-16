@@ -12,7 +12,6 @@ import type { FaapiMiddleware } from './middleware/middlewareTypes';
 import type { InjectorMap } from './middleware/injectorTypes';
 import type { CorsOptions } from './middleware/cors';
 import type { HelmetOptions } from './middleware/helmet';
-import type { LoggerOptions } from './middleware/logger';
 import type { FaapiContext } from './runtime/contextTypes';
 
 /**
@@ -36,8 +35,6 @@ export interface TestServerOptions {
   cors?: CorsOptions | boolean;
   /** 安全头配置，默认 false */
   helmet?: HelmetOptions | boolean;
-  /** 请求日志配置，默认 false（避免污染测试输出） */
-  logger?: LoggerOptions | boolean;
   /** 全局中间件（外层洋葱） */
   middlewares?: FaapiMiddleware[];
   /** 全局注入器 */
@@ -94,7 +91,7 @@ const DEFAULT_BODY_LIMIT = 10 * 1024 * 1024;
  * 2. sortRoutes 排序
  * 3. mkdtemp 创建临时 schema 目录（或用传入的 dist）
  * 4. generateSchemaFiles 生成 zod.js
- * 5. createServer 创建 server（默认禁用 CORS/Helmet/Logger，避免污染断言）
+ * 5. createServer 创建 server（默认禁用 CORS/Helmet，避免污染断言）
  * 6. server.listen(0) 随机端口
  * 7. 返回 TestServer
  *
@@ -110,7 +107,6 @@ export async function createTestServer(options: TestServerOptions): Promise<Test
     dist,
     cors = false,
     helmet = false,
-    logger = false,
     middlewares,
     injectors,
     onError,
@@ -132,14 +128,13 @@ export async function createTestServer(options: TestServerOptions): Promise<Test
   // 3. 生成 zod.js
   await generateSchemaFiles(sorted, rootDir, schemaDist);
 
-  // 4. 创建 server（默认禁用 CORS/Helmet/Logger，避免污染断言）
+  // 4. 创建 server（默认禁用 CORS/Helmet，避免污染断言）
   const { server } = createServer({
     routes: sorted,
     rootDir,
     dist: schemaDist,
     cors,
     helmet,
-    logger,
     middlewares,
     injectors,
     onError,

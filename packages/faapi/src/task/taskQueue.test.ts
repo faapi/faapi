@@ -325,21 +325,24 @@ describe('createTaskQueue', () => {
       await queue.enqueue('mailer', {});
       await fake.dispatch('mailer', {}, 1);
       expect(run).toHaveBeenCalledTimes(1);
-      expect(entries).toHaveLength(1);
+      // 管道不配 level 时不过滤：info 与 child debug 全量进 sink
+      expect(entries).toHaveLength(2);
       expect(entries[0].level).toBe('info');
       expect(entries[0].message).toBe('settling');
       expect(entries[0].scope).toBe('task:mailer');
       expect(entries[0].fields).toEqual({ jobId: 'd-1', task: 'mailer', attempt: 1 });
+      expect(entries[1].level).toBe('debug');
+      expect(entries[1].scope).toBe('task:mailer:db');
       await queue.stop();
     } finally {
       configureLogging(undefined);
     }
   });
 
-  it('进程内 taskCtx.log 受全局级别过滤（默认 info 时 debug 不输出）', async () => {
+  it('进程内 taskCtx.log 受管道阈值过滤（显式 level: info 时 debug 不输出）', async () => {
     const { configureLogging } = await import('../logger/logger');
     const entries: unknown[] = [];
-    configureLogging({ sink: (e) => entries.push(e) });
+    configureLogging({ level: 'info', sink: (e) => entries.push(e) });
     try {
       const run = vi.fn(
         async (

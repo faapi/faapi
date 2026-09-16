@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
@@ -8,6 +8,7 @@ import { sortRoutes } from '../router/sortRoutes';
 import { createServer } from './createServer';
 import { generateSchemaFiles } from '../cli/generateSchemaFiles';
 import { invalidateSchemaCache } from '../validator/validateInput';
+import { configureLogging } from '../logger/logger';
 import type { Server } from 'node:http';
 import type { RouteManifest } from '../router/routeTypes';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
@@ -335,137 +336,133 @@ describe('HTTP Server E2E', () => {
     });
   });
 
-  // Logger E2E 测试
+  // Logger E2E 测试（egg 模型：请求日志无条件并入统一管道，config.log.accessLog: false 关闭）
   describe('logger', () => {
-    describe('默认启用（undefined）', () => {
+    describe('默认启用：请求日志经 console 出口输出（consoleLevel 默认 info）', () => {
       let defaultLoggerServer: Server;
       let defaultLoggerBaseUrl: string;
 
       beforeAll(async () => {
-        // 不传 logger 选项 → 默认启用 logger()
         const result = await setupServerWithOptions({});
+        configureLogging({ consoleLevel: 'info' });
         defaultLoggerServer = result.server;
         defaultLoggerBaseUrl = result.baseUrl;
       });
 
       afterAll(async () => {
         await closeServer(defaultLoggerServer);
+        configureLogging(undefined);
       });
 
-      it('请求触发 console.log 输出 method/path/status/duration', async () => {
-        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      it('请求触发 console 输出 access 条目（文本格式含 method/path/status/duration）', async () => {
+        const logSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
         try {
           const res = await fetch(`${defaultLoggerBaseUrl}/api/auth/login`);
           expect(res.status).toBe(200);
           expect(logSpy).toHaveBeenCalled();
-          // logger() 调用 log(entry, text),console.log 忽略第二参,只打印对象
-          const entry = logSpy.mock.calls[0][0] as Record<string, unknown>;
-          expect(entry.method).toBe('GET');
-          expect(entry.path).toBe('/api/auth/login');
-          expect(entry.status).toBe(200);
-          expect(typeof entry.durationMs).toBe('number');
+          const line = logSpy.mock.calls[0][0] as string;
+          expect(line).toMatch(/INFO \[access\] GET \/api\/auth\/login 200 \d+ms/);
         } finally {
           logSpy.mockRestore();
         }
       });
 
-      it('错误请求也被记录（500 状态码）', async () => {
-        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      it('错误请求也被记录（500 → error 级别，走 console.error）', async () => {
+        const logSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         try {
           const res = await fetch(`${defaultLoggerBaseUrl}/api/error/throw`);
           expect(res.status).toBe(500);
-          // handler 抛错 → buildErrorResponse 兜底返回 500,logger 从 next() 返回的 Response 拿到 500
           expect(logSpy).toHaveBeenCalled();
-          const entry = logSpy.mock.calls[0][0] as Record<string, unknown>;
-          expect(entry.method).toBe('GET');
-          expect(entry.path).toBe('/api/error/throw');
-          expect(entry.status).toBe(500);
+          const line = logSpy.mock.calls[0][0] as string;
+          expect(line).toMatch(/ERROR \[access\] GET \/api\/error\/throw 500 \d+ms/);
         } finally {
           logSpy.mockRestore();
         }
       });
     });
 
-    describe('logger: false', () => {
-      let noLoggerServer: Server;
-      let noLoggerBaseUrl: string;
+    describe('config.log.sink 接管：请求日志与业务日志同管道（scope access）', () => {
+      let sinkServer: Server;
+      let sinkBaseUrl: string;
+      const entries: Array<{ level: string; scope?: string; message: string }> = [];
 
       beforeAll(async () => {
-        const result = await setupServerWithOptions({ logger: false });
-        noLoggerServer = result.server;
-        noLoggerBaseUrl = result.baseUrl;
+        const result = await setupServerWithOptions({});
+        configureLogging({ sink: (e) => entries.push(e as never) });
+        sinkServer = result.server;
+        sinkBaseUrl = result.baseUrl;
       });
 
       afterAll(async () => {
-        await closeServer(noLoggerServer);
+        await closeServer(sinkServer);
+        configureLogging(undefined);
       });
 
-      it('请求不触发 console.log', async () => {
-        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-        try {
-          const res = await fetch(`${noLoggerBaseUrl}/api/auth/login`);
-          expect(res.status).toBe(200);
-          expect(logSpy).not.toHaveBeenCalled();
-        } finally {
-          logSpy.mockRestore();
-        }
-      });
-    });
-
-    describe('logger: { log: customFn }', () => {
-      let customLoggerServer: Server;
-      let customLoggerBaseUrl: string;
-      const logs: string[] = [];
-
-      beforeAll(async () => {
-        const result = await setupServerWithOptions({
-          logger: {
-            log: (_obj: string | Record<string, unknown>, msg?: string) =>
-              logs.push(msg ?? String(_obj)),
-          },
-        });
-        customLoggerServer = result.server;
-        customLoggerBaseUrl = result.baseUrl;
-      });
-
-      afterAll(async () => {
-        await closeServer(customLoggerServer);
-      });
-
-      beforeEach(() => {
-        logs.length = 0;
-      });
-
-      it('请求触发自定义 log 函数,格式匹配', async () => {
-        const res = await fetch(`${customLoggerBaseUrl}/api/auth/login`);
+      it('请求条目进 sink（level 按 status 映射，fields 含 requestId/status）', async () => {
+        const res = await fetch(`${sinkBaseUrl}/api/auth/login`);
         expect(res.status).toBe(200);
-        expect(logs).toHaveLength(1);
-        expect(logs[0]).toMatch(/^GET \/api\/auth\/login 200 \d+ms$/);
+        const access = entries.filter((e) => e.scope === 'access');
+        expect(access.length).toBeGreaterThanOrEqual(1);
+        expect(access[0].level).toBe('info');
       });
     });
 
-    describe('logger: true', () => {
-      let trueLoggerServer: Server;
-      let trueLoggerBaseUrl: string;
+    describe('config.log.accessLog: false 关闭请求日志', () => {
+      let noAccessServer: Server;
+      let noAccessBaseUrl: string;
 
       beforeAll(async () => {
-        const result = await setupServerWithOptions({ logger: true });
-        trueLoggerServer = result.server;
-        trueLoggerBaseUrl = result.baseUrl;
+        const result = await setupServerWithOptions({});
+        configureLogging({ accessLog: false });
+        noAccessServer = result.server;
+        noAccessBaseUrl = result.baseUrl;
       });
 
       afterAll(async () => {
-        await closeServer(trueLoggerServer);
+        await closeServer(noAccessServer);
+        configureLogging(undefined);
       });
 
-      it('等价于默认启用,触发 console.log', async () => {
-        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      it('请求不产生任何日志输出', async () => {
+        const spies = (['debug', 'info', 'warn', 'error'] as const).map((m) =>
+          vi.spyOn(console, m).mockImplementation(() => {}),
+        );
         try {
-          const res = await fetch(`${trueLoggerBaseUrl}/api/auth/login`);
+          const res = await fetch(`${noAccessBaseUrl}/api/auth/login`);
           expect(res.status).toBe(200);
-          expect(logSpy).toHaveBeenCalled();
+          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
         } finally {
-          logSpy.mockRestore();
+          for (const spy of spies) spy.mockRestore();
+        }
+      });
+    });
+
+    describe('config.log: false 全静默：请求日志一并关闭', () => {
+      let silentServer: Server;
+      let silentBaseUrl: string;
+
+      beforeAll(async () => {
+        const result = await setupServerWithOptions({});
+        configureLogging(false);
+        silentServer = result.server;
+        silentBaseUrl = result.baseUrl;
+      });
+
+      afterAll(async () => {
+        await closeServer(silentServer);
+        configureLogging(undefined);
+      });
+
+      it('请求不产生任何日志输出', async () => {
+        const spies = (['debug', 'info', 'warn', 'error'] as const).map((m) =>
+          vi.spyOn(console, m).mockImplementation(() => {}),
+        );
+        try {
+          const res = await fetch(`${silentBaseUrl}/api/auth/login`);
+          expect(res.status).toBe(200);
+          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+        } finally {
+          for (const spy of spies) spy.mockRestore();
         }
       });
     });

@@ -1,46 +1,42 @@
 # logger
 
-一句话概括：请求日志中间件,输出 method path status duration,默认启用（与 cors 一致）
+一句话概括：请求日志中间件,每请求一条 method/path/status/duration,默认启用并**无条件并入统一日志管道**（egg 模型:访问日志与业务日志同管道）
 
 ## 为什么需要
 
-生产环境排查问题需要请求日志。框架默认启用 logger,确保零配置即有日志输出;用户可通过 `faapi.config.ts` 的 `logger` 字段自定义或关闭。
+生产环境排查问题需要请求日志。框架默认启用 logger,请求条目转 `LogEntry`（scope `access`）经 `writeLogEntry` 走统一管道——与业务日志同文件/同 sink/console,一份 `config.log` 管全部输出,无需第二份日志配置。`config.logger` 独立配置已废除（major: 单一入口简化）。
 
 ## 使用场景
 
-作为洋葱模型中间件使用,在 `await next()` 前后记录日志；支持自定义 log 函数。前记录 method/path,后追加 status/duration。
+作为洋葱模型中间件使用,在 `await next()` 前后记录日志。前记录 method/path,后追加 status/duration。
 
-结构化条目（传给自定义 log 函数的第一参数）附带 `requestId`（取自 `ctx.requestId`，请求头 `x-request-id` 优先、否则自动生成）——与业务日志器（`ctx.log`，见 `../logger/logger.md`）的条目经 requestId 关联。文本格式不变。
+条目形状（并入管道后）:
 
-通过 `faapi.config.ts` 的 `logger` 字段配置:
+- `level`: 按 status 映射——2xx/3xx → `info`、4xx → `warn`、5xx → `error`(文件模式下 5xx 自动进 error.log)
+- `message`: 文本 `GET /api/users 200 12ms`(错误为 `POST /api/users 400 45ms - Error: ...`)
+- `scope`: `access`(与业务日志的 `http` 区分,`requestId` 关联两者)
+- `fields`: `{ requestId, method, path, status, durationMs, error? }`
 
-- `undefined` / `true` → 启用默认 logger()（输出目标动态决策，见下）
-- `false` → 禁用内置 logger
-- `LoggerOptions` → 启用并自定义（如传入 pino/winston logger 实例，最高优先）
+### 配置(全部在 `config.log`,无独立请求日志配置)
 
-**默认输出目标（`options.log` 未配置时）按全局日志配置动态解析**（每次请求时读取，运行时切换 `configureLogging` 同样生效）：
+- 缺省: 并入管道(文件模式下落文件 + console 双写;纯 console 模式经 console 出口输出)
+- `config.log.accessLog: false`: 关闭请求日志(不输出)
+- `config.log: false`: 全静默,请求日志一并关闭
 
-| `config.log` 状态 | 默认输出 |
-|------|------|
-| 配置了 `dir`（`accessLog` 缺省）或显式 `accessLog: true` | 并入统一日志管道：条目转 `LogEntry`（level 按 status 映射 2xx/3xx→info、4xx→warn、5xx→error；scope `access`；fields 携带 requestId/method/path/status/durationMs）经 `writeLogEntry` 输出——与业务日志同文件/同 sink |
-| 其他（未配置 / `true` / `false` / `{ sink }` 缺省） | `console.log` 打印结构化条目（默认行为，不变） |
+### 编程式自定义输出(高级)
 
-`config.log: false`（业务日志全静默）时请求日志仍走 `console.log`——关闭请求日志用 `logger: false`（两条管道开关独立）。见 `../logger/logger.md` 的关系矩阵。
+`logger` 中间件仍从主入口导出,需要完全接管输出时自行组装:
 
 ```ts
 // faapi.config.ts
+import { logger } from '@faapi/faapi';
+
 export default {
-  // 默认启用,无需配置
-  // 或精细配置
-  logger: {
-    log: (obj, msg) => pinoLogger.info(obj, msg),  // 结构化日志
-  },
-  // 或关闭
-  logger: false,
+  middlewares: [logger({ log: (entry, msg) => pinoLogger.info(entry, msg) })],
 } satisfies FaapiConfig;
 ```
 
-**完全自定义日志中间件**：`logger: false` + `middlewares: [myCustomLogger]`。
+显式 `options.log` 时完全接管,不再走统一管道。
 
 ## 中间件顺序
 
@@ -52,6 +48,7 @@ logger 放在 helmet 之后、全局中间件之前,记录"业务请求总时长
 
 - `middlewareTypes.ts` - 实现中间件接口
 - `invokeHandler.ts` - 中间件执行入口
-- `createServer.ts` - 在中间件链中注册 logger（`configMiddlewares.push(logger(opts))`）
-- `configTypes.ts` - `logger?: LoggerOptions | boolean` 配置项
-- `../logger/logger.ts` - `isAccessLogPiped`（是否并入统一管道）/ `writeLogEntry`（并入输出）
+- `createServer.ts` - 在中间件链中注册 logger（默认挂载）
+- `../logger/logger.ts` - `isAccessLogEnabled` / `writeLogEntry`（并入输出）
+- `../logger/logger.md` - 统一管道配置（`config.log` 唯一入口）
+- `configTypes.ts` - `log?: LogConfig | boolean` 配置项

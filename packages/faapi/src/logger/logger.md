@@ -16,7 +16,7 @@ import { createLogger } from '@faapi/faapi';
 const log = createLogger('db');
 
 export async function connect() {
-  log.debug('connecting', { host });           // 生产（默认 info 级）被过滤
+  log.debug('connecting', { host });           // console 出口默认 info 级,debug 不显示（文件/sink 出口不过滤）
   await pool.connect();
   log.info('db connected', { host, port });
   try {
@@ -79,7 +79,7 @@ export default {
 } satisfies FaapiConfig;
 ```
 
-`dir` 模式**未显式配置 `level`（含 `LOG_LEVEL` env）时不过滤**——全量条目落盘，debug/info/warn/error 的分流由文件布局决定（`splitByLevel`），不在管道层丢数据；显式配置 `level` 时阈值照常生效。未配置 `dir` 的模式（console / 自定义 sink）未显式配置时仍默认 `info` 阈值（行为不变）。
+文件出口**未显式配置 `level`（含 `LOG_LEVEL` env）时不过滤**——全量条目落盘，debug/info/warn/error 的分流由文件布局决定（`splitByLevel`），不在管道层丢数据；显式配置 `level` 时文件出口阈值生效。console 出口独立由 `consoleLevel` 控制（默认 `'info'`），与文件阈值互不牵扯。
 
 ### 5. 接管输出目标（业务方接入 pino / 写文件）
 
@@ -90,7 +90,7 @@ export default {
 import pino from 'pino';
 import type { LogEntry } from '@faapi/faapi';
 
-// pino 级别放到最低，过滤统一交给 config.log.level / LOG_LEVEL（单一过滤源）
+// pino 级别放到最低；需在 faapi 侧降噪时显式配 config.log.level（管道阈值,不配不过滤）
 const pinoLogger = pino({ level: 'trace' });
 
 // entry.fields 里的 Error 是原始实例（Error 展开是默认 console sink 的职责），
@@ -121,8 +121,8 @@ export default {
 
 注意点：
 
-- **级别过滤归属**：faapi 侧过滤发生在 sink 调用之前，pino 收到的条目都已过阈值——pino level 设最低避免双重过滤配置漂移
-- **请求日志统一进 pino**（可选）：配置 `log: { sink, accessLog: true }` 请求日志即并入同一管道（scope `access`），或沿用 `logger: { log: (entry, msg) => pinoLogger.info(entry, msg) }` 自定义接线（条目含 requestId/status/durationMs）
+- **级别过滤归属**：管道阈值 `level` 不配时不过滤——pino 收到全量条目,降噪交给 pino 自身 level 或显式 `config.log.level`（避免双重过滤配置漂移）
+- **请求日志统一进 pino**（缺省即并入）：请求日志无条件走统一管道（scope `access`）,sink 接管后自动覆盖；需自定义格式时用 `middlewares: [logger({ log: (entry, msg) => ... })]` 自行组装
 - **绝对不丢日志**（审计类）：`pino(pino.destination({ sync: true }))` 同步写，牺牲吞吐换确定性；常规场景默认异步 + `onClose` flush 足够
 - 本地开发美化输出：`pino({ transport: { target: 'pino-pretty' } })`（需安装 pino-pretty）或命令行管道 `node dist/main | npx pino-pretty`；`transport` 模式下进程退出前用 `pino.final` 处理 flush，不影响容器内的 JSON 采集
 
@@ -132,7 +132,7 @@ export default {
 
 - **输出到 stdout/stderr**：默认 console sink 的 debug/info 走 stdout、warn/error 走 stderr，`docker logs` 直接可见；容器内**不写日志文件**，采集交给 Docker logging driver（json-file / fluentd / loki 等）或 k8s 采集器
 - **结构化采集**：接 Loki/ELK/Datadog 时按上一节接 pino sink——JSON 行到 stdout，单流（pino 不像默认 console 分流 stderr）对采集器更友好；`requestId` 已在每条业务日志与请求日志条目中，跨服务串联可用，多副本部署可在 sink 里补 `hostname` 等 Pod 维度字段
-- **级别调整不改镜像**：`docker run -e LOG_LEVEL=debug`（compose `environment:` / k8s `env` 同理）。faapi 的 `loadEnv` 也会把镜像内 `.env` 加载进 `process.env`，但运行期注入用 `-e` 最常见。注意优先级：`config.log.level` 显式值 > `LOG_LEVEL` env > `'info'`——容器场景建议 config 只写 `sink` 不写死 level，级别交给环境变量
+- **级别调整不改镜像**：`docker run -e LOG_LEVEL=debug`（compose `environment:` / k8s `env` 同理）。faapi 的 `loadEnv` 也会把镜像内 `.env` 加载进 `process.env`，但运行期注入用 `-e` 最常见。注意优先级：`config.log.level` 显式值 > `LOG_LEVEL` env > 不过滤——容器场景建议 config 只写 `sink` 不写死 level，级别交给环境变量
 - **优雅停机不丢日志**：`docker stop` 发 SIGTERM → faapi（listen 时已注册 SIGTERM/SIGINT handler）自动优雅关闭——drain 在跑任务、执行 `lifecycle.onClose` 后退出 → pino 的 flush 挂在 `onClose`（见上节示例）；Docker 默认 10s 宽限期足够，超时 SIGKILL 强杀时异步缓冲仍可能丢（同所有 Node 进程）
 
 ```yaml
@@ -149,7 +149,7 @@ services:
     #   driver: loki
 ```
 
-`log: false` 完全静默（含 error，测试场景降噪）；`log` 未配置或 `true` 时默认 console 输出，级别取 `config.log.level` > 环境变量 `LOG_LEVEL` > `'info'`（非法值启动报错，不静默兜底）。日志全局配置是**进程级资源**（stdout/文件本就进程唯一）：多 app 同进程时后启动的 app 覆盖先启动的，与注册表的 app 实例级隔离不同。
+`log: false` 完全静默（含 error 与请求日志，测试场景降噪）；`log` 未配置或 `true` 时 console 输出（`consoleLevel` 默认 `'info'`），管道阈值取 `config.log.level` > 环境变量 `LOG_LEVEL` > 不过滤（非法值启动报错，不静默兜底）。日志全局配置是**进程级资源**（stdout/文件本就进程唯一）：多 app 同进程时后启动的 app 覆盖先启动的，与注册表的 app 实例级隔离不同。
 
 ### 默认文本格式
 
@@ -160,28 +160,26 @@ services:
 
 `[ISO 时间] LEVEL [scope] message fields-JSON`，scope/fields 缺省时对应段省略。级别映射 console.debug/info/warn/error（warn/error 走 stderr）。fields 中的 `Error` 值序列化为 `{ name, message, stack }`。
 
-### 与请求日志中间件（`config.logger`）的关系
+### 与请求日志中间件的关系
 
-`config.log.accessLog` 控制请求日志是否并入统一管道（缺省随 `config.log.dir` 启用）：
+**egg 模型：请求日志无条件并入统一管道**（`config.logger` 独立配置已废除，`config.log` 是唯一日志配置入口）：
 
-| 配置组合 | 请求日志输出 |
+| 配置 | 请求日志行为 |
 |------|------|
-| 未配置 `config.log` / `true` / `{ sink }` | `console.log`（默认，格式不变） |
-| `{ dir }`（缺省 `accessLog`） | **并入统一管道**（与业务日志同文件/同 sink） |
-| `{ sink, accessLog: true }` | **并入统一管道** |
-| `{ dir, accessLog: false }` | `console.log`（显式关闭） |
-| `config.log: false` | `console.log`（全静默只作用于业务日志，关闭请求日志用 `config.logger: false`） |
-| `config.logger: { log }` | 用户接管（最高优先，见 `../middleware/logger.md`） |
+| 缺省 | **并入管道**：条目 `{ level: 2xx/3xx→'info'、4xx→'warn'、5xx→'error'，message: 'GET /api/users 200 12ms'，scope: 'access'，fields: { requestId, method, path, status, durationMs, error? } }`——与业务日志同文件/同 sink/console，`level`/`consoleLevel` 统一过滤 |
+| `accessLog: false` | 关闭请求日志（不输出） |
+| `config.log: false` | 全静默，请求日志一并关闭 |
 
-并入的条目形状：`{ level: 2xx/3xx→'info'、4xx→'warn'、5xx→'error'，message: 'GET /api/users 200 12ms'，scope: 'access'，fields: { requestId, method, path, status, durationMs, error? } }`——按 status 映射级别，文件模式下 5xx 自动进 `error.log`；scope `access` 与业务日志的 `http` 区分，`requestId` 关联两者。显式 `logger: { log }` 自定义时不再并入（显式接管优先）。
+scope `access` 与业务日志的 `http` 区分，`requestId` 关联两者；文件模式下 5xx 自动进 `error.log`。需要完全自定义输出格式时用 `logger({ log })` 中间件自行组装（见 `../middleware/logger.md`），不再走管道。
 
 ## 行为约定
 
-- **级别阈值**：`debug(0) < info(1) < warn(2) < error(3)`，低于阈值的条目在构造 entry 之前丢弃（零序列化开销）
-- **级别解析**：logger 实例级 `options.level` 覆盖全局；全局取 `config.log.level` 显式值 > `LOG_LEVEL` 环境变量 > 模式默认。非法级别（config 或 env）在 `configureLogging` 时显式抛错（启动期 fail fast），不降级为默认值。**模式默认分档**：`config.log.dir` 文件模式默认**不过滤**（全量条目进管道，分流由 `splitByLevel` 文件布局承担）；console / 自定义 sink 模式默认 `'info'`（行为与既有版本一致）
-- **sink 解析**：logger 实例级 `options.sink` 优先（显式接管，不受全局 `log: false` 影响）→ 全局 sink → 文件管道（`dir`）→ 默认 console。`dir` 模式 `stdout` 非 false 时文件与 console 双写。`sink` 与 `dir` 互斥，同时配置抛错
+- **双出口独立阈值（egg transport 模型）**：一条管道、两个输出出口，各管各的阈值——`level` 管管道出口（文件/sink 收到的条目，不配**不过滤**，全量放行）；`consoleLevel` 管 console 出口（不配 `'info'`，`false` 关闭）。两者互不牵扯：文件可 `level: 'error'` 只存错误，console 可 `consoleLevel: 'info'` 看全
+- **级别常量**：`debug(0) < info(1) < warn(2) < error(3)`
+- **级别解析**：logger 实例级 `options.level` 是该实例的入口预滤（低于阈值不构造条目）；全局 `level` 取 `config.log.level` 显式值 > `LOG_LEVEL` 环境变量 > 不过滤。非法级别（config 或 env）在 `configureLogging` 时显式抛错（启动期 fail fast），不降级为默认值
+- **出口解析**：logger 实例级 `options.sink` 优先（显式接管，不受全局 `log: false` / 出口阈值影响）→ 全局 sink（受 `level`）→ 文件管道（`dir`，受 `level`；`stdout` 非 false 时 console 双写，受 `consoleLevel`）→ 纯 console（受 `consoleLevel`）。`sink` 与 `dir` 互斥，同时配置抛错
 - **`child(scope)`**：scope 以 `:` 合并（`createLogger('http').child('user')` → `http:user`，可多层嵌套），fields 浅合并（child 覆盖同名键）；返回新 Logger，父子互不影响
-- **`configureLogging(undefined)`** 重置为默认（level 走 env/默认 info、无自定义 sink）——编程式多 app 切换全局配置用
+- **`configureLogging(undefined)`** 重置为默认（管道不过滤、consoleLevel 默认 info、无文件/自定义 sink）——编程式多 app 切换全局配置用
 - 日志调用**永不抛错**：fields 序列化失败（循环引用等）降级为提示文本输出（已记入 `fallback.md`），不影响业务流程
 
 ## 相关模块

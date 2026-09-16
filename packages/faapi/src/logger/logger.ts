@@ -10,17 +10,18 @@ import { formatEntry } from './formatEntry';
 import { createFileLogSink, type FileLogSinkHandle } from './fileSink';
 
 /**
- * 框架级结构化日志器（logger.md）
+ * 框架级结构化日志器（logger.md）——参考 egg.js 的单管道模型
  *
- * 级别阈值 + scope 分类 + 结构化字段 + 可插拔 sink + 内置文件管道，零依赖：
- * 默认输出 console 文本，`config.log.sink` 可整体接管（接 pino/winston/文件），
- * `config.log.dir` 启用 egg 风格文件输出（含请求日志并入）。全局配置为进程级
- * 资源（stdout/文件本就进程唯一），由 `configureLogging` 设置（createAppBase
- * 启动时读 config.log 调用），多 app 同进程后启动覆盖先启动。
+ * 一条日志管道、两个输出出口，各有独立阈值：
+ * - 管道出口（文件 `dir` / 自定义 `sink`）：`level` 阈值，不配不过滤（全量条目，
+ *   分流由文件布局或下游 sink 决定）
+ * - console 出口：`consoleLevel` 阈值，不配 `'info'`（`false` 关闭 console）
  *
- * 阈值解析：显式 level（config.log.level > LOG_LEVEL env）生效；未显式配置时
- * `dir` 文件模式不过滤（全量落盘，分流由 splitByLevel 文件布局承担），其余模式
- * 默认 info（既有行为）。
+ * 请求日志（middleware/logger.ts）无条件并入管道（`accessLog: false` 关闭），
+ * `config.logger` 独立配置已废除——单一 `config.log` 入口管全部输出。
+ *
+ * 全局配置为进程级资源（stdout/文件本就进程唯一），由 `configureLogging` 设置
+ * （createAppBase 启动时读 config.log 调用），多 app 同进程后启动覆盖先启动。
  *
  * 日志调用永不抛错：fields 序列化失败降级为提示文本（fallback.md）。
  */
@@ -40,31 +41,40 @@ function assertLogLevel(value: unknown, source: string): asserts value is LogLev
 /**
  * 全局日志配置（进程级）
  *
- * level 为 null 表示未显式配置——阈值回落模式默认（`dir` 文件模式不过滤、其余
- * info，见 globalThreshold）。sink/fileSink 互斥（configureLogging 校验）：
- * sink 显式接管时 fileSink 不参与。disabled 对应 `config.log: false`（业务日志
- * 全部静默，含 error；请求日志开关独立，见 middleware/logger.ts）。
+ * level 为 null 表示未配置——管道出口不过滤（全量条目进文件/sink）。
+ * consoleLevel 为 null 表示未配置——console 出口默认 'info'；false 关闭 console。
+ * sink/fileSink 互斥（configureLogging 校验）。disabled 对应 `config.log: false`
+ * （管道与请求日志全部静默）。
  */
 const globalState: {
   level: LogLevel | null;
+  consoleLevel: LogLevel | false | null;
   sink: LogSink | null;
   fileSink: FileLogSinkHandle | null;
   stdout: boolean;
   accessLog: boolean;
   disabled: boolean;
-} = { level: null, sink: null, fileSink: null, stdout: true, accessLog: false, disabled: false };
+} = {
+  level: null,
+  consoleLevel: null,
+  sink: null,
+  fileSink: null,
+  stdout: true,
+  accessLog: true,
+  disabled: false,
+};
 
 /**
  * 设置全局日志配置（进程级，`createAppBase` 启动时以 `config.log` 调用）
  *
- * - `false`：完全静默（含 error，测试降噪场景）
- * - `true` / `{}`：默认级别（显式 level > LOG_LEVEL env > 模式默认）+ 默认 console sink
- * - `{ level, sink }`：自定义管道接管（与 dir 互斥，同时配置抛错）
- * - `{ dir, splitByLevel?, stdout?, accessLog? }`：egg 风格文件输出（fileSink.md）
+ * - `false`：全部静默（含 error 与请求日志，测试降噪场景）
+ * - `true` / `{}`：console 出口默认 info，管道出口不过滤，无文件输出
+ * - `{ level, consoleLevel, sink, dir, stdout, accessLog }`：egg 模型精细配置
+ *   （level 管管道出口、consoleLevel 管 console 出口；sink 与 dir 互斥）
  * - `undefined`：重置为默认（编程式多 app 切换全局配置用）
  *
- * LOG_LEVEL env 仅在本函数读取——app 启动路径必经此处（env 非法在启动期报错）；
- * 纯编程式不调本函数时 env 不生效。
+ * LOG_LEVEL env 仅作为管道 level 的环境来源（consoleLevel 无 env）——本函数是
+ * env 读取点，非法值启动期报错（fail fast）。
  */
 export function configureLogging(config?: LogConfig | boolean | undefined): void {
   const objectConfig = typeof config === 'object' ? config : {};
@@ -78,11 +88,19 @@ export function configureLogging(config?: LogConfig | boolean | undefined): void
 
   globalState.disabled = config === false;
   globalState.sink = objectConfig.sink ?? null;
-  globalState.accessLog = objectConfig.accessLog ?? objectConfig.dir !== undefined;
+  globalState.accessLog = objectConfig.accessLog ?? true;
   globalState.stdout = objectConfig.stdout ?? true;
   globalState.fileSink = objectConfig.dir
     ? createFileLogSink({ dir: objectConfig.dir, splitByLevel: objectConfig.splitByLevel })
     : null;
+  if (objectConfig.consoleLevel !== undefined) {
+    if (objectConfig.consoleLevel !== false) {
+      assertLogLevel(objectConfig.consoleLevel, 'config.log.consoleLevel');
+    }
+    globalState.consoleLevel = objectConfig.consoleLevel;
+  } else {
+    globalState.consoleLevel = null;
+  }
   if (objectConfig.level !== undefined) {
     assertLogLevel(objectConfig.level, 'config.log.level');
     globalState.level = objectConfig.level;
@@ -95,13 +113,16 @@ export function configureLogging(config?: LogConfig | boolean | undefined): void
 }
 
 /**
- * 当前生效的全局阈值；undefined 表示不过滤（dir 文件模式未显式配置 level 时，
- * 全量条目进管道——分流由文件布局/下游 sink 决定）
+ * 管道阈值（文件/sink 收到的条目）；undefined = 不过滤（未配置 level 时全量放行，
+ * 分流由文件布局或下游 sink 决定）
  */
-function globalThreshold(): LogLevel | undefined {
-  if (globalState.level) return globalState.level;
-  if (globalState.fileSink) return undefined;
-  return 'info';
+function pipelineThreshold(): LogLevel | undefined {
+  return globalState.level ?? undefined;
+}
+
+/** console 出口阈值；false = console 关闭 */
+function consoleThreshold(): LogLevel | false {
+  return globalState.consoleLevel ?? 'info';
 }
 
 /** 阈值判定（threshold undefined = 不过滤） */
@@ -110,18 +131,13 @@ function belowThreshold(level: LogLevel, threshold: LogLevel | undefined): boole
 }
 
 /**
- * 当前生效的全局级别（任务隔离派发用：级别随 workerData 下发做 worker 侧预过滤，
+ * 当前生效的管道级别（任务隔离派发用：级别随 workerData 下发做 worker 侧预过滤，
  * 宿主侧 writeLogEntry 再次过滤——两级一致，派发后级别变更以宿主为准；
  * undefined = 不过滤，worker 侧同样放行全量）
  */
 export function getEffectiveLogLevel(): LogLevel | undefined {
-  return globalThreshold();
+  return pipelineThreshold();
 }
-
-/** 默认输出：console 对应级别方法（warn/error 走 stderr） */
-const consoleSink: LogSink = (entry) => {
-  console[CONSOLE_METHOD[entry.level]](formatEntry(entry));
-};
 
 const CONSOLE_METHOD: Record<LogLevel, 'debug' | 'info' | 'warn' | 'error'> = {
   debug: 'debug',
@@ -130,34 +146,43 @@ const CONSOLE_METHOD: Record<LogLevel, 'debug' | 'info' | 'warn' | 'error'> = {
   error: 'error',
 };
 
-/**
- * 全局管道：disabled 检查 + 输出解析
- *
- * 优先级：全局 sink（显式接管）→ 文件管道（dir 配置，stdout 非 false 时 console
- * 双写）→ 默认 console。
- */
-function globalDispatch(entry: LogEntry): void {
-  if (globalState.disabled) return;
-  if (globalState.sink) {
-    globalState.sink(entry);
-    return;
-  }
-  if (globalState.fileSink) {
-    globalState.fileSink.write(entry);
-    if (globalState.stdout) consoleSink(entry);
-    return;
-  }
-  consoleSink(entry);
+/** console 输出（对应级别方法，warn/error 走 stderr），受 consoleLevel 阈值过滤 */
+function consoleDispatch(entry: LogEntry): void {
+  const threshold = consoleThreshold();
+  if (threshold === false || belowThreshold(entry.level, threshold)) return;
+  console[CONSOLE_METHOD[entry.level]](formatEntry(entry));
 }
 
 /**
- * 写一条预构建的日志条目（过全局阈值 + 全局管道）
+ * 全局管道：disabled 检查 + 出口解析（各出口独立阈值——egg transport 模型）
+ *
+ * 优先级：全局 sink（显式接管，受 `level`，不经 console）→ 文件管道（`dir`，
+ * 受 `level`；stdout 非 false 时 console 双写，受 `consoleLevel`）→ 纯 console
+ * （受 `consoleLevel`）。`level` 与 `consoleLevel` 互不牵扯：文件可只存 error
+ * 而.console 看全部。
+ */
+function globalDispatch(entry: LogEntry): void {
+  if (globalState.disabled) return;
+  const pipeThreshold = pipelineThreshold();
+  if (globalState.sink) {
+    if (!belowThreshold(entry.level, pipeThreshold)) globalState.sink(entry);
+    return;
+  }
+  if (globalState.fileSink) {
+    if (!belowThreshold(entry.level, pipeThreshold)) globalState.fileSink.write(entry);
+    if (globalState.stdout) consoleDispatch(entry);
+    return;
+  }
+  consoleDispatch(entry);
+}
+
+/**
+ * 写一条预构建的日志条目（直达全局管道，各出口按自身阈值过滤）
  *
  * 任务隔离执行桥接用：worker 内联日志器把条目作为纯数据 postMessage 回传宿主，
  * 宿主侧经本函数走统一管道（自定义 sink / 文件管道同样覆盖隔离任务）。
  */
 export function writeLogEntry(entry: LogEntry): void {
-  if (belowThreshold(entry.level, globalThreshold())) return;
   globalDispatch(entry);
 }
 
@@ -172,13 +197,12 @@ export function flushLogging(): Promise<void> {
 }
 
 /**
- * 请求日志是否并入统一日志管道（middleware/logger.ts 默认输出决策用）
+ * 请求日志是否并入管道（middleware/logger.ts 默认输出决策用）
  *
- * `config.log.accessLog` 显式配置优先；缺省随 `config.log.dir` 启用（文件模式下
- * 请求日志与业务日志同管道，一份配置管全部输出）。`config.log: false`（业务日志
- * 全静默）不吞请求日志——关闭请求日志用 `config.logger: false`。
+ * 缺省并入（egg 模型：访问日志与业务日志同管道）；`config.log.accessLog: false`
+ * 或 `config.log: false` 时请求日志不输出。
  */
-export function isAccessLogPiped(): boolean {
+export function isAccessLogEnabled(): boolean {
   return !globalState.disabled && globalState.accessLog;
 }
 
@@ -198,8 +222,8 @@ export function createLogger(scope?: string, options?: CreateLoggerOptions): Log
     callFields: Record<string, unknown> | undefined,
     scopeSuffix: string | undefined,
   ): void => {
-    const threshold = options?.level ?? globalThreshold();
-    if (belowThreshold(level, threshold)) return;
+    // 实例级 level 是该 logger 的出口阈值；全局阈值在各出口独立判定（egg transport 模型）
+    if (belowThreshold(level, options?.level)) return;
     const entry: LogEntry = {
       level,
       message,
@@ -216,7 +240,7 @@ export function createLogger(scope?: string, options?: CreateLoggerOptions): Log
       entry.fields = { ...baseFields, ...callFields };
     }
     if (options?.sink) {
-      // 实例级 sink：显式接管输出管道，不受全局 disabled 影响
+      // 实例级 sink：显式接管输出管道，不受全局 disabled / consoleLevel 影响
       options.sink(entry);
     } else {
       globalDispatch(entry);

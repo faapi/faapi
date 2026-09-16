@@ -150,21 +150,17 @@ describe('logger middleware 与统一日志管道（config.log.accessLog）', ()
     }
   });
 
-  it('sink 模式缺省 accessLog 时不并入：请求日志走 console.log（行为不变）', async () => {
+  it('sink 模式缺省 accessLog 即并入：请求日志与业务日志同管道（egg 模型默认）', async () => {
     delete process.env.LOG_LEVEL;
     const entries: LogEntry[] = [];
-    const consoleLogs: unknown[] = [];
     configureLogging({ sink: (e) => entries.push(e) });
-    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
-      consoleLogs.push(...args);
-    });
     try {
       const mw = logger();
       await invokeHandler(() => ({ ok: true }), makeCtx(), undefined, [mw]);
-      expect(entries).toHaveLength(0);
-      expect(consoleLogs).toHaveLength(1);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].scope).toBe('access');
+      expect(entries[0].level).toBe('info');
     } finally {
-      vi.restoreAllMocks();
       configureLogging(undefined);
       delete process.env.LOG_LEVEL;
     }
@@ -209,12 +205,12 @@ describe('logger middleware 与统一日志管道（config.log.accessLog）', ()
     }
   });
 
-  it('dir 模式显式 accessLog: false 时请求日志回落 console.log，不写文件', async () => {
+  it('accessLog: false 时请求日志完全不输出（文件与 console 均无）', async () => {
     delete process.env.LOG_LEVEL;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-access-'));
     const consoleLogs: unknown[] = [];
-    configureLogging({ dir, stdout: false, accessLog: false });
-    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    configureLogging({ dir, stdout: true, accessLog: false });
+    vi.spyOn(console, 'info').mockImplementation((...args: unknown[]) => {
       consoleLogs.push(...args);
     });
     try {
@@ -225,7 +221,7 @@ describe('logger middleware 与统一日志管道（config.log.accessLog）', ()
         ? fs.readFileSync(path.join(dir, 'app.log'), 'utf8')
         : '';
       expect(content).not.toContain('[access]');
-      expect(consoleLogs).toHaveLength(1);
+      expect(consoleLogs).toHaveLength(0);
     } finally {
       vi.restoreAllMocks();
       configureLogging(undefined);
@@ -234,17 +230,17 @@ describe('logger middleware 与统一日志管道（config.log.accessLog）', ()
     }
   });
 
-  it('config.log: false（业务全静默）时请求日志仍走 console.log（存量行为）', async () => {
+  it('config.log: false 全静默：请求日志一并关闭（不再回落 console.log）', async () => {
     delete process.env.LOG_LEVEL;
     const consoleLogs: unknown[] = [];
     configureLogging(false);
-    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    vi.spyOn(console, 'info').mockImplementation((...args: unknown[]) => {
       consoleLogs.push(...args);
     });
     try {
       const mw = logger();
       await invokeHandler(() => ({ ok: true }), makeCtx(), undefined, [mw]);
-      expect(consoleLogs).toHaveLength(1);
+      expect(consoleLogs).toHaveLength(0);
     } finally {
       vi.restoreAllMocks();
       configureLogging(undefined);
