@@ -540,3 +540,61 @@ describe('参数名 log 注入（与 ctx.log 同一实例）', () => {
     expect(injected).toBe(ctx.log);
   });
 });
+
+describe('全局状态跨模块实例共享（dev CLI bundle 与主入口双副本）', () => {
+  let lines: string[];
+  beforeEach(() => {
+    delete process.env.LOG_LEVEL;
+    lines = spyConsole();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.LOG_LEVEL;
+    configureLogging(undefined);
+  });
+
+  /** 模拟第二份模块实例：dev 下 CLI bundle 内联一份框架代码，业务模块经包主入口加载另一份 */
+  async function loadSecondCopy() {
+    vi.resetModules();
+    return import('./logger');
+  }
+
+  it('副本 A configureLogging({ sink })，副本 B createLogger 输出进同一管道', async () => {
+    const seen: LogEntry[] = [];
+    configureLogging({ sink: (entry) => seen.push(entry) });
+
+    const copyB = await loadSecondCopy();
+    copyB.createLogger('biz').info('from copy B');
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ level: 'info', scope: 'biz', message: 'from copy B' });
+    expect(lines).toEqual([]);
+  });
+
+  it('副本 B configureLogging，副本 A 的 writeLogEntry 同样进入配置的管道', async () => {
+    const copyB = await loadSecondCopy();
+    const seen: LogEntry[] = [];
+    copyB.configureLogging({ sink: (entry) => seen.push(entry) });
+
+    writeLogEntry({ level: 'error', message: 'from copy A', time: '2026-09-15T08:00:00.000Z' });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ level: 'error', message: 'from copy A' });
+  });
+
+  it('副本 A configureLogging({ dir })，副本 B createLogger 落盘同一 app.log', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-logger-dual-'));
+    try {
+      configureLogging({ dir });
+
+      const copyB = await loadSecondCopy();
+      copyB.createLogger('startup').info('boot');
+      await copyB.flushLogging();
+
+      expect(fs.readFileSync(path.join(dir, 'app.log'), 'utf8')).toContain('[startup] boot');
+    } finally {
+      configureLogging(undefined);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -151,6 +151,8 @@ services:
 
 `log: false` 完全静默（含 error 与请求日志，测试场景降噪）；`log` 未配置或 `true` 时 console 输出（`consoleLevel` 默认 `'info'`），管道阈值取 `config.log.level` > 环境变量 `LOG_LEVEL` > 不过滤（非法值启动报错，不静默兜底）。日志全局配置是**进程级资源**（stdout/文件本就进程唯一）：多 app 同进程时后启动的 app 覆盖先启动的，与注册表的 app 实例级隔离不同。
 
+**全局状态跨模块实例共享（globalThis 承载）**：管道状态（level/sink/fileSink 等）存在 `globalThis` 上（`Symbol.for('faapi.logger.state')` 键，与 `getApp` 单例同模式），不放在模块级变量里。原因：dev 模式下日志管道存在两个模块实例——`faapi` CLI 跑在 `dist/cli/index.js`（tsup 打包时内联了框架代码），业务模块经包主入口加载 `dist/index.js`，两份副本各有独立 module cache；`configureLogging` 由 CLI 侧的 `createAppBase` 调用，若状态是模块级的，业务代码 `createLogger`（走主入口副本）看到的 `fileSink` 恒为 null，日志退化为纯 console——dev 下 `config.log.dir` 的业务日志全部不落盘（prod 的 `dist/main` 与业务模块共享 `dist/index.js` 同一实例，不受影响）。globalThis 键用 `Symbol.for` 创建，跨副本命中同一个 key；prod 行为无变化。
+
 ### 默认文本格式
 
 ```

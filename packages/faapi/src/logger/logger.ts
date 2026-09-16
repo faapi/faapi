@@ -21,7 +21,9 @@ import { createFileLogSink, type FileLogSinkHandle } from './fileSink';
  * `config.logger` 独立配置已废除——单一 `config.log` 入口管全部输出。
  *
  * 全局配置为进程级资源（stdout/文件本就进程唯一），由 `configureLogging` 设置
- * （createAppBase 启动时读 config.log 调用），多 app 同进程后启动覆盖先启动。
+ * （createAppBase 启动时读 config.log 调用），多 app 同进程后启动覆盖先启动；
+ * 状态经 globalThis 承载跨模块实例共享（dev 下 CLI bundle 与主入口是两份模块副本，
+ * 模块级变量会导致业务侧 createLogger 看不到 CLI 侧配置的管道）。
  *
  * 日志调用永不抛错：fields 序列化失败降级为提示文本（fallback.md）。
  */
@@ -39,14 +41,14 @@ function assertLogLevel(value: unknown, source: string): asserts value is LogLev
 }
 
 /**
- * 全局日志配置（进程级）
+ * 全局日志管道状态
  *
  * level 为 null 表示未配置——管道出口不过滤（全量条目进文件/sink）。
  * consoleLevel 为 null 表示未配置——console 出口默认 'info'；false 关闭 console。
  * sink/fileSink 互斥（configureLogging 校验）。disabled 对应 `config.log: false`
  * （管道与请求日志全部静默）。
  */
-const globalState: {
+interface LoggingState {
   level: LogLevel | null;
   consoleLevel: LogLevel | false | null;
   sink: LogSink | null;
@@ -54,15 +56,42 @@ const globalState: {
   stdout: boolean;
   accessLog: boolean;
   disabled: boolean;
-} = {
-  level: null,
-  consoleLevel: null,
-  sink: null,
-  fileSink: null,
-  stdout: true,
-  accessLog: true,
-  disabled: false,
-};
+}
+
+/**
+ * 管道状态的 globalThis key（`Symbol.for` 创建，跨模块实例命中同一键）
+ *
+ * 管道状态是进程级资源（stdout/文件本就进程唯一），但不能放模块级变量——dev 模式下
+ * 框架存在两个模块实例：`faapi` CLI 跑在 `dist/cli/index.js`（tsup 打包内联框架代码），
+ * 业务模块经包主入口加载 `dist/index.js`，两份副本 module cache 独立。模块级变量会让
+ * `configureLogging`（CLI 侧 createAppBase 调用）只作用于 CLI 副本，业务 `createLogger`
+ * （主入口副本）看到的 fileSink 恒为 null，dev 下 `config.log.dir` 的业务日志不落盘。
+ * 与 `getApp` 单例同模式：globalThis + `Symbol.for` 键跨副本共享，prod（单实例）行为无变化。
+ */
+const LOGGING_STATE_KEY = Symbol.for('faapi.logger.state');
+
+function createDefaultLoggingState(): LoggingState {
+  return {
+    level: null,
+    consoleLevel: null,
+    sink: null,
+    fileSink: null,
+    stdout: true,
+    accessLog: true,
+    disabled: false,
+  };
+}
+
+/** 全局日志管道状态（globalThis 承载，跨模块实例共享；首次访问时懒初始化） */
+function getLoggingState(): LoggingState {
+  const g = globalThis as Record<symbol, LoggingState | undefined>;
+  let state = g[LOGGING_STATE_KEY];
+  if (!state) {
+    state = createDefaultLoggingState();
+    g[LOGGING_STATE_KEY] = state;
+  }
+  return state;
+}
 
 /**
  * 设置全局日志配置（进程级，`createAppBase` 启动时以 `config.log` 调用）
@@ -77,6 +106,7 @@ const globalState: {
  * env 读取点，非法值启动期报错（fail fast）。
  */
 export function configureLogging(config?: LogConfig | boolean | undefined): void {
+  const state = getLoggingState();
   const objectConfig = typeof config === 'object' ? config : {};
   if (objectConfig.sink && objectConfig.dir) {
     throw new Error(
@@ -84,31 +114,31 @@ export function configureLogging(config?: LogConfig | boolean | undefined): void
     );
   }
   // 旧文件流先关（切配置/重置不泄漏 fd；close 异步收尾，不影响新配置立即生效）
-  void globalState.fileSink?.close();
+  void state.fileSink?.close();
 
-  globalState.disabled = config === false;
-  globalState.sink = objectConfig.sink ?? null;
-  globalState.accessLog = objectConfig.accessLog ?? true;
-  globalState.stdout = objectConfig.stdout ?? true;
-  globalState.fileSink = objectConfig.dir
+  state.disabled = config === false;
+  state.sink = objectConfig.sink ?? null;
+  state.accessLog = objectConfig.accessLog ?? true;
+  state.stdout = objectConfig.stdout ?? true;
+  state.fileSink = objectConfig.dir
     ? createFileLogSink({ dir: objectConfig.dir, splitByLevel: objectConfig.splitByLevel })
     : null;
   if (objectConfig.consoleLevel !== undefined) {
     if (objectConfig.consoleLevel !== false) {
       assertLogLevel(objectConfig.consoleLevel, 'config.log.consoleLevel');
     }
-    globalState.consoleLevel = objectConfig.consoleLevel;
+    state.consoleLevel = objectConfig.consoleLevel;
   } else {
-    globalState.consoleLevel = null;
+    state.consoleLevel = null;
   }
   if (objectConfig.level !== undefined) {
     assertLogLevel(objectConfig.level, 'config.log.level');
-    globalState.level = objectConfig.level;
+    state.level = objectConfig.level;
   } else if (process.env.LOG_LEVEL !== undefined) {
     assertLogLevel(process.env.LOG_LEVEL, 'LOG_LEVEL env');
-    globalState.level = process.env.LOG_LEVEL as LogLevel;
+    state.level = process.env.LOG_LEVEL as LogLevel;
   } else {
-    globalState.level = null;
+    state.level = null;
   }
 }
 
@@ -117,12 +147,12 @@ export function configureLogging(config?: LogConfig | boolean | undefined): void
  * 分流由文件布局或下游 sink 决定）
  */
 function pipelineThreshold(): LogLevel | undefined {
-  return globalState.level ?? undefined;
+  return getLoggingState().level ?? undefined;
 }
 
 /** console 出口阈值；false = console 关闭 */
 function consoleThreshold(): LogLevel | false {
-  return globalState.consoleLevel ?? 'info';
+  return getLoggingState().consoleLevel ?? 'info';
 }
 
 /** 阈值判定（threshold undefined = 不过滤） */
@@ -162,15 +192,16 @@ function consoleDispatch(entry: LogEntry): void {
  * 而.console 看全部。
  */
 function globalDispatch(entry: LogEntry): void {
-  if (globalState.disabled) return;
+  const state = getLoggingState();
+  if (state.disabled) return;
   const pipeThreshold = pipelineThreshold();
-  if (globalState.sink) {
-    if (!belowThreshold(entry.level, pipeThreshold)) globalState.sink(entry);
+  if (state.sink) {
+    if (!belowThreshold(entry.level, pipeThreshold)) state.sink(entry);
     return;
   }
-  if (globalState.fileSink) {
-    if (!belowThreshold(entry.level, pipeThreshold)) globalState.fileSink.write(entry);
-    if (globalState.stdout) consoleDispatch(entry);
+  if (state.fileSink) {
+    if (!belowThreshold(entry.level, pipeThreshold)) state.fileSink.write(entry);
+    if (state.stdout) consoleDispatch(entry);
     return;
   }
   consoleDispatch(entry);
@@ -193,7 +224,8 @@ export function writeLogEntry(entry: LogEntry): void {
  * 测试场景断言文件内容前调用。无文件管道（未配置 `config.log.dir`）时为 no-op。
  */
 export function flushLogging(): Promise<void> {
-  return globalState.fileSink ? globalState.fileSink.flush() : Promise.resolve();
+  const state = getLoggingState();
+  return state.fileSink ? state.fileSink.flush() : Promise.resolve();
 }
 
 /**
@@ -203,7 +235,8 @@ export function flushLogging(): Promise<void> {
  * 或 `config.log: false` 时请求日志不输出。
  */
 export function isAccessLogEnabled(): boolean {
-  return !globalState.disabled && globalState.accessLog;
+  const state = getLoggingState();
+  return !state.disabled && state.accessLog;
 }
 
 /**
