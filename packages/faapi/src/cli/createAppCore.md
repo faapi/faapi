@@ -36,7 +36,7 @@ dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes`（热�
 |------|------|
 | `listen(port?)` | 执行 `onBoot` 钩子（`server.listen` 之前，抛错 → `listen()` reject 且端口不暴露——启动校验用），启动 HTTP server，打印路由表，执行 `onReady` 钩子（listen 回调内——资源初始化用），注册默认优雅关闭信号（SIGTERM/SIGINT，进程级仅一次） |
 | `close()` | 幂等优雅关闭：断开空闲 keep-alive 连接 → 执行 `onClose` 钩子 → 等**在途请求完成**（drain，SSE/WS 长连接超时 `FAAPI_SHUTDOWN_TIMEOUT_MS`（默认 10000ms）后强制断开）→ `app.server` 置 null。注册表（tool/agent/skill + agent handle 工厂）与单例仅在自身是当前 app 时清理——同进程多 app 场景下，先创建的 app close 不会清掉运行中 app 的注册表 |
-| `inject(options?)` | 无服务器测试注入——构造模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body }`。`listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景（配合 `getApp()` 拿到 app 实例）。body 语义见下节 |
+| `inject(options?)` | 无服务器测试注入——构造模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body, raw }`。`listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景（配合 `getApp()` 拿到 app 实例）。body 语义见下节，raw 语义见下下节 |
 
 端口优先级：`listen()` 参数 > `options.port` > `PORT` 环境变量 > 默认 `3000`。
 
@@ -55,6 +55,50 @@ listen 错误原样 reject；listen 成功后解除该监听器，运行期错�
 
 - 调用方显式传入的 `content-type` 头**优先于默认值**——string body + `application/x-www-form-urlencoded` 可直接测 form 表单路由
 - 预编码的 JSON 字符串（如 `JSON.stringify(obj)` 的结果）会被**原样发送**再由服务端解析一次——传 `body: '{"a":1}'` 服务端收到对象 `{a:1}`；不要传预编码字符串当对象用，直接传原始对象
+
+### inject 的 raw 字段（同进程取数类型保真）
+
+`InjectResponse.raw` 携带 handler 的**原始返回值**（自动包裹与 JSON 序列化之前），Date/Map/嵌套类实例等富类型不丢失。为什么需要它：`inject` 走完整请求链路，handler 返回值经 `wrapResult` 包裹 → `toResponse` JSON 序列化 → mockRes 收集字节 → `JSON.parse` 反序列化——往返后 Date 变 ISO 字符串。HTTP 客户端场景这是正确语义（wire 上本就只有 JSON），但 Next.js RSC 同进程取数（`getApp() + inject`）场景，业务方以 ORM 推断类型标注返回值（如 `Novel.updatedAt: Date`），类型与运行时不符（线上曾因此崩溃：`b.updatedAt.getTime is not a function`）。
+
+`body` 与 `raw` 并存、语义各自独立，消费方自选：
+
+| 字段 | 语义 | 适用场景 |
+|------|------|---------|
+| `body` | 响应字节按 JSON 反序列化的结果（非 JSON 回退字符串），与真实 HTTP 客户端拿到的一致 | 测试注入、HTTP 语义断言 |
+| `raw` | handler 原始返回值（富类型保真）；无法捕获时为 `undefined` | Next.js RSC 同进程取数 |
+
+`raw` 的捕获语义——**当且仅当响应体由 handler 的数据返回值自动包裹产生时**，raw 为该返回值：
+
+| 场景 | raw |
+|------|-----|
+| handler 直接 `return` 普通值（含 `null`） | handler 原始返回值（`{ data }` 包裹前的值） |
+| handler `return ctx.ok(data)` / `ctx.fail()` / `ctx.json()` 等 Response 形态 | `undefined`——Response 构造时已即时 `JSON.stringify`，富类型在该步已丢失，无从保真 |
+| handler 抛错（含校验失败 400/422、404/405 等管线错误） | `undefined` |
+| 中间件拦截（未调 `next()`，handler 未执行） | `undefined` |
+| SSE（`ctx.sse()`，响应由 writer 控制） | `undefined` |
+
+注意：
+
+- **raw 描述 handler 执行结果，与最终 HTTP 响应相互独立**——中间件在 `await next()` 之后替换响应时，raw 仍是 handler 的返回值，`body`/`status` 是替换后的响应
+- raw 快路径要求 handler **直接 `return` 数据**（`return data` 而非 `return ctx.ok(data)`）
+- `raw === null` 与 `raw === undefined` 语义不同：前者是 handler 返回了 `null`，后者是未捕获（上表场景）；快路径判断用 `res.raw !== undefined`
+
+RSC 同进程取数示例（类型保真通路）：
+
+```ts
+// 业务侧 apiFetch（src/app/lib/api.ts）
+const res = await app.inject({
+  method: 'GET',
+  path: '/api/novels',
+  headers: { cookie: h.get('cookie') ?? '' },
+});
+// 快路径：handler 数据形态返回 → 原始值直取（updatedAt instanceof Date 为真）
+if (res.raw !== undefined) return res.raw;
+// 慢路径：错误/拦截 → 按 HTTP 语义（status + body）解析错误
+throw new ApiError(res.status, res.body);
+```
+
+实现桥接（对真实 HTTP 请求路径仅两次属性赋值，无行为变化）：`invokeHandler` 在 `toResponse` 成功后将原始返回值暂存 ctx（`__faapiHandlerResult`）→ `handleRequest` 桥接到 res → `inject` 在 mockRes finish 后读取。
 
 ### getApp()
 
@@ -84,7 +128,7 @@ async function Page() {
     path: '/api/user',
     headers: { cookie: h.get('cookie') ?? '', authorization: h.get('authorization') ?? '' },
   });
-  const data = res.body;  // 已解析，无需 await res.json()
+  const data = res.body;  // 已解析，无需 await res.json()；类型保真（Date 等富类型）用 res.raw，见下节
   return <div>{data.name}</div>;
 }
 ```
@@ -111,7 +155,7 @@ async function Page() {
 - 创建任务队列时传入 `createTaskRegistriesView(registries)`（app 注册表只读视图）——任务执行侧经 `TaskContext.registries` 访问已水合的 agent/tool/skill 元数据（进程内活引用；隔离 worker 传纯数据快照，见 `../task/taskTypes.md`）
 - `listen` 打印路由表 + tool 清单（有 tool 时），注册默认优雅关闭信号：SIGTERM/SIGINT → `app.close()`（drain 在途请求 + `onClose` 钩子 + 注册表清理）→ `process.exit(0)`。进程级仅注册一次（faapi 单进程单 app 设计），测试多次 listen 不堆积监听器
 - `close` 幂等（`closed` 标志）；`close` 时清理 toolRegistry 单例（与 app 单例清理对称）；HTTP/2 连接清理方法 feature-detect
-- `inject` 无 handler 时 reject；`JSON.parse` 失败回退为字符串
+- `inject` 无 handler 时 reject；`JSON.parse` 失败回退为字符串；`raw` 携带 handler 原始返回值（类型保真，仅数据形态返回时捕获——语义见「inject 的 raw 字段」节）
 - `inject` body 按类型区分语义（string/Buffer 原样透传，对象 JSON.stringify），调用方 content-type 优先——见「inject 的 body 语义」
 
 `loadAndHydrateTools(rootDir, dist)` 导出供 `reloadTools` 热替换后重新水合——读 `faapi-tools.js` → `hydrateTools` → `hydrateToolRegistry`。

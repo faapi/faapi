@@ -624,6 +624,12 @@ async function handleRequest(
       outerMiddlewares.length > 0
         ? await compose(outerMiddlewares, ctx, routePipeline)
         : await routePipeline();
+    // inject raw 捕获桥（第二跳）：handler 原始返回值 ctx → res，app.inject() 在
+    // mockRes finish 后读取；真实 HTTP 请求仅一次属性赋值（无消费方），无行为变化。
+    // 语义详见 ../cli/createAppCore.md「inject 的 raw 字段」
+    (res as unknown as { __faapiHandlerResult?: unknown }).__faapiHandlerResult = (
+      ctx as FaapiContext & { __faapiHandlerResult?: unknown }
+    ).__faapiHandlerResult;
     // 4. 发送响应
     await sendSuccessResponse(response, res);
   } catch (err: unknown) {

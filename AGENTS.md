@@ -775,15 +775,18 @@ async function Page() {
     },
   });
 
-  const data = res.body;  // 已解析，无需 await res.json()
-  return <div>{data.name}</div>;
+  // res.raw：handler 原始返回值（类型保真）——同进程取数优先用它，
+  // ORM 推断类型（如 updatedAt: Date）与运行时一致，不经 JSON 序列化往返
+  if (res.raw !== undefined) return <div>{res.raw.name}</div>;
+  // 慢路径（错误/中间件拦截，raw 为 undefined）：按 HTTP 语义消费
+  throw new Error(`API error: ${res.status}`);
 }
 ```
 
 **关键点**：
 - `getApp()` 未初始化时抛错（强约束）；`createAppBase` 末尾设置单例，`close()` 时清 null
 - `app.inject()` 走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），`listen()` 前后均可调用
-- 返回 `{ status, headers, body }`——`body` 已 JSON.parse，无需手动 `await res.json()`
+- 返回 `{ status, headers, body, raw }`——`body` 已 JSON.parse（HTTP 语义，与真实客户端一致）；`raw` 为 handler 原始返回值（类型保真，Date 等富类型不丢；仅在 handler 直接 `return` 数据时捕获，错误/拦截/`ctx.ok` 等 Response 形态为 `undefined`，详见 `src/cli/createAppCore.md`）
 - 需手动透传请求头（cookie / authorization 等）从 `next/headers` 到 `inject` 的 `headers` 参数
 
 详见 `src/cli/createAppCore.md`。

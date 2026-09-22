@@ -30,6 +30,18 @@ function wrapResult(result: unknown, ctx: FaapiContext): unknown {
 }
 
 /**
+ * inject raw 捕获桥（第一跳）：将 handler 原始返回值暂存到 ctx
+ *
+ * app.inject() 同进程取数需要类型保真（Date 等富类型不经 JSON 序列化往返），
+ * 原始返回值只有此处可得（wrapResult 包裹 / toResponse 序列化之前）。暂存后由
+ * createServer 的 handleRequest 桥接到 res，inject 在 mockRes finish 后读取；
+ * 真实 HTTP 请求路径仅多一次属性赋值，无行为变化。语义详见 ../cli/createAppCore.md。
+ */
+function stashHandlerResult(ctx: FaapiContext, result: unknown): void {
+  (ctx as FaapiContext & { __faapiHandlerResult?: unknown }).__faapiHandlerResult = result;
+}
+
+/**
  * 将 ctx.meta（setStatus/setHeader/setCookie 设置的响应元数据）合并到 Response
  *
  * 用于中间件返回 Response 时，确保用户通过 ctx.setStatus/setHeader 设置的
@@ -174,7 +186,11 @@ export async function invokeHandler(
       const result = await injectParamsAsync(handler, ctx, body, injectors);
       const sseResponse = pickSseAndAutoClose();
       if (sseResponse) return sseResponse;
-      return toResponse(wrapResult(result, ctx), meta);
+      // toResponse 成功后才暂存（序列化抛错时响应未产生，不捕获——raw 有值即响应体由该值包裹而来）；
+      // Response 形态返回值（ctx.ok/ctx.fail/ctx.json）不捕获——构造时已即时序列化，富类型已丢失
+      const response = await toResponse(wrapResult(result, ctx), meta);
+      if (!(result instanceof Response)) stashHandlerResult(ctx, result);
+      return response;
     } catch (err) {
       // handler 抛错时关闭未完成的 SSE 流，避免泄漏
       autoCloseSseOnError();
@@ -188,7 +204,10 @@ export async function invokeHandler(
       const result = await injectParamsAsync(handler, ctx, body, injectors);
       const sseResponse = pickSseAndAutoClose();
       if (sseResponse) return sseResponse;
-      return toResponse(wrapResult(result, ctx), meta);
+      // 同上：Response 形态不捕获，见无中间件分支注释
+      const response = await toResponse(wrapResult(result, ctx), meta);
+      if (!(result instanceof Response)) stashHandlerResult(ctx, result);
+      return response;
     } catch (err) {
       // handler 抛错时关闭未完成的 SSE 流，避免泄漏
       autoCloseSseOnError();
