@@ -1,6 +1,7 @@
 import type { ResponseConfig } from '../config/configTypes';
 import { FaapiError } from '../errors/FaapiError';
 import { ValidationError, MethodNotAllowedError, PayloadTooLargeError } from '../errors/httpErrors';
+import { stringifyJson } from '../utils/stringifyJson';
 
 /**
  * 统一响应格式化中心
@@ -64,14 +65,14 @@ export function jsonOk(body: unknown, status = 200, extraHeaders?: HeadersInit):
   return jsonRaw(body, status, extraHeaders);
 }
 
-/** 内部:构造 JSON Response,不包外层 */
+/** 内部:构造 JSON Response,不包外层（BigInt 安全序列化，见 utils/stringifyJson） */
 function jsonRaw(body: unknown, status: number, extraHeaders?: HeadersInit): Response {
   const headers = new Headers({ 'Content-Type': 'application/json' });
   if (extraHeaders) {
     const extra = new Headers(extraHeaders);
     extra.forEach((value, key) => headers.set(key, value));
   }
-  return new Response(JSON.stringify(body), { status, headers });
+  return new Response(stringifyJson(body), { status, headers });
 }
 
 /**

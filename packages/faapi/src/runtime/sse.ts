@@ -19,6 +19,8 @@
  * - invokeHandler 在 handler 返回后检查 ctx 是否持有 SSE response，有则优先使用
  */
 
+import { stringifyJson } from '../utils/stringifyJson';
+
 /**
  * SSE 事件字段
  *
@@ -73,7 +75,7 @@ export function encodeSseEvent(event: SseEvent): string {
     out += `retry: ${event.retry}\n`;
   }
 
-  // data：对象 JSON.stringify，多行每行加前缀
+  // data：对象 JSON.stringify（BigInt 安全，见 utils/stringifyJson），多行每行加前缀
   if (event.data !== undefined) {
     let dataStr: string;
     if (typeof event.data === 'string') {
@@ -81,7 +83,7 @@ export function encodeSseEvent(event: SseEvent): string {
     } else if (event.data === null) {
       dataStr = 'null';
     } else {
-      dataStr = JSON.stringify(event.data);
+      dataStr = stringifyJson(event.data);
     }
     // 多行 data：每行加 data: 前缀
     const lines = dataStr.split('\n');

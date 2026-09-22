@@ -146,4 +146,23 @@ describe('toResponse', () => {
     expect(res.headers.get('X-Custom')).toBe('yes');
     expect(res.headers.get('Set-Cookie')).toBe('session=xyz');
   });
+
+  it('返回含 BigInt 的对象 -> BigInt 序列化为字符串（不再抛 TypeError 500）', async () => {
+    const res = await toResponse({ id: 9007199254740993n, tags: [1n] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: '9007199254740993', tags: ['1'] });
+  });
+
+  it('返回顶层 BigInt -> JSON 字符串', async () => {
+    const res = await toResponse(42n);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/json');
+    expect(await res.json()).toBe('42');
+  });
+
+  it('返回 Date 字段 -> ISO 字符串（序列化行为不变）', async () => {
+    const res = await toResponse({ at: new Date('2026-01-01T00:00:00.000Z') });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ at: '2026-01-01T00:00:00.000Z' });
+  });
 });

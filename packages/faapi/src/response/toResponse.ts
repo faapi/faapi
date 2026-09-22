@@ -1,4 +1,5 @@
 import { isPlainObject } from '../utils/isPlainObject';
+import { stringifyJson } from '../utils/stringifyJson';
 import type { ResponseMeta } from '../runtime/contextTypes';
 import { deferMetaHeaders, isHeadersOnlyMeta } from './pendingMeta';
 
@@ -9,7 +10,7 @@ import { deferMetaHeaders, isHeadersOnlyMeta } from './pendingMeta';
  * - Response 对象：原样返回
  * - ReadableStream：直接作为 body
  * - Buffer / Uint8Array：作为二进制 body
- * - 普通对象/数组：JSON.stringify，Content-Type: application/json
+ * - 普通对象/数组：JSON.stringify（BigInt 安全，BigInt → 字符串），Content-Type: application/json
  * - string：text/plain
  * - number/boolean：text/plain，String(value)
  * - null/undefined：204 No Content
@@ -94,9 +95,9 @@ export async function toResponse(value: unknown, meta?: ResponseMeta): Promise<R
     });
   }
 
-  // 普通对象/数组：JSON.stringify，Content-Type: application/json
+  // 普通对象/数组：JSON.stringify（BigInt 安全，BigInt → 字符串），Content-Type: application/json
   if (isPlainObject(value) || Array.isArray(value)) {
-    const body = JSON.stringify(value);
+    const body = stringifyJson(value);
     const headers = new Headers({ 'Content-Type': 'application/json' });
     applyMeta(headers);
     return new Response(body, {
@@ -125,8 +126,8 @@ export async function toResponse(value: unknown, meta?: ResponseMeta): Promise<R
     });
   }
 
-  // 其他类型 fallback：JSON.stringify
-  const body = JSON.stringify(value);
+  // 其他类型 fallback：JSON.stringify（BigInt 安全）
+  const body = stringifyJson(value);
   const headers = new Headers({ 'Content-Type': 'application/json' });
   applyMeta(headers);
   return new Response(body, {

@@ -60,6 +60,20 @@ describe('wsHandler', () => {
       expect(sent).toEqual([JSON.stringify([1, 2, 3])]);
     });
 
+    it('对象含 BigInt：序列化为字符串（不抛错）', () => {
+      const sent: unknown[] = [];
+      const raw = {
+        send: (data: string | Buffer) => {
+          sent.push(data);
+        },
+        close: () => {},
+        readyState: 1,
+      };
+      const ws = wrapWsSocket(raw);
+      ws.send({ id: 9007199254740993n });
+      expect(sent).toEqual(['{"id":"9007199254740993"}']);
+    });
+
     it('close 透传给原生 socket（带 code 和 reason）', () => {
       let closedWith: { code?: number; reason?: string | Buffer } = {};
       const raw = {

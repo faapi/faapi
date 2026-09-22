@@ -293,6 +293,8 @@ export default { middlewares: [errorHandler] } satisfies FaapiConfig;
 
 `null`/`undefined` 也会被包裹为 `{ data: null }` / `{ data: undefined }`（后者 JSON 序列化后为 `{}`），不再返回 204 No Content。如需 204，handler 应显式返回 Response 对象（如 `return new Response(null, { status: 204 })`）。
 
+**JSON 序列化规则**（所有响应出口一致——`toResponse`、`ctx.ok`/`ctx.fail`/`ctx.json`、错误兜底、SSE/WS 消息帧）：框架统一用 BigInt 安全的 `JSON.stringify`（`src/utils/stringifyJson.ts`）——BigInt（含嵌套）序列化为字符串（JSON 无 BigInt 类型，字符串是标准无损表示，客户端 `BigInt(s)` 还原），Date 按 `toJSON` 输出 ISO 8601 字符串，NaN/Infinity 输出 `null`，循环引用仍抛 `TypeError` 显式失败。
+
 `ctx.ok(data)` 显式包裹等价于 `return data`（框架自动包裹），两者响应一致。`ctx.fail()` 返回的是 `Response` 对象，不会被再次包裹。
 
 **`ctx.fail()` 的 `status` 和 `code` 独立可省略**：

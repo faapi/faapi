@@ -15,4 +15,5 @@ handler 可能返回各种类型（对象、字符串、null 等），需要统�
 ## 相关模块
 
 - `isPlainObject.ts` - 判断对象类型
+- `../utils/stringifyJson.ts` - 对象/数组分支的 JSON 序列化（BigInt 安全，BigInt → 字符串）
 - `invokeHandler.ts` - 调用此函数

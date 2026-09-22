@@ -7,6 +7,8 @@
  * @see wsHandler.md 功能说明
  */
 
+import { stringifyJson } from '../utils/stringifyJson';
+
 /**
  * faapi 封装的 WebSocket socket 抽象
  *
@@ -78,8 +80,9 @@ export function wrapWsSocket(rawSocket: {
 }): WsSocket {
   return {
     send(data: string | Buffer | object): void {
+      // BigInt 安全序列化（含 BigInt 的对象 send 不再抛错），见 utils/stringifyJson
       const payload =
-        typeof data === 'string' || Buffer.isBuffer(data) ? data : JSON.stringify(data);
+        typeof data === 'string' || Buffer.isBuffer(data) ? data : stringifyJson(data);
       rawSocket.send(payload);
     },
     close(code?: number, reason?: string | Buffer): void {

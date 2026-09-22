@@ -41,6 +41,11 @@ describe('encodeSseEvent', () => {
     expect(out).toBe('data: {"name":"alice","age":30}\n\n');
   });
 
+  it('data 含 BigInt：序列化为字符串（不抛错）', () => {
+    const out = encodeSseEvent({ data: { id: 9007199254740993n } });
+    expect(out).toBe('data: {"id":"9007199254740993"}\n\n');
+  });
+
   it('data 为数字：转字符串', () => {
     const out = encodeSseEvent({ data: 42 });
     expect(out).toBe('data: 42\n\n');
