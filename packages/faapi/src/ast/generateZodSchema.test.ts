@@ -253,14 +253,20 @@ describe('generateZodSchema', () => {
       expect(schema.safeParse({ createdAt: '2024-01-01T00:00:00Z' }).success).toBe(true);
     });
 
-    it('非 ISO 格式字符串不通过', () => {
+    it('毫秒时间戳 number 通过（与响应序列化 Date → getTime() 可逆往返）', () => {
       const schema = makeZodSchemaObject(`export interface Q { createdAt: Date; }`, 'Q');
-      expect(schema.safeParse({ createdAt: 'not a date' }).success).toBe(false);
+      const parsed = schema.safeParse({ createdAt: new Date('2024-01-01T00:00:00Z').getTime() });
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect((parsed.data as { createdAt: Date }).createdAt.getTime()).toBe(
+          new Date('2024-01-01T00:00:00Z').getTime(),
+        );
+      }
     });
 
-    it('非 string/Date 类型不通过', () => {
+    it('非法字符串与无关类型不通过', () => {
       const schema = makeZodSchemaObject(`export interface Q { createdAt: Date; }`, 'Q');
-      expect(schema.safeParse({ createdAt: 123 }).success).toBe(false);
+      expect(schema.safeParse({ createdAt: 'not a date' }).success).toBe(false);
       expect(schema.safeParse({ createdAt: true }).success).toBe(false);
     });
   });

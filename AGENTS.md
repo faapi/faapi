@@ -293,7 +293,19 @@ export default { middlewares: [errorHandler] } satisfies FaapiConfig;
 
 `null`/`undefined` 也会被包裹为 `{ data: null }` / `{ data: undefined }`（后者 JSON 序列化后为 `{}`），不再返回 204 No Content。如需 204，handler 应显式返回 Response 对象（如 `return new Response(null, { status: 204 })`）。
 
-**JSON 序列化规则**（所有响应出口一致——`toResponse`、`ctx.ok`/`ctx.fail`/`ctx.json`、错误兜底、SSE/WS 消息帧）：框架统一用 BigInt 安全的 `JSON.stringify`（`src/utils/stringifyJson.ts`）——BigInt（含嵌套）序列化为字符串（JSON 无 BigInt 类型，字符串是标准无损表示，客户端 `BigInt(s)` 还原），Date 按 `toJSON` 输出 ISO 8601 字符串，NaN/Infinity 输出 `null`，循环引用仍抛 `TypeError` 显式失败。
+**JSON 序列化契约**（所有响应出口一致——`toResponse`、`ctx.ok`/`ctx.fail`/`ctx.json`、错误兜底、SSE/WS 消息帧、`app.inject()` 的 body）：框架统一用 `src/utils/stringifyJson.ts` 序列化——**JSON 原生类型之外的一切值转换为可逆的原生表示，线上格式即契约，客户端按转换后类型消费或自行还原**：
+
+| 值 | JSON 输出 | 客户端还原 |
+|----|-----------|-----------|
+| `Date` | 毫秒时间戳（number） | `new Date(ts)` |
+| `BigInt` | 字符串 | `BigInt(s)` |
+| `Map` | entries 数组 | `new Map(entries)` |
+| `Set` | 值数组 | `new Set(arr)` |
+| `NaN` / `±Infinity` | `"NaN"` / `"±Infinity"` 字符串 | `Number(s)` |
+| `RegExp` | `"/source/flags"` 字符串 | `new RegExp(source, flags)` |
+| 循环引用 | 抛 `TypeError`（结构错误显式失败，不静默产出坏 JSON） | — |
+
+配套：输入侧 `Date` 字段 schema 同时接受 ISO 字符串与毫秒时间戳（`new Date(v)` 双形态还原），与输出序列化可逆往返。
 
 `ctx.ok(data)` 显式包裹等价于 `return data`（框架自动包裹），两者响应一致。`ctx.fail()` 返回的是 `Response` 对象，不会被再次包裹。
 
@@ -777,18 +789,18 @@ async function Page() {
     },
   });
 
-  // res.raw：handler 原始返回值（类型保真）——同进程取数优先用它，
-  // ORM 推断类型（如 updatedAt: Date）与运行时一致，不经 JSON 序列化往返
-  if (res.raw !== undefined) return <div>{res.raw.name}</div>;
-  // 慢路径（错误/中间件拦截，raw 为 undefined）：按 HTTP 语义消费
-  throw new Error(`API error: ${res.status}`);
+  // res.body：已 JSON.parse（HTTP 语义），与真实客户端拿到的一致——线上格式即契约：
+  // Date 字段为毫秒时间戳、BigInt 为字符串等（转换规则见 src/utils/stringifyJson.md），
+  // 业务方按转换后的类型标注消费，或在边界自行还原（如 new Date(ts)）
+  const data = res.body;
+  return <div>{data.name}</div>;
 }
 ```
 
 **关键点**：
 - `getApp()` 未初始化时抛错（强约束）；`createAppBase` 末尾设置单例，`close()` 时清 null
 - `app.inject()` 走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），`listen()` 前后均可调用
-- 返回 `{ status, headers, body, raw }`——`body` 已 JSON.parse（HTTP 语义，与真实客户端一致）；`raw` 为 handler 原始返回值（类型保真，Date 等富类型不丢；仅在 handler 直接 `return` 数据时捕获，错误/拦截/`ctx.ok` 等 Response 形态为 `undefined`，详见 `src/cli/createAppCore.md`）
+- 返回 `{ status, headers, body }`——`body` 已 JSON.parse，序列化契约与真实 HTTP 响应完全相同（Date → 毫秒时间戳、BigInt → 字符串、Map/Set → 数组等），不存在第二种同进程形态；业务方按 wire 类型消费或在消费点还原
 - 需手动透传请求头（cookie / authorization 等）从 `next/headers` 到 `inject` 的 `headers` 参数
 
 详见 `src/cli/createAppCore.md`。
@@ -841,6 +853,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
   - 公用函数提取到 dist 根部的 `faapi-helpers.js`（仅一份，ESM export `coerceNumber` / `coerceBoolean`），各 `zod.js` 通过相对路径 `import` 复用，而非每个文件内联声明；无 coerce schema 时不生成该文件，zod.js 也不注入 import。
   - `generateSchemaFileSource` 根据 schemaName 推断 inputType：以 `Query`/`Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）。
   - `mapZodCode` 新增 `not_finite → COERCE_FAILED` 映射（实际场景中 coerce 失败多报 `invalid_type`）。
+- `Date` 字段输入双形态：schema 生成用 `z.preprocess` 同时接受 ISO 字符串与毫秒时间戳（`new Date(v)`），与响应序列化（Date → `getTime()` 毫秒时间戳，见 5.5「JSON 序列化契约」）可逆往返——GET 拿到的时间戳可直接 POST 回传。
 - dev 和 prd 行为一致，不降级：
   - dev（Vite 风格按需模式）：启动时仅编译 config + 生成路由清单，**不预生成 `zod.js`**；首次请求时 `ensureSchemaGenerated` 按需生成（mtime 缓存复用未变更的产物），watch 时删 stale zod.js + 清缓存 + 下次请求按需重建。
   - prd：`faapi build` 全量生成 `zod.js`，启动时按需 import。

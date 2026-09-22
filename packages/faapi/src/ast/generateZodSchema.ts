@@ -250,10 +250,11 @@ function baseExpression(type: RuntimeType, ctx: CodeGenContext): string {
     case 'union':
       return generateUnionExpression(type.members, ctx);
     case 'date':
-      // z.preprocess 限制只接受 string/Date：string → new Date(string)，其他原样传入
-      // z.coerce.date() 会把 number 也转为 Date（new Date(123)），不符合需求
+      // 输入接受 ISO 字符串与毫秒时间戳双形态（与响应序列化 Date → getTime() 毫秒
+      // 时间戳可逆往返，见 utils/stringifyJson）；其他类型原样传入
+      // z.coerce.date() 会把 boolean 等也强转，不符合需求
       // date 类型本身已用 preprocess，coerce 模式下无需再包一层
-      return 'z.preprocess((v) => (typeof v === "string" ? new Date(v) : v), z.date())';
+      return 'z.preprocess((v) => (typeof v === "string" || typeof v === "number" ? new Date(v) : v), z.date())';
     case 'record':
       return `z.record(${runtimeTypeToZodExpression(type.key, ctx)}, ${runtimeTypeToZodExpression(type.value, ctx)})`;
     case 'map':

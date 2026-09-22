@@ -53,18 +53,12 @@ export interface InjectOptions {
 export interface InjectResponse {
   status: number;
   headers: Headers;
-  /** 响应字节按 JSON 反序列化的结果（非 JSON 回退字符串）——HTTP 语义，与真实客户端一致 */
-  body: unknown;
   /**
-   * handler 原始返回值（自动包裹与 JSON 序列化之前，Date 等富类型不丢）
-   *
-   * 仅当响应体由 handler 数据返回值自动包裹产生时捕获（同进程取数类型保真，
-   * 快路径判断用 `res.raw !== undefined`）；handler 返回 Response 形态
-   * （ctx.ok/ctx.fail/ctx.json）、抛错、中间件拦截、SSE、404/405/校验失败等
-   * handler 未产生数据返回值的场景为 undefined。语义详见 createAppCore.md
-   * 「inject 的 raw 字段」节。
+   * 响应字节按 JSON 反序列化的结果（非 JSON 回退字符串）——HTTP 语义，与真实客户端一致。
+   * 序列化契约（Date → 毫秒时间戳、BigInt → 字符串等，JSON 原生类型之外全部转换）
+   * 见 `src/utils/stringifyJson.md`，与真实 HTTP 响应完全相同
    */
-  raw?: unknown;
+  body: unknown;
 }
 
 /** 默认产物目录（prod 模式，对应 `faapi build` 默认输出到 `dist`） */
@@ -319,9 +313,8 @@ export interface AppBase {
    * 无服务器测试注入
    *
    * 构建一个模拟请求直接走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 /
-   * schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的
-   * `{ status, headers, body, raw }`——body 为 JSON 反序列化结果（HTTP 语义），
-   * raw 为 handler 原始返回值（同进程取数类型保真，语义见 InjectResponse.raw）。
+   * schema 校验 / 目录中间件 / handler），不绑定端口，返回已解析的 `{ status, headers, body }`
+   * ——body 为 JSON 反序列化结果，与真实 HTTP 客户端拿到的一致（同一序列化契约）。
    *
    * `listen()` 前后均可调用——`listen()` 后调用常用于 Next.js Server Component 等同进程场景
    * （配合 `getApp()` 拿到 app 实例）。
@@ -668,9 +661,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
             status: mockRes.statusCode,
             headers: new Headers(mockRes._headers as Record<string, string>),
             body: parsed,
-            // inject raw 捕获桥（第三跳）：handler 原始返回值（handleRequest 从 ctx
-            // 桥接到 res；未捕获时 undefined——语义见 InjectResponse.raw 注释）
-            raw: (mockRes as unknown as { __faapiHandlerResult?: unknown }).__faapiHandlerResult,
           });
         });
 

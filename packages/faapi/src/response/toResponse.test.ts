@@ -160,9 +160,9 @@ describe('toResponse', () => {
     expect(await res.json()).toBe('42');
   });
 
-  it('返回 Date 字段 -> ISO 字符串（序列化行为不变）', async () => {
+  it('返回 Date 字段 -> 毫秒时间戳（序列化契约）', async () => {
     const res = await toResponse({ at: new Date('2026-01-01T00:00:00.000Z') });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ at: '2026-01-01T00:00:00.000Z' });
+    expect(await res.json()).toEqual({ at: 1767225600000 });
   });
 });
