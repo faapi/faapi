@@ -161,6 +161,14 @@ retry: <ms>\n
 
 `data` 若是多行字符串，每行都加 `data: ` 前缀。
 
+### 响应头
+
+SSE Response 预设四个头：`Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`。
+
+`X-Accel-Buffering: no` 用于反代穿透：nginx 默认 `proxy_buffering on`，会把上游的小包攒进缓冲区（默认约 8k～64k），攒满或流结束才发给客户端——LLM 流式的每个 delta 只有几百字节，一条典型回复整条流都装得进缓冲区，结果浏览器在整个生成期间收不到任何字节，流结束瞬间全部吐出，SSE 的逐事件语义完全失效。nginx 认到该头后按响应跳过缓冲，事件即产即达；Caddy / Traefik / Cloudflare 等其他反代不识别该头，当普通自定义头透传，无副作用。
+
+handler 可经 `ctx.setHeader('X-Accel-Buffering', 'yes')` 覆盖默认值（见下表 setHeader 合并语义），但覆盖为缓冲几乎不会有合理场景——需要缓冲的响应不应使用 SSE。
+
 ### 与现有机制的关系
 
 | 机制 | 与 SSE 的关系 |

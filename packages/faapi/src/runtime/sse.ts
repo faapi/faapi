@@ -10,7 +10,9 @@
  *
  * 设计要点：
  * - writer 内部用 ReadableStream + TextEncoder，send 时 enqueue，close 时 close controller
- * - response 预设 text/event-stream、no-cache、keep-alive 头，状态码默认 200
+ * - response 预设 text/event-stream、no-cache、keep-alive、X-Accel-Buffering: no 头，状态码默认 200
+ *   （X-Accel-Buffering: no 让 nginx 按响应跳过 proxy_buffering，SSE 小包不被攒到流结束才下发；
+ *   非 nginx 反代不识别该头，当普通自定义头透传）
  * - close 后再 send 静默忽略，避免 handler 异步流程中误写已关闭的流
  * - sendError 向流写入 event: error 后关闭，用于流式输出中报错的优雅终止
  *
@@ -162,6 +164,8 @@ export function createSseWriter(): SseWriter {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      // nginx 认到该头后按响应跳过 proxy_buffering；其他反代/客户端忽略，无副作用
+      'X-Accel-Buffering': 'no',
     },
   });
 

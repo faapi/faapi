@@ -136,6 +136,11 @@ describe('createSseWriter', () => {
     expect(writer.response.headers.get('Connection')).toBe('keep-alive');
   });
 
+  it('response 默认 X-Accel-Buffering 为 no（禁用 nginx 反代缓冲）', () => {
+    const writer = createSseWriter();
+    expect(writer.response.headers.get('X-Accel-Buffering')).toBe('no');
+  });
+
   it('response 默认状态码 200', () => {
     const writer = createSseWriter();
     expect(writer.response.status).toBe(200);
