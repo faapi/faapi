@@ -34,6 +34,7 @@ function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
     agents: opts.agents,
     model: opts.model,
     maxTurns: opts.maxTurns,
+    inputDescription: opts.inputDescription,
   };
 }
 
@@ -49,6 +50,7 @@ function agentEntry(opts: Partial<AgentMetadata> = {}): AgentMetadata {
     agents: opts.agents,
     model: opts.model,
     maxTurns: opts.maxTurns,
+    inputDescription: opts.inputDescription,
   };
 }
 
@@ -616,12 +618,13 @@ describe('Agent', () => {
       expect(toolMsg!.content).toMatch(/drafted/);
     });
 
-    it('sub-agent 无 hasRun 时走默认 reactLoop,stringify args 作为 input', async () => {
+    it('sub-agent 无 hasRun 时走默认 reactLoop,非单字段 input 形状 stringify 兜底', async () => {
       // 父 provider 需与子不同——DI 复用父 provider 会冲突
       // 解决:deps.provider 是父的;子 agent 构造时复用同 deps.provider
       // 为隔离,让父 provider 的 mock 序列中预留子 agent 的调用
       const { provider: parentProvider, completeCalls } = createMockProvider([
         llmResponse({
+          // 宽松模型可能不按 schema 传参（多字段/任意 JSON）——stringify 兜底不丢信息
           toolCalls: [toolCall('c1', 'agent.writer', { topic: 'AI' })],
           stopReason: 'tool_calls',
         }),
@@ -652,11 +655,74 @@ describe('Agent', () => {
       });
       expect(result.content).toBe('parent-final');
 
-      // 验证子 agent 的 input 是 stringify(args)
+      // 验证子 agent 的 input 是 stringify(args)（兜底路径）
       const childRequest = completeCalls.mock.calls[1][0];
       expect(childRequest.messages.find((m: LLMMessage) => m.role === 'user')!.content).toBe(
         JSON.stringify({ topic: 'AI' }),
       );
+    });
+
+    it('sub-agent 收到单字段 { input } 时直传字符串（去 JSON 壳）', async () => {
+      const { provider: parentProvider, completeCalls } = createMockProvider([
+        llmResponse({
+          // 严格 schema 模型按显式入参约定传 { input: '交接单' }
+          toolCalls: [toolCall('c1', 'agent.writer', { input: '写一篇关于 AI 的短文' })],
+          stopReason: 'tool_calls',
+        }),
+        // 子 agent.run 的 user 消息
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        // 父最终答案
+        llmResponse({ content: 'parent-final', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider: parentProvider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer' })],
+          subAgentEntries: [agentEntry({ name: 'writer', hasRun: false })],
+          loadAgentModuleImpl: async () => ({ run: undefined }),
+        }),
+      );
+
+      const result = await agent.run('write', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('parent-final');
+
+      // 子 agent 的 user 消息是交接单字符串本身,不是 JSON.stringify({"input":...})
+      const childRequest = completeCalls.mock.calls[1][0];
+      expect(childRequest.messages.find((m: LLMMessage) => m.role === 'user')!.content).toBe(
+        '写一篇关于 AI 的短文',
+      );
+    });
+
+    it('自定义 run 始终收原始 args 对象（含 input 字段）', async () => {
+      const { provider: parentProvider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent.writer', { input: '交接单内容' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+
+      let receivedArgs: unknown;
+      const agent = new Agent(
+        createDeps({
+          provider: parentProvider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer' })],
+          subAgentEntries: [agentEntry({ name: 'writer', hasRun: true })],
+          loadAgentModuleImpl: async () => ({
+            run: (async (args: unknown) => {
+              receivedArgs = args;
+              return 'drafted';
+            }) as (...args: unknown[]) => unknown,
+          }),
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('final');
+      expect(receivedArgs).toEqual({ input: '交接单内容' });
     });
   });
 
@@ -787,7 +853,7 @@ describe('Agent', () => {
       expect(noDef.function.parameters).toEqual({ type: 'object' });
     });
 
-    it('sub-agent 包装为 agent.<name>,input 为自由 schema', async () => {
+    it('sub-agent 包装为 agent.<name>,入参为显式单字段 input schema（默认文案）', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
       ]);
@@ -805,7 +871,47 @@ describe('Agent', () => {
       const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
       const writerDef = tools.find((t) => t.function.name === 'agent.writer')!;
       expect(writerDef.function.description).toBe('写作');
-      expect(writerDef.function.parameters).toEqual({ type: 'object' });
+      expect(writerDef.function.parameters).toEqual({
+        type: 'object',
+        properties: {
+          input: { type: 'string', description: expect.stringContaining('交接单') },
+        },
+        required: ['input'],
+      });
+    });
+
+    it('sub-agent 声明 inputDescription 时覆盖默认 input description 文案', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [
+            agentMeta({
+              name: 'writer',
+              inputDescription: '写作任务交接单,含主题、体裁与字数要求',
+            }),
+          ],
+        }),
+      );
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
+      const writerDef = tools.find((t) => t.function.name === 'agent.writer')!;
+      expect(writerDef.function.parameters).toEqual({
+        type: 'object',
+        properties: {
+          input: {
+            type: 'string',
+            description: '写作任务交接单,含主题、体裁与字数要求',
+          },
+        },
+        required: ['input'],
+      });
     });
   });
 

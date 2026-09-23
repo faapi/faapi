@@ -46,7 +46,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 
 | 访问器 | 对应核心模块 | 说明 |
 | --- | --- | --- |
-| `getAgent(name)` | [agentRegistry.getAgent](../../faapi/src/injection/agentRegistry.md) | 查 agent `AgentCore`（LLM 可见字段：`name` / `description` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns`）。仅查文件 registry,**不 fallback 到 skillRegistry**——skill 与 agent 职责正交不耦合 |
+| `getAgent(name)` | [agentRegistry.getAgent](../../faapi/src/injection/agentRegistry.md) | 查 agent `AgentCore`（LLM 可见字段：`name` / `description` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription`）。仅查文件 registry,**不 fallback 到 skillRegistry**——skill 与 agent 职责正交不耦合 |
 | `getAgentEntry(name)` | [agentRegistry.getAgentEntry](../../faapi/src/injection/agentRegistry.md) | 查 agent `AgentMetadata`（继承 `AgentCore` + `filePath` / `hasRun`）。仅查文件 registry,加载 `handler.js` 用 |
 | `getTool(name)` | [toolRegistry.getTool](../../faapi/src/injection/toolRegistry.md) | 查 tool 元数据（filePath / functionName / inputTypeName） |
 | `resolveAgentTools(name)` | [agentRegistry.resolveAgentTools](../../faapi/src/injection/agentRegistry.md) | agent 显式声明的 tools 引用（仅查文件 registry） |
@@ -115,7 +115,22 @@ class Agent {
 合并两个来源（按 `name` 去重,先入者保留）：
 
 1. **agent.tools 引用** —— `resolveAgentTools(agentName)` 返回 agent 显式声明的 `tools` 引用
-2. **sub-agent** —— `resolveSubAgents(agentName)` 每个包装为 `agent.<name>`（`function.parameters` 为自由 schema `{ type: 'object' }`）
+2. **sub-agent** —— `resolveSubAgents(agentName)` 每个包装为 `agent.<name>`,入参约定为显式单字段 schema：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "input": {
+      "type": "string",
+      "description": "<sub 元数据 inputDescription,未声明时用框架默认文案>"
+    }
+  },
+  "required": ["input"]
+}
+```
+
+显式 `input` 字段是 agent-as-tool 的派发交接单——严格遵循 JSON schema 的模型（GLM 系列、OpenAI strict mode 等）对无属性 `{ type: 'object' }` 只会回空 `{}`,派发上下文传不进子代理（宽松填参的模型不受影响,问题隐性）。默认文案提示 LLM 传自然语言交接单;sub 元数据声明 `inputDescription`（agent config 块,见 [extractAgentMetadata](../../faapi/src/ast/extractAgentMetadata.md)）时覆盖默认文案,让 sub-agent 自述需要什么交接单。
 
 每个常规 tool 的 `input`：
 - `getToolSchema(tool)`（带缓存）提供 → 用其 `jsonSchema`
@@ -173,7 +188,7 @@ if (entry?.hasRun) {
 // 默认 reactLoop:继承父调用的 provider,sub 的 model 用其元数据声明（未声明沿用父 model）
 const subMeta = deps.getAgent(subName);
 const result = await subAgent.run(
-  typeof args === 'string' ? args : JSON.stringify(args),
+  extractSubAgentInput(args),  // 单字段 { input: string } 直传字符串;其余形状 stringify 兜底
   {
     agent: subName,
     enableTracing: resolved.enableTracing,
@@ -192,7 +207,8 @@ return result.content;  // enableTracing=false:直接返回,与常规 tool 一�
 - **`maxAgentDepth`**：默认 3。depth 从 1（根）开始,sub-agent 为 2、3...,超出抛 `AgentRecursionError`
 - **`getAgentEntry` vs `getAgent`**：加载 `handler.js` 必须用 `getAgentEntry`——`getAgent` 返回 `AgentCore`（无 `filePath` / `hasRun`）。两者都仅查文件 registry,不 fallback 到 skillRegistry（skill 与 agent 职责正交不耦合,skill 不参与 sub-agent 递归）。sub-agent 必须是文件型 agent,skill 不被 `agents` 列表自动引用
 - **自定义 run**：sub-agent handler 导出 `run` 时（`entry.hasRun=true`）,调用 `mod.run(args)` 跳过默认 reactLoop——业务方完全控制 sub-agent 逻辑,**无 trace**（业务方自己返回业务结果,不参与 reactLoop 的 tracing 采集）
-- **默认 reactLoop + provider 继承**：sub-agent 无 `run`（未注册或 `hasRun=false`）时,调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。agent-as-tool input 为开放式 JSON,stringify 后作为 user 消息喂给 sub-agent 的 LLM。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）被包装为 `TracingToolResult` 返回给 reactLoop,reactLoop 通过 `isTracingToolResult` 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`enableTracing=false` 时返回 `result.content`（与常规 tool 一致,零开销）
+- **默认 reactLoop + provider 继承**：sub-agent 无 `run`（未注册或 `hasRun=false`）时,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）被包装为 `TracingToolResult` 返回给 reactLoop,reactLoop 通过 `isTracingToolResult` 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`enableTracing=false` 时返回 `result.content`（与常规 tool 一致,零开销）
+- **自定义 run 的入参形状**：`mod.run(args, ctx)` 始终收原始 args 对象。默认入参 schema 下 LLM 传 `{ input: '交接单' }`——自定义 run 的业务方读 `args.input` 取交接单（也兼容读整个 args 的旧写法,宽松模型下形状不变）
 
 ### Tracing
 

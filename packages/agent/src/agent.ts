@@ -37,6 +37,29 @@ import type { TracingToolResult } from './trace';
 /** 默认最大 agent 递归深度（根 agent depth=1，sub-agent 递增） */
 const DEFAULT_MAX_AGENT_DEPTH = 3;
 
+/**
+ * sub-agent 工具 input 字段的默认 description（派发交接单说明）
+ *
+ * sub 元数据声明 `inputDescription` 时覆盖——让每个 sub-agent 自述需要什么样的交接单
+ */
+const DEFAULT_SUBAGENT_INPUT_DESCRIPTION =
+  '派发给该 agent 的任务交接单（自然语言）：写清任务目标、必要的上下文信息与对产出结果的要求';
+
+/**
+ * 从 sub-agent tool call 的 args 提取 user 消息
+ *
+ * args 恰为单字段 `{ input: <string> }`（与显式入参 schema 形状一致）时直传字符串——
+ * 去掉 JSON 壳，子代理 LLM 直接读交接单原文;其余形状（宽松模型多传字段/传空对象/
+ * 任意 JSON）`JSON.stringify` 兜底，不丢信息、向后兼容
+ */
+function extractSubAgentUserInput(args: Record<string, unknown>): string {
+  const keys = Object.keys(args);
+  if (keys.length === 1 && keys[0] === 'input' && typeof args.input === 'string') {
+    return args.input;
+  }
+  return JSON.stringify(args);
+}
+
 /** 合法消息 role（与 LLMMessage 的 role 联合一致，运行时校验反序列化历史用） */
 const VALID_MESSAGE_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 
@@ -623,7 +646,9 @@ export class Agent {
    * - `resolveToolSchema` 提供 → 用其 `jsonSchema`
    * - 未提供 / tool 无 `inputTypeName` → 自由 schema `{ type: 'object' }`
    *
-   * sub-agent 的 `function.parameters` 始终为 `{ type: 'object' }`（agent 参数开放）。
+   * sub-agent 的 `function.parameters` 为显式单字段 `input` schema（string,必填）——
+   * 严格遵循 JSON schema 的模型对无属性 `{ type: 'object' }` 只回 `{}`,派发上下文
+   * 传不进子代理;description 用 sub 元数据 `inputDescription`,未声明用默认文案。
    */
   private async buildToolDefinitions(agentName: string): Promise<LLMToolDefinition[]> {
     const definitions = new Map<string, LLMToolDefinition>();
@@ -651,7 +676,16 @@ export class Agent {
         function: {
           name,
           description: subAgent.description,
-          parameters: { type: 'object' },
+          parameters: {
+            type: 'object',
+            properties: {
+              input: {
+                type: 'string',
+                description: subAgent.inputDescription ?? DEFAULT_SUBAGENT_INPUT_DESCRIPTION,
+              },
+            },
+            required: ['input'],
+          },
         },
       });
     }
@@ -757,8 +791,9 @@ export class Agent {
    * **自定义 run 无 trace**：业务方导出 `run` 函数时直接返回业务结果,无法采集 sub-agent
    * 内部明细——需 trace 时应让 sub-agent 走默认 reactLoop（不导出 `run`）。
    *
-   * 自定义 run 接收原始 args 对象；默认 reactLoop 接收 stringify 后的 args
-   * 作为 user 消息（agent-as-tool input 为开放式 JSON）。
+   * 自定义 run 接收原始 args 对象；默认 reactLoop 的 user 消息：args 恰为单字段
+   * `{ input: <string> }`（与显式入参 schema 形状一致）时直传字符串,其余形状
+   * stringify 兜底（见 `extractSubAgentUserInput`）。
    *
    * 加载 handler.js 用 `getAgentEntry`(返回 AgentMetadata,含 filePath/hasRun),
    * 而非 `getAgent`(返回 AgentCore,无代码加载细节)。DB skill 无文件,
@@ -791,10 +826,10 @@ export class Agent {
     }
 
     // 默认 reactLoop：继承父调用的 provider；sub 元数据声明 model 时优先用自身的,
-    // 未声明时沿用父 model。stringify args 作为 user 消息（agent-as-tool input 为开放式 JSON）,
-    // 传递 enableTracing 让 sub-agent 采集 trace
+    // 未声明时沿用父 model。单字段 { input } 直传字符串（与显式入参 schema 形状一致）,
+    // 其余形状 stringify 兜底;传递 enableTracing 让 sub-agent 采集 trace
     const subMeta = this.deps.getAgent(subName);
-    const result = await subAgent.run(typeof args === 'string' ? args : JSON.stringify(args), {
+    const result = await subAgent.run(extractSubAgentUserInput(args), {
       agent: subName,
       provider: callCtx.provider,
       model: subMeta?.model ?? callCtx.model,

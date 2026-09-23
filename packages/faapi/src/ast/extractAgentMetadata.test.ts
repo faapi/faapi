@@ -170,6 +170,24 @@ describe('extractAgentMetadata', () => {
       expect(result!.maxTurns).toBe(10);
     });
 
+    it('提取 inputDescription（字符串）', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x', inputDescription: '章节拆解交接单,含章节原文' };\n`,
+      );
+      expect(result!.inputDescription).toBe('章节拆解交接单,含章节原文');
+    });
+
+    it('inputDescription 未声明 → undefined', () => {
+      const result = extract(`export const config = { systemPrompt: 'x', model: 'gpt-4' };\n`);
+      expect(result!.inputDescription).toBeUndefined();
+    });
+
+    it('inputDescription 非字符串值 → 抛错', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', inputDescription: 42 };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+
     it('提取 tools（字符串数组）', () => {
       const result = extract(
         `export const config = { systemPrompt: 'x', tools: ['weather.getWeather', 'web-search.search'] };\n`,

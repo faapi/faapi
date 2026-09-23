@@ -36,6 +36,15 @@ export interface AgentCore {
   model?: string;
   /** 最大对话轮数(config 块字面量提取),未声明时为 `undefined`;声明了但非数字字面量在构建期抛错 */
   maxTurns?: number;
+  /**
+   * agent-as-tool 派发交接单说明(config 块字面量提取),未声明时为 `undefined`;
+   * 声明了但非字面量在构建期抛错
+   *
+   * 该 agent 被其他 agent 当 tool 派发时(`agents` 列表引用),工具 `input` 字段的
+   * schema description——告诉主控 LLM 该传什么样的交接单;未声明时 `@faapi/agent`
+   * 的 `buildToolDefinitions` 用框架默认文案
+   */
+  inputDescription?: string;
 }
 
 /**
@@ -56,7 +65,7 @@ export interface AgentCore {
  * - `name` — `@agent` JSDoc 覆盖值,或 `pathMeta.name`(目录推导)
  * - `filePath` / `hasRun` — 由 `pathMeta` 透传
  * - `description` — JSDoc 注释块自由文本(对 LLM 可见)
- * - `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` — config 块字面量提取
+ * - `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription` — config 块字面量提取
  */
 export interface AgentMetadata extends AgentCore {
   /** 源码相对路径(从 `pathMeta` 透传),`loadAgentModule` 据此加载 `handler.js` 提取 `run` */
@@ -94,7 +103,7 @@ interface FoundConfig {
  * 提取内容：
  * 1. **JSDoc 描述** — config 导出的 JSDoc 自由文本
  * 2. **`@agent` 覆盖名** — JSDoc 中 `@agent` 标签后的文本，覆盖目录推导的 `name`
- * 3. **config 块字段** — systemPrompt / tools / agents / model / maxTurns
+ * 3. **config 块字段** — systemPrompt / tools / agents / model / maxTurns / inputDescription
  *
  * 不提取(由 `pathMeta` 透传)：`filePath` / `hasRun`
  *
@@ -153,7 +162,7 @@ export function extractAgentMetadata(
   const agentNameOverride = extractJSDocTagValue(jsDoc, 'agent');
 
   // config 块字段提取（extractConfigFields 保证 systemPrompt 非空——requireStringValue 失败即抛）
-  const { systemPrompt, tools, agents, model, maxTurns } = extractConfigFields(
+  const { systemPrompt, tools, agents, model, maxTurns, inputDescription } = extractConfigFields(
     objectLiteral,
     sourceFile,
   );
@@ -168,6 +177,7 @@ export function extractAgentMetadata(
     agents,
     model,
     maxTurns,
+    inputDescription,
   };
 }
 
@@ -288,12 +298,14 @@ function extractConfigFields(
   agents?: string[];
   model?: string;
   maxTurns?: number;
+  inputDescription?: string;
 } {
   let systemPrompt: string | undefined;
   let tools: string[] | undefined;
   let agents: string[] | undefined;
   let model: string | undefined;
   let maxTurns: number | undefined;
+  let inputDescription: string | undefined;
 
   for (const prop of objLit.properties) {
     // 跳过 SpreadAssignment（...other）
@@ -330,13 +342,16 @@ function extractConfigFields(
       case 'maxTurns':
         maxTurns = requireNumberValue(prop, 'maxTurns', sourceFile);
         break;
+      case 'inputDescription':
+        inputDescription = requireStringValue(prop, 'inputDescription', sourceFile);
+        break;
       default:
         // 框架不读的字段几乎必然是拼写错误或误解——静默忽略后运行时按默认值
         // 跑，与声明意图不符（如 maxTurn 拼错后轮数走默认值）
         throw SchemaExtractionError.at(
           prop,
           `config.${propName}`,
-          '未知 config 字段——仅支持 systemPrompt / tools / agents / model / maxTurns',
+          '未知 config 字段——仅支持 systemPrompt / tools / agents / model / maxTurns / inputDescription',
           sourceFile,
         );
     }
@@ -351,7 +366,7 @@ function extractConfigFields(
     );
   }
 
-  return { systemPrompt, tools, agents, model, maxTurns };
+  return { systemPrompt, tools, agents, model, maxTurns, inputDescription };
 }
 
 /**

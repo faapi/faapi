@@ -633,7 +633,7 @@ agent 与 skill 物理隔离，职责正交不耦合：
 **agentRegistry 的查询函数不 fallback 到 skillRegistry**——`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 只查文件 registry。skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归（skill 不再被 agent 的 `agents` 列表自动引用）。skillRegistry 仅供业务方 plugin 内部使用，需要让 handler 看到 skill 时业务方自行通过注入器或中间件机制注入。
 
 DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetadata` 接口）：
-- 只填 LLM 可见字段：`name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?`
+- 只填 LLM 可见字段：`name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?` / `inputDescription?`（agent-as-tool 派发交接单说明，未声明时 sub-agent 工具 schema 的 input description 用框架默认文案）
 - 无需 `filePath` / `hasRun` / `hasConfig` 占位——这些字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）
 - DB skill 不支持自定义 `run` 函数（多步 prompt 串联）——需要 `run` 的仍走文件型 agent
 
