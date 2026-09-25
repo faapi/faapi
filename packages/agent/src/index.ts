@@ -44,10 +44,12 @@ export {
   reactLoop,
   reactLoopStream,
   ReactLoopError,
+  isSubAgentToolResult,
   type ToolExecutor,
   type ReactLoopConfig,
   type ReactLoopResult,
   type ReactLoopStreamChunk,
+  type SubAgentToolResult,
 } from './reactLoop';
 
 // Tracing 类型（结构化调用明细,Phase 3.x）——单次 agent.run() 的明细 + sub-agent 嵌套 trace

@@ -25,9 +25,10 @@
 
 | 类型 | 说明 |
 | --- | --- |
-| `AgentTrace` | 单次 agent.run() 的完整明细（agentName + startedAt + durationMs + turns + usage + stopReason + content + events） |
-| `AgentTraceEvent` | discriminated union,按 `type` 区分：`llm_call` / `tool_call` / `subagent_call` |
-| `TracingToolResult` | sub-agent 调用的特殊返回值（`{ __trace: true, result, trace }`）,reactLoop 据此识别 sub-agent 调用 |
+| `AgentTrace` | 单次 agent.run() 的完整明细（agentName + startedAt + durationMs + turns + usage + stopReason + content + events）；`turns` / `usage` 为整树口径（与 `ReactLoopResult` 同值，含全部 sub-agent 循环） |
+| `AgentTraceEvent` | discriminated union,按 `type` 区分：`llm_call` / `tool_call` / `subagent_call`；事件 `turn` 序号是主循环口径（1..N 连续，不含 sub-agent 内部轮） |
+| `SubAgentToolResult` | sub-agent tool 的结构化返回值（`{ __subAgent: true, result, usage?, turns?, trace? }`），reactLoop 据此上卷用量、发 `subagent_call` 事件（`trace` 存在时） |
+| `TracingToolResult` | 旧版 sub-agent 返回值（`{ __trace: true, result, trace }`，无用量字段）——reactLoop 仍兼容识别（仅发事件、不上卷用量），新代码用 `SubAgentToolResult` |
 
 ### 触发机制：opt-in
 
@@ -73,7 +74,7 @@ done(content='最终答案', turns=2, stopReason='stop', usage={...})
 
 reactLoop 只调 `executeTool(name, args)`,**不知道某个 tool 是常规 tool 还是 sub-agent**。识别机制：
 
-### TracingToolResult 联合类型
+### SubAgentToolResult 与旧 TracingToolResult
 
 `ToolExecutor` 返回值扩展为联合类型：
 
@@ -81,26 +82,31 @@ reactLoop 只调 `executeTool(name, args)`,**不知道某个 tool 是常规 tool
 export type ToolExecutor = (
   name: string,
   args: Record<string, unknown>,
-) => Promise<unknown | TracingToolResult>;
+) => Promise<unknown | SubAgentToolResult>;
 
-export interface TracingToolResult {
-  /** 标记字段（避免与普通对象返回值冲突） */
-  __trace: true;
-  result: unknown;
-  trace: AgentTrace;
+export interface SubAgentToolResult {
+  __subAgent: true;    // 标记字段
+  result: unknown;     // 子代理最终 content（剥壳后作为 tool 消息回传 LLM）
+  usage?: LLMUsage;    // 子循环整树用量（reactLoop 上卷进父 run 台账）
+  turns?: number;      // 子循环整树轮数
+  trace?: AgentTrace;  // enableTracing=true 时携带（发 subagent_call 事件）
 }
 ```
 
 - **常规 tool**：返回 `unknown`（不变,向后兼容）
-- **sub-agent 调用**：[Agent.executeSubAgent](./agent.md) 在 `enableTracing=true` 时返回 `{ __trace: true, result, trace: subTrace }`;`enableTracing=false` 时返回 `unknown`（与常规 tool 一致）
+- **sub-agent 调用**：[Agent.executeSubAgent](./agent.md) 把默认 reactLoop 的子循环结果统一包装为 `SubAgentToolResult`（无论 tracing 开关——用量上卷不依赖 tracing）；tracing 开启时附 `trace` 字段
+- **旧 `TracingToolResult`**（`{ __trace: true, result, trace }`）：reactLoop 仍兼容识别并发 `subagent_call` 事件,但无用量字段、不上卷——业务方直接调 `reactLoop` 自定义 `executeTool` 的存量代码不受影响
 
-reactLoop 在收到返回值时检查 `__trace` 字段：
-- 命中 → 发出 `subagent_call` 事件（带 sub-trace）
+reactLoop 在收到返回值时检查 `__subAgent` / `__trace` 字段：
+- 命中且 `trace` 存在 → 发出 `subagent_call` 事件（带 sub-trace）
+- 命中但无 `trace`（旧结构必有 `trace`,新结构 tracing 关闭时无）→ 发出 `tool_call` 事件
 - 未命中 → 发出 `tool_call` 事件
+
+用量上卷语义（`usage` / `turns` 整树口径、自定义 run 计 0、循环控制不受影响）详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」。
 
 ### Agent.executeSubAgent 传递 enableTracing
 
-[Agent 类](./agent.md) 创建 subAgent 时把父 agent 的 `enableTracing` 传递给 subAgent,subAgent.run 返回的 `result.trace` 就是 sub-trace,被包装为 `TracingToolResult` 返回给 reactLoop。
+[Agent 类](./agent.md) 创建 subAgent 时把父 agent 的 `enableTracing` 传递给 subAgent,subAgent.run 返回的 `result.trace` 就是 sub-trace,附在 `SubAgentToolResult.trace` 返回给 reactLoop。
 
 ## 性能开销
 
@@ -121,8 +127,8 @@ const result = await agent.run(input, { enableTracing: false });
 | 字段 | 描述视角 | 与 trace 的关系 |
 | --- | --- | --- |
 | `messages` | LLM 视角——扁平消息数组,供下次调用作为上下文传入 | `trace.events` 里的 `llm_call.inputMessages` 是每轮快照,拼接后等价于 `messages` |
-| `usage` | 累计 token | `trace.usage` 与 `result.usage` 同值;`llm_call.usage` 是每轮分量 |
-| `turns` | 总轮数 | `trace.turns` 与 `result.turns` 同值 |
+| `usage` | 累计 token（整树口径——主循环 + 全部 sub-agent 循环） | `trace.usage` 与 `result.usage` 同值;`llm_call.usage` 是主循环每轮分量,sub 循环分量在各层 sub-trace 里 |
+| `turns` | 总轮数（整树口径） | `trace.turns` 与 `result.turns` 同值;事件 `turn` 序号是主循环口径 |
 | `stopReason` | 最终停止原因 | `trace.stopReason` 与 `result.stopReason` 同值 |
 | `content` | 最终内容 | `trace.content` 与 `result.content` 同值 |
 
@@ -137,6 +143,6 @@ const result = await agent.run(input, { enableTracing: false });
 ## 相关模块
 
 - [reactLoop](./reactLoop.md) — trace 在 reactLoop / reactLoopStream 内部采集,通过 ReactLoopResult / ReactLoopStreamChunk 暴露
-- [agent](./agent.md) — Agent.executeSubAgent 传递 enableTracing 给 subAgent,包装 TracingToolResult 返回
+- [agent](./agent.md) — Agent.executeSubAgent 传递 enableTracing 给 subAgent,子循环结果包装为 SubAgentToolResult 返回（trace 字段携带 sub-trace）
 - [agentHandle](./agentHandle.md) — AgentRunOptions.enableTracing 控制单次调用是否开 tracing
 - [provider](./provider.md) — LLMUsage / LLMMessage / LLMStopReason / LLMToolCall 类型来源

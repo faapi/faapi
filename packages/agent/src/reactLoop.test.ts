@@ -1779,3 +1779,263 @@ describe('中断恢复（Resume）', () => {
     });
   });
 });
+
+// ─── usage / turns 整树上卷（SubAgentToolResult）──────────────
+
+describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
+  const mainUsage1: LLMUsage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
+  const mainUsage2: LLMUsage = { prompt_tokens: 20, completion_tokens: 30, total_tokens: 50 };
+  const subUsage: LLMUsage = { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 };
+  const subUsage2: LLMUsage = { prompt_tokens: 7, completion_tokens: 1, total_tokens: 8 };
+
+  /** 构造 SubAgentToolResult（executeTool 模拟 sub-agent 返回） */
+  function subResult(opts: {
+    result: unknown;
+    usage?: LLMUsage;
+    turns?: number;
+    trace?: AgentTrace;
+  }): Record<string, unknown> {
+    const r: Record<string, unknown> = { __subAgent: true, result: opts.result };
+    if (opts.usage !== undefined) r.usage = opts.usage;
+    if (opts.turns !== undefined) r.turns = opts.turns;
+    if (opts.trace !== undefined) r.trace = opts.trace;
+    return r;
+  }
+
+  /** 构造 sub-agent trace（tracing 路径测试用） */
+  function makeSubTrace(turns: number, usage?: LLMUsage): AgentTrace {
+    return {
+      agentName: 'writer',
+      startedAt: 100,
+      durationMs: 50,
+      turns,
+      usage,
+      stopReason: 'stop',
+      content: 'sub',
+      events: [],
+    };
+  }
+
+  describe('reactLoop — 非流式', () => {
+    it('SubAgentToolResult 的 usage/turns 上卷：result.usage = 主循环 + sub，turns 同口径', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          stopReason: 'tool_calls',
+          usage: mainUsage1,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop', usage: mainUsage2 }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: async () => subResult({ result: 'sub-done', usage: subUsage, turns: 4 }),
+      });
+
+      // usage：主循环两轮(15+50) + sub(5)
+      expect(result.usage).toEqual({ prompt_tokens: 32, completion_tokens: 38, total_tokens: 70 });
+      // turns：主循环 2 轮 + 子循环 4 轮
+      expect(result.turns).toBe(6);
+      // 回传 LLM 的 tool 消息是剥壳后的 result（LLM 视角与上卷机制无关）
+      const toolMsg = result.messages.find((m) => m.role === 'tool');
+      expect(toolMsg!.content).toBe('sub-done');
+    });
+
+    it('同轮并行多个 sub-agent：usage/turns 全部累加', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent.a', {}), toolCall('c2', 'agent.b', {})],
+          stopReason: 'tool_calls',
+          usage: mainUsage1,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: async (name) =>
+          name === 'agent.a'
+            ? subResult({ result: 'a', usage: subUsage, turns: 2 })
+            : subResult({ result: 'b', usage: subUsage2, turns: 3 }),
+      });
+
+      // usage：15 + 5 + 8
+      expect(result.usage).toEqual({ prompt_tokens: 19, completion_tokens: 9, total_tokens: 28 });
+      // turns：主 2（tool 轮 + 直答轮）+ 2 + 3
+      expect(result.turns).toBe(7);
+    });
+
+    it('usage/turns 缺省的 SubAgentToolResult：跳过累加，不影响主循环口径', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          stopReason: 'tool_calls',
+          usage: mainUsage1,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop', usage: mainUsage2 }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: async () => subResult({ result: 'no-usage' }),
+      });
+
+      expect(result.usage).toEqual({ prompt_tokens: 30, completion_tokens: 35, total_tokens: 65 });
+      expect(result.turns).toBe(2);
+    });
+
+    it('子循环轮数不挤占 maxTurns：循环控制保持主循环口径', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+
+      // maxTurns=2：若子循环 turns 污染循环计数，派发后循环立即超限抛 ReactLoopError
+      const result = await reactLoop('hi', {
+        provider,
+        maxTurns: 2,
+        executeTool: async () => subResult({ result: 'sub', usage: subUsage, turns: 100 }),
+      });
+
+      expect(result.content).toBe('final');
+      expect(result.turns).toBe(102); // 主 2 + 子 100
+    });
+
+    it('tracing 开启：SubAgentToolResult 带 trace → subagent_call 事件；trace.turns/usage 整树；事件 turn 主循环序号', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          stopReason: 'tool_calls',
+          usage: mainUsage1,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop', usage: mainUsage2 }),
+      ]);
+
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: async () =>
+          subResult({ result: 'sub', usage: subUsage, turns: 4, trace: makeSubTrace(4, subUsage) }),
+        enableTracing: true,
+      });
+
+      const trace = result.trace!;
+      // trace 顶层与 result 同口径（整树）
+      expect(trace.turns).toBe(6);
+      expect(trace.usage).toEqual({ prompt_tokens: 32, completion_tokens: 38, total_tokens: 70 });
+
+      // subagent_call 事件发出，嵌套 sub-trace
+      const subEvt = trace.events.find((e) => e.type === 'subagent_call');
+      expect(subEvt).toBeDefined();
+      if (subEvt!.type === 'subagent_call') {
+        expect(subEvt!.agentName).toBe('writer');
+        expect(subEvt!.trace).toEqual(makeSubTrace(4, subUsage));
+      }
+      expect(subEvt!.turn).toBe(1); // 事件 turn 是主循环序号
+
+      // llm_call.turn 保持主循环 1..N 连续
+      const llmTurns = trace.events.filter((e) => e.type === 'llm_call').map((e) => e.turn);
+      expect(llmTurns).toEqual([1, 2]);
+    });
+
+    it('旧 TracingToolResult 兼容：subagent_call 事件仍发出，无用量字段不影响 usage', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          stopReason: 'tool_calls',
+          usage: mainUsage1,
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop', usage: mainUsage2 }),
+      ]);
+
+      const legacy: TracingToolResult = {
+        __trace: true,
+        result: 'legacy-sub',
+        trace: makeSubTrace(9, subUsage),
+      };
+      const result = await reactLoop('hi', {
+        provider,
+        executeTool: async () => legacy,
+        enableTracing: true,
+      });
+
+      // 旧结构无 usage 字段——usage 只含主循环，不上卷
+      expect(result.usage).toEqual({ prompt_tokens: 30, completion_tokens: 35, total_tokens: 65 });
+      expect(result.turns).toBe(2);
+
+      // subagent_call 事件仍发出（存量业务方自定义 executeTool 不受影响）
+      const subEvt = result.trace!.events.find((e) => e.type === 'subagent_call');
+      expect(subEvt).toBeDefined();
+      const toolMsg = result.messages.find((m) => m.role === 'tool');
+      expect(toolMsg!.content).toBe('legacy-sub');
+    });
+  });
+
+  describe('reactLoopStream — 流式', () => {
+    it('done.usage / done.turns 整树上卷', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [toolCall('c1', 'agent.writer', {})],
+            finishReason: 'tool_calls',
+            usage: mainUsage1,
+          },
+        ],
+        [{ deltaContent: 'final', finishReason: 'stop', usage: mainUsage2 }],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', {
+          provider,
+          executeTool: async () => subResult({ result: 'sub', usage: subUsage, turns: 3 }),
+        }),
+      );
+
+      const done = chunks.at(-1)!.done!;
+      // usage：主循环两轮(15+50) + sub(5)
+      expect(done.usage).toEqual({ prompt_tokens: 32, completion_tokens: 38, total_tokens: 70 });
+      // turns：主 2 + 子 3
+      expect(done.turns).toBe(5);
+    });
+
+    it('tracing 开启：traceEvent 的 turn 保持主循环序号，subagent_call 事件发出', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [toolCall('c1', 'agent.writer', {})],
+            finishReason: 'tool_calls',
+            usage: mainUsage1,
+          },
+        ],
+        [{ deltaContent: 'final', finishReason: 'stop', usage: mainUsage2 }],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', {
+          provider,
+          executeTool: async () =>
+            subResult({
+              result: 'sub',
+              usage: subUsage,
+              turns: 3,
+              trace: makeSubTrace(3, subUsage),
+            }),
+          enableTracing: true,
+        }),
+      );
+
+      const traceEvents = chunks.filter((c) => c.traceEvent).map((c) => c.traceEvent!);
+      const subEvt = traceEvents.find((e) => e.type === 'subagent_call');
+      expect(subEvt).toBeDefined();
+      expect(subEvt!.turn).toBe(1);
+
+      const llmTurns = traceEvents.filter((e) => e.type === 'llm_call').map((e) => e.turn);
+      expect(llmTurns).toEqual([1, 2]);
+
+      const done = chunks.at(-1)!.done!;
+      expect(done.turns).toBe(5); // 主 2 + 子 3
+    });
+  });
+});

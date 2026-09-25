@@ -29,17 +29,54 @@ import {
  * 由 [Agent 类](./agent.md)提供——reactLoop 不关心 tool 如何被找到和执行。
  * Agent 类的 `executeTool` 实现：
  * - 常规 tool → `loadToolModule` 加载 handler 并调用
- * - agent-as-tool（`agent.` 前缀）→ 递归调子 agent 的 reactLoop（含 `maxAgentDepth` 防护）
+ * - agent-as-tool（`agent.` 前缀）→ 递归调子 agent 的 reactLoop（`maxAgentDepth` 防护由 Agent 类在 `executeTool` 内实现），
+ *   返回 [SubAgentToolResult](#subagenttoolresult)（携带子循环整树 `usage` / `turns` 供父循环上卷）
  *
  * 返回值可以是任意类型——非 string 会被 JSON.stringify 后回传 LLM。
  *
- * sub-agent 调用时,若 `enableTracing=true`,返回 [TracingToolResult](./trace.md)
- * 携带 sub-agent 的 trace,reactLoop 据此发出 `subagent_call` 事件（嵌套递归 trace）。
+ * sub-agent 调用时,`SubAgentToolResult.trace` 存在（`enableTracing=true`）时
+ * reactLoop 发出 `subagent_call` 事件（嵌套递归 trace）；旧 `TracingToolResult`
+ * （`__trace` 标记,无用量字段）仍兼容识别,但不上卷用量。
  */
 export type ToolExecutor = (
   name: string,
   args: Record<string, unknown>,
-) => Promise<unknown | TracingToolResult>;
+) => Promise<unknown | SubAgentToolResult>;
+
+/**
+ * sub-agent tool 的结构化返回值——reactLoop 据此上卷子循环用量、剥壳回传、发 subagent_call 事件
+ *
+ * [Agent.executeSubAgent](./agent.md) 在 sub-agent 走默认 reactLoop 时统一构造
+ * （无论 tracing 开关——用量上卷不依赖 tracing）。reactLoop 通过
+ * `isSubAgentToolResult` 识别后：`usage` / `turns` 累加进父循环（整树口径,
+ * 详见 reactLoop.md「usage 与 turns 的整树口径」）,随后剥壳取 `result` 作为
+ * tool 消息回传 LLM;`trace` 存在时再发 `subagent_call` 事件。
+ *
+ * `__subAgent` 是标记字段,避免与普通对象返回值冲突。
+ */
+export interface SubAgentToolResult {
+  /** 标记字段（避免与普通对象返回值冲突） */
+  __subAgent: true;
+  /** 子代理返回的业务结果（stringifyResult 后作为 tool 消息内容回传 LLM） */
+  result: unknown;
+  /** 子循环整树 token 用量（自定义 run 的 sub-agent 无结构化用量,缺省 = 计 0） */
+  usage?: LLMUsage;
+  /** 子循环整树轮数（缺省 = 计 0） */
+  turns?: number;
+  /** 子循环 trace（`enableTracing=true` 时携带,reactLoop 发 subagent_call 事件并嵌入） */
+  trace?: AgentTrace;
+}
+
+/**
+ * 类型守卫：判断 ToolExecutor 返回值是否为 SubAgentToolResult
+ */
+export function isSubAgentToolResult(value: unknown): value is SubAgentToolResult {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { __subAgent?: unknown }).__subAgent === true
+  );
+}
 
 /**
  * reactLoop 配置
@@ -111,11 +148,18 @@ export interface ReactLoopResult {
   reasoning?: string;
   /** 完整对话历史（system + user + assistant + tool 消息） */
   messages: LLMMessage[];
-  /** 使用的轮数（含最终轮） */
+  /**
+   * 使用的轮数（整树口径：主循环轮数 + 全部 sub-agent 循环轮数）。
+   * `maxTurns` 循环控制与 trace 事件的 `turn` 序号只按主循环计（子代理轮数不挤占父循环预算）。
+   */
   turns: number;
   /** 最终轮的停止原因 */
   stopReason: LLMStopReason;
-  /** 累计 token 用量（多轮累加，provider 不返回时为 `undefined`） */
+  /**
+   * 累计 token 用量（整树口径：本次 run 全部 `llm_call` usage 之和,含全部层级的
+   * sub-agent 循环,自定义 run 的 sub-agent 计 0;provider 不返回时为 `undefined`）。
+   * 详见 reactLoop.md「usage 与 turns 的整树口径」。
+   */
   usage?: LLMUsage;
   /**
    * 结构化调用明细（`enableTracing=true` 时填充,否则 `undefined` 零开销）。
@@ -154,8 +198,10 @@ export interface ReactLoopStreamChunk {
     content: string;
     /** 最终轮的完整推理内容（thinking 模型；无推理内容时不存在） */
     reasoning?: string;
+    /** 整树口径（主循环 + 全部 sub-agent 循环），与 ReactLoopResult.turns 一致 */
     turns: number;
     stopReason: LLMStopReason;
+    /** 整树口径（全部 llm_call 之和），与 ReactLoopResult.usage 一致 */
     usage?: LLMUsage;
   };
 }
@@ -374,18 +420,21 @@ export async function reactLoop(
   let totalUsage: LLMUsage | undefined;
   /** 最终轮 assistant 的推理内容（thinking 模型；每轮覆盖，循环结束时即最终轮值） */
   let finalReasoning: string | undefined;
-  let turns = 0;
+  /** 主循环轮数——循环控制（maxTurns）与事件 turn 序号的唯一依据 */
+  let loopTurns = 0;
+  /** 子树轮数累计（SubAgentToolResult 上卷）——结果 turns = loopTurns + subTurns */
+  let subTurns = 0;
 
   // trace 采集容器（enableTracing=false 时不构造,零开销）
   const traceStartedAt = enableTracing ? nowMs() : 0;
   const traceEvents: AgentTraceEvent[] | undefined = enableTracing ? [] : undefined;
 
-  while (turns < maxTurns) {
+  while (loopTurns < maxTurns) {
     // 取消预检查：已取消则不再发起本轮 LLM 调用（携带断点历史供续跑）
     if (config.signal?.aborted) {
       throw new AgentAbortError(undefined, messages);
     }
-    turns++;
+    loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
     // 历史裁剪（maxHistoryTokens）：只作用于发给 LLM 的消息副本，本地 messages 不变
@@ -418,7 +467,7 @@ export async function reactLoop(
       const llmEndedAt = nowMs();
       traceEvents!.push({
         type: 'llm_call',
-        turn: turns,
+        turn: loopTurns,
         startedAt: llmStartedAt,
         durationMs: llmEndedAt - llmStartedAt,
         model: config.model ?? '',
@@ -439,6 +488,7 @@ export async function reactLoop(
     // 非 tool_calls → 循环结束
     if (response.stopReason !== 'tool_calls' || !response.message.tool_calls) {
       const traceEndedAt = enableTracing ? nowMs() : 0;
+      const turns = loopTurns + subTurns;
       const result: ReactLoopResult = {
         content: response.message.content,
         messages,
@@ -483,8 +533,10 @@ export async function reactLoop(
         try {
           args = parseToolCallArguments(toolCall);
           rawResult = await config.executeTool(toolName, args);
-          // TracingToolResult:提取 result 字段作为 tool 消息内容
-          if (isTracingToolResult(rawResult)) {
+          // SubAgentToolResult / 旧 TracingToolResult:剥壳取 result 作为 tool 消息内容
+          if (isSubAgentToolResult(rawResult)) {
+            resultStr = stringifyResult(rawResult.result);
+          } else if (isTracingToolResult(rawResult)) {
             resultStr = stringifyResult(rawResult.result);
           } else {
             resultStr = stringifyResult(rawResult);
@@ -524,12 +576,34 @@ export async function reactLoop(
       toolErr,
       hasError,
     } of settled) {
+      // 整树上卷：sub-agent 结果的 usage/turns 累加进父循环（usage 台账不依赖 tracing 开关）
+      if (isSubAgentToolResult(rawResult)) {
+        if (rawResult.usage) {
+          totalUsage = accumulateUsage(totalUsage, rawResult.usage);
+        }
+        if (typeof rawResult.turns === 'number') {
+          subTurns += rawResult.turns;
+        }
+      }
       if (enableTracing) {
-        if (isTracingToolResult(rawResult)) {
-          // sub-agent 调用:嵌入 sub-trace
+        if (isSubAgentToolResult(rawResult) && rawResult.trace) {
+          // sub-agent 调用（新结构）:嵌入 sub-trace
           traceEvents!.push({
             type: 'subagent_call',
-            turn: turns,
+            turn: loopTurns,
+            startedAt: toolStartedAt,
+            durationMs: toolEndedAt - toolStartedAt,
+            toolCallId: toolCall.id,
+            agentName: extractSubAgentName(toolName),
+            input: JSON.stringify(args),
+            trace: rawResult.trace,
+            result: resultStr,
+          });
+        } else if (isTracingToolResult(rawResult)) {
+          // sub-agent 调用(旧 TracingToolResult,兼容存量自定义 executeTool):嵌入 sub-trace
+          traceEvents!.push({
+            type: 'subagent_call',
+            turn: loopTurns,
             startedAt: toolStartedAt,
             durationMs: toolEndedAt - toolStartedAt,
             toolCallId: toolCall.id,
@@ -541,7 +615,7 @@ export async function reactLoop(
         } else {
           traceEvents!.push({
             type: 'tool_call',
-            turn: turns,
+            turn: loopTurns,
             startedAt: toolStartedAt,
             durationMs: toolEndedAt - toolStartedAt,
             toolCallId: toolCall.id,
@@ -591,14 +665,17 @@ export async function* reactLoopStream(
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
-  let turns = 0;
+  /** 主循环轮数——循环控制（maxTurns）与事件 turn 序号的唯一依据 */
+  let loopTurns = 0;
+  /** 子树轮数累计（SubAgentToolResult 上卷）——done.turns = loopTurns + subTurns */
+  let subTurns = 0;
 
-  while (turns < maxTurns) {
+  while (loopTurns < maxTurns) {
     // 取消预检查：已取消则不再发起本轮 LLM 调用（携带断点历史供续跑）
     if (config.signal?.aborted) {
       throw new AgentAbortError(undefined, messages);
     }
-    turns++;
+    loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
     // 历史裁剪（maxHistoryTokens）：只作用于发给 LLM 的消息副本，本地 messages 不变
@@ -675,7 +752,7 @@ export async function* reactLoopStream(
       yield {
         traceEvent: {
           type: 'llm_call',
-          turn: turns,
+          turn: loopTurns,
           startedAt: llmStartedAt,
           durationMs: llmEndedAt - llmStartedAt,
           model: config.model ?? '',
@@ -691,7 +768,7 @@ export async function* reactLoopStream(
     if (finishReason !== 'tool_calls' || !toolCalls) {
       const donePayload: NonNullable<ReactLoopStreamChunk['done']> = {
         content: turnContent,
-        turns,
+        turns: loopTurns + subTurns,
         stopReason: finishReason ?? 'other',
         usage: totalUsage,
       };
@@ -716,7 +793,10 @@ export async function* reactLoopStream(
         args = parseToolCallArguments(toolCall);
         yield { toolCall: { name: toolName, arguments: args } };
         rawResult = await config.executeTool(toolName, args);
-        if (isTracingToolResult(rawResult)) {
+        // SubAgentToolResult / 旧 TracingToolResult:剥壳取 result 作为 tool 消息内容
+        if (isSubAgentToolResult(rawResult)) {
+          resultStr = stringifyResult(rawResult.result);
+        } else if (isTracingToolResult(rawResult)) {
           resultStr = stringifyResult(rawResult.result);
         } else {
           resultStr = stringifyResult(rawResult);
@@ -728,15 +808,41 @@ export async function* reactLoopStream(
         rawResult = undefined;
       }
 
+      // 整树上卷：sub-agent 结果的 usage/turns 累加进父循环（usage 台账不依赖 tracing 开关）
+      if (isSubAgentToolResult(rawResult)) {
+        if (rawResult.usage) {
+          totalUsage = accumulateUsage(totalUsage, rawResult.usage);
+        }
+        if (typeof rawResult.turns === 'number') {
+          subTurns += rawResult.turns;
+        }
+      }
+
       yield { toolResult: { name: toolName, result: resultStr } };
 
       if (enableTracing) {
         const toolEndedAt = nowMs();
-        if (isTracingToolResult(rawResult)) {
+        if (isSubAgentToolResult(rawResult) && rawResult.trace) {
+          // sub-agent 调用（新结构）:嵌入 sub-trace
           yield {
             traceEvent: {
               type: 'subagent_call',
-              turn: turns,
+              turn: loopTurns,
+              startedAt: toolStartedAt,
+              durationMs: toolEndedAt - toolStartedAt,
+              toolCallId: toolCall.id,
+              agentName: extractSubAgentName(toolName),
+              input: JSON.stringify(args),
+              trace: rawResult.trace,
+              result: resultStr,
+            },
+          };
+        } else if (isTracingToolResult(rawResult)) {
+          // sub-agent 调用(旧 TracingToolResult,兼容存量自定义 executeTool):嵌入 sub-trace
+          yield {
+            traceEvent: {
+              type: 'subagent_call',
+              turn: loopTurns,
               startedAt: toolStartedAt,
               durationMs: toolEndedAt - toolStartedAt,
               toolCallId: toolCall.id,
@@ -750,7 +856,7 @@ export async function* reactLoopStream(
           yield {
             traceEvent: {
               type: 'tool_call',
-              turn: turns,
+              turn: loopTurns,
               startedAt: toolStartedAt,
               durationMs: toolEndedAt - toolStartedAt,
               toolCallId: toolCall.id,

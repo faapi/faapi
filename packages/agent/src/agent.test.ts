@@ -2230,3 +2230,173 @@ describe('Agent — 中断恢复（Resume）', () => {
     expect(sent.at(-1)).toEqual({ role: 'tool', content: '晴', tool_call_id: 'c1' });
   });
 });
+
+describe('Agent — usage / turns 整树上卷', () => {
+  /** 构造支持任意层级 sub-agent 声明的 deps（resolveSubAgents 按各 agent 元数据的 agents 声明展开） */
+  function createTreeDeps(
+    provider: LLMProvider,
+    agents: Record<string, AgentCore>,
+    entries: Record<string, AgentMetadata> = {},
+    overrides: Partial<Pick<AgentDeps, 'loadAgentModule'>> = {},
+  ): AgentDeps {
+    return {
+      providers: new Map([['openai', provider]]),
+      llms: defaultLlms(),
+      rootDir: '/project',
+      getAgent: (name) => agents[name],
+      getAgentEntry: (name) => entries[name],
+      getTool: () => undefined,
+      resolveAgentTools: () => [],
+      resolveSubAgents: (name) =>
+        (agents[name]?.agents ?? []).flatMap((n) => (agents[n] ? [agents[n]!] : [])),
+      loadToolModule: async () => {
+        throw new Error('loadToolModule not mocked');
+      },
+      loadAgentModule:
+        overrides.loadAgentModule ??
+        (async () => {
+          throw new Error('loadAgentModule not mocked');
+        }),
+    };
+  }
+
+  it('两层派发：父 run 的 usage = 全部 llm_call usage 之和，turns 同口径聚合', async () => {
+    // 调用序列：researcher(tool 轮) → writer(tool 轮) → reviewer(直答) → writer(直答) → researcher(直答)
+    const { provider } = createMockProvider([
+      llmResponse({
+        toolCalls: [toolCall('c1', 'agent.writer', { input: '写' })],
+        stopReason: 'tool_calls',
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      llmResponse({
+        toolCalls: [toolCall('c2', 'agent.reviewer', { input: '审' })],
+        stopReason: 'tool_calls',
+        usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+      }),
+      llmResponse({
+        content: 'review-ok',
+        stopReason: 'stop',
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }),
+      llmResponse({
+        content: 'draft-ok',
+        stopReason: 'stop',
+        usage: { prompt_tokens: 7, completion_tokens: 8, total_tokens: 15 },
+      }),
+      llmResponse({
+        content: 'parent-final',
+        stopReason: 'stop',
+        usage: { prompt_tokens: 20, completion_tokens: 30, total_tokens: 50 },
+      }),
+    ]);
+
+    const agent = new Agent(
+      createTreeDeps(provider, {
+        researcher: agentMeta({ name: 'researcher', agents: ['writer'], model: 'gpt-4o' }),
+        writer: agentMeta({ name: 'writer', agents: ['reviewer'] }),
+        reviewer: agentMeta({ name: 'reviewer' }),
+      }),
+    );
+
+    const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+    expect(result.content).toBe('parent-final');
+    // 整树 usage = 5 次 llm_call 之和（主循环 2 + writer 2 + reviewer 1）
+    expect(result.usage).toEqual({ prompt_tokens: 138, completion_tokens: 95, total_tokens: 233 });
+    // 整树 turns = 2 + 2 + 1
+    expect(result.turns).toBe(5);
+  });
+
+  it('自定义 run 的 sub-agent 计 0：父 usage/turns 只含主循环口径', async () => {
+    const { provider } = createMockProvider([
+      llmResponse({
+        toolCalls: [toolCall('c1', 'agent.writer', { input: '交接单' })],
+        stopReason: 'tool_calls',
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      llmResponse({
+        content: 'final',
+        stopReason: 'stop',
+        usage: { prompt_tokens: 20, completion_tokens: 30, total_tokens: 50 },
+      }),
+    ]);
+
+    const agent = new Agent(
+      createTreeDeps(
+        provider,
+        {
+          researcher: agentMeta({ name: 'researcher', agents: ['writer'], model: 'gpt-4o' }),
+          writer: agentMeta({ name: 'writer' }),
+        },
+        { writer: agentEntry({ name: 'writer', hasRun: true }) },
+        {
+          loadAgentModule: async () => ({
+            run: (async () => 'custom-run-result') as (...args: unknown[]) => unknown,
+          }),
+        },
+      ),
+    );
+
+    const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+    expect(result.content).toBe('final');
+    // 自定义 run 无结构化 usage 可卷——只含主循环 2 轮
+    expect(result.usage).toEqual({ prompt_tokens: 30, completion_tokens: 35, total_tokens: 65 });
+    expect(result.turns).toBe(2);
+  });
+
+  it('tracing 开启：subagent_call 事件仍嵌套，父 trace.usage/turns 整树', async () => {
+    const { provider } = createMockProvider([
+      llmResponse({
+        toolCalls: [toolCall('c1', 'agent.writer', { input: '写' })],
+        stopReason: 'tool_calls',
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      }),
+      // writer 子循环直答
+      llmResponse({
+        content: 'sub-answer',
+        stopReason: 'stop',
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+      }),
+      llmResponse({
+        content: 'final',
+        stopReason: 'stop',
+        usage: { prompt_tokens: 20, completion_tokens: 30, total_tokens: 50 },
+      }),
+    ]);
+
+    const agent = new Agent(
+      createTreeDeps(provider, {
+        researcher: agentMeta({ name: 'researcher', agents: ['writer'], model: 'gpt-4o' }),
+        writer: agentMeta({ name: 'writer' }),
+      }),
+    );
+
+    const result = await agent.run('go', {
+      agent: 'researcher',
+      model: 'gpt-4o',
+      enableTracing: true,
+    });
+
+    // 整树 usage：15 + 3 + 50；turns：主 2 + 子 1
+    expect(result.usage).toEqual({ prompt_tokens: 31, completion_tokens: 37, total_tokens: 68 });
+    expect(result.turns).toBe(3);
+
+    const trace = result.trace!;
+    expect(trace.agentName).toBe('researcher');
+    expect(trace.usage).toEqual(result.usage);
+    expect(trace.turns).toBe(3);
+
+    // subagent_call 事件仍在，嵌套 sub-trace（agentName 被 Agent.run 填为 writer）
+    const subEvt = trace.events.find((e) => e.type === 'subagent_call');
+    expect(subEvt).toBeDefined();
+    if (subEvt!.type === 'subagent_call') {
+      expect(subEvt!.agentName).toBe('writer');
+      expect(subEvt!.trace.agentName).toBe('writer');
+      // sub-trace 的 usage 是子循环整树口径（此处子无 sub-sub，即子自身 1 轮）
+      expect(subEvt!.trace.usage).toEqual({
+        prompt_tokens: 1,
+        completion_tokens: 2,
+        total_tokens: 3,
+      });
+    }
+  });
+});

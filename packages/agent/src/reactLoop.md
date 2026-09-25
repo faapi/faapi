@@ -25,8 +25,9 @@
 | --- | --- |
 | `ToolExecutor` | tool 执行函数 `(name, args) => Promise<unknown>`，由 Agent 类提供 |
 | `ReactLoopConfig` | 循环配置（provider + systemPrompt + tools + executeTool + maxTurns + model 等） |
-| `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage） |
-| `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + done） |
+| `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage）；`usage` / `turns` 为整树口径（见「usage 与 turns 的整树口径」章节） |
+| `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + done）；`done.usage` / `done.turns` 同整树口径 |
+| `SubAgentToolResult` | sub-agent tool 的结构化返回值（`{ __subAgent: true, result, usage?, turns?, trace? }`），reactLoop 识别后上卷用量、剥壳回传（见「usage 与 turns 的整树口径」章节） |
 | `ReactLoopError` | 系统级错误（maxTurns 超限，携带中断时 messages 供续跑），tool 执行错误不抛此类型 |
 
 ### `reactLoop(input, config)` 流程
@@ -39,6 +40,7 @@
    - 若 `stopReason !== 'tool_calls'` 或无 `tool_calls` → 返回最终结果
    - 遍历 `tool_calls`，arguments JSON 字符串 parse 后逐个调 `executeTool(name, args)`（解析边界收拢在 reactLoop，tool 执行函数 / 鉴权钩子 / trace 拿到已 parse 对象）
    - tool 执行错误被 catch，错误消息作为 tool 结果回传 LLM（LLM 可自我恢复）
+   - tool 结果为 `SubAgentToolResult` 时先上卷 `usage` / `turns`（整树口径，见下节）再剥壳回传
    - tool 结果 push 到 messages（role='tool' + tool_call_id）
 3. 超出 `maxTurns` → 抛 `ReactLoopError`
 
@@ -51,8 +53,8 @@
    - `deltaReasoning` chunk → yield `{ deltaReasoning }`（含中间 tool 轮的推理内容）
    - 累积 `turnContent` / `turnReasoning`（当前轮的全部 token / 推理内容）
    - 终止 chunk（含 `finishReason`）：
-     - `tool_calls` → yield 每个 `{ toolCall }`，执行 tool，yield `{ toolResult }`，继续循环
-     - `stop` / 其他 → yield `{ done: { content, reasoning, turns, stopReason, usage } }`，return
+     - `tool_calls` → yield 每个 `{ toolCall }`，执行 tool，yield `{ toolResult }`（`SubAgentToolResult` 先上卷 `usage` / `turns` 再剥壳，与非流式一致），继续循环
+     - `stop` / 其他 → yield `{ done: { content, reasoning, turns, stopReason, usage } }`（`usage` / `turns` 整树口径），return
 3. 超出 `maxTurns` → 抛 `ReactLoopError`
 
 ### Tool 错误处理策略
@@ -80,6 +82,36 @@ LLM 一轮可返回多个 tool_call，非流式路径**并行执行**（`Promise
 - **每个 toolCall 独立 try/catch**——单个失败不影响其余的结果回传
 - **`beforeToolCall` / `afterToolCall` 钩子会并发触发**——业务方钩子不应依赖调用顺序（读 ctx 做鉴权/改写与顺序无关）
 - 流式路径（`reactLoopStream`）保持**串行**——chunk 的 yield 顺序受消费端约束
+
+### usage 与 turns 的整树口径（sub-agent 冒泡）
+
+`ReactLoopResult.usage` / `turns`（流式为 `done.usage` / `done.turns`）是**整树口径**——不只主循环，所有层级的 sub-agent 循环用量与轮数都逐层上卷：
+
+- `usage` = 本次 run 全部 `llm_call` usage 之和（主循环 + 全部 sub-agent 循环，多层递归天然聚合）
+- `turns` = 主循环轮数 + 全部 sub-agent 循环轮数
+
+**为什么需要**：多 agent 场景下子代理循环才是 token 大头，若 `usage` 只含主循环，业务方按 run 落用量台账会系统性低估（GAP-1，writer 拆书场景逐章成本失真）。子循环用量必须冒泡到父 run 的台账口径。
+
+**机制**：sub-agent 走默认 reactLoop 时，[Agent.executeSubAgent](./agent.md) 把子循环结果包装为 `SubAgentToolResult` 返回——子循环的 `usage` / `turns` 已是其自身整树口径（sub-sub 先在子循环上卷），reactLoop 识别 `__subAgent` 标记后把 `usage` 累加进本循环用量、`turns` 累加进结果轮数，随后剥壳取 `result` 作为 tool 消息回传 LLM（LLM 视角与上卷机制无关，回传内容不变）：
+
+```ts
+export interface SubAgentToolResult {
+  __subAgent: true;      // 标记字段
+  result: unknown;       // 子代理最终 content（剥壳后回传 LLM）
+  usage?: LLMUsage;      // 子循环整树用量（缺省 = 无可卷，如自定义 run）
+  turns?: number;        // 子循环整树轮数
+  trace?: AgentTrace;    // enableTracing=true 时携带（发 subagent_call 事件）
+}
+```
+
+**边界与不变式**：
+
+- **自定义 run 的 sub-agent 计 0**：handler 导出 `run` 函数的 sub-agent 不走默认 reactLoop，无结构化 usage 可卷——`executeSubAgent` 直接返回业务结果（不包装），其 token 不进入父 run 台账。需要用量统计的 sub-agent 应走默认 reactLoop
+- **循环控制不受影响**：`maxTurns` 循环计数与 trace 事件的 `turn` 序号始终是**主循环口径**——子代理轮数不挤占父循环的 `maxTurns` 预算，`llm_call.turn` / `tool_call.turn` / `subagent_call.turn` 序号保持 1..N 连续
+- **trace 顶层同口径**：`AgentTrace.turns` / `usage` 与 `ReactLoopResult` 同值（整树）；各层 sub-trace 自带各自的整树用量，业务方可还原逐层明细
+- **兼容**：reactLoop 同时识别旧 `TracingToolResult`（`{ __trace: true, result, trace }`，无用量字段，仅触发 `subagent_call` 事件、不上卷用量）——业务方直接调 `reactLoop` 自定义 `executeTool` 的存量代码不受影响；新代码用 `SubAgentToolResult`
+
+> **Breaking**：`usage` 语义由「本次 run 主循环用量」升级为「整树用量」，`turns` 同口径聚合。按主循环口径消费的业务方需自行调整落库口径（版本与迁移说明见 changeset / CHANGELOG）。
 
 ### 历史裁剪（`maxHistoryTokens`）
 

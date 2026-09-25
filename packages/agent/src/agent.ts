@@ -17,8 +17,8 @@ import {
   type ReactLoopConfig,
   type ReactLoopResult,
   type ReactLoopStreamChunk,
+  type SubAgentToolResult,
 } from './reactLoop';
-import type { TracingToolResult } from './trace';
 
 /**
  * Agent 类——按 `agent.name` 查找元数据、组装 tool 列表、提供 `run` / `stream` / `asTool`
@@ -218,7 +218,7 @@ export type FilterToolsHook = (
  * 本次调用的解析结果（[buildLoopConfig](#buildLoopConfig) 解析后经闭包传给 executeTool）
  *
  * - `agentName`——本次调用的有效 agent 名（执行白名单按它的声明集合校验）
- * - `enableTracing`——sub-agent 调用是否包装 TracingToolResult
+ * - `enableTracing`——sub-agent 调用是否在 SubAgentToolResult 上附带 trace
  * - `provider` / `model`——解析出的 LLM 入口,sub-agent 递归继承（sub 元数据
  *   声明 `model` 时优先用自身的）
  */
@@ -501,8 +501,8 @@ export class Agent {
         ? this.resolveExternalProvider(options.provider, options?.model)
         : this.resolveModelKey(options?.model, meta);
 
+    // 闭包捕获 enableTracing,通过 executeTool 传递给 executeSubAgent,使其决定是否附带 trace
     // enableTracing 优先级:options > deps.config > 默认 false（opt-in,零开销）
-    // 闭包捕获 enableTracing,通过 executeTool 传递给 executeSubAgent,使其能包装 TracingToolResult
     const enableTracing = options?.enableTracing ?? this.deps.config?.enableTracing ?? false;
 
     // 本次调用的解析结果——executeTool / executeSubAgent 复用（白名单校验用 agentName,
@@ -699,7 +699,7 @@ export class Agent {
   /**
    * tool 执行路由（由 reactLoop 调用）
    *
-   * - `agent.` 前缀 → {@link executeSubAgent} 递归（含 enableTracing + TracingToolResult 包装）
+   * - `agent.` 前缀 → {@link executeSubAgent} 递归（含 usage/turns 上卷 + tracing 包装）
    * - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
    *
    * `callCtx` 由 [buildLoopConfig](#buildLoopConfig) 闭包捕获传入——本次调用的有效
@@ -715,7 +715,7 @@ export class Agent {
     rawName: string,
     rawArgs: Record<string, unknown>,
     callCtx: AgentCallContext,
-  ): Promise<unknown | TracingToolResult> {
+  ): Promise<unknown | SubAgentToolResult> {
     // 执行守卫（authHooks）：在 agent. 分流之前——一个钩子同时覆盖常规 tool
     // 与 sub-agent 递归。拒绝时不执行目标,守卫的 error 回传 LLM;
     // 改写时以守卫返回的 args 继续（多租户场景强制注入可信值）
@@ -744,7 +744,7 @@ export class Agent {
       };
     }
 
-    // sub-agent 递归（携带 callCtx,使其能继承 provider/model + 包装 TracingToolResult）
+    // sub-agent 递归（携带 callCtx,使其能继承 provider/model + 决定是否附带 trace）
     if (name.startsWith('agent.')) {
       return await this.executeSubAgent(name.slice(6), args, callCtx);
     }
@@ -777,19 +777,22 @@ export class Agent {
    * sub-agent 递归执行
    *
    * 1. `maxAgentDepth` 防护——超限抛 {@link AgentRecursionError}
-   * 2. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`（无 trace,与常规 tool 一致）
+   * 2. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`（无 trace、无结构化
+   *    usage 可卷——直接返回业务结果,其 token 不进入父 run 台账）
    * 3. 无 `run` 时调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`
    *    走默认 reactLoop——继承父调用的 provider,sub 元数据声明 `model` 时优先用自身的,
    *    未声明时沿用父 model
    *
-   * **tracing 路径**：`enableTracing=true` 时,subAgent.run 返回的 `result.trace`（agentName
-   * 已被 `Agent.run` 填为 subName）被包装为 [TracingToolResult](./trace.md) 返回给 reactLoop。
-   * reactLoop 通过 `isTracingToolResult` 识别后发出 `subagent_call` 事件,嵌入 sub-trace
-   * （递归结构,业务方可还原完整调用树）。`enableTracing=false` 时返回 `result.content`
-   * （unknown,与常规 tool 一致,零开销）。
+   * **返回值统一包装为 [SubAgentToolResult](./reactLoop.md)**（无论 tracing 开关——
+   * 用量上卷不依赖 tracing）：`usage` / `turns` 是子循环整树口径（sub-sub 已在子循环
+   * 上卷）,reactLoop 识别后累加进父循环,父 run 的 usage 台账 = 全部 `llm_call` 之和。
+   * `enableTracing=true` 时再附 `trace`（agentName 已被 `Agent.run` 填为 subName）,
+   * reactLoop 据此发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原
+   * 完整调用树）。详见 reactLoop.md「usage 与 turns 的整树口径」。
    *
-   * **自定义 run 无 trace**：业务方导出 `run` 函数时直接返回业务结果,无法采集 sub-agent
-   * 内部明细——需 trace 时应让 sub-agent 走默认 reactLoop（不导出 `run`）。
+   * **自定义 run 无 trace、无用量上卷**：业务方导出 `run` 函数时直接返回业务结果,
+   * 无法采集 sub-agent 内部明细——需 trace / 用量统计时让 sub-agent 走默认 reactLoop
+   * （不导出 `run`）。
    *
    * 自定义 run 接收原始 args 对象；默认 reactLoop 的 user 消息：args 恰为单字段
    * `{ input: <string> }`（与显式入参 schema 形状一致）时直传字符串,其余形状
@@ -803,7 +806,7 @@ export class Agent {
     subName: string,
     args: Record<string, unknown>,
     callCtx: AgentCallContext,
-  ): Promise<unknown | TracingToolResult> {
+  ): Promise<unknown | SubAgentToolResult> {
     const newDepth = this.depth + 1;
     const maxDepth = this.deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
     if (newDepth > maxDepth) {
@@ -836,16 +839,19 @@ export class Agent {
       enableTracing: callCtx.enableTracing,
     });
 
-    // enableTracing=true:包装 TracingToolResult,reactLoop 据此发出 subagent_call 事件
-    // enableTracing=false:直接返回 content（unknown,与常规 tool 一致,零开销）
+    // 统一包装 SubAgentToolResult（无论 tracing 开关）:usage/turns 是子循环整树口径,
+    // reactLoop 累加进父循环（父 run 台账 = 全部 llm_call 之和,详见 reactLoop.md）;
+    // tracing 开启时附 trace,reactLoop 据此发出 subagent_call 事件
     this.deps.config?.afterToolCall?.(`agent.${subName}`, args, result.content, this.deps.ctx);
+    const wrapped: SubAgentToolResult = {
+      __subAgent: true,
+      result: result.content,
+      usage: result.usage,
+      turns: result.turns,
+    };
     if (callCtx.enableTracing && result.trace) {
-      return {
-        __trace: true,
-        result: result.content,
-        trace: result.trace,
-      } satisfies TracingToolResult;
+      wrapped.trace = result.trace;
     }
-    return result.content;
+    return wrapped;
   }
 }

@@ -14,9 +14,10 @@ export interface AgentTrace {
   startedAt: number;
   /** 总耗时 ms（done 时填充,抛错时也填充） */
   durationMs?: number;
-  /** 总轮数（与 ReactLoopResult.turns 一致） */
+  /** 总轮数（与 ReactLoopResult.turns 一致,整树口径——含全部 sub-agent 循环轮数;
+   *  事件 turn 序号是主循环口径,与此独立） */
   turns: number;
-  /** 累计 token 用量（与 ReactLoopResult.usage 一致） */
+  /** 累计 token 用量（与 ReactLoopResult.usage 一致,整树口径——含全部 sub-agent 循环） */
   usage?: LLMUsage;
   /** 最终停止原因（与 ReactLoopResult.stopReason 一致） */
   stopReason?: LLMStopReason;
@@ -43,7 +44,7 @@ export type AgentTraceEvent = LlmCallEvent | ToolCallEvent | SubAgentCallEvent;
  */
 export interface LlmCallEvent {
   type: 'llm_call';
-  /** 第几轮（从 1 开始） */
+  /** 第几轮（从 1 开始;主循环口径,sub-agent 内部轮在各层 sub-trace 里） */
   turn: number;
   startedAt: number;
   durationMs?: number;
@@ -80,12 +81,16 @@ export interface ToolCallEvent {
 }
 
 /**
- * sub-agent 调用事件——executeTool 返回 TracingToolResult 时触发
+ * sub-agent 调用事件——executeTool 返回 SubAgentToolResult（trace 存在时）
+ * 或旧 TracingToolResult 时触发
  *
- * sub-agent 的 trace 嵌入 `trace` 字段（递归结构）,业务方可还原完整调用树。
+ * sub-agent 的 trace 嵌入 `trace` 字段（递归结构）,业务方可还原完整调用树;
+ * sub 循环的 usage/turns 已由 reactLoop 上卷进父 run 台账（整树口径）,
+ * 逐层明细经各层 sub-trace 还原。
  */
 export interface SubAgentCallEvent {
   type: 'subagent_call';
+  /** 第几轮（从 1 开始;主循环口径） */
   turn: number;
   startedAt: number;
   durationMs?: number;
@@ -105,12 +110,17 @@ export interface SubAgentCallEvent {
 /**
  * sub-agent 调用的特殊返回值——reactLoop 据此识别 sub-agent 调用并发出 subagent_call 事件
  *
- * [Agent.executeSubAgent](./agent.md) 在 `enableTracing=true` 时返回此类型;
- * `enableTracing=false` 时返回 `unknown`（与常规 tool 一致）。
+ * **旧版结构（兼容保留）**：无用量字段、不上卷 usage/turns。框架内部的
+ * [Agent.executeSubAgent](./agent.md) 已改用 [SubAgentToolResult](./reactLoop.md)
+ * （`__subAgent` 标记,携带子循环整树 `usage` / `turns`,tracing 开启时附 `trace`）——
+ * 新代码应使用 SubAgentToolResult。reactLoop 对两者都识别（存量业务方直接调
+ * `reactLoop` 自定义 `executeTool` 构造本类型的代码不受影响）。
  *
  * `__trace` 是标记字段,避免与普通对象返回值冲突。reactLoop 通过
  * `typeof result === 'object' && result !== null && result.__trace === true`
  * 判断是否为 TracingToolResult。
+ *
+ * @deprecated 改用 SubAgentToolResult（reactLoop.ts）——本类型仅为存量兼容保留
  */
 export interface TracingToolResult {
   /** 标记字段（避免与普通对象返回值冲突） */
@@ -126,6 +136,9 @@ export interface TracingToolResult {
  *
  * reactLoop 用此函数区分 sub-agent 调用（发出 subagent_call 事件）
  * 与常规 tool 调用（发出 tool_call 事件）。
+ *
+ * @deprecated 框架内部已改用 isSubAgentToolResult（reactLoop.ts）；本守卫仅为
+ * 存量自定义 executeTool 的兼容识别保留
  */
 export function isTracingToolResult(value: unknown): value is TracingToolResult {
   return (
