@@ -1,4 +1,6 @@
 import type { FaapiMiddleware } from './middlewareTypes';
+import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
+import { mergeVary } from './mergeVary';
 
 export interface CorsOptions {
   origin?: string | string[] | true;
@@ -31,6 +33,7 @@ export function cors(options: CorsOptions = {}): FaapiMiddleware {
   } = options;
 
   return async (ctx, next) => {
+    const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
     const reqOrigin = ctx.headers.get('origin');
     if (!reqOrigin) {
       await next();
@@ -49,16 +52,11 @@ export function cors(options: CorsOptions = {}): FaapiMiddleware {
 
     // 当 origin 为动态值（true 或数组）时，响应内容（是否带 ACAO）随 Origin 头变化
     // ——不匹配被拒的响应同样必须带 Vary: Origin。缺了它，CDN/浏览器按 URL 缓存
-    // "无 ACAO 的拒绝响应"后，可能服务给后续合法 Origin 的请求（缓存污染面）
+    // "无 ACAO 的拒绝响应"后，可能服务给后续合法 Origin 的请求（缓存污染面）。
+    // 合并读权威来源 meta.headers（延迟落头通道）——读请求头既看不到其他中间件
+    // 已设置的响应 Vary，还会把客户端伪造的 Vary 请求头带进响应
     if (origin === true || Array.isArray(origin)) {
-      const existingVary = ctx.headers.get('vary');
-      if (existingVary) {
-        if (!existingVary.toLowerCase().includes('origin')) {
-          ctx.setHeader('Vary', `${existingVary}, Origin`);
-        }
-      } else {
-        ctx.setHeader('Vary', 'Origin');
-      }
+      mergeVary(meta, 'Origin');
     }
 
     if (!allowOrigin) {

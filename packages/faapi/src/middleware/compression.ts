@@ -1,6 +1,7 @@
 import zlib from 'node:zlib';
 import { promisify } from 'node:util';
 import type { FaapiMiddleware } from './middlewareTypes';
+import { mergeVary } from './mergeVary';
 import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
 import { consumePendingMetaHeaders } from '../response/pendingMeta';
 
@@ -98,20 +99,6 @@ async function compressBody(
       return gzipAsync(buf);
     case 'deflate':
       return deflateAsync(buf);
-  }
-}
-
-/** 向 meta.headers 合并 Vary 值（CORS 等中间件可能已设置 Vary: Origin，不能覆盖） */
-function mergeVary(meta: ResponseMeta, value: string): void {
-  const existing = meta.headers['Vary'] ?? meta.headers['vary'];
-  if (!existing) {
-    meta.headers['Vary'] = value;
-    return;
-  }
-  // 大小写不敏感地检查是否已包含
-  if (!existing.toLowerCase().includes(value.toLowerCase())) {
-    const key = meta.headers['Vary'] !== undefined ? 'Vary' : 'vary';
-    meta.headers[key] = `${existing}, ${value}`;
   }
 }
 

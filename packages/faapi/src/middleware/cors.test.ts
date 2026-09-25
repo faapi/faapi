@@ -173,6 +173,17 @@ describe('cors middleware', () => {
       // 动态 origin 下拒绝响应也必须带 Vary: Origin（防 CDN 缓存污染）
       expect(ctx.meta.headers['Vary']).toBe('Origin');
     });
+
+    it('客户端伪造的 Vary 请求头不进响应（Vary 合并读 meta 而非请求头）', async () => {
+      // 回归：此前读 ctx.headers.get('vary')（请求头）——客户端发 Vary: Evil 会
+      // 让响应 Vary 变成 "Evil, Origin"。改为读 meta.headers 后与请求头无关
+      const middleware = cors({ origin: true });
+      const ctx = createMockContext('GET', 'http://a.com');
+      ctx.headers.set('vary', 'Evil');
+      await callCors(middleware, ctx);
+
+      expect(ctx.meta.headers['Vary']).toBe('Origin');
+    });
   });
 
   describe('preflight OPTIONS', () => {
