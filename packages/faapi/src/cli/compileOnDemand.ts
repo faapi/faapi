@@ -136,6 +136,8 @@ export function clearCompiledFiles(): void {
  * 并发去重（mutex）：
  * - 同一 sourceAbsPath 的并发请求共享同一 in-flight Promise
  * - 第二个请求 await 后返回 false（表示「别的请求已触发编译,本次不需要再触发」）
+ * - in-flight 编译失败时等待方重抛同一真实错误——吞掉后返回 false 会让调用方去
+ *   import 不存在的产物,报误导性的 ERR_MODULE_NOT_FOUND,掩盖真实编译错误
  *
  * @param sourceAbsPath 源码 .ts 绝对路径
  * @param rootDir 项目根目录
@@ -148,12 +150,11 @@ export async function ensureCompiled(
   rootDir: string,
   dist: string,
 ): Promise<boolean> {
-  // mutex: 同一文件正在被别的请求编译 → 等待并返回 false
+  // mutex: 同一文件正在被别的请求编译 → 等待并返回 false；
+  // 失败时 inFlight 的 rejection 原样传播（真实编译错误优先于误导性的模块缺失）
   const inFlight = state.inFlightCompilations.get(sourceAbsPath);
   if (inFlight) {
-    await inFlight.catch(() => {
-      // 别的请求编译失败时不在这里抛——让本请求按正常流程自己重试
-    });
+    await inFlight;
     return false;
   }
 
@@ -283,6 +284,7 @@ export function clearGeneratedSchemas(): void {
  * 并发去重（mutex）：
  * - 同一 schemaPath 的并发请求共享同一 in-flight Promise
  * - 第二个请求 await 后返回 false
+ * - in-flight 生成失败时等待方重抛同一真实错误（与 ensureCompiled 同语义）
  *
  * @param schemaPath zod.js 绝对路径
  * @param routeFilePath route.filePath（产物路径，如 '.faapi/api/hello/handler.js'）
@@ -299,12 +301,11 @@ export async function ensureSchemaGenerated(
   rootDir: string,
   dist: string,
 ): Promise<boolean> {
-  // mutex: 同一 schemaPath 正在被别的请求生成 → 等待并返回 false
+  // mutex: 同一 schemaPath 正在被别的请求生成 → 等待并返回 false；
+  // 失败时 inFlight 的 rejection 原样传播（与 ensureCompiled 同语义）
   const inFlight = state.inFlightSchemaGenerations.get(schemaPath);
   if (inFlight) {
-    await inFlight.catch(() => {
-      // 别的请求生成失败时不在这里抛——让本请求按正常流程自己重试
-    });
+    await inFlight;
     return false;
   }
 

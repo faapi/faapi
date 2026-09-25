@@ -430,24 +430,66 @@ describe('按需编译（Vite 风格）', () => {
     expect(existsSync(handlerJsPath)).toBe(true);
   });
 
-  it('ensureCompiled mutex: 第一个请求编译失败时,第二个请求不抛错(走自己的重试流程)', async () => {
-    // 写入语法错误的 handler
+  it('ensureCompiled mutex: 编译失败时并发等待方收到同一真实错误（不吞错）', async () => {
+    // 回归：此前等待方 await in-flight 后 catch 吞错返回 false，调用方接着去 import
+    // 不存在的产物，报误导性的 ERR_MODULE_NOT_FOUND 掩盖真实编译错误。
+    // 现在等待方原样传播首个触发方的编译错误
     writeHandler('api/broken/handler.ts', 'export function GET( { ; ; ;  invalid syntax');
     await generateManifestOnly();
 
     const sourcePath = join(tempDir, 'src', 'api', 'broken', 'handler.ts');
 
-    // 并发调 ensureCompiled 两次
-    // 期望: 都抛错(第一个失败后,第二个 await 失败被 catch,自己重试也失败)
-    //   - 第一个: 触发编译 → 抛错
-    //   - 第二个: await in-flight(失败被 catch 不抛错) → return false → 然后自己重试 → 触发编译 → 抛错
-    //   或者两个都进入触发编译分支都抛错
-    await expect(
-      Promise.all([
-        ensureCompiled(sourcePath, tempDir, '.faapi').catch((e) => e),
-        ensureCompiled(sourcePath, tempDir, '.faapi').catch((e) => e),
-      ]),
-    ).resolves.toBeDefined();
+    const [r1, r2] = await Promise.allSettled([
+      ensureCompiled(sourcePath, tempDir, '.faapi'),
+      ensureCompiled(sourcePath, tempDir, '.faapi'),
+    ]);
+
+    expect(r1.status).toBe('rejected');
+    expect(r2.status).toBe('rejected');
+    // 两个请求拿到的是同一类真实编译错误（esbuild），而非模块缺失
+    const reason1 = (r1 as PromiseRejectedResult).reason as Error;
+    const reason2 = (r2 as PromiseRejectedResult).reason as Error;
+    expect(String(reason1.message ?? reason1)).toMatch(/invalid syntax|Build failed|ERROR/i);
+    expect(String(reason2.message ?? reason2)).toMatch(/invalid syntax|Build failed|ERROR/i);
+  });
+
+  it('ensureSchemaGenerated mutex: 生成失败时并发等待方收到同一真实错误', async () => {
+    // 回归：与 ensureCompiled 同语义——等待方原样传播首个触发方的生成错误
+    writeHandler(
+      'api/bad-type/handler.ts',
+      [
+        'export interface Query { page: any; }',
+        'export function GET(query: Query) { return { page: query.page }; }',
+      ].join('\n'),
+    );
+    await generateManifestOnly();
+
+    const { routes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi');
+    const { serializeRoutes } = await import('./generateRoutes');
+    const serialized = serializeRoutes(routes, [], tempDir, '.faapi');
+    const routeFilePath = serialized.routes[0].filePath;
+    const schemaPath = join(tempDir, '.faapi', 'api', 'bad-type', 'zod.js');
+
+    const [r1, r2] = await Promise.allSettled([
+      ensureSchemaGenerated(
+        schemaPath,
+        routeFilePath,
+        serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+        tempDir,
+        '.faapi',
+      ),
+      ensureSchemaGenerated(
+        schemaPath,
+        routeFilePath,
+        serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+        tempDir,
+        '.faapi',
+      ),
+    ]);
+    expect(r1.status).toBe('rejected');
+    expect(r2.status).toBe('rejected');
+    const reason1 = String((r1 as PromiseRejectedResult).reason);
+    expect(reason1).toMatch(/SchemaExtractionError|any/i);
   });
 
   it('_resetDevOnDemandState 清空所有状态', async () => {
