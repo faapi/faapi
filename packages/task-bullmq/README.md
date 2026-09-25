@@ -39,13 +39,13 @@ export function POST(body, tasks) {
 
 | faapi 驱动接口 | BullMQ |
 | --- | --- |
-| `enqueue(name, payload, { retries, delayMs })` | `queue.add(name, payload, { attempts: retries + 1, backoff: exponential 500ms, delay })` |
-| `startWorker(name, { concurrency, process })` | `new Worker(name, handler, { connection, concurrency, prefix })` |
-| `stop(timeoutMs)` | workers.close() + queues.close()（race 超时） |
+| `enqueue(name, payload, { retries, delayMs, dedupId })` | `queue.add(name, payload, { attempts: retries + 1, backoff: exponential 500ms, delay, removeOnComplete, removeOnFail, jobId })`。终态任务默认 7 天后移除（`removeOnComplete`/`removeOnFail` 可覆盖，`false` 恢复永不清理）——BullMQ 默认永久保留终态任务，Redis 无界增长且 dedupId 去重在存活期内一直生效 |
+| `startWorker(name, { concurrency, process })` | `new Worker(name, handler, { connection, concurrency, prefix })`；attempt 取 `job.attemptsStarted`（跨实例/重启准确） |
+| `stop(timeoutMs)` | workers.close() + queues.close()（race 超时），超时 abort 在跑任务的 signal |
 | `stopWorkers()` | 仅关 Worker（dev 热替换重注册用），Queue 连接保持 |
 | 失败重试 | BullMQ 侧执行（attempts = retries + 1，指数退避 500ms 起） |
 
-注意：BullMQ 不提供执行中任务的取消信号——`run` 的 `taskCtx.signal` 永不 abort，长任务请自行做超时控制。
+注意：BullMQ 不提供执行中任务的取消信号，但 `stop` 超时路径会 abort `taskCtx.signal`（任务监听 signal 可尽快退出）。
 
 ## License
 

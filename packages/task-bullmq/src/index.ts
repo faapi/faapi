@@ -1,5 +1,12 @@
 import type { TaskDriver, TaskDriverProcess, TaskDriverRecord, TaskJobStatus } from '@faapi/faapi';
-import { Queue, Worker, type ConnectionOptions, type Job, type JobType } from 'bullmq';
+import {
+  Queue,
+  Worker,
+  type ConnectionOptions,
+  type Job,
+  type JobType,
+  type KeepJobs,
+} from 'bullmq';
 
 /**
  * BullMQ 驱动选项
@@ -9,7 +16,19 @@ export interface BullMQDriverOptions {
   connection: ConnectionOptions;
   /** 队列名前缀（默认 `faapi`——同一 Redis 下多个 faapi 应用隔离用） */
   prefix?: string;
+  /**
+   * 终态（completed）任务清理策略，透传 BullMQ `removeOnComplete`。
+   * 默认 7 天后移除——BullMQ 默认永久保留终态任务，Redis 无界增长，且 dedupId
+   * （jobId）去重在任务存活期内一直生效，周期性复用同一 dedupId 的投递（如
+   * nightly-sync）会被永久静默忽略。传 `false` 恢复 BullMQ 默认（永不清理）。
+   */
+  removeOnComplete?: boolean | number | KeepJobs;
+  /** 终态（failed）任务清理策略，透传 BullMQ `removeOnFail`，默认同上 */
+  removeOnFail?: boolean | number | KeepJobs;
 }
+
+/** 终态任务默认保留秒数（7 天，与 pg-boss 默认保留策略同量级） */
+const DEFAULT_KEEP_AGE_SECONDS = 7 * 24 * 3600;
 
 /**
  * faapi 任务队列 BullMQ 驱动（Redis 持久化队列）
@@ -27,8 +46,8 @@ export interface BullMQDriverOptions {
  * ```
  *
  * 语义映射（详见包根 README）：
- * - `enqueue` → `queue.add(name, payload, { delay, attempts, backoff })`（每任务一个 Queue）
- * - `startWorker` → `new Worker(name, handler, { connection, concurrency })`
+ * - `enqueue` → `queue.add(name, payload, { delay, attempts, backoff, removeOnComplete, removeOnFail })`（每任务一个 Queue）
+ * - `startWorker` → `new Worker(name, handler, { connection, concurrency })`；attempt 取 job.attemptsStarted
  * - `stop` → workers.close() + queues.close()（等 in-flight；超时 abort 在跑任务的 signal）
  * - 重试 → BullMQ 侧执行（attempts = retries + 1，指数退避 500ms 起）
  */
@@ -45,6 +64,9 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
   const workers = new Map<string, Worker>();
   /** 在跑任务的取消控制器（stop 超时 abort——run 监听 signal 可尽快退出） */
   const inflight = new Map<string, AbortController>();
+  /** 终态清理策略（默认 7 天移除，false 透传恢复 BullMQ 永不清理） */
+  const removeOnComplete = options.removeOnComplete ?? { age: DEFAULT_KEEP_AGE_SECONDS };
+  const removeOnFail = options.removeOnFail ?? { age: DEFAULT_KEEP_AGE_SECONDS };
 
   function getQueue(name: string): Queue {
     let q = queues.get(name);
@@ -54,9 +76,6 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
     }
     return q;
   }
-
-  /** 驱动侧 attempt 计数（兼容不同 BullMQ 版本的 attemptsMade/attemptsStarted 字段差异） */
-  const attemptCounts = new Map<string, number>();
 
   return {
     async enqueue(name, payload, opts) {
@@ -68,6 +87,9 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         // BullMQ attempts 含首次执行，retries 是额外重试次数
         attempts: (opts?.retries ?? 0) + 1,
         backoff: { type: 'exponential', delay: 500 },
+        // 终态任务定时移除：防 Redis 无界增长 + 限定 dedupId 去重的存活期
+        removeOnComplete,
+        removeOnFail,
         // dedupId 幂等键：同 jobId 的 job 存活期内 add 被忽略（BullMQ 原生去重）
         ...(opts?.dedupId ? { jobId: opts.dedupId } : {}),
         ...(opts?.delayMs ? { delay: opts.delayMs } : {}),
@@ -86,8 +108,9 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         name,
         async (job: Job) => {
           const id = job.id ?? '';
-          const attempt = (attemptCounts.get(id) ?? 0) + 1;
-          attemptCounts.set(id, attempt);
+          // attemptsStarted 由 BullMQ 维护（首次执行为 1，重试递增，跨实例/重启准确）——
+          // 进程内自计数会内存泄漏且多实例/重启后失真
+          const attempt = job.attemptsStarted;
           // 信号由驱动自管：stop 超时 abort（BullMQ 自身不提供执行中任务的取消能力）
           const controller = new AbortController();
           inflight.set(id, controller);
@@ -114,7 +137,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
 
     async stop(timeoutMs = 10_000) {
       stopped = true;
-      // 等待超时到点 abort 在跑任务（run 监听 signal 尽快退出）；等待结束后兜底 abort 残留
+      // 等待超时到点 abort 在跑任务（run 监听 signal 可尽快退出）；等待结束后兜底 abort 残留
       const abortTimer = setTimeout(() => {
         for (const controller of inflight.values()) controller.abort();
       }, timeoutMs);
@@ -133,7 +156,6 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         clearTimeout(abortTimer);
         for (const controller of inflight.values()) controller.abort();
         inflight.clear();
-        attemptCounts.clear();
       }
     },
 
@@ -172,7 +194,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
               name: job.name,
               payload: job.data,
               status,
-              attempts: job.attemptsMade ?? 0,
+              attempts: job.attemptsStarted ?? job.attemptsMade ?? 0,
               ...(job.returnvalue !== undefined && job.returnvalue !== null
                 ? { result: job.returnvalue }
                 : {}),

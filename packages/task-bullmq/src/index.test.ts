@@ -21,7 +21,7 @@ const h = vi.hoisted(() => {
   }> = [];
   const fakeWorkers: Array<{
     name: string;
-    handler: (job: { id: string; data: unknown }) => Promise<unknown>;
+    handler: (job: { id: string; data: unknown; attemptsStarted?: number }) => Promise<unknown>;
     opts: Record<string, unknown>;
     closed: boolean;
     on: ReturnType<typeof vi.fn>;
@@ -62,7 +62,7 @@ vi.mock('bullmq', () => {
   }
   class FakeWorker {
     name: string;
-    handler: (job: { id: string; data: unknown }) => Promise<unknown>;
+    handler: (job: { id: string; data: unknown; attemptsStarted?: number }) => Promise<unknown>;
     opts: Record<string, unknown>;
     closed = false;
     on = vi.fn(() => this);
@@ -116,23 +116,54 @@ describe('createBullMQDriver', () => {
     expect(worker.name).toBe('mail');
     expect(worker.opts).toMatchObject({ concurrency: 4, prefix: 'faapi' });
 
-    const result = await worker.handler({ id: 'j1', data: { to: 'x' } });
+    const result = await worker.handler({ id: 'j1', data: { to: 'x' }, attemptsStarted: 1 });
     expect(result).toBe('ok');
     expect(process).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'j1', name: 'mail', payload: { to: 'x' }, attempt: 1 }),
     );
   });
 
-  it('process 抛错向外抛（BullMQ 按 attempts/backoff 重试），attempt 计数递增', async () => {
+  it('process 抛错向外抛（BullMQ 按 attempts/backoff 重试），attempt 取 job.attemptsStarted', async () => {
+    // 回归：attempt 此前用进程内 Map 自计数——只增不删（内存泄漏），多实例共库或
+    // 进程重启后从 1 重来（失真）。改为 BullMQ 维护的 attemptsStarted（首次执行为 1）
     const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
     const process = vi.fn(async () => {
       throw new Error('boom');
     });
     await driver.startWorker('flaky', { concurrency: 1, process });
     const worker = h.fakeWorkers[0]!;
-    await expect(worker.handler({ id: 'j1', data: null })).rejects.toThrow('boom');
-    await expect(worker.handler({ id: 'j1', data: null })).rejects.toThrow('boom');
+    await expect(worker.handler({ id: 'j1', data: null, attemptsStarted: 1 })).rejects.toThrow(
+      'boom',
+    );
+    await expect(worker.handler({ id: 'j1', data: null, attemptsStarted: 2 })).rejects.toThrow(
+      'boom',
+    );
+    expect(process).toHaveBeenNthCalledWith(1, expect.objectContaining({ attempt: 1 }));
     expect(process).toHaveBeenNthCalledWith(2, expect.objectContaining({ attempt: 2 }));
+  });
+
+  it('终态任务默认 7 天清理（removeOnComplete/removeOnFail 防 Redis 无界增长）', async () => {
+    // 回归：此前未设置清理策略，BullMQ 默认永久保留终态任务，且 dedupId（jobId）
+    // 去重在存活期内一直生效——周期性复用同一 dedupId 的投递被永久静默忽略
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    await driver.enqueue('mail', {});
+    expect(h.fakeQueues[0]!.adds[0]!.opts).toMatchObject({
+      removeOnComplete: { age: 7 * 24 * 3600 },
+      removeOnFail: { age: 7 * 24 * 3600 },
+    });
+  });
+
+  it('removeOnComplete/removeOnFail 可覆盖（false 透传恢复 BullMQ 永不清理）', async () => {
+    const driver = createBullMQDriver({
+      connection: { host: '127.0.0.1' },
+      removeOnComplete: false,
+      removeOnFail: { count: 10 },
+    });
+    await driver.enqueue('mail', {});
+    expect(h.fakeQueues[0]!.adds[0]!.opts).toMatchObject({
+      removeOnComplete: false,
+      removeOnFail: { count: 10 },
+    });
   });
 
   it('stop 关闭 workers + queues，之后 enqueue 拒绝新任务', async () => {
@@ -188,6 +219,7 @@ describe('createBullMQDriver', () => {
       name: 'mail',
       data: { to: 'x' },
       attemptsMade: 1,
+      attemptsStarted: 2,
       timestamp: 1000,
       ...extra,
     });
@@ -202,6 +234,8 @@ describe('createBullMQDriver', () => {
     expect(records.map((r) => r.id).sort()).toEqual(['a1', 'c1', 'd1', 'f1', 'w1']);
     const byId = new Map(records.map((r) => [r.id, r]));
     expect(byId.get('w1')!.status).toBe('pending');
+    // attempts 优先取 attemptsStarted（执行次数），缺失时回退 attemptsMade
+    expect(byId.get('w1')!.attempts).toBe(2);
     expect(byId.get('d1')!.status).toBe('pending');
     expect(byId.get('a1')!.status).toBe('running');
     expect(byId.get('c1')).toMatchObject({ status: 'done', result: 'ok' });
