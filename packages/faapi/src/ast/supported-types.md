@@ -59,7 +59,7 @@ readonly 是 TypeScript 的编译期约束，运行时不产生校验语义，AS
 | `keyof T` | `union` | 字面量联合 |
 | `Date` | `date` | 允许 Date 实例或 ISO 8601 字符串 |
 | `Record<K, V>` | `record` | |
-| 命名空间类型（`NS.Type`） | 递归解析 | QualifiedName 引用经 checker 定位到真实声明 |
+| 命名空间类型（`NS.Type`） | 递归解析 | QualifiedName 引用经 checker 定位到真实声明；**仅首次引用内联**——同一命名空间类型的二次引用标 `ref` 后无法按短名定位顶层声明，会抛 SchemaExtractionError |
 | 索引签名与属性共存 | `object` + catchall | `{ a: string; [k: string]: unknown }` 属性保留，索引签名生成 `.catchall(...)`——此前索引签名会丢弃全部属性 |
 | 交叉类型（全部成员为 object） | `object` | 合并属性（同名字段类型一致去重、带约束者优先；类型/可选性冲突即 TS 的 never，显式抛 SchemaExtractionError）；含非 object 成员（branded 类型如 `string & {...}`）显式抛 SchemaExtractionError，不静默放宽校验 |
 | `Partial<T>` | `object` | 所有字段变 optional |
@@ -73,7 +73,7 @@ readonly 是 TypeScript 的编译期约束，运行时不产生校验语义，AS
 | interface（含 `extends` 继承） | `object` | 合并父接口属性；支持多继承与多级继承。方法签名/存取器成员显式抛 SchemaExtractionError（不静默丢弃） |
 | 泛型 interface / type 别名 | 实参绑定后递归解析 | `Box<string>` 按位置绑定实参；支持默认类型（`<T = string>`）；形参遮蔽同名真实类型；实参缺失且无默认时抛错 |
 | `enum`（字符串/数值枚举） | `union` | 字面量联合；隐式数值枚举递增 |
-| 自引用 / 循环引用 | `ref` | 由 `generateZodSchema` 用 `z.lazy(() => ...)` 处理 |
+| 自引用 / 循环引用（含互递归、入口在环上） | `ref` | 由 `generateZodSchema` 用 `z.lazy(() => ...)` 处理——凡成为命名声明的类型必然自环即被 lazy 包裹，入口在环上时整个入口 lazy |
 | 跨文件类型引用（import） | checker 内联 | 每个 `zod.js` 自包含，无需跨文件 import |
 
 ## 不支持的类型（抛 SchemaExtractionError）

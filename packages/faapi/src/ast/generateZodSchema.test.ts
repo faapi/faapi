@@ -384,6 +384,61 @@ describe('generateZodSchema', () => {
       expect(schemaA.safeParse({ b: { id: 1 } }).success).toBe(true);
       expect(schemaA.safeParse({ b: { id: '1' } }).success).toBe(false);
     });
+
+    it('真互递归（A↔B，入口在环上）生成的代码可执行且校验正确', () => {
+      // 入口 A 与 B 互递归：A 的提取中 B 内部的 a 标记为 ref 'A'，入口表达式含自引用
+      // → 整个入口包 z.lazy。若实现回归（入口未 lazy），模块求值时 TDZ ReferenceError，
+      // new Function 执行阶段即失败
+      const schema = makeZodSchemaObject(
+        `export interface A { b: B; }
+         export interface B { a?: A; }`,
+        'A',
+      );
+      expect(schema.safeParse({ b: {} }).success).toBe(true);
+      expect(schema.safeParse({ b: { a: { b: { a: { b: {} } } } } }).success).toBe(true);
+      expect(schema.safeParse({ b: { a: 'x' } }).success).toBe(false);
+    });
+
+    it('互递归环不经过入口时，命名声明全部 z.lazy 且求值顺序安全', () => {
+      // 入口 Q 引用 A 两次逼出 ref 'A'；A→B→C→B 环不经过 Q 和 A。
+      // A、C 成为命名声明且必须 z.lazy（否则声明提升后前向引用 TDZ）。
+      // 关键断言是 makeZodSchemaObject 的执行本身：声明语句按文件顺序求值，
+      // 任何前向引用都在这里抛 ReferenceError
+      const schema = makeZodSchemaObject(
+        `export interface A { b: B; }
+         export interface B { c: C; }
+         export interface C { b2?: B; }
+         export interface Q { a1: A; a2: A; }`,
+        'Q',
+      );
+      const code = makeZodSchema(
+        `export interface A { b: B; }
+         export interface B { c: C; }
+         export interface C { b2?: B; }
+         export interface Q { a1: A; a2: A; }`,
+        'Q',
+      );
+      // 环上声明（B 经 C 回指自环）必须 lazy；非环声明 A 允许 eager
+      expect(code).toContain('const BSchema = z.lazy(');
+      expect(
+        schema.safeParse({ a1: { b: { c: {} } }, a2: { b: { c: { b2: { c: {} } } } } }).success,
+      ).toBe(true);
+      expect(schema.safeParse({ a1: { b: { c: 'x' } } }).success).toBe(false);
+    });
+
+    it('互递归 + 自环混合（A↔B 且 B 自环）生成的代码可执行', () => {
+      const schema = makeZodSchemaObject(
+        `export interface A { b: B; }
+         export interface B { a?: A; next?: B; }
+         export interface Q { a1: A; a2: A; }`,
+        'Q',
+      );
+      expect(schema.safeParse({ a1: { b: {} }, a2: { b: { next: {} } } }).success).toBe(true);
+      expect(
+        schema.safeParse({ a1: { b: { next: { a: { b: {} } } } }, a2: { b: {} } }).success,
+      ).toBe(true);
+      expect(schema.safeParse({ a1: { b: { a: 1 } } }).success).toBe(false);
+    });
   });
 
   describe('生成代码格式', () => {
