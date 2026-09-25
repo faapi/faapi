@@ -12,7 +12,7 @@ import { atomicWriteFile } from '../utils/atomicWrite';
  * 与 [AgentMetadata](../ast/extractAgentMetadata.md) 字段一一对应，仅 `filePath`
  * 由源码形式（`src/...`）转为产物形式（`<dist>/...`，打平 `src/` 前缀 + dist 前缀 + `.js`）。
  *
- * `undefined` 字段（description / systemPrompt / tools / agents / model / maxTurns）
+ * `undefined` 字段（description / systemPrompt / tools / agents / model / maxTurns / inputDescription）
  * 在 JSON.stringify 时自动省略，水合时通过 `??` 兜底为 undefined。
  *
  * > `hasConfig` 字段已移除——它原本用于控制 `loadAgentModule` 是否提取 `config` 对象,
@@ -35,6 +35,8 @@ export interface SerializedAgentRecord {
   model?: string;
   /** 最大对话轮数（config 块字面量提取），无/非字面量时省略 */
   maxTurns?: number;
+  /** agent-as-tool 派发交接单说明（config 块字面量提取），无/非字面量时省略 */
+  inputDescription?: string;
   /** 产物形式路径（如 `dist/agents/researcher/handler.js`），供运行时 import agent.js */
   filePath: string;
 }
@@ -48,7 +50,7 @@ const AGENTS_FILE = 'faapi-agents.js';
  * 序列化 agent 清单为可写入 JS 模块的结构
  *
  * - `filePath` 转为产物形式（打平 `src/` 前缀 + dist 前缀 + `.js`）
- * - 其他字段（name/description/hasRun/systemPrompt/tools/agents/model/maxTurns）直接透传
+ * - 其他字段（name/description/hasRun/systemPrompt/tools/agents/model/maxTurns/inputDescription）直接透传
  * - `undefined` 字段在 JSON.stringify 时自动省略
  *
  * @param agents AST 增强后的 AgentMetadata[]（由 generateAgentArtifacts 内部从 AgentManifest 增强）
@@ -67,6 +69,7 @@ export function serializeAgents(
     agents: a.agents,
     model: a.model,
     maxTurns: a.maxTurns,
+    inputDescription: a.inputDescription,
     filePath: toProdFilePath(a.filePath, dist),
   }));
 }
@@ -104,6 +107,7 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
     agents: a.agents ?? undefined,
     model: a.model ?? undefined,
     maxTurns: a.maxTurns ?? undefined,
+    inputDescription: a.inputDescription ?? undefined,
   }));
 }
 

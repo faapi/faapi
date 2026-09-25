@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-agent 与 tool 一样采用扫描式发现，`scanAgents` 启动时只读源码 + 正则检测 config/run 导出（零 import），产出 `AgentManifest[]`。但 manifest 仅含路径推导字段（`name` / `filePath` / `hasConfig` / `hasRun`），不含 JSDoc 描述、`@agent` 覆盖名、config 块字段（systemPrompt / tools / agents / model / maxTurns）。
+agent 与 tool 一样采用扫描式发现，`scanAgents` 启动时只读源码 + 正则检测 config/run 导出（零 import），产出 `AgentManifest[]`。但 manifest 仅含路径推导字段（`name` / `filePath` / `hasConfig` / `hasRun`），不含 JSDoc 描述、`@agent` 覆盖名、config 块字段（systemPrompt / tools / agents / model / maxTurns / inputDescription）。
 
 这些字段需要 TypeScript AST 提取（由 [extractAgentMetadata](../ast/extractAgentMetadata.md) 完成），提取结果序列化为 `faapi-agents.js`（ESM 模块导出 `agents` 数组），运行时由 [createAppCore](./createAppCore.md) 水合到 [agentRegistry](../injection/agentRegistry.md)。
 
@@ -47,7 +47,7 @@ agentRegistry 单例
 
 ### undefined 字段处理
 
-`description` / `tools` / `agents` / `model` / `maxTurns` 在 JSON.stringify 时自动省略，水合时通过 `?? undefined` 兜底，保证 `AgentMetadata` 类型完整。`systemPrompt` 经上游必填校验必有值。
+`description` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription` 在 JSON.stringify 时自动省略，水合时通过 `?? undefined` 兜底，保证 `AgentMetadata` 类型完整。`systemPrompt` 经上游必填校验必有值。
 
 ### 清单级校验（不如预期即报错）
 
@@ -77,7 +77,7 @@ AST 提取层的单 agent 校验（systemPrompt 必填、字面量提取失败�
 | --- | --- | --- |
 | 输入 | `ToolManifest[]` | `AgentManifest[]` |
 | AST 增强器 | `extractToolMetadata` | `extractAgentMetadata` |
-| 元数据字段 | name/functionName/description/inputTypeName | name/description/hasConfig/hasRun/systemPrompt/tools/agents/model/maxTurns |
+| 元数据字段 | name/functionName/description/inputTypeName | name/description/hasConfig/hasRun/systemPrompt/tools/agents/model/maxTurns/inputDescription |
 | 清单产物 | `faapi-tools.js`（导出 `tools`） | `faapi-agents.js`（导出 `agents`） |
 | zod.js 生成 | 每个 handler.ts 一个 `zod.js`（coerce=false） | **不生成**（agent 无输入参数） |
 | skipSchema 选项 | 有（dev 按需模式跳过 zod.js） | 无（没有 schema 可跳过） |

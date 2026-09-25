@@ -55,6 +55,7 @@ describe('generateAgentArtifacts', () => {
         agents: ['writer'],
         model: 'gpt-4',
         maxTurns: 10,
+        inputDescription: '研究任务交接单,含主题与输出格式',
       };
       const result = serializeAgents([meta], 'dist');
       expect(result).toHaveLength(1);
@@ -67,6 +68,7 @@ describe('generateAgentArtifacts', () => {
         agents: ['writer'],
         model: 'gpt-4',
         maxTurns: 10,
+        inputDescription: '研究任务交接单,含主题与输出格式',
         filePath: 'dist/agents/researcher/handler.js',
       });
     });
@@ -76,7 +78,7 @@ describe('generateAgentArtifacts', () => {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
         hasRun: true,
-        // description / systemPrompt / tools / agents / model / maxTurns 均为 undefined
+        // description / systemPrompt / tools / agents / model / maxTurns / inputDescription 均为 undefined
       };
       const result = serializeAgents([meta], 'dist');
       expect(result[0].name).toBe('researcher');
@@ -88,6 +90,7 @@ describe('generateAgentArtifacts', () => {
       expect(result[0].agents).toBeUndefined();
       expect(result[0].model).toBeUndefined();
       expect(result[0].maxTurns).toBeUndefined();
+      expect(result[0].inputDescription).toBeUndefined();
     });
 
     it('dev 模式 dist 为 .faapi', () => {
@@ -149,6 +152,7 @@ describe('generateAgentArtifacts', () => {
           agents: ['writer'],
           model: 'gpt-4',
           maxTurns: 10,
+          inputDescription: '研究任务交接单,含主题与输出格式',
           filePath: 'dist/agents/researcher/handler.js',
         },
       ];
@@ -164,6 +168,7 @@ describe('generateAgentArtifacts', () => {
         agents: ['writer'],
         model: 'gpt-4',
         maxTurns: 10,
+        inputDescription: '研究任务交接单,含主题与输出格式',
       });
     });
 
@@ -174,7 +179,7 @@ describe('generateAgentArtifacts', () => {
           name: 'researcher',
           hasRun: true,
           filePath: 'dist/agents/researcher/handler.js',
-          // description / systemPrompt / tools / agents / model / maxTurns 缺失
+          // description / systemPrompt / tools / agents / model / maxTurns / inputDescription 缺失
         },
       ] as unknown as SerializedAgentRecord[];
       const hydrated = hydrateAgents(serialized);
@@ -186,6 +191,7 @@ describe('generateAgentArtifacts', () => {
       expect(hydrated[0].agents).toBeUndefined();
       expect(hydrated[0].model).toBeUndefined();
       expect(hydrated[0].maxTurns).toBeUndefined();
+      expect(hydrated[0].inputDescription).toBeUndefined();
     });
 
     it('serializeAgents + hydrateAgents 往返一致(filePath 保持产物形式)', () => {
@@ -197,6 +203,7 @@ describe('generateAgentArtifacts', () => {
           hasRun: false,
           systemPrompt: 'prompt',
           model: 'gpt-4',
+          inputDescription: '研究任务交接单',
         },
         {
           name: 'writer',
@@ -212,8 +219,10 @@ describe('generateAgentArtifacts', () => {
       expect(hydrated[0].description).toBe(original[0].description);
       expect(hydrated[0].systemPrompt).toBe(original[0].systemPrompt);
       expect(hydrated[0].model).toBe(original[0].model);
+      expect(hydrated[0].inputDescription).toBe(original[0].inputDescription);
       expect(hydrated[1].filePath).toBe('dist/agents/writer/handler.js');
       expect(hydrated[1].description).toBeUndefined();
+      expect(hydrated[1].inputDescription).toBeUndefined();
     });
   });
 
@@ -403,6 +412,38 @@ export async function run(ctx) { return 'done'; }
       const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
       expect(content).toContain('"systemPrompt"');
       expect(content).toContain('You are a log analyzer.');
+    });
+
+    it('config 块 inputDescription 端到端写入 faapi-agents.js 并水合还原(agent-as-tool 派发交接单)', async () => {
+      // 业务反馈场景:提取器提取了 inputDescription,但序列化/水合两道字段映射
+      // 均漏掉该字段,导致运行时 agent-as-tool 派发工具恒用框架默认文案
+      writeAgent(
+        'src/agents/outliner/handler.ts',
+        `export const config = {
+  systemPrompt: '章节拆解',
+  inputDescription: '章节拆解交接单,含章节原文与拆解维度',
+};
+`,
+      );
+      const agents: AgentManifest[] = [
+        { name: 'outliner', filePath: 'src/agents/outliner/handler.ts', hasRun: false },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
+
+      expect(metadata[0].inputDescription).toBe('章节拆解交接单,含章节原文与拆解维度');
+
+      // faapi-agents.js 含 inputDescription 字段(JSON key 与值)
+      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
+      expect(content).toContain('"inputDescription"');
+      expect(content).toContain('章节拆解交接单,含章节原文与拆解维度');
+
+      // import 还原 + 水合——运行时 agentRegistry 拿到的元数据带 inputDescription
+      const mod = (await importWithCacheBust(join(dist, 'faapi-agents.js'))) as {
+        agents: SerializedAgentRecord[];
+      };
+      const hydrated = hydrateAgents(mod.agents);
+      expect(hydrated[0].inputDescription).toBe('章节拆解交接单,含章节原文与拆解维度');
     });
 
     it('不生成 zod.js(与 tool 的关键差异)', async () => {
