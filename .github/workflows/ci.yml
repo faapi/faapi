@@ -22,7 +22,9 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
+      # lint + format:check 双门禁：pre-commit 的 lint-staged 可被 --no-verify 绕过，
+      # CI 是格式漂移进 main 的最后防线
+      - run: pnpm lint && pnpm format:check
 
   typecheck:
     runs-on: ubuntu-latest
@@ -50,13 +52,14 @@ jobs:
 
   # 按包拆分并行：每个 job 独占 runner（public repo 标准 runner 为 4 vCPU / 16 GB），
   # 包间不再串行（根 test 的 --workspace-concurrency=1 是历史 OOM 的包级串行妥协，
-  # 见提交 a3f7014）——内存天然隔离，等价于消除了包间 OOM 竞争
+  # 见提交 a3f7014）——内存天然隔离，等价于消除了包间 OOM 竞争。
+  # 新增子包必须同步加进 matrix（typecheck job 走 pnpm -r 全包递归，无此问题）
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        pkg: [faapi, agent, mcp, schema, next]
+        pkg: [faapi, agent, mcp, schema, next, task-bullmq, task-pgboss]
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
