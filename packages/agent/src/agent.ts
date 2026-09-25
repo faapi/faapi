@@ -516,6 +516,7 @@ export class Agent {
       temperature: options?.temperature,
       maxTokens: options?.maxTokens,
       maxTurns: meta.maxTurns ?? this.deps.config?.maxTurns,
+      maxHistoryTokens: this.deps.config?.maxHistoryTokens,
       tools,
       signal: options?.signal,
       messages: options?.messages,

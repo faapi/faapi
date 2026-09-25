@@ -271,6 +271,42 @@ describe('Agent', () => {
       expect(completeCalls).toHaveBeenCalledTimes(1);
     });
 
+    it('config.maxHistoryTokens 全局配置接线 reactLoop:超预算裁掉最旧轮组', async () => {
+      // 回归:AgentRuntimeConfig.maxHistoryTokens 必须从 deps.config 透传进 ReactLoopConfig
+      // （此前 buildLoopConfig 从不读取该字段,全局配置静默失效）。
+      // 大 tool 结果 + 小预算 → 第三轮请求里第一轮（c1）必须被裁掉
+      const handler = vi.fn(async () => ({ data: 'r'.repeat(400) }));
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather.getWeather', {})],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({
+          toolCalls: [toolCall('c2', 'weather.getWeather', {})],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async (filePath, functionName) => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName,
+          }),
+          config: { maxHistoryTokens: 120 }, // ≈240 字符:system+user+单轮装得下,两轮装不下
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      const third = completeCalls.mock.calls[2][0].messages;
+      expect(third.some((m: LLMMessage) => m.tool_call_id === 'c1')).toBe(false);
+      expect(third.some((m: LLMMessage) => m.tool_call_id === 'c2')).toBe(true);
+    });
+
     it('thinking:provider 返回 reasoning_content → result.reasoning 透出,历史剥离', async () => {
       const { provider } = createMockProvider([
         llmResponse({ content: '答案', reasoningContent: '思考过程', stopReason: 'stop' }),

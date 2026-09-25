@@ -126,10 +126,11 @@ export interface ReactLoopConfig {
    */
   messages?: LLMMessage[];
   /**
-   * 启用 tracing（默认 true）。开启时填充 `ReactLoopResult.trace` /
-   * `ReactLoopStreamChunk.traceEvent`,详见 [trace.md](./trace.md)。
+   * 启用 tracing（默认 false——opt-in,不开启零开销）。开启时填充
+   * `ReactLoopResult.trace` / `ReactLoopStreamChunk.traceEvent`,详见 [trace.md](./trace.md)。
    *
-   * 业务方在生产主路径显式传 `false` 关闭以零开销运行。
+   * 与 `AgentRuntimeConfig.enableTracing` / `AgentRunOptions.enableTracing` 同语义：
+   * 优先级 options > 全局 config > 默认 false。
    */
   enableTracing?: boolean;
 }
