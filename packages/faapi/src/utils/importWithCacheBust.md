@@ -47,6 +47,10 @@ function importWithCacheBust(filePath: string): Promise<Record<string, unknown>>
 
 `filePath` 须为绝对路径，内部用 `pathToFileURL` 转为 `file://` URL。无显式 try/catch——`import()` / `importActual` 失败（模块不存在/语法错误/别名解析失败）异常直接向上传播。
 
+### bustViteCache 分支的实例缓存
+
+`bustViteCache = true`（vitest + dev 按需模式）时模块实例按 `(filePath, mtime)` 缓存复用：同文件同 mtime 返回同一实例——每请求 `?t=Date.now()` 新建 URL 会让 ESM 注册表为同一文件积累永不回收的模块实例（内存无界增长），且下游按模块对象做的 WeakMap 缓存（injection 分析等）永久 miss、每请求重跑 AST 解析。文件重编译（mtime 变化）自动失效换新实例，无需显式清理。
+
 ## 相关模块
 
 - `createDevApp.ts` - 调 `setLoadTimestamp` 开启缓存失效模式

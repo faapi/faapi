@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setLoadTimestamp, importWithCacheBust } from './importWithCacheBust';
@@ -98,6 +98,23 @@ describe('importWithCacheBust 在 vitest 环境走 Vite pipeline', () => {
     setLoadTimestamp(Date.now());
     const mod = await importWithCacheBust(file);
     expect(mod.value).toBe('node-loaded');
+  });
+
+  it('bustViteCache：同文件同 mtime 复用同一模块实例（防每请求新建 URL 泄漏）', async () => {
+    const file = join(tempDir, 'mod.js');
+    writeFileSync(file, 'export const value = 1;\n');
+
+    const m1 = await importWithCacheBust(file, true);
+    const m2 = await importWithCacheBust(file, true);
+    // 同一实例:下游按模块对象的 WeakMap 缓存(injection 分析)才能命中
+    expect(m2).toBe(m1);
+
+    // mtime 变化(重编译)后自动失效,加载新实例
+    const future = new Date(Date.now() + 5000);
+    utimesSync(file, future, future);
+    const m3 = await importWithCacheBust(file, true);
+    expect(m3).not.toBe(m1);
+    expect(m3.value).toBe(1);
   });
 
   it('vi.importActual 抛错时异常向上传播', async () => {
