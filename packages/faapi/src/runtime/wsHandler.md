@@ -108,6 +108,7 @@ interface WsSocket {
 
 - `WsSocket` 是 faapi 封装的 socket 抽象，对象 send 时自动 JSON.stringify
 - `readyState` 与 WebSocket 规范一致
+- **回调异常隔离**：`onOpen`/`onMessage`/`onClose` 抛错被框架捕获，故障半径限定当前连接——不会沿 EventEmitter 传播成 uncaughtException 崩进程（与 HTTP 路径的错误链对称）。有 `onError` 时把异常以 `Error` 转交（业务方可 `ws.close()` 自决连接去留）；无 `onError` 时 `console.error` 留痕。`onError` 自身抛错同样被捕获，仅 `console.error`。框架不会因回调抛错主动关闭连接
 
 ## 相关模块
 

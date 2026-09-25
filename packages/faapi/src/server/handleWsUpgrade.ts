@@ -94,17 +94,41 @@ async function loadWsHandler(
  *
  * 注意：wss.handleUpgrade 回调触发时 socket 已经处于 OPEN 状态，
  * 'open' 事件不会再触发，需要直接同步调用 onOpen。
+ *
+ * 用户回调异常隔离（导出供测试锚定契约）：onOpen/onMessage/onClose 抛错被捕获，
+ * 故障半径限定当前连接——EventEmitter 监听器同步抛出会沿 emit 传播为
+ * uncaughtException（Node 15+ 默认终止进程），HTTP 路径有完整错误链，WS 事件
+ * 模型对齐。有 onError 时转交业务方（可 ws.close() 自决），无 onError 时
+ * console.error；onError 自身抛错同样捕获仅留痕。框架不因回调抛错主动关连接。
  */
-function bindEvents(rawSocket: WebSocket, handlers: WsEventHandlers | void): void {
+export function bindEvents(rawSocket: WebSocket, handlers: WsEventHandlers | void): void {
   if (!handlers) return;
   const ws = wrapWsSocket(rawSocket);
+
+  /** 单个用户回调的异常隔离；onError 转交失败时降级 console.error（不递归抛） */
+  const guard = (event: string, fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (handlers.onError) {
+        try {
+          handlers.onError(ws, error);
+        } catch (hookErr) {
+          console.error(`[faapi] WS onError 回调抛错 (after ${event}):`, hookErr);
+        }
+      } else {
+        console.error(`[faapi] WS ${event} 回调抛错:`, error);
+      }
+    }
+  };
 
   if (handlers.onOpen) {
     // handleUpgrade 回调触发时 socket 已是 OPEN，直接同步调用
     if (rawSocket.readyState === WebSocket.OPEN) {
-      handlers.onOpen!(ws);
+      guard('onOpen', () => handlers.onOpen!(ws));
     } else {
-      rawSocket.once('open', () => handlers.onOpen!(ws));
+      rawSocket.once('open', () => guard('onOpen', () => handlers.onOpen!(ws)));
     }
   }
   if (handlers.onMessage) {
@@ -113,17 +137,22 @@ function bindEvents(rawSocket: WebSocket, handlers: WsEventHandlers | void): voi
       // 二进制帧透传 Buffer（utf8 解码不可逆，protobuf/msgpack 等二进制协议会损坏），
       // 文本帧转 utf8 字符串——与 onMessage 类型声明 string | Buffer 一致
       const buf = toWsBuffer(data);
-      handlers.onMessage!(ws, isBinary ? buf : buf.toString('utf8'));
+      guard('onMessage', () => handlers.onMessage!(ws, isBinary ? buf : buf.toString('utf8')));
     });
   }
   if (handlers.onClose) {
     rawSocket.on('close', (code: number, reason: Buffer) => {
-      handlers.onClose!(ws, code, reason.toString('utf8'));
+      guard('onClose', () => handlers.onClose!(ws, code, reason.toString('utf8')));
     });
   }
   if (handlers.onError) {
     rawSocket.on('error', (err: Error) => {
-      handlers.onError!(ws, err);
+      // onError 是错误出口本身，只防它抛错升级为 uncaughtException
+      try {
+        handlers.onError!(ws, err);
+      } catch (hookErr) {
+        console.error('[faapi] WS onError 回调抛错 (after onError):', hookErr);
+      }
     });
   }
 }
