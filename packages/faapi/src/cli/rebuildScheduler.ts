@@ -8,6 +8,8 @@
 export interface RebuildScheduler {
   /** 文件变化/新增：加入待编译集合并调度重建 */
   addFiles(files: string[]): void;
+  /** 文件删除：从待编译集合剔除（含失败回灌的文件），防止幽灵文件永久卡住重建批次 */
+  removeFiles(files: string[]): void;
   /** 仅调度重建（如 unlink，无文件可编译） */
   schedule(): void;
 }
@@ -92,6 +94,10 @@ export function createRebuildScheduler(options: RebuildSchedulerOptions): Rebuil
         if (!pendingFiles.includes(file)) pendingFiles.push(file);
       }
       requestRun();
+    },
+    removeFiles(files) {
+      const drop = new Set(files);
+      pendingFiles = pendingFiles.filter((f) => !drop.has(f));
     },
     schedule() {
       requestRun();

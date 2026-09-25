@@ -55,7 +55,7 @@ debounce(100ms) 合并、重建进行中不重入（当前轮结束后串行补�
 
 1. **增量编译**变化的文件（`compileDevRoutes` with `files` 参数，只编译 add/change 的文件）
 2. **重生成 `faapi-config.js`**（`compileConfig`，内部有 mtime 短路：config 源及其依赖模块无变化时跳过编译，无配置文件则跳过）
-3. **调 `app.reloadRoutes()`**（由 `createDevApp` 提供，完成以下工作）：
+3. **调 `app.reloadAll()`**（由 `createDevApp` 提供：开头 `invalidateProgramCache()` 一次，然后依次执行四个 reload*——批量上下文中各 reload* 不再各自清 Program 缓存，单次保存的全项目 ts.Program 重建从 4 次降到 1 次）。第一步 `reloadRoutes` 完成以下工作：
    - 更新模块加载时间戳（`setLoadTimestamp(Date.now())`，ESM import 绕过缓存）
    - 清理中间件 + Program + schema 缓存
    - `clearCompiledFiles()` 清按需编译内存缓存
@@ -63,9 +63,9 @@ debounce(100ms) 合并、重建进行中不重入（当前轮结束后串行补�
    - **按需模式**：`deleteSchemaFiles` 删 stale zod.js + `clearGeneratedSchemas` 清按需生成缓存（下次请求触发 `ensureSchemaGenerated` 重建）
    - **非按需模式**：`generateSchemaFiles` 全量重新生成 zod.js + `invalidateSchemaCache` 清空模块缓存
    - `ctx.updateRoutes` 更新 `app.routes` / `app.wsRoutes` 和 `routesRef.current` / `routesRef.wsCurrent`（server 使用最新路由）
-4. **调 `app.reloadTools()`**（由 `createDevApp` 提供，完成以下工作）：
-   - `setLoadTimestamp(Date.now())` 让 `faapi-tools.js` 重新读取绕过 ESM 缓存
-   - `invalidateProgramCache()` 清 Program 缓存（tool 源码 AST 需重新分析）
+4. **（reloadAll 内继续）`reloadTools` / `reloadAgents` / `reloadTasks`**（由 `createDevApp` 提供）：
+   - `setLoadTimestamp(Date.now())` 让对应清单产物重新读取绕过 ESM 缓存
+   - 扫描 tools/agents/tasks + 重生成清单产物 + 重新水合注册表（tasks 另含重编译与队列重注册）
    - `scanTools` 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
    - `generateToolArtifacts` 重生成 `faapi-tools.js`（按需模式跳过 zod.js，首次请求按需生成）
    - 无 tool 文件时 `scanTools` 返回空，`generateToolArtifacts` 写入空清单（开销极低）

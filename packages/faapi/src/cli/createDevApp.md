@@ -26,17 +26,24 @@ startWatcher({ rootDir, app, devDist: '.faapi' });
 interface DevApp extends AppBase {
   reloadRoutes(): Promise<void>;
   reloadTools(): Promise<void>;
+  reloadAgents(): Promise<void>;
+  reloadTasks(): Promise<void>;
+  reloadAll(): Promise<void>;
 }
 
 function createDevApp(options?: CreateAppOptions): Promise<DevApp>
 ```
 
-`DevApp` 在 `AppBase`（`listen`/`close`/`inject`）基础上增加 `reloadRoutes` 和 `reloadTools`。`CreateAppOptions` 从 `createAppCore` re-export。
+`DevApp` 在 `AppBase`（`listen`/`close`/`inject`）基础上增加四个 reload* 热替换方法和 `reloadAll`（watcher 专用批量入口）。`CreateAppOptions` 从 `createAppCore` re-export。
+
+## reloadAll（watcher 批量入口）
+
+watcher 一轮重建串行调 `reloadAll`：开头 `invalidateProgramCache()` 一次，然后依次执行四个 reload*。批量上下文（进程级标志）中各 reload* 开头的 `invalidateProgramCache` 全部跳过——否则单次保存会触发 4 次全项目 ts.Program 重建（保存延迟随项目体积而非变更大小增长）。程序化直调单个 reload* 时标志未置位，各自失效，语义不变。
 
 ## reloadRoutes 流程
 
 1. `setLoadTimestamp(Date.now())` — 更新模块加载时间戳（ESM import 绕过缓存）
-2. `invalidateMiddlewareCache()` / `invalidateProgramCache()` / `invalidateSchemaCache()` — 清缓存（watcher 已重新生成产物）
+2. `invalidateMiddlewareCache()` / `invalidateProgramCache()` / `invalidateSchemaCache()` — 清缓存（watcher 已重新生成产物；`reloadAll` 批量上下文中 Program 失效跳过）
 3. `clearCompiledFiles()` — 清按需编译内存缓存（让被修改的 handler.js 下次请求触发重编译）
 4. `scanRoutes(rootDir, patterns, dist)` — 重新扫描源码路由（不走 `faapi-routes.js` 重新 import，ESM 缓存难以可靠绕过；scanRoutes 仅读源码 + 正则提取方法名，零 import）
 5. `sortRoutes(routes)`
@@ -52,7 +59,7 @@ function createDevApp(options?: CreateAppOptions): Promise<DevApp>
 ## reloadTools 流程
 
 1. `setLoadTimestamp(Date.now())` — 更新模块加载时间戳（让 `faapi-tools.js` 重新读取绕过 ESM 缓存）
-2. `invalidateProgramCache()` — 清 Program 缓存（tool 源码可能变化，AST 需重新分析）
+2. `invalidateProgramCache()` — 清 Program 缓存（tool 源码可能变化，AST 需重新分析；`reloadAll` 批量上下文中跳过）
 3. `scanTools(rootDir, TOOL_PATTERNS)` — 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
 4. `generateToolArtifacts(tools, rootDir, dist, { skipSchema: isDevOnDemandEnabled() })` — 重生成 `faapi-tools.js`（含 AST 增强：description / inputTypeName）
    - 按需模式跳过 zod.js 生成——首次请求时按需生成（与 `reloadRoutes` 的策略一致）

@@ -28,7 +28,7 @@ import {
   isDevOnDemandEnabled,
 } from './compileOnDemand';
 
-/** dev 应用接口（AppBase + reloadRoutes/reloadTools/reloadAgents 热替换） */
+/** dev 应用接口（AppBase + reloadRoutes/reloadTools/reloadAgents/reloadTasks/reloadAll 热替换） */
 export interface DevApp extends AppBase {
   /** 重新水合路由清单 + 清 schema 缓存 + 更新 server 路由引用（dev 热替换用） */
   reloadRoutes(): Promise<void>;
@@ -38,7 +38,21 @@ export interface DevApp extends AppBase {
   reloadAgents(): Promise<void>;
   /** 重新扫描 tasks + 重编译任务源码 + 重生成 faapi-tasks.js + 清队列缓存（dev 热替换用） */
   reloadTasks(): Promise<void>;
+  /**
+   * 一轮 watcher 重建的批量热替换：依次执行四个 reload*，但 Program 缓存只在
+   * 开头失效一次（watcher 专用——逐个直调 reload* 时各自失效，语义不变）
+   */
+  reloadAll(): Promise<void>;
 }
+
+/**
+ * Program 缓存批量失效去重（进程级）
+ *
+ * watcher 一轮重建串行调 4 个 reload*，各自开头都 invalidateProgramCache 会导致
+ * 全项目 ts.Program 重建 4~5 次（保存延迟随项目体积增长）。reloadAll 在批量上下文
+ * 中置位此标志，各 reload* 跳过自己的失效，只保留 reloadAll 入口那一次。
+ */
+let suppressProgramInvalidation = false;
 
 /**
  * dev 模式应用启动 API
@@ -69,7 +83,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     setLoadTimestamp(Date.now());
     // 清理缓存（中间件/schema 已被 watcher 重新生成）
     invalidateMiddlewareCache();
-    invalidateProgramCache();
+    if (!suppressProgramInvalidation) invalidateProgramCache();
     invalidateSchemaCache();
     // 清按需编译缓存（让被修改的 handler.js 重新编译）
     clearCompiledFiles();
@@ -111,7 +125,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     // 更新模块加载时间戳（ESM import 绕过缓存，让 faapi-tools.js 重新读取）
     setLoadTimestamp(Date.now());
     // 清 Program 缓存（tool 源码可能变化，AST 需重新分析）
-    invalidateProgramCache();
+    if (!suppressProgramInvalidation) invalidateProgramCache();
     // 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
     const tools = await scanTools(ctx.rootDir, TOOL_PATTERNS);
     // 重生成 faapi-tools.js（含 AST 增强：description / inputTypeName）
@@ -127,7 +141,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     // 更新模块加载时间戳（ESM import 绕过缓存，让 faapi-agents.js 重新读取）
     setLoadTimestamp(Date.now());
     // 清 Program 缓存（agent 源码可能变化，AST 需重新分析）
-    invalidateProgramCache();
+    if (!suppressProgramInvalidation) invalidateProgramCache();
     // 重新扫描 agents（零 import，仅读源码 + 正则检测 config/run 导出）
     const agents = await scanAgents(ctx.rootDir, DEFAULT_AGENT_PATTERNS);
     // 重生成 faapi-agents.js（含 AST 增强：description / @agent 覆盖 / config 块字段）
@@ -141,7 +155,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     // 更新模块加载时间戳（ESM import 绕过缓存，让 faapi-tasks.js 重新读取）
     setLoadTimestamp(Date.now());
     // 清 Program 缓存（任务源码可能变化，AST 需重新分析）
-    invalidateProgramCache();
+    if (!suppressProgramInvalidation) invalidateProgramCache();
     // 重新扫描任务（零 import，仅读源码 + 正则提取 meta）
     const tasks = await scanTasks(ctx.rootDir, TASK_PATTERNS);
     // 重编译任务文件（mtime 缓存：未变化的跳过）——队列派发时 import 产物模块
@@ -156,6 +170,22 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     await ctx.taskQueue.reload();
     // 重新水合 faapi-tasks.js 到 taskRegistry（reload 后需更新注册表）
     await loadAndHydrateTasks(ctx.rootDir, ctx.dist, ctx.registries);
+  };
+
+  devApp.reloadAll = async (): Promise<void> => {
+    // 一轮重建只清一次 Program 缓存：四个 reload* 开头的失效在批量上下文中跳过
+    // （watcher 单次保存的全项目 ts.Program 重建从 4~5 次降到 1 次）
+    invalidateProgramCache();
+    const prev = suppressProgramInvalidation;
+    suppressProgramInvalidation = true;
+    try {
+      await devApp.reloadRoutes();
+      await devApp.reloadTools();
+      await devApp.reloadAgents();
+      await devApp.reloadTasks();
+    } finally {
+      suppressProgramInvalidation = prev;
+    }
   };
 
   return devApp;

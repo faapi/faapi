@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,9 +11,15 @@ import { sortRoutes } from '../router/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
-import { invalidateProgramCache } from '../ast/createProgram';
 import { invalidateSchemaCache } from '../validator/validateInput';
 import { listTools, clearToolRegistry } from '../injection/toolRegistry';
+
+// invalidateProgramCache 包一层 spy（真实行为不变），供 reloadAll 批量失效去重断言用
+vi.mock('../ast/createProgram', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../ast/createProgram')>();
+  return { ...actual, invalidateProgramCache: vi.fn(actual.invalidateProgramCache) };
+});
+import { invalidateProgramCache } from '../ast/createProgram';
 
 /**
  * createDevApp 测试：dev 模式启动 API（含 reloadRoutes 热替换）
@@ -221,5 +227,29 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
     const app = await createDevApp({ rootDir: tempDir });
     expect(app.routes.length).toBeGreaterThan(0);
     await app.close();
+  });
+
+  it('reloadAll 一轮重建只失效一次 Program 缓存；逐个直调 reload* 仍各自失效', async () => {
+    writeHandler();
+    await compileArtifacts('.faapi');
+
+    // watcher 路径：reloadAll 批量上下文中四个 reload* 的失效全部跳过，只剩入口一次
+    // （逐个失效会让单次保存触发 4 次全项目 ts.Program 重建）
+    const app = await createDevApp({ rootDir: tempDir });
+    const spy = vi.mocked(invalidateProgramCache);
+    spy.mockClear();
+    await app.reloadAll();
+    expect(spy).toHaveBeenCalledTimes(1);
+    await app.close();
+
+    // 程序化直调（无批量上下文）：各 reload* 语义不变，仍各自失效
+    const app2 = await createDevApp({ rootDir: tempDir });
+    spy.mockClear();
+    await app2.reloadRoutes();
+    await app2.reloadTools();
+    await app2.reloadAgents();
+    await app2.reloadTasks();
+    expect(spy).toHaveBeenCalledTimes(4);
+    await app2.close();
   });
 });

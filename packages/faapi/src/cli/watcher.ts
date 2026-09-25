@@ -1,5 +1,6 @@
 import chokidar from 'chokidar';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
 import type { DevApp } from './createDevApp';
@@ -37,35 +38,33 @@ export interface WatchOptions {
  * 重建进行中不重入：新事件只累积文件，当前轮结束后自动串行补跑（见 rebuildScheduler.md）。
  * 重建失败时待编译文件回灌，等待下次文件事件一起重编译（不主动重试）。
  *
- * unlink（文件删除）不增量编译（无文件可编译），但触发 reloadRoutes（路由结构变化）。
+ * unlink（文件删除）从待编译集合剔除该文件并触发 reloadRoutes（路由结构变化），不增量编译；
+ * 重建批次编译前还会过滤已删除文件，防止 change 入队后删除（git 切分支）的文件随失败
+ * 回灌永久卡住整批编译。
  */
 export function startWatcher(options: WatchOptions): void {
   const { rootDir, app, devDist } = options;
 
   async function rebuildRoutes(files: string[]): Promise<void> {
+    // 过滤已删除的文件：change 入队后、本轮编译前被删除的文件（或在途批次失败回灌后
+    // 才收到 unlink）仍留在批次里，喂给 esbuild 会抛 "Could not read from file" 并随
+    // 失败回灌永久卡住整批编译——同批新文件永远编译不到直到重启
+    const existing = files.filter((f) => existsSync(f));
     // 1. 增量编译变化的文件（add/change 事件累积的文件）
-    if (files.length > 0) {
+    if (existing.length > 0) {
       await compileDevRoutes({
         rootDir,
         dist: devDist,
-        files,
+        files: existing,
       });
     }
 
     // 2. 重生成 faapi-config.js（compileConfig 内部 mtime 短路，配置源无变化时跳过）
     await compileConfig({ rootDir, dist: devDist });
 
-    // 3. 调 app.reloadRoutes()（scanRoutes + generateSchemaFiles + 清缓存 + 更新引用）
-    await app.reloadRoutes();
-    // 4. 调 app.reloadTools()（scanTools + 重生成 faapi-tools.js + 清缓存）
-    //    与 reloadRoutes 分离——tool 清单独立重建，无 tool 文件时 scanTools 返回空（快速跳过）
-    await app.reloadTools();
-    // 5. 调 app.reloadAgents()（scanAgents + 重生成 faapi-agents.js + 清缓存）
-    //    与 reloadTools 分离——agent 清单独立重建，无 agent 文件时 scanAgents 返回空（快速跳过）
-    await app.reloadAgents();
-    // 6. 调 app.reloadTasks()（scanTasks + 重编译任务 + 重生成 faapi-tasks.js + 清队列缓存）
-    //    与 reloadAgents 分离——任务清单独立重建，无任务文件时 scanTasks 返回空（快速跳过）
-    await app.reloadTasks();
+    // 3. 批量热替换 reloadAll（routes/tools/agents/tasks）：Program 缓存只在开头失效
+    //    一次——逐个调 reload* 会触发 4 次全项目 ts.Program 重建
+    await app.reloadAll();
 
     console.log(
       `- Routes rebuilt${files.length > 0 ? `, ${files.length} file(s) recompiled` : ''}`,
@@ -152,8 +151,10 @@ export function startWatcher(options: WatchOptions): void {
     }
     scheduler.addFiles([abs]);
   }
-  watcher.on('unlink', () => {
-    // 文件删除：不增量编译（无文件可编译），但触发重生成产物 + reloadRoutes（路由结构变化）
+  watcher.on('unlink', (file) => {
+    // 文件删除：从待编译集合剔除（change 入队后删除的文件不再进编译批次），
+    // 并触发重生成产物 + reloadRoutes（路由结构变化）
+    scheduler.removeFiles([path.resolve(rootDir, file)]);
     scheduler.schedule();
   });
   watcher.on('error', (err) => {

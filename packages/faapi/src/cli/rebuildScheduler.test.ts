@@ -126,6 +126,39 @@ describe('createRebuildScheduler', () => {
     expect(rebuild).toHaveBeenLastCalledWith(['/a.ts', '/b.ts', '/c.ts']);
   });
 
+  it('removeFiles：编译前剔除已删除文件（change 入队后 unlink 的竞态）', async () => {
+    const rebuild = vi.fn().mockResolvedValue(undefined);
+    const scheduler: RebuildScheduler = createRebuildScheduler({ rebuild });
+
+    // 文件 change 入队，随后在下一轮重建前被删除（如 git 切分支）
+    scheduler.addFiles(['/a.ts']);
+    scheduler.addFiles(['/b.ts']);
+    scheduler.removeFiles(['/a.ts']);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(rebuild).toHaveBeenCalledTimes(1);
+    // 已删除的 a.ts 不进编译批次——否则 esbuild 抛 "Could not read from file"
+    expect(rebuild).toHaveBeenCalledWith(['/b.ts']);
+  });
+
+  it('removeFiles：可剔除失败回灌的文件，避免幽灵文件永久卡住整批', async () => {
+    // 时序：含 a.ts 的批次编译失败 → a.ts 在回灌后被删除 → removeFiles 剔除 →
+    // 若不剔除，回灌的 a.ts 每轮重建都撞同一个错误，同批 b.ts 永远编译不到
+    const rebuild = vi.fn().mockRejectedValueOnce(new Error('compile failed'));
+    const onError = vi.fn();
+    const scheduler: RebuildScheduler = createRebuildScheduler({ rebuild, onError });
+
+    scheduler.addFiles(['/a.ts']);
+    scheduler.addFiles(['/b.ts']);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    scheduler.removeFiles(['/a.ts']);
+    scheduler.addFiles(['/c.ts']);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(rebuild).toHaveBeenLastCalledWith(['/b.ts', '/c.ts']);
+  });
+
   it('rebuild 成功：文件清空不回灌，后续 schedule 收到空数组', async () => {
     const rebuild = vi.fn().mockResolvedValue(undefined);
     const scheduler = createRebuildScheduler({ rebuild });

@@ -13,7 +13,7 @@ watcher 的重建链（增量编译 + compileConfig + reloadRoutes/reloadTools/r
 
 ## 使用场景
 
-- `watcher.ts` 创建调度器，`add/change` 事件调 `addFiles([...])`，`unlink` 事件调 `schedule()`
+- `watcher.ts` 创建调度器，`add/change` 事件调 `addFiles([...])`，`unlink` 事件调 `removeFiles([file])` + `schedule()`（文件已删除，从待编译集合剔除后触发结构重建）
 - 重建回调封装「增量编译 → compileConfig → reloadRoutes/reloadTools/reloadAgents」
 
 ## 行为定义
@@ -23,6 +23,7 @@ watcher 的重建链（增量编译 + compileConfig + reloadRoutes/reloadTools/r
 - **失败回灌**：回调抛错时该轮文件合并回待编译集合，等待下一次文件事件一起编译；**不主动定时重试**——编译失败通常因语法错误，主动重试会造成每 100ms 一次的错误刷屏，用户保存修复文件后自然触发下一轮
 - **成功清空**：回调成功后本轮文件清空，不回灌
 - **空重建**：`schedule()` 无待编译文件时回调收到空数组（路由结构变化场景）
+- **剔除已删除文件**：`removeFiles(files)` 把文件从待编译集合移除（含失败回灌的文件）。没有它，`change` 入队后、本轮编译前被删除的文件（git 切分支的 change+unlink 批量事件）会一直留在集合里，每轮重建都被 esbuild 以 "Could not read from file" 拒绝并随失败回灌——同批新文件永远编译不到，直到重启
 
 ## 相关模块
 
