@@ -79,4 +79,44 @@ describe('stringifyJson', () => {
     const shared = { v: 1 };
     expect(stringifyJson({ a: shared, b: shared })).toBe('{"a":{"v":1},"b":{"v":1}}');
   });
+
+  it('快路径：纯 JSON 原生类型大树与慢路径输出逐字节一致', () => {
+    // 快路径（needsConversion=false 直通 JSON.stringify）与重建路径的输出必须一致
+    const tree = {
+      str: 'x',
+      num: 1.5,
+      neg: -0,
+      bool: false,
+      nil: null,
+      arr: [{ a: [1, 'two', true, null] }, []],
+      nested: { deep: { deeper: { list: [{ ok: 0 }] } } },
+    };
+    expect(stringifyJson(tree)).toBe(JSON.stringify(tree));
+  });
+
+  it('快路径下循环引用同样抛 TypeError（检测与慢路径同语义）', () => {
+    const obj: Record<string, unknown> = { list: [1, 2] };
+    obj['self'] = obj;
+    expect(() => stringifyJson(obj)).toThrow(TypeError);
+    const arr: unknown[] = [1];
+    arr.push(arr);
+    expect(() => stringifyJson({ arr })).toThrow(TypeError);
+  });
+
+  it('toJSON 返回含 Date 的对象走慢路径且 Date 被转换', () => {
+    const wrapper = {
+      toJSON: () => ({ at: new Date('2026-01-01T00:00:00.000Z'), plain: 1 }),
+    };
+    expect(stringifyJson({ w: wrapper })).toBe('{"w":{"at":1767225600000,"plain":1}}');
+  });
+
+  it('类实例（无 toJSON）原样序列化，快慢路径一致', () => {
+    class Point {
+      constructor(
+        public x: number,
+        public y: number,
+      ) {}
+    }
+    expect(stringifyJson({ p: new Point(1, 2) })).toBe('{"p":{"x":1,"y":2}}');
+  });
 });

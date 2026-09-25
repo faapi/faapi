@@ -25,7 +25,66 @@ import { isPlainObject } from './isPlainObject';
  *   共享引用不受影响
  */
 export function stringifyJson(value: unknown): string {
+  // 快路径：整棵值树均为 JSON 原生类型（绝大多数响应的形态）时零分配直通原生
+  // stringify。慢路径对 plain object/array 无条件递归重建——每个响应都要付出一次
+  // 全量深拷贝（GC 压力翻倍）；检测本身零分配（只做类型判断），无特殊类型时省掉
+  // 整棵树的重建。检测遇循环引用与慢路径同语义抛 TypeError
+  if (!needsConversion(value, new Set<object>())) {
+    return JSON.stringify(value);
+  }
   return JSON.stringify(convertValue(value, new Set<object>()));
+}
+
+/**
+ * 检测值树是否需要转换（含 Date/BigInt/Map/Set/NaN/RegExp/toJSON 时走慢路径重建）
+ *
+ * 与 convertValue 相同的遍历结构与循环引用检测（ancestors），但零分配——
+ * 只做类型判断，不重建任何对象/数组。
+ */
+function needsConversion(value: unknown, ancestors: Set<object>): boolean {
+  if (value === null) return false;
+  const type = typeof value;
+  if (type === 'bigint') return true;
+  if (type === 'number') return !Number.isFinite(value as number);
+  if (type !== 'object') return false;
+
+  const obj = value as object;
+  if (ancestors.has(obj)) {
+    throw new TypeError('[faapi] Converting circular structure to JSON');
+  }
+  if (obj instanceof Date || obj instanceof Map || obj instanceof Set || obj instanceof RegExp) {
+    return true;
+  }
+  // 带 toJSON 的对象走慢路径：其返回值中的特殊类型也要转换
+  if (typeof (obj as { toJSON?: unknown }).toJSON === 'function') return true;
+
+  if (Array.isArray(obj)) {
+    ancestors.add(obj);
+    for (let i = 0; i < obj.length; i++) {
+      if (needsConversion(obj[i], ancestors)) {
+        ancestors.delete(obj);
+        return true;
+      }
+    }
+    ancestors.delete(obj);
+    return false;
+  }
+  if (isPlainObject(obj)) {
+    ancestors.add(obj);
+    // for-in + hasOwnProperty 避免分配键数组（Object.keys/entries 每节点一个数组）；
+    // 可枚举性与 getters 的调用语义与 Object.entries 一致
+    for (const key in obj) {
+      if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+      if (needsConversion((obj as Record<string, unknown>)[key], ancestors)) {
+        ancestors.delete(obj);
+        return true;
+      }
+    }
+    ancestors.delete(obj);
+    return false;
+  }
+  // 其他对象（类实例、URL 等）：原样序列化，无需转换
+  return false;
 }
 
 /** 递归转换值树中的规范外类型（ancestors 做循环引用检测） */
