@@ -9,10 +9,11 @@ dist/
 # IDE
 .idea/
 .vscode/
-.zcode/
-# .trae 只保留 skills（规划文档等杂项不入库）
+# .zcode / .trae 只保留 skills（规划文档等杂项不入库）
+.zcode/*
+!.zcode/skills
 .trae/*
-!.trae/skills/
+!.trae/skills
 *.swp
 *.swo
 
