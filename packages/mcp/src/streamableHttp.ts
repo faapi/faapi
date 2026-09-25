@@ -179,15 +179,15 @@ async function handlePost(request: Request, server: McpServer): Promise<Response
   }
 
   // 解析 JSON-RPC 消息。批量走 parseJsonRpcBatch：批内单条无效仅对该条生成
-  // ParseError 响应（JSON-RPC 2.0 规范），不整批 400
+  // InvalidRequest 响应（JSON-RPC 2.0 规范 §4.4），不整批 400
   let messages: JsonRpcMessage[];
   let invalidResponses: JsonRpcMessage[] = [];
   if (Array.isArray(body)) {
-    // 空批：JSON-RPC 2.0 规范要求返回单个 Invalid Request 响应（延续 400 语义）
+    // 空批：JSON-RPC 2.0 规范要求返回单个 InvalidRequest(-32600) 响应（延续 400 语义）
     if (body.length === 0) {
       return jsonResponse(
         400,
-        createErrorResponse(null, ErrorCode.ParseError, 'Invalid Request: empty batch'),
+        createErrorResponse(null, ErrorCode.InvalidRequest, 'Invalid Request: empty batch'),
       );
     }
     const batch = parseJsonRpcBatch(body);
@@ -197,8 +197,10 @@ async function handlePost(request: Request, server: McpServer): Promise<Response
     try {
       messages = parseJsonRpcMessage(body);
     } catch (err) {
+      // 整体 JSON 文本已解析成功,单条结构不合法属 InvalidRequest(-32600);
+      // -32700 保留给此前的整体 JSON 文本解析失败
       const message = err instanceof JsonRpcParseError ? err.message : 'Invalid JSON-RPC message';
-      return jsonResponse(400, createErrorResponse(null, ErrorCode.ParseError, message));
+      return jsonResponse(400, createErrorResponse(null, ErrorCode.InvalidRequest, message));
     }
   }
 

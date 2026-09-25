@@ -9,7 +9,8 @@
 
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
-  id: string | number;
+  /** id:null 为 JSON-RPC 2.0 规范弃用但合法的形态（解析时按 request 接受） */
+  id: string | number | null;
   method: string;
   params?: unknown;
 }
@@ -22,7 +23,8 @@ export interface JsonRpcNotification {
 
 export interface JsonRpcResultResponse {
   jsonrpc: '2.0';
-  id: string | number;
+  /** id:null 对应未知/无效请求 id 的错误响应,以及规范弃用的 null-id request */
+  id: string | number | null;
   result: unknown;
 }
 
@@ -78,7 +80,10 @@ export function isErrorResponse(msg: JsonRpcMessage): msg is JsonRpcErrorRespons
 
 // ─── 响应构建 ───────────────────────────────────────────
 
-export function createResultResponse(id: string | number, result: unknown): JsonRpcResultResponse {
+export function createResultResponse(
+  id: string | number | null,
+  result: unknown,
+): JsonRpcResultResponse {
   return { jsonrpc: '2.0', id, result };
 }
 
@@ -112,8 +117,9 @@ export function parseJsonRpcMessage(data: unknown): JsonRpcMessage[] {
 }
 
 /**
- * 解析 JSON-RPC 批量消息（JSON-RPC 2.0 规范：批内单条无效仅对该条生成
- * ParseError error object（id:null）,不整批失败）
+ * 解析 JSON-RPC 批量消息（JSON-RPC 2.0 规范 §4.4：批内单条无效仅对该条生成
+ * InvalidRequest error object（id:null）,不整批失败。-32700 保留给整体 JSON
+ * 文本解析失败——单条结构不合法属 Invalid Request）
  *
  * @returns messages（有效消息）+ invalid（解析失败的条目,以错误响应形态给出,
  *          transport 层并入批响应数组）
@@ -132,7 +138,7 @@ export function parseJsonRpcBatch(data: unknown[]): {
       invalid.push({
         jsonrpc: '2.0',
         id: null,
-        error: { code: ErrorCode.ParseError, message: reason },
+        error: { code: ErrorCode.InvalidRequest, message: reason },
       } as JsonRpcErrorResponse);
     }
   }
@@ -156,10 +162,11 @@ function parseSingleMessage(data: unknown): JsonRpcMessage {
   if (obj.jsonrpc !== '2.0') {
     throw new JsonRpcParseError('Invalid Request: jsonrpc must be "2.0"');
   }
-  // Request: has method + id
+  // Request: has method + id（id:null 为规范弃用但合法的形态,按 request 接受并
+  // 以 id:null 回传响应——官方 SDK 同语义;notification 仅指 id 成员缺席）
   if (
     typeof obj.method === 'string' &&
-    (typeof obj.id === 'string' || typeof obj.id === 'number')
+    (typeof obj.id === 'string' || typeof obj.id === 'number' || obj.id === null)
   ) {
     return {
       jsonrpc: '2.0',

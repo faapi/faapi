@@ -140,6 +140,12 @@ describe('jsonRpc', () => {
       expect(() => parseJsonRpcMessage(null)).toThrow(JsonRpcParseError);
     });
 
+    it('id:null 的 method 消息按 request 接受（规范弃用形态,官方 SDK 同语义）', () => {
+      const msgs = parseJsonRpcMessage({ jsonrpc: '2.0', id: null, method: 'ping' });
+      expect(msgs).toHaveLength(1);
+      expect(msgs[0]).toEqual({ jsonrpc: '2.0', id: null, method: 'ping' });
+    });
+
     it('jsonrpc 字段非 "2.0" 抛错', () => {
       expect(() => parseJsonRpcMessage({ jsonrpc: '1.0', id: 1, method: 'ping' })).toThrow(
         JsonRpcParseError,

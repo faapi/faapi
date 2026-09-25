@@ -183,7 +183,8 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       }>;
       expect(body).toHaveLength(2);
       const invalid = body.find((r) => r.id === null);
-      expect(invalid?.error?.code).toBe(-32700);
+      // JSON-RPC 2.0 §4.4:批内单条无效应为 InvalidRequest(-32600),-32700 保留给整体解析失败
+      expect(invalid?.error?.code).toBe(-32600);
       expect(body.some((r) => r.id === 1 && r.result)).toBe(true);
     });
 
@@ -193,7 +194,7 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as Array<{ id: null; error: { code: number } }>;
       expect(body).toHaveLength(2);
-      expect(body.every((r) => r.id === null && r.error.code === -32700)).toBe(true);
+      expect(body.every((r) => r.id === null && r.error.code === -32600)).toBe(true);
     });
 
     it('空批 → 400', async () => {
@@ -339,7 +340,8 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       const res = await handleMcpRequest(req, mcp);
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error.code).toBe(-32700);
+      // 合法 JSON 但结构不合法 → InvalidRequest(-32600),非整体解析失败的 -32700
+      expect(body.error.code).toBe(-32600);
     });
   });
 
