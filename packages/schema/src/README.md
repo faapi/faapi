@@ -20,7 +20,7 @@ routeSchema ─┐
 ## 依赖关系
 
 - **`@faapi/faapi`（peerDependencies）**：复用主包公开的 AST 能力（`createProgram` / `extractTypeInfo` / `collectRouteSchemaSources`），不依赖主包内部模块
-- **`@faapi/mcp`（dependencies）**：基于纯手写 MCP Server SDK 暴露 resource
+- **`@faapi/mcp`（peerDependencies + devDependencies）**：基于纯手写 MCP Server SDK 暴露 resource
 
 ## 启用方式
 

@@ -21,15 +21,15 @@ MCP 协议基于 JSON-RPC 2.0。所有通信都是 JSON-RPC 消息（Request / N
 - **JsonRpcErrorResponse**：有 id + error，错误响应
 - **ErrorCode**：JSON-RPC 标准错误码（-32700 ~ -32603）+ MCP 扩展（-32000 ~ -32001）
 - **JsonRpcError** / **JsonRpcMessage**：联合类型(已从 index.ts 导出,供业务方做类型收窄)
-- **JsonRpcParseError**：解析错误类(继承 Error,包含 `code` 字段,`parseJsonRpcMessage` 解析失败时抛出,业务方可 `instanceof` 判定)
+- **JsonRpcParseError**：解析错误类(继承 Error,`name` 固定为 `JsonRpcParseError`——错误码不在实例上,由调用方按场景选择;`parseJsonRpcMessage` 解析失败时抛出,业务方可 `instanceof` 判定)
 
 ## 工具函数
 
 | 函数 | 说明 |
 |------|------|
-| `parseJsonRpcMessage(text)` | 解析 JSON 字符串为 JSON-RPC 消息,失败抛 `JsonRpcParseError` |
+| `parseJsonRpcMessage(data)` | 解析**已 JSON.parse 的值**为 JSON-RPC 消息数组（单条也包装为数组,批量逐条解析）,失败抛 `JsonRpcParseError`;JSON.parse 由 transport 层（streamableHttp）负责 |
 | `createResultResponse(id, result)` | 构建成功响应 |
-| `createErrorResponse(id, error)` | 构建错误响应 |
+| `createErrorResponse(id, code, message, data?)` | 构建错误响应（标准错误码,`data` 可选） |
 | `isRequest(msg)` | 判定是否为 Request(有 id + method) |
 | `isNotification(msg)` | 判定是否为 Notification(有 method 无 id) |
 | `isResultResponse(msg)` | 判定是否为成功响应(有 id + result) |
