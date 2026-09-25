@@ -48,6 +48,17 @@ export async function apiCall<T>(input: string, init?: RequestInit): Promise<T> 
     throw new ApiError('NON_JSON_RESPONSE', res.status, statusMessage(res.status));
   }
 
+  // JSON.parse("null") === null 等非对象形态:合法 JSON 但不是信封,归入非 JSON 分支
+  // (否则 body.error 访问抛裸 TypeError,击穿「失败一律转译为 ApiError」的模块承诺)
+  if (body === null || typeof body !== 'object') {
+    console.error('[apiCall] 非 JSON 响应', {
+      status: res.status,
+      url: res.url,
+      body: text.slice(0, 200),
+    });
+    throw new ApiError('NON_JSON_RESPONSE', res.status, statusMessage(res.status));
+  }
+
   if (!res.ok || body.error) {
     throw new ApiError(
       body.error?.code ?? 'HTTP_ERROR',

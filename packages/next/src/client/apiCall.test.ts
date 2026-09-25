@@ -86,6 +86,22 @@ describe('apiCall', () => {
     expect((err as ApiError).message).toBe('服务暂时不可用,请稍后重试');
   });
 
+  it('合法 JSON 但非对象形态(null/数字) → NON_JSON_RESPONSE,不抛裸 TypeError', async () => {
+    // 回归:JSON.parse("null") === null,此前 body.error 访问抛
+    // "Cannot read properties of null",击穿「失败一律转 ApiError」承诺
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(null, 200)),
+    );
+    await expect(apiCall('/api/x')).rejects.toMatchObject({ code: 'NON_JSON_RESPONSE' });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(42, 200)),
+    );
+    await expect(apiCall('/api/x')).rejects.toMatchObject({ code: 'NON_JSON_RESPONSE' });
+  });
+
   it('HTML 404(Next 404 页) → NON_JSON_RESPONSE + 请求失败: 404', async () => {
     vi.stubGlobal(
       'fetch',
