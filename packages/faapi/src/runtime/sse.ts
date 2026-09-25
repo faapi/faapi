@@ -15,6 +15,8 @@
  *   非 nginx 反代不识别该头，当普通自定义头透传）
  * - close 后再 send 静默忽略，避免 handler 异步流程中误写已关闭的流
  * - sendError 向流写入 event: error 后关闭，用于流式输出中报错的优雅终止
+ * - 背压：send/sendRaw 保持同步；desiredSize 暴露缓冲状态，waitForDrain() 供
+ *   生产循环在缓冲超水位时暂停（pull 钩子唤醒），防慢客户端内存无界增长
  *
  * 与 ctx 的集成：
  * - ctx.sse() 调用 createSseWriter()，并把 response 缓存到 ctx 内部字段
@@ -127,6 +129,22 @@ export interface SseWriter {
   readonly closed: boolean;
   /** 客户端是否已断开（ReadableStream 被 cancel） */
   readonly aborted: boolean;
+  /**
+   * 流缓冲背压状态（透传 controller.desiredSize）
+   *
+   * `null` = 流已关闭/断开；`<= 0` 表示消费慢于生产（缓冲超过高水位），生产循环
+   * 应 `await waitForDrain()` 暂停，否则快生产者（LLM token 流）+ 慢客户端会让
+   * 缓冲无界增长。`send`/`sendRaw` 保持同步不抛，背压响应由调用方自决。
+   */
+  readonly desiredSize: number | null;
+  /**
+   * 等待流缓冲排空（背压感知）
+   *
+   * 缓冲低于高水位（desiredSize > 0）时立即返回；否则挂起直到消费者拉取使缓冲
+   * 排空（ReadableStream pull 钩子唤醒）、或流关闭/客户端断开（避免悬挂）。
+   * 典型用法见 runtime/sse.md「背压」章节。
+   */
+  waitForDrain(): Promise<void>;
   /** 对应的 HTTP Response（由框架使用，用户一般不需要直接访问） */
   readonly response: Response;
 }
@@ -145,18 +163,37 @@ export function createSseWriter(): SseWriter {
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let closed = false;
   let aborted = false;
+  /** waitForDrain 挂起中的等待方——消费者拉取（pull）/关闭/断开时唤醒 */
+  let drainWaiters: Array<() => void> = [];
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(c) {
-      controller = c;
+  const resolveDrainWaiters = (): void => {
+    const waiters = drainWaiters;
+    drainWaiters = [];
+    for (const resolve of waiters) resolve();
+  };
+
+  // 高水位 16 个 chunk（SSE chunk 小）：给消费者留缓冲余量，超过即 desiredSize <= 0，
+  // 生产方可感知背压。无显式策略时默认 HWM=1,waitForDrain 过于激进
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      start(c) {
+        controller = c;
+      },
+      // 消费者排空缓冲后再要数据 → 背压解除，唤醒 waitForDrain 等待方
+      pull() {
+        resolveDrainWaiters();
+      },
+      cancel() {
+        // 客户端断开连接（cancel ReadableStream）
+        aborted = true;
+        closed = true;
+        controller = null;
+        // 等待方立即放行（生产循环靠 aborted 退出）
+        resolveDrainWaiters();
+      },
     },
-    cancel() {
-      // 客户端断开连接（cancel ReadableStream）
-      aborted = true;
-      closed = true;
-      controller = null;
-    },
-  });
+    { highWaterMark: 16 },
+  );
 
   const response = new Response(stream, {
     status: 200,
@@ -196,6 +233,8 @@ export function createSseWriter(): SseWriter {
     close(): void {
       if (closed) return;
       closed = true;
+      // 关闭唤醒全部等待方（resolved 的 Promise 不会让生产循环悬挂）
+      resolveDrainWaiters();
       if (controller) {
         try {
           controller.close();
@@ -208,6 +247,20 @@ export function createSseWriter(): SseWriter {
 
     get closed(): boolean {
       return closed;
+    },
+
+    get desiredSize(): number | null {
+      return controller ? controller.desiredSize : null;
+    },
+
+    waitForDrain(): Promise<void> {
+      // 已关闭/断开：立即返回（生产循环自行感知 closed/aborted 退出）
+      if (closed || !controller) return Promise.resolve();
+      // 缓冲低于高水位：背压未触发，立即返回
+      if ((controller.desiredSize ?? 0) > 0) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        drainWaiters.push(resolve);
+      });
     },
 
     get aborted(): boolean {

@@ -330,4 +330,91 @@ describe('createSseWriter', () => {
       expect(writer.aborted).toBe(false);
     });
   });
+
+  describe('背压（desiredSize / waitForDrain）', () => {
+    it('缓冲超过高水位时 desiredSize <= 0，消费者读取后回升', async () => {
+      const writer = createSseWriter();
+      const reader = writer.response.body!.getReader();
+      // 消费暂停：先积压一批（高水位 16）
+      for (let i = 0; i < 30; i++) {
+        writer.send({ data: 'x'.repeat(100) });
+      }
+      const drained = writer.desiredSize;
+      expect(drained).not.toBeNull();
+      expect(drained! <= 0).toBe(true);
+
+      // 恢复消费：缓冲排空后 desiredSize 回升
+      for (let i = 0; i < 30; i++) {
+        await reader.read();
+      }
+      expect(writer.desiredSize! > 0).toBe(true);
+      reader.releaseLock();
+      writer.close();
+    });
+
+    it('waitForDrain：缓冲超水位时挂起，消费者拉取后唤醒', async () => {
+      const writer = createSseWriter();
+      const reader = writer.response.body!.getReader();
+      for (let i = 0; i < 30; i++) {
+        writer.send({ data: 'y'.repeat(100) });
+      }
+      expect(writer.desiredSize! <= 0).toBe(true);
+
+      let resolved = false;
+      const drain = writer.waitForDrain().then(() => {
+        resolved = true;
+      });
+      // 未消费前不唤醒
+      await Promise.resolve();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(resolved).toBe(false);
+
+      // 消费至缓冲排空 → pull 钩子唤醒等待方
+      for (let i = 0; i < 30; i++) {
+        await reader.read();
+      }
+      await drain;
+      expect(resolved).toBe(true);
+      reader.releaseLock();
+      writer.close();
+    });
+
+    it('waitForDrain：缓冲未超水位时立即返回', async () => {
+      const writer = createSseWriter();
+      writer.send({ data: 'one' });
+      await writer.waitForDrain(); // 不挂起
+      writer.close();
+    });
+
+    it('waitForDrain：close / 客户端断开时立即返回（不悬挂生产循环）', async () => {
+      const writer = createSseWriter();
+      for (let i = 0; i < 30; i++) {
+        writer.send({ data: 'z' });
+      }
+      const drain = writer.waitForDrain();
+      writer.close();
+      await drain; // close 立即放行
+
+      // 客户端断开（cancel）路径
+      const writer2 = createSseWriter();
+      const reader2 = writer2.response.body!.getReader();
+      for (let i = 0; i < 30; i++) {
+        writer2.send({ data: 'z' });
+      }
+      const drain2 = writer2.waitForDrain();
+      reader2.cancel();
+      await drain2;
+      expect(writer2.aborted).toBe(true);
+    });
+
+    it('closed/aborted 后 desiredSize 为 null', async () => {
+      const writer = createSseWriter();
+      writer.close();
+      expect(writer.desiredSize).toBeNull();
+
+      const writer2 = createSseWriter();
+      await writer2.response.body!.cancel();
+      expect(writer2.desiredSize).toBeNull();
+    });
+  });
 });

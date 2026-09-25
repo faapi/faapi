@@ -189,6 +189,22 @@ handler 可经 `ctx.setHeader('X-Accel-Buffering', 'yes')` 覆盖默认值（见
 
 无需 try/finally 强制 close，框架兜底保证不泄漏连接。
 
+### 背压
+
+`send`/`sendRaw` 保持同步不抛（API 稳定），缓冲状态经 `desiredSize`（透传 `controller.desiredSize`，`null` = 已关闭/断开）暴露，生产循环在缓冲超过高水位（16 chunk）时应主动暂停：
+
+```ts
+for await (const token of llmStream()) {
+  if (sse.aborted) break;
+  sse.send({ data: token });
+  if ((sse.desiredSize ?? 0) <= 0) {
+    await sse.waitForDrain(); // 慢客户端:挂起直到消费者排空缓冲/断开/关闭
+  }
+}
+```
+
+`waitForDrain()` 在缓冲低于水位时立即返回；否则挂起直到 ReadableStream 的 pull 钩子被消费者触发（缓冲排空）、流关闭或客户端断开（避免生产循环悬挂）。不感知背压的循环在"快生产者 + 慢客户端"场景下缓冲无界增长（每连接一处内存泄漏点）。
+
 ## 相关模块
 
 - [createContext](./createContext.md)：挂载 `ctx.sse()` 方法
