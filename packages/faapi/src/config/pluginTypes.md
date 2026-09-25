@@ -54,4 +54,4 @@ ctx.wrapHandler((original) => (req, res) => {
 
 - [configTypes.ts](./configTypes.md) - FaapiConfig.plugins 字段引用 PluginDeclaration
 - [loadPlugins.ts](../cli/loadPlugins.md) - 加载和执行插件，收集包装器
-- [startServer.ts](../server/startServer.md) - applyPluginWrappers 工具函数
+- [startServer.ts](../server/startServer.md) - `applyPluginWrappers` 工具函数
