@@ -16,6 +16,9 @@ const h = vi.hoisted(() => {
     cancel: ReturnType<typeof vi.fn>;
     resume: ReturnType<typeof vi.fn>;
     createQueue: ReturnType<typeof vi.fn>;
+    complete: ReturnType<typeof vi.fn>;
+    fail: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
     sent: Array<{ name: string; data: unknown; options: unknown }>;
     workHandlers: Array<{
       options: Record<string, unknown>;
@@ -25,8 +28,16 @@ const h = vi.hoisted(() => {
   let sendCounter = 0;
   let workerCounter = 0;
   let failStartCounter = 0;
+  /** 非空时 start 挂起直到 resolve（停机竞态测试用） */
+  let startGate: Promise<void> | null = null;
   return {
     fakeBosses,
+    get startGate() {
+      return startGate;
+    },
+    set startGate(v: Promise<void> | null) {
+      startGate = v;
+    },
     counters: {
       get send() {
         return sendCounter;
@@ -56,6 +67,7 @@ vi.mock('pg-boss', () => {
       h.fakeBosses.push(this as never);
     }
     start = vi.fn(async () => {
+      if (h.startGate) await h.startGate;
       if (h.counters.failStart > 0) {
         h.counters.failStart -= 1;
         throw new Error('db down');
@@ -82,6 +94,9 @@ vi.mock('pg-boss', () => {
     cancel = vi.fn(async (_name: string, _id: string) => {});
     resume = vi.fn(async (_name: string, _id: string) => {});
     createQueue = vi.fn(async (_name: string) => {});
+    complete = vi.fn(async (_name: string, _id: string) => {});
+    fail = vi.fn(async (_name: string, _id: string, _reason?: unknown) => {});
+    on = vi.fn((_event: string, _listener: (...args: unknown[]) => void) => {});
     sent: Array<{ name: string; data: unknown; options: unknown }> = [];
     workHandlers: Array<{
       options: Record<string, unknown>;
@@ -150,15 +165,139 @@ describe('createPgBossDriver', () => {
     expect(process).toHaveBeenNthCalledWith(2, expect.objectContaining({ attempt: 3 }));
   });
 
-  it('process 抛错向外抛出（pg-boss 记失败并按 retryLimit 重试）', async () => {
+  it('process 抛错：仅 fail 该任务（带错误摘要），同批其他任务正常 complete', async () => {
+    // 回归：此前批内串行执行且无逐任务 try/catch，单个任务抛错由 pg-boss 对整批
+    // fail——同批已被 fetch 成 active 的其他任务也被消耗重试额度（毒化整批）
     const driver = createPgBossDriver();
-    const process = vi.fn(async () => {
-      throw new Error('boom');
+    const process = vi.fn(async (job: { id: string }) => {
+      if (job.id === 'j1') throw new Error('boom');
+      return 'ok';
     });
-    await driver.startWorker('flaky', { concurrency: 1, process });
+    await driver.startWorker('flaky', { concurrency: 2, process });
     const boss = fakeBosses()[0]!;
     const handler = boss.workHandlers[0]!.handler;
-    await expect(handler([{ id: 'j1', data: null, retryCount: 0 }])).rejects.toThrow('boom');
+    // handler 正常返回（失败已逐任务结算），不向外抛
+    await expect(
+      handler([
+        { id: 'j1', data: null, retryCount: 0 },
+        { id: 'j2', data: null, retryCount: 0 },
+      ]),
+    ).resolves.toBeUndefined();
+    expect(boss.fail).toHaveBeenCalledTimes(1);
+    expect(boss.fail).toHaveBeenCalledWith(
+      'flaky',
+      'j1',
+      expect.objectContaining({ message: 'boom' }),
+    );
+    expect(boss.complete).toHaveBeenCalledTimes(1);
+    expect(boss.complete).toHaveBeenCalledWith('flaky', 'j2');
+  });
+
+  it('批内任务并发执行（concurrency 语义与 BullMQ 驱动一致）', async () => {
+    let running = 0;
+    let peak = 0;
+    const driver = createPgBossDriver();
+    const process = vi.fn(async () => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 20));
+      running -= 1;
+    });
+    await driver.startWorker('a', { concurrency: 4, process });
+    const boss = fakeBosses()[0]!;
+    await boss.workHandlers[0]!.handler([
+      { id: 'j1', data: null, retryCount: 0 },
+      { id: 'j2', data: null, retryCount: 0 },
+      { id: 'j3', data: null, retryCount: 0 },
+    ]);
+    expect(peak).toBe(3);
+    // 成功路径逐任务 complete
+    expect(boss.complete).toHaveBeenCalledTimes(3);
+  });
+
+  it('enqueue 按任务元信息映射 expireInSeconds（timeoutMs + graceMs + 缓冲）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('long', {}, { timeoutMs: 30 * 60_000, graceMs: 5000 });
+    const boss = fakeBosses()[0]!;
+    const options = boss.sent[0]!.options as { expireInSeconds: number };
+    // 30min + 5s grace + 60s 缓冲 = 1865s——pg-boss DDL 默认 15 分钟会强杀仍在运行的
+    // 长任务并重试（同一任务两份并发），必须按任务预算给足
+    expect(options.expireInSeconds).toBe(Math.ceil((30 * 60_000 + 5000) / 1000) + 60);
+  });
+
+  it('未声明 timeoutMs 的任务用 defaultExpireSeconds 兜底（可配置，默认 24h）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('short', {});
+    const boss = fakeBosses()[0]!;
+    let options = boss.sent[0]!.options as { expireInSeconds: number };
+    expect(options.expireInSeconds).toBe(24 * 60 * 60);
+
+    const custom = createPgBossDriver({ defaultExpireSeconds: 3600 });
+    await custom.enqueue('short', {});
+    options = fakeBosses()[1]!.sent[0]!.options as { expireInSeconds: number };
+    expect(options.expireInSeconds).toBe(3600);
+  });
+
+  it('stop 的 timeout 以毫秒直传 pg-boss（其 timeout 单位是毫秒，非秒）', async () => {
+    const driver = createPgBossDriver();
+    await driver.startWorker('a', { concurrency: 1, process: async () => 1 });
+    await driver.stop(8000);
+    const boss = fakeBosses()[0]!;
+    // 回归：此前 Math.floor(timeoutMs / 1000) 把毫秒当秒传，stop(10s) 实际只 drain 1 秒
+    expect(boss.stop).toHaveBeenCalledWith(
+      expect.objectContaining({ close: true, graceful: true, timeout: 8000 }),
+    );
+  });
+
+  it('offWork 悬挂（卡死任务）时 stop 与 deadline 竞速，有界返回并 abort', async () => {
+    const driver = createPgBossDriver();
+    const captured: AbortSignal[] = [];
+    const process = vi.fn(async (job: { signal: AbortSignal }) => {
+      captured.push(job.signal);
+      await new Promise(() => {}); // 挂起：offWork 永远等不到 handler 结束
+    });
+    await driver.startWorker('a', { concurrency: 1, process });
+    const boss = fakeBosses()[0]!;
+    boss.offWork = vi.fn(async () => {
+      await new Promise(() => {}); // offWork 悬挂
+    }) as never;
+    void boss.workHandlers[0]!.handler([{ id: 'j1', data: null, retryCount: 0 }]);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const began = Date.now();
+    await driver.stop(80);
+    const elapsed = Date.now() - began;
+    // stop() 必须在 deadline 附近有界返回（而非永久悬挂）；放宽上界容忍 CI 慢环境
+    expect(elapsed).toBeLessThan(2000);
+    expect(captured[0]!.aborted).toBe(true);
+  });
+
+  it('boss 实例挂 error 监听（连接池错误/worker 异常不成 uncaughtException）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    const boss = fakeBosses()[0]!;
+    expect(boss.on).toHaveBeenCalledWith('error', expect.any(Function));
+  });
+
+  it('start 期间 stop() 竞态：不回写实例（关闭并放弃，不泄漏已 start 的 PgBoss）', async () => {
+    let release!: () => void;
+    h.startGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const driver = createPgBossDriver();
+    // enqueue 触发建连，start 挂在 gate 上
+    const enqueueErr: Promise<unknown> = driver.enqueue('mail', {}).catch((err) => err);
+    await vi.waitFor(() => expect(fakeBosses().length).toBe(1));
+    // stop 先于 start 完成执行
+    const stopPromise = driver.stop(1000);
+    release();
+    const err = (await enqueueErr) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/stopped/);
+    await stopPromise;
+    // 竞态输掉的实例被关闭收尾（不泄漏一个已 start、永不 stop 的 PgBoss）
+    expect(fakeBosses()[0]!.stop).toHaveBeenCalled();
+    h.startGate = null;
   });
 
   it('stop 调用 offWork + boss.stop({ close: true, graceful: true })，之后 enqueue 拒绝新任务', async () => {

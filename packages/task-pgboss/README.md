@@ -37,13 +37,13 @@ export function POST(body, tasks) {
 
 | faapi 驱动接口 | pg-boss |
 | --- | --- |
-| `enqueue(name, payload, { retries, delayMs })` | 幂等 `createQueue(name)`（每任务名每进程一次，缓存短路）→ `boss.send(name, payload, { retryLimit, retryDelay: 1, retryBackoff: true, startAfter })` |
-| `startWorker(name, { concurrency, process })` | 幂等 `createQueue(name)` → `boss.work(name, { batchSize: concurrency }, handler)` |
-| `stop(timeoutMs)` | 停 work + `boss.stop({ close: true, timeout })` |
+| `enqueue(name, payload, { retries, delayMs, dedupId, timeoutMs, graceMs })` | 幂等 `createQueue(name)`（每任务名每进程一次，缓存短路）→ `boss.send(name, payload, { retryLimit, retryDelay: 1, retryBackoff: true, expireInSeconds, startAfter, id })`。`expireInSeconds` = `timeoutMs + graceMs + 60s` 缓冲（未声明 `timeoutMs` 的任务用 `defaultExpireSeconds` 兜底，默认 24h）——pg-boss 以 expire_in 硬限执行，不映射会让 DDL 默认 15 分钟强杀仍在运行的长任务并重试 |
+| `startWorker(name, { concurrency, process })` | 幂等 `createQueue(name)` → `boss.work(name, { batchSize: concurrency }, handler)`。批内任务并发执行、逐任务 `complete`/`fail` 结算——单个任务失败只消耗自己的重试额度，不毒化同批 |
+| `stop(timeoutMs)` | `offWork`（与 deadline 竞速，卡死任务不悬挂停机）+ `boss.stop({ close: true, graceful: true, timeout })`（timeout 单位毫秒）；deadline 到点 abort 在跑任务的 signal |
 | `stopWorkers()` | `offWork()`（不断开连接，dev 热替换重注册用） |
 | 失败重试 | pg-boss 侧执行（retryLimit + retryBackoff 指数退避） |
 
-注意：pg-boss v10 不再隐式建队列（`send()` 对未创建队列静默返回 null）——驱动在投递/注册 worker 前自动幂等建队列，业务方无需预建；pg-boss 也不提供执行中任务的取消信号——`run` 的 `taskCtx.signal` 永不 abort，长任务请自行做超时控制。
+注意：pg-boss v10 不再隐式建队列（`send()` 对未创建队列静默返回 null）——驱动在投递/注册 worker 前自动幂等建队列，业务方无需预建。pg-boss 自身不提供执行中任务的取消信号，但 `stop` 超时路径会 abort `taskCtx.signal`（任务监听 signal 可尽快退出；仍不退出的由 expire_in 兜底结算）。
 
 ## License
 
