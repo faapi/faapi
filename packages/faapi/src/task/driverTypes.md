@@ -15,15 +15,18 @@
 
 - 重试策略在**入队时**由语义层传 `retries`（从任务 meta 取），驱动负责执行（pg-boss：retryLimit/retryBackoff；bullmq：attempts/backoff）
 - `process` 抛错 = 本次执行失败，驱动决定是否重试；语义层在每次 process 调用中更新任务记录（attempt/done/failed）
-- `dedupId`（可选，幂等键）：同键任务在队列系统保留期内不重复入队——pgboss 映射 `send` 的自定义 `id`（**要求 UUID 格式，驱动内做任意字符串 → 确定性 UUID（SHA-1）映射**，主键冲突 DO NOTHING 即跳过投递）；bullmq 映射 `jobId`（waiting/active 等存活期内同键忽略）。cron 投递自动携带（见 cronScheduler.md）
-- `stop(timeoutMs)` 停消费等 in-flight，**超时后 abort 在跑任务的 signal**（任务监听可尽快退出；进程退出兜底终止），子包 pgboss/bullmq 均已实现；`stopWorkers()` 仅停消费不断连接（dev 热替换重注册用，可选实现）
+- `dedupId`（可选，幂等键）：同键任务在队列系统保留期内不重复入队——pgboss 映射 `send` 的自定义 `id`（**要求 UUID 格式，驱动内做任意字符串 → 确定性 UUID（SHA-1）映射**，主键冲突 DO NOTHING 即跳过投递）；bullmq 映射 `jobId`（waiting/active 等存活期内同键忽略；终态任务默认 7 天后清理，存活期即保留期，可经 `removeOnComplete`/`removeOnFail` 覆盖）。cron 投递自动携带（见 cronScheduler.md）
+- **执行硬限**：入队时语义层透传任务 meta 的 `timeoutMs`/`graceMs`，驱动以此设置队列系统的执行硬限（pgboss 映射 `expireInSeconds` = timeoutMs + graceMs + 60s 缓冲；未声明 `timeoutMs` 的任务用驱动兜底默认）。不映射会让队列系统的默认限值（pg-boss DDL 15 分钟）强杀仍在运行的长任务并重试——同一任务两份并发执行
+- **批内失败隔离**（pgboss）：`work` handler 内批任务并发执行、逐任务 complete/fail 结算（pg-boss 的结算 SQL 带 state 守卫，语义层先结算后 handler 正常返回的批量 complete 是 no-op）——单个任务失败只消耗自己的重试额度，不毒化同批其他任务；`concurrency` 语义与 bullmq（原生并行消费）一致
+- `stop(timeoutMs)` 停消费等 in-flight，**超时后 abort 在跑任务的 signal**（任务监听可尽快退出；进程退出兜底终止），子包 pgboss/bullmq 均已实现，且 stop 整体有界返回（pgboss 侧 offWork/boss.stop 与 deadline 竞速——卡死任务不再永久悬挂停机；pg-boss `stop({ timeout })` 的单位是毫秒）；`stopWorkers()` 仅停消费不断连接（dev 热替换重注册用，可选实现）
+- 驱动实例必须挂 `error` 事件监听（pg-boss 把连接池错误/worker 异常 emit 为 'error'，无监听器会成为 uncaughtException 崩进程）
 
 ## 可选管理方法（`list` / `cancel` / `retry`）
 
 - 全部可选——驱动按队列系统的真实能力实现，未实现时 `TaskClient` 对应调用显式抛错（不静默降级）
-- `list(opts?)`：查询持久化队列任务，返回 `TaskDriverRecord[]`（status 由子包从队列系统状态映射为 faapi 语义：pgboss created→pending、active→running、completed→done、cancelled→cancelled；bullmq waiting/delayed→pending、active→running、completed→done、failed→failed）。**pg-boss v10 无批量列出 jobs 的公开 API，未实现**（可用 `getJobById`/SQL 旁路）；**BullMQ 取消 = `job.remove()`，移除后记录不可查（无 cancelled 状态）**
-- `cancel(name, id)`：取消队列侧任务——pgboss 映射 `boss.cancel`（保留 cancelled 记录）；bullmq 映射 `job.remove()`（等待/延迟中的不再执行，active 受锁限制由 BullMQ 抛错）
-- `retry(name, id)`：重试失败/取消的任务——pgboss 映射 `boss.resume`（仅 cancelled 任务可恢复）；bullmq 映射 `job.retry()`（仅 failed 可重试，其余状态由 BullMQ 抛错）
+- `list(opts?)`：查询持久化队列任务，返回 `TaskDriverRecord[]`（status 由子包从队列系统状态映射为 faapi 语义；**pg-boss v10 无批量列出 jobs 的公开 API，task-pgboss 未实现**——下方状态映射仅为约定，无 pgboss 参考实现；bullmq waiting/delayed→pending、active→running、completed→done、failed→failed 已实现。**BullMQ 取消 = `job.remove()`，移除后记录不可查（无 cancelled 状态）**）
+- `cancel(name, id)`：取消队列侧任务——pgboss 映射 `boss.cancel`（保留 cancelled 记录）；bullmq 映射 `job.remove()`（等待/延迟中的不再执行，active 受锁限制由 BullMQ 抛错）。**驱动不校验取消是否真实生效**（pg-boss 对不存在/不可取消的 id 静默 no-op；BullMQ 对不存在的 job 静默 no-op）——语义层记录状态可能与队列实际状态相反，管理操作建议配合 `getJobById`/队列系统自身工具核实
+- `retry(name, id)`：重试失败/取消的任务——pgboss 映射 `boss.resume`（仅 cancelled 任务可恢复）；bullmq 映射 `job.retry()`（仅 failed 可重试，其余状态由 BullMQ 抛错；任务不存在时抛错）
 - 语义层补充：`TaskClient.listQueued` 把驱动记录与本进程执行记录按 id 合并（本进程观测优先——attempts/status/result 更实时）
 
 ## 相关模块

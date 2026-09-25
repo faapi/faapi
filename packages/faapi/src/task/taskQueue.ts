@@ -277,6 +277,10 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         delayMs: opts?.delayMs,
         retries: meta.retries ?? 0,
         dedupId: opts?.dedupId,
+        // 执行硬限预算透传驱动（pgboss 映射 expireInSeconds）：未声明 timeoutMs 时
+        // 两字段为 undefined，驱动用自身兜底
+        timeoutMs: meta.timeoutMs,
+        graceMs: meta.graceMs,
       });
       // driver.enqueue 可能已同步触发派发——runJob 已写入
       // running/done 记录时不要用 pending 覆盖

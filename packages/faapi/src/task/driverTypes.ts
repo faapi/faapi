@@ -31,8 +31,8 @@ export type TaskDriverProcess = (job: TaskDriverJob) => Promise<unknown>;
  * 驱动侧任务查询记录（TaskDriver.list 的返回项）
  *
  * status 由子包从队列系统原生状态映射为 faapi 语义
- * （pgboss：created→pending、active→running、completed→done、cancelled→cancelled；
- * bullmq：waiting/delayed→pending、active→running、completed→done、failed→failed），
+ * （bullmq：waiting/delayed→pending、active→running、completed→done、failed→failed；
+ * pg-boss v10 无批量列出 jobs 的公开 API，task-pgboss 未实现 list），
  * 语义层零映射直接转 TaskJob。
  */
 export interface TaskDriverRecord {
@@ -61,12 +61,22 @@ export interface TaskDriver {
    * @param opts.dedupId 幂等键（可选）——同键任务在队列系统保留期内不重复入队。
    *   pgboss 映射 send 自定义 id（驱动内做任意字符串 → 确定性 UUID 映射，冲突跳过）；
    *   bullmq 映射 jobId。重复投递时返回已存在任务的 id。
+   * @param opts.timeoutMs 任务执行超时毫秒（语义层从任务 meta 取）——驱动以此设置
+   *   队列系统的执行硬限（pgboss 映射 expireInSeconds），防止队列系统默认限值
+   *   （pg-boss DDL 15 分钟）强杀仍在运行的长任务后重试，导致同一任务两份并发执行
+   * @param opts.graceMs 超时取消宽限期毫秒（与 timeoutMs 配套，驱动计入执行硬限预算）
    * @throws 驱动已停止 / 连接失败等
    */
   enqueue(
     name: string,
     payload: unknown,
-    opts?: { delayMs?: number; retries?: number; dedupId?: string },
+    opts?: {
+      delayMs?: number;
+      retries?: number;
+      dedupId?: string;
+      timeoutMs?: number;
+      graceMs?: number;
+    },
   ): Promise<string>;
   /**
    * 注册某任务的消费 worker（幂等覆盖）。process 抛错 = 本次失败，驱动决定重试。
