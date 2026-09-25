@@ -550,14 +550,15 @@ function stripReasoningFromMessages(messages: LLMMessage[]): LLMMessage[] {
 /**
  * OpenAI tool_calls 数组 → 规范形 LLMToolCall[]
  *
- * 补全缺失的 id/name 默认值并**校验 arguments 可解析**（不合法抛
- * `LLMProviderError`，fail-fast 在 provider 边界），`arguments` 保持线格式
- * JSON 字符串——解析边界收敛在 reactLoop（执行前 parse）。
+ * 补全缺失的 id/name 默认值，`arguments` 保持线格式 JSON 字符串——解析边界
+ * 收敛在 reactLoop（执行前 parse）。此处**不预校验 JSON 合法性**：maxTokens 截断
+ * （stopReason='length'）会产生半截 JSON，fail-fast 会让整个 run 死亡；不校验则
+ * 由 reactLoop 的 per-tool 错误路径把解析失败回传 LLM，LLM 可修正参数重试（自愈）。
  */
 function normalizeToolCalls(
   toolCalls: OpenAIToolCall[] | undefined,
-  bodyText: string,
-  status: number,
+  _bodyText: string,
+  _status: number,
 ): LLMToolCall[] | undefined {
   if (!toolCalls || toolCalls.length === 0) return undefined;
 
@@ -565,15 +566,6 @@ function normalizeToolCalls(
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i];
     const argsStr = tc?.function?.arguments ?? '{}';
-    try {
-      JSON.parse(argsStr);
-    } catch {
-      const excerpt = argsStr.slice(0, 500);
-      throw new LLMProviderError(`Invalid tool arguments JSON: ${excerpt}`, {
-        status,
-        body: bodyText.slice(0, 500),
-      });
-    }
     result.push({
       id: tc?.id ?? `call_${i}`,
       type: 'function',
@@ -680,7 +672,13 @@ function accumulateToolCall(
   accumulators.set(idx, acc);
 }
 
-/** 流结束时把累积器转为规范形 LLMToolCall[]（arguments 保持 JSON 字符串，校验可解析）+ finishReason + usage 一并 emit */
+/**
+ * 流结束时把累积器转为规范形 LLMToolCall[]（arguments 保持 JSON 字符串）+
+ * finishReason + usage 一并 emit。
+ *
+ * 不校验 arguments JSON 合法性——解析边界在 reactLoop 的 per-tool 错误路径
+ * （解析失败回传 LLM 可修正重试），截断产生的半截 JSON 不应让整个 run 死亡。
+ */
 function finalizeStreamChunk(
   accumulators: Map<number, ToolCallAccumulator>,
   finishReason: LLMStopReason | undefined,
@@ -694,14 +692,6 @@ function finalizeStreamChunk(
       // 跳过不完整(无 id 或 name)的累积,异常流不应阻止结束
       if (!acc.id || !acc.name) continue;
       const argsStr = acc.argsString || '{}';
-      try {
-        JSON.parse(argsStr);
-      } catch {
-        const excerpt = argsStr.slice(0, 500);
-        throw new LLMProviderError(`Invalid tool arguments JSON: ${excerpt}`, {
-          body: excerpt,
-        });
-      }
       toolCalls.push({
         id: acc.id,
         type: 'function',

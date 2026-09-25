@@ -477,6 +477,157 @@ describe('Agent', () => {
     });
   });
 
+  describe('executeTool — toolTimeoutMs 超时与钩子隔离', () => {
+    it('toolTimeoutMs:挂死的 tool handler 超时,错误回传 LLM（run 不永久挂起）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather.getWeather', { city: 'x' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'recovered', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async (filePath, functionName) => ({
+            handler: async () => {
+              await new Promise(() => {}); // 挂死:模拟无超时的内部 fetch
+            },
+            functionName,
+          }),
+          config: { toolTimeoutMs: 50 },
+        }),
+      );
+
+      const result = await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+      // 第二轮 LLM 收到超时错误 tool 消息,可自决重试或换路
+      expect(result.content).toBe('recovered');
+      const toolMsg = completeCalls.mock.calls[1][0].messages.find(
+        (m: LLMMessage) => m.role === 'tool',
+      );
+      expect(toolMsg).toBeDefined();
+      expect(String(toolMsg!.content)).toMatch(/timed out|timeout/i);
+    });
+
+    it('toolTimeoutMs 未设置时挂死 handler 保持原行为（run 挂起,不引入行为变化）', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather.getWeather', {})],
+          stopReason: 'tool_calls',
+        }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async (filePath, functionName) => ({
+            handler: async () => {
+              await new Promise(() => {});
+            },
+            functionName,
+          }),
+        }),
+      );
+      // 50ms 后 abort:run 仍挂起(tool 无超时),证明未配置时行为不变
+      const runPromise = agent.run('x', { agent: 'researcher', model: 'gpt-4o' });
+      const outcome = await Promise.race([
+        runPromise.then(() => 'resolved' as const),
+        new Promise((r) => setTimeout(() => r('pending' as const), 60)),
+      ]);
+      expect(outcome).toBe('pending');
+    });
+
+    it('afterToolCall 钩子抛错只留痕,不把成功的 tool 结果变成错误回传 LLM', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather.getWeather', {})],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+      const afterToolCall = vi.fn(() => {
+        throw new Error('audit down');
+      });
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async (filePath, functionName) => ({
+            handler: async () => ({ temp: 25 }),
+            functionName,
+          }),
+          config: { afterToolCall },
+        }),
+      );
+
+      const result = await agent.run('w?', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('done');
+      // LLM 第二轮收到的是真实结果,而非审计系统的报错
+      const toolMsg = completeCalls.mock.calls[1][0].messages.find(
+        (m: LLMMessage) => m.role === 'tool',
+      );
+      expect(String(toolMsg!.content)).toContain('25');
+      expect(afterToolCall).toHaveBeenCalledTimes(1);
+      expect(errSpy).toHaveBeenCalled();
+      errSpy.mockRestore();
+    });
+  });
+
+  describe('provider 坏 JSON arguments 自愈路径', () => {
+    it('tool_calls.arguments 为半截 JSON:provider 不 fail-fast,解析错误回传 LLM 修正', async () => {
+      // 场景:maxTokens 截断产生半截 JSON。此前 provider 边界 JSON.parse 校验失败
+      // 抛 LLMProviderError,整个 run 死亡,reactLoop 宣称的自愈路径不可达
+      const raw = '{"city": "北';
+      const completeCalls = vi.fn();
+      let call = 0;
+      const provider: LLMProvider = {
+        complete: async (request) => {
+          completeCalls(request);
+          if (call++ === 0) {
+            return {
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  {
+                    id: 'c1',
+                    type: 'function',
+                    function: { name: 'weather.getWeather', arguments: raw },
+                  },
+                ],
+              },
+              stopReason: 'tool_calls',
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            } as unknown as LLMResponse;
+          }
+          return llmResponse({ content: 'fixed', stopReason: 'stop' });
+        },
+        stream: () => {
+          throw new Error('stream not mocked');
+        },
+      };
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+        }),
+      );
+
+      const result = await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('fixed');
+      const toolMsg = completeCalls.mock.calls[1][0].messages.find(
+        (m: LLMMessage) => m.role === 'tool',
+      );
+      expect(toolMsg).toBeDefined();
+    });
+  });
+
   describe('executeTool — input 校验', () => {
     it('resolveToolSchema.validate 失败时返回 { error },不调用 handler', async () => {
       const handler = vi.fn(async () => 'should not be called');

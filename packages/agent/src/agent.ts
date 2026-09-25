@@ -156,6 +156,13 @@ export interface AgentRuntimeConfig {
   /** 发送给 LLM 的历史 token 预算（近似估算,未设置 = 不裁剪）——透传 reactLoop,见 reactLoop.md 历史裁剪章节 */
   maxHistoryTokens?: number;
   /**
+   * 单次 tool 执行的超时毫秒数（未设置 = 不限时）。超时抛 `AgentToolTimeoutError`,
+   * 被 reactLoop 按既有 tool 错误路径回传 LLM（LLM 可决定重试或换路）——挂死的
+   * tool handler（如无超时的内部 fetch）此前会让整个 run 永久挂起,且 run 的
+   * abort signal 对 tool 执行无效
+   */
+  toolTimeoutMs?: number;
+  /**
    * 启用 tracing 的全局默认值（默认 false——opt-in,不开启零开销）。
    *
    * 开启时 `ReactLoopResult.trace` / `ReactLoopStreamChunk.traceEvent` 填充
@@ -309,6 +316,21 @@ export class AgentError extends Error {
  *
  * 被 [reactLoop](./reactLoop.md) catch 后错误消息回传 LLM，LLM 可据此调整策略。
  */
+/** tool 执行超时（toolTimeoutMs）——被 reactLoop catch 后回传 LLM,不终止整个 run */
+export class AgentToolTimeoutError extends AgentError {
+  /** 超时的 tool 名 */
+  readonly toolName: string;
+  /** 配置的超时毫秒数 */
+  readonly timeoutMs: number;
+
+  constructor(toolName: string, timeoutMs: number) {
+    super(`Tool "${toolName}" timed out after ${timeoutMs}ms`);
+    this.name = 'AgentToolTimeoutError';
+    this.toolName = toolName;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export class AgentRecursionError extends AgentError {
   /** 配置的 maxAgentDepth 值 */
   readonly maxDepth: number;
@@ -769,8 +791,31 @@ export class Agent {
     }
 
     const mod = await this.deps.loadToolModule(tool.filePath, tool.functionName);
-    const result = await mod.handler(callArgs, this.deps.ctx);
-    this.deps.config?.afterToolCall?.(name, args, result, this.deps.ctx);
+    const toolTimeoutMs = this.deps.config?.toolTimeoutMs;
+    let result: unknown;
+    if (toolTimeoutMs && toolTimeoutMs > 0) {
+      // 超时竞速:到点抛 AgentToolTimeoutError,被 reactLoop per-tool catch 后回传 LLM。
+      // 输了的 handler Promise 无从取消(同步持有的执行不中断),仅不再等待其结果
+      result = await Promise.race([
+        mod.handler(callArgs, this.deps.ctx),
+        new Promise<never>((_, reject) => {
+          const timer = setTimeout(
+            () => reject(new AgentToolTimeoutError(name, toolTimeoutMs)),
+            toolTimeoutMs,
+          );
+          timer.unref?.();
+        }),
+      ]);
+    } else {
+      result = await mod.handler(callArgs, this.deps.ctx);
+    }
+    try {
+      this.deps.config?.afterToolCall?.(name, args, result, this.deps.ctx);
+    } catch (hookErr) {
+      // 审计钩子自身抛错只留痕——钩子在 return 前同步调用,不隔离会把成功的 tool
+      // 结果变成错误回传 LLM(审计故障劫持执行语义,LLM 拿到审计报错还可能重试)
+      console.error(`[faapi] afterToolCall hook error for tool "${name}":`, hookErr);
+    }
     return result;
   }
 

@@ -68,6 +68,7 @@ export {
   Agent,
   AgentError,
   AgentRecursionError,
+  AgentToolTimeoutError,
   type AgentDeps,
   type AgentRuntimeConfig,
   type ToolSchemaResolution,
