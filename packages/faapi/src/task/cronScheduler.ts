@@ -30,19 +30,24 @@ export function createCronScheduler(registry: TaskRegistry, enqueue: CronEnqueue
       for (const task of registry.list()) {
         if (!task.cron) continue;
         // croner 对非法表达式抛错——启动期显式失败，不静默跳过（cronScheduler.md 约定）
+        // 计划槽位幂等键：start 时捕获 nextRun()（croner 剥离毫秒的下一个计划触发时刻），
+        // 回调消费本槽位后滚动到下一槽位。键只由 cron 表达式 + 槽位序号决定，与实际触发
+        // 时刻无关——多实例各自 setTimeout 的毫秒级抖动不影响键值，时钟同步下同窗同键
+        let pendingSlot: Date | null = null;
         const schedule = new Cron(task.cron, () => {
-          // 计划触发时刻（秒级）做幂等键：多实例时钟同步下同窗同键，驱动按 dedupId 去重
-          const runAt = schedule.currentRun();
+          const slot = pendingSlot;
+          pendingSlot = schedule.nextRun();
           void Promise.resolve()
             .then(() =>
               enqueue(task.name, {
-                dedupId: runAt ? `cron:${task.name}:${runAt.toISOString()}` : undefined,
+                dedupId: slot ? `cron:${task.name}:${slot.toISOString()}` : undefined,
               }),
             )
             .catch((err) => {
               console.error(`[faapi] Cron enqueue failed for task "${task.name}":`, err);
             });
         });
+        pendingSlot = schedule.nextRun();
         schedules.push(schedule);
       }
     },

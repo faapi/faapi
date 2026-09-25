@@ -44,6 +44,27 @@ describe('createCronScheduler', () => {
     expect(new Set(keys).size).toBeGreaterThan(1);
   });
 
+  it('dedupId 是秒级对齐的计划槽位（毫秒为 0），不随触发抖动漂移', async () => {
+    // 回归：键曾取 croner currentRun()（实际触发时刻，保留毫秒）——多实例 setTimeout
+    // 毫秒级抖动导致键几乎必然不同，多实例防重失效。改为 nextRun() 计划槽位后，
+    // 键秒级对齐（toISOString 恒以 .000Z 结尾）且不晚于投递时刻
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'tick', filePath: 'd.js', cron: '*/1 * * * * *' }]);
+    const keys: string[] = [];
+    const enqueue = vi.fn(async (_name: string, opts: { dedupId?: string }) => {
+      keys.push(opts.dedupId!);
+      return { id: 'x' };
+    });
+    const scheduler = createCronScheduler(registry, enqueue);
+    scheduler.start();
+    await vi.waitFor(() => expect(keys.length).toBeGreaterThanOrEqual(1), { timeout: 10_000 });
+    scheduler.stop();
+    const slotMs = keys.map((k) => new Date(k.split(':').slice(2).join(':')).getMilliseconds());
+    for (const ms of slotMs) {
+      expect(ms).toBe(0);
+    }
+  });
+
   it('stop 后不再投递', async () => {
     const registry = createTaskRegistry();
     registry.hydrate([{ name: 'tick', filePath: 'd.js', cron: '*/1 * * * * *' }]);
