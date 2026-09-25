@@ -337,9 +337,20 @@ export function createServer(options: CreateServerOptions): {
       bodyLimit,
       trustedProxy,
       registries,
-    ).catch(() => {
-      res.statusCode = 500;
-      res.end();
+    ).catch((err) => {
+      // 兜底留痕：进入这里说明 sendErrorResponse 自身也失败（如响应头已发的二次
+      // 响应尝试），恰恰是最需要排查痕迹的极端场景，静默吞掉会让 500 无从定位
+      console.error('[faapi] Request pipeline failed after error response attempt:', err);
+      try {
+        if (!res.headersSent) {
+          res.statusCode = 500;
+          res.end();
+        } else if (!res.writableEnded) {
+          res.end();
+        }
+      } catch {
+        // 连接已不可用，忽略
+      }
     });
   });
 
@@ -448,6 +459,9 @@ function getRoutePaths(
   return cached;
 }
 
+/** 合并注入器缓存（route 记录 → 全局+目录合并结果；route 记录 reload 即换代） */
+const mergedInjectorsCache = new WeakMap<object, InjectorMap>();
+
 function createRoutePipeline(opts: {
   routes: RouteManifest;
   method: string;
@@ -518,10 +532,18 @@ function createRoutePipeline(opts: {
       }
     }
 
-    // 6. 注入器合并：全局注入器为基线，目录注入器覆盖同名
-    const mergedInjectors = globalInjectors
-      ? { ...globalInjectors, ...route.injectors }
-      : route.injectors;
+    // 6. 注入器合并：全局注入器为基线，目录注入器覆盖同名。
+    //    合并结果对固定 route 恒定（injectors 在上方第 5 步按需加载后就绪，
+    //    reload 换新 route 记录），按 route WeakMap 缓存避免每请求 spread 重建
+    let mergedInjectors = route.injectors;
+    if (globalInjectors) {
+      let merged = mergedInjectorsCache.get(route);
+      if (!merged) {
+        merged = { ...globalInjectors, ...route.injectors };
+        mergedInjectorsCache.set(route, merged);
+      }
+      mergedInjectors = merged;
+    }
 
     // 7. handler 调用（含目录中间件洋葱模型 + 自动响应包装）
     return await invokeHandler(routeModule.handler, ctx, body, route.middlewares, mergedInjectors);
@@ -630,6 +652,13 @@ async function handleRequest(
     // 客户端已断开或响应已完成：网络中断/连接销毁不是服务端错误，
     // 不向已销毁的连接写 500（写入无效），也不触发 onError 误报
     if (res.destroyed || res.writableEnded) return;
+    // 413（请求体超限）：客户端可能仍在上传——响应附 Connection: close 并在写出
+    // 后销毁请求连接。不关闭的话：请求体未消费，keep-alive 连接无法复用，客户端
+    // 上传也只会收到晦涩的连接重置而非明确的 413
+    if (err instanceof PayloadTooLargeError) {
+      res.setHeader('Connection', 'close');
+      res.once('finish', () => req.destroy());
+    }
     await sendErrorResponse(err, meta, res, onError, ctx);
   }
 }

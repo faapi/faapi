@@ -708,6 +708,9 @@ describe('HTTP Server E2E', () => {
         expect(res.status).toBe(413);
         const body = await res.json();
         expect(body.error.code).toBe('PAYLOAD_TOO_LARGE');
+        // 请求体未消费,keep-alive 连接不可复用——必须声明 close,
+        // 客户端重发大 body 时拿到的是明确 413 而非连接层面的晦涩错误
+        expect(res.headers.get('connection')).toBe('close');
       } finally {
         await closeServer(smallSrv);
       }
