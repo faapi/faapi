@@ -22,7 +22,6 @@
     "typecheck:test": "pnpm -r --no-bail run typecheck:test"
   },
   "devDependencies": {
-    "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.0",
     "@commitlint/cli": "^21.1.0",
     "@commitlint/config-conventional": "^21.1.0",

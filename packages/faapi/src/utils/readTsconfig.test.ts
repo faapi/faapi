@@ -71,10 +71,7 @@ describe('readTsconfig', () => {
       }),
     );
     // 子配置：extends（不设 baseUrl，继承父的）
-    await writeFile(
-      path.join(dir, 'tsconfig.json'),
-      JSON.stringify({ extends: './base.json' }),
-    );
+    await writeFile(path.join(dir, 'tsconfig.json'), JSON.stringify({ extends: './base.json' }));
 
     const config = readTsconfig(dir);
     expect(config).not.toBeNull();

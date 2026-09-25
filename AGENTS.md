@@ -869,7 +869,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 - `ws` WebSocket 协议
 - `vitest` 测试（faapi 包提供 `test:unit` / `test:e2e` / `test` 三档：本地快速反馈用 unit，CI 与发布门禁跑全量）
 - 代码质量：`eslint`（flat config）+ `prettier` + `husky` + `lint-staged` + `commitlint`
-- 版本与发布：`@changesets/cli` + `@changesets/changelog-github`，CI 由 GitHub Actions 驱动
+- 版本与发布：`@changesets/cli`（changelog 生成器为默认的 `@changesets/changelog-git`），CI 由 GitHub Actions 驱动
 
 ### 6.5 新增子包配置清单
 

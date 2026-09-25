@@ -32,9 +32,7 @@ describe('resolveAlias', () => {
   });
 
   it('通配捕获中间多段路径：@/lib/utils/db', () => {
-    expect(resolveAlias('@/lib/utils/db', config)).toEqual([
-      '/project/src/lib/utils/db',
-    ]);
+    expect(resolveAlias('@/lib/utils/db', config)).toEqual(['/project/src/lib/utils/db']);
   });
 
   it('无匹配返回空数组', () => {
