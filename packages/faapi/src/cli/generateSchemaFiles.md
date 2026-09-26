@@ -123,6 +123,8 @@ function getHelpersImportPath(relDir: string): string
 4. 通过 `usesCoerceHelpers` 检测所有源码，需要时在 dist 根部生成 `faapi-helpers.js`（`generateHelpersFileSource()`）
 5. 并行写入所有 zod.js
 
+> zod.js 的分组/写入/helpers 生成流程由 `generateZodArtifacts` 共享管线执行（与 tools/tasks 同一份），本模块保留 schema 源生成与产物布局函数。
+
 ## 相关模块
 
 - [generateZodSchema](../ast/generateZodSchema) — RuntimeType → zod schema 代码（含 coerce preprocess）

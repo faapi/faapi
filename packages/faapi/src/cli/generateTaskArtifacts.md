@@ -19,6 +19,8 @@
 - zod.js：对每个任务文件的 `run` 函数提取首参类型名（extractToolMetadata，functionName='run'），有类型名则用 tool 同款管线（collectTaskSchemaSources → generateToolSchemaFileSource，coerce=false）写 `<dist>/tasks/<dir>/zod.js`，导出 `${typeName}Schema`；无类型名跳过（运行时同样跳过校验）
 - 无任务文件时仍写空清单（`export const tasks = []`），运行时队列空转
 
+> zod.js 的分组/写入/helpers 生成流程由 `generateZodArtifacts` 共享管线执行（与 routes/tools 同一份）。
+
 ## 相关模块
 
 - `src/cli/generateToolArtifacts.ts` — schema 生成管线复用（generateToolSchemaFileSource / getSchemaOutputPath）

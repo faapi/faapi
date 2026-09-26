@@ -1,15 +1,14 @@
 import path from 'node:path';
-import { atomicWriteFile } from '../utils/atomicWrite';
 import type { RouteManifest } from '../router/routeTypes';
 import type { RouteSchemaSource } from './collectRouteSchemaSources';
 import type { RuntimeType } from '../ast/resolveTypeNode';
 import { collectRouteSchemaSources } from './collectRouteSchemaSources';
 import {
   generateZodSchemaSourceParts,
-  generateHelpersFileSource,
   usesCoerceHelpers,
   HELPERS_FILENAME,
 } from '../ast/generateZodSchema';
+import { generateZodArtifacts } from './generateZodArtifacts';
 
 /**
  * 源文件路径 → 产物 zod.js 路径
@@ -211,59 +210,10 @@ export async function generateSchemaFiles(
 
   const { sources, resolversByFile } = collectRouteSchemaSources(routes, rootDir);
 
-  // 按 filePath 分组 sources（同一 handler 的多个方法合并到一个 zod.js）
-  const sourcesByFile = new Map<string, RouteSchemaSource[]>();
-  for (const source of sources) {
-    let list = sourcesByFile.get(source.filePath);
-    if (!list) {
-      list = [];
-      sourcesByFile.set(source.filePath, list);
-    }
-    list.push(source);
-  }
-
-  // 为每个文件生成 zod.js 源码（先暂存，用于检测是否需要 helpers）
-  const fileEntries: { outputPath: string; source: string }[] = [];
-  for (const [filePath, fileSources] of sourcesByFile) {
-    // filePath 是绝对路径，转为相对 rootDir 的路径用于计算输出路径
-    const relFile = path.relative(rootDir, filePath).replace(/\\/g, '/');
-    const outputPath = getSchemaOutputPath(relFile, dist, rootDir);
-    // 计算 zod.js 所在目录相对 dist 的路径（用于 import helpers）
-    // 与 getSchemaOutputPath 的目录计算逻辑一致：strip src/ 前缀后取目录部分
-    let relForDir = relFile;
-    if (relForDir.startsWith('src/')) {
-      relForDir = relForDir.slice(4);
-    }
-    const dirIdx = relForDir.lastIndexOf('/');
-    const zodRelDir = dirIdx >= 0 ? relForDir.slice(0, dirIdx) : '';
-    const helpersImportPath = getHelpersImportPath(zodRelDir);
-
-    const resolver = resolversByFile.get(filePath);
-    const source = generateSchemaFileSource(
-      fileSources,
-      (name) => resolver?.resolve(name)?.runtimeType,
-      helpersImportPath,
-    );
-    fileEntries.push({ outputPath, source });
-  }
-
-  // 检测是否需要生成 faapi-helpers.js
-  const allSourceCode = fileEntries.map((e) => e.source).join('\n');
-  if (usesCoerceHelpers(allSourceCode)) {
-    const helpersPath = path.resolve(rootDir, dist, HELPERS_FILENAME);
-    await writeSchemaFile(helpersPath, generateHelpersFileSource());
-  }
-
-  // 并行写入所有 zod.js
-  await Promise.all(
-    fileEntries.map(({ outputPath, source }) => writeSchemaFile(outputPath, source)),
-  );
-}
-
-/**
- * 写入 zod.js 文件（确保目录存在）
- */
-async function writeSchemaFile(outputPath: string, source: string): Promise<void> {
-  // 原子写：dev watch 重建与在途请求并发时，请求 import zod.js 不能读到半成品
-  await atomicWriteFile(outputPath, source);
+  await generateZodArtifacts(sources, {
+    generateFileSource: generateSchemaFileSource,
+    resolversByFile,
+    rootDir,
+    dist,
+  });
 }

@@ -1,10 +1,11 @@
 import path from 'node:path';
+import { generateZodArtifacts } from './generateZodArtifacts';
 import type { TaskManifest, TaskMetadata } from '../task/taskTypes';
 import { extractToolMetadata, type ToolMetadata } from '../ast/extractToolMetadata';
 import { createPrograms } from '../ast/createProgram';
 import { toProdFilePath } from '../utils/prodPaths';
 import { atomicWriteFile } from '../utils/atomicWrite';
-import { getSchemaOutputPath, getHelpersImportPath } from './generateSchemaFiles';
+
 import {
   extractTypeInfo,
   createLazyTypeResolver,
@@ -12,12 +13,7 @@ import {
   type LazyTypeResolver,
 } from '../ast/extractHandlerTypes';
 import type { RuntimeType } from '../ast/resolveTypeNode';
-import {
-  generateZodSchemaSource,
-  generateHelpersFileSource,
-  usesCoerceHelpers,
-  HELPERS_FILENAME,
-} from '../ast/generateZodSchema';
+import { generateZodSchemaSource, usesCoerceHelpers } from '../ast/generateZodSchema';
 
 /**
  * faapi-tasks.js 文件名（与 faapi-routes.js / faapi-tools.js 同构）
@@ -229,51 +225,12 @@ export async function generateTaskArtifacts(
     return hydrateTasks(serialized);
   }
 
-  const sourcesByFile = new Map<string, TaskSchemaSource[]>();
-  for (const source of sources) {
-    let list = sourcesByFile.get(source.filePath);
-    if (!list) {
-      list = [];
-      sourcesByFile.set(source.filePath, list);
-    }
-    list.push(source);
-  }
-
-  const fileEntries: { outputPath: string; source: string }[] = [];
-  for (const [filePath, fileSources] of sourcesByFile) {
-    const relFile = path.relative(rootDir, filePath).replace(/\\/g, '/');
-    const outputPath = getSchemaOutputPath(relFile, dist, rootDir);
-    const resolver = resolversByFile.get(filePath);
-
-    let relForDir = relFile;
-    if (relForDir.startsWith('src/')) {
-      relForDir = relForDir.slice(4);
-    }
-    const dirIdx = relForDir.lastIndexOf('/');
-    const zodRelDir = dirIdx >= 0 ? relForDir.slice(0, dirIdx) : '';
-    const helpersImportPath = getHelpersImportPath(zodRelDir);
-
-    const source = generateTaskSchemaFileSource(
-      fileSources,
-      (name) => resolver?.resolve(name)?.runtimeType,
-      helpersImportPath,
-    );
-    fileEntries.push({ outputPath, source });
-  }
-
-  // 4. 检测并生成/复用 faapi-helpers.js（Map/Set 字段需要，与路由/tool 共享一份）
-  const allSourceCode = fileEntries.map((e) => e.source).join('\n');
-  if (usesCoerceHelpers(allSourceCode)) {
-    const helpersPath = path.resolve(rootDir, dist, HELPERS_FILENAME);
-    const { existsSync } = await import('node:fs');
-    if (!existsSync(helpersPath)) {
-      await atomicWriteFile(helpersPath, generateHelpersFileSource());
-    }
-  }
-
-  await Promise.all(
-    fileEntries.map(({ outputPath, source }) => atomicWriteFile(outputPath, source)),
-  );
+  await generateZodArtifacts(sources, {
+    generateFileSource: generateTaskSchemaFileSource,
+    resolversByFile,
+    rootDir,
+    dist,
+  });
 
   return hydrateTasks(serialized);
 }

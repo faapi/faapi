@@ -1,12 +1,11 @@
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { generateZodArtifacts } from './generateZodArtifacts';
 import type { ToolManifestList } from '../tools/toolTypes';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import { extractToolMetadata } from '../ast/extractToolMetadata';
 import { createPrograms } from '../ast/createProgram';
 import { toProdFilePath } from '../utils/prodPaths';
 import { atomicWriteFile } from '../utils/atomicWrite';
-import { getSchemaOutputPath } from './generateSchemaFiles';
 import {
   extractTypeInfo,
   createLazyTypeResolver,
@@ -14,13 +13,7 @@ import {
   type LazyTypeResolver,
 } from '../ast/extractHandlerTypes';
 import type { RuntimeType } from '../ast/resolveTypeNode';
-import {
-  generateZodSchemaSource,
-  generateHelpersFileSource,
-  usesCoerceHelpers,
-  HELPERS_FILENAME,
-} from '../ast/generateZodSchema';
-import { getHelpersImportPath } from './generateSchemaFiles';
+import { generateZodSchemaSource, usesCoerceHelpers } from '../ast/generateZodSchema';
 
 /**
  * 序列化的 tool manifest 记录(可写入 JS 模块,无函数引用)
@@ -271,13 +264,6 @@ export function generateToolSchemaFileSource(
  * 与 [generateSchemaFiles](./generateSchemaFiles.ts) 共享同一份 `faapi-helpers.js`——
  * 若文件已存在则不重复生成(路由 schema 生成阶段可能已生成)。
  */
-async function maybeGenerateHelpers(allSourceCode: string, distDir: string): Promise<void> {
-  if (!usesCoerceHelpers(allSourceCode)) return;
-  const helpersPath = path.resolve(distDir, HELPERS_FILENAME);
-  if (existsSync(helpersPath)) return;
-  await atomicWriteFile(helpersPath, generateHelpersFileSource());
-}
-
 /**
  * 主入口:从 ToolManifest[] 生成 faapi-tools.js + 每个 tool 的 zod.js
  *
@@ -339,57 +325,12 @@ export async function generateToolArtifacts(
     return metadata; // 无 inputTypeName 的 tool,不生成 zod.js
   }
 
-  // 按文件分组 sources(同一 handler.ts 多个 tool 合并到一个 zod.js)
-  const sourcesByFile = new Map<string, ToolSchemaSource[]>();
-  for (const source of sources) {
-    let list = sourcesByFile.get(source.filePath);
-    if (!list) {
-      list = [];
-      sourcesByFile.set(source.filePath, list);
-    }
-    list.push(source);
-  }
-
-  // 为每个文件生成 zod.js 源码(先暂存,用于检测是否需要 helpers)
-  const fileEntries: { outputPath: string; source: string }[] = [];
-  for (const [filePath, fileSources] of sourcesByFile) {
-    const relFile = path.relative(rootDir, filePath).replace(/\\/g, '/');
-    const outputPath = getSchemaOutputPath(relFile, dist, rootDir);
-    const resolver = resolversByFile.get(filePath);
-
-    // 计算 zod.js 所在目录相对 dist 的路径(用于 import helpers)
-    let relForDir = relFile;
-    if (relForDir.startsWith('src/')) {
-      relForDir = relForDir.slice(4);
-    }
-    const dirIdx = relForDir.lastIndexOf('/');
-    const zodRelDir = dirIdx >= 0 ? relForDir.slice(0, dirIdx) : '';
-    const helpersImportPath = getHelpersImportPath(zodRelDir);
-
-    const source = generateToolSchemaFileSource(
-      fileSources,
-      (name) => resolver?.resolve(name)?.runtimeType,
-      helpersImportPath,
-    );
-    fileEntries.push({ outputPath, source });
-  }
-
-  // 检测是否需要生成 faapi-helpers.js
-  const allSourceCode = fileEntries.map((e) => e.source).join('\n');
-  const distDir = path.resolve(rootDir, dist);
-  await maybeGenerateHelpers(allSourceCode, distDir);
-
-  // 并行写入所有 zod.js
-  await Promise.all(
-    fileEntries.map(({ outputPath, source }) => writeToolSchemaFile(outputPath, source)),
-  );
+  await generateZodArtifacts(sources, {
+    generateFileSource: generateToolSchemaFileSource,
+    resolversByFile,
+    rootDir,
+    dist,
+  });
 
   return metadata;
-}
-
-/**
- * 写入 tool zod.js 文件(确保目录存在)
- */
-async function writeToolSchemaFile(outputPath: string, source: string): Promise<void> {
-  await atomicWriteFile(outputPath, source);
 }

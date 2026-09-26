@@ -204,6 +204,8 @@ interface ToolSchemaSource {
 
 dev 启动时 `generateToolArtifacts(skipSchema: true)` 只生成 `faapi-tools.js`，不预生成 zod.js。首次 agent 调用 tool 时由 `ensureToolSchemaGenerated`（阶段 1.4）按需生成单文件 zod.js（与 `ensureSchemaGenerated` 同构，复用 mtime 缓存策略）。
 
+> zod.js 的分组/写入/helpers 生成流程由 `generateZodArtifacts` 共享管线执行（与 routes/tasks 同一份）。
+
 ## 相关模块
 
 - [scanTools](../tools/scanTools.md) — 产出 `ToolManifest[]`（仅路径推导字段），作为本模块输入
