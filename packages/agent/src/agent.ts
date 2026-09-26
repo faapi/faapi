@@ -17,8 +17,10 @@ import {
   type ReactLoopConfig,
   type ReactLoopResult,
   type ReactLoopStreamChunk,
+  type SubAgentDeltaEmitter,
   type SubAgentToolResult,
 } from './reactLoop';
+import type { AgentTraceEvent } from './trace';
 
 /**
  * Agent 类——按 `agent.name` 查找元数据、组装 tool 列表、提供 `run` / `stream` / `asTool`
@@ -573,7 +575,8 @@ export class Agent {
       signal: options?.signal,
       messages: options?.messages,
       enableTracing,
-      executeTool: async (name, args) => this.executeTool(name, args, callCtx),
+      executeTool: async (name, args, deltaEmitter) =>
+        this.executeTool(name, args, callCtx, deltaEmitter),
     };
   }
 
@@ -768,6 +771,7 @@ export class Agent {
     rawName: string,
     rawArgs: Record<string, unknown>,
     callCtx: AgentCallContext,
+    deltaEmitter?: SubAgentDeltaEmitter,
   ): Promise<unknown | SubAgentToolResult> {
     // 执行守卫（authHooks）：在 agent. 分流之前——一个钩子同时覆盖常规 tool
     // 与 sub-agent 递归。拒绝时不执行目标,守卫的 error 回传 LLM;
@@ -790,9 +794,10 @@ export class Agent {
       };
     }
 
-    // sub-agent 递归（携带 callCtx,使其能继承 provider/model + 决定是否附带 trace）
+    // sub-agent 递归（携带 callCtx,使其能继承 provider/model + 决定是否附带 trace;
+    // deltaEmitter 由流式父循环下发——嵌套循环增量经此冒泡,见 reactLoop.md）
     if (name.startsWith('agent.')) {
-      return await this.executeSubAgent(name.slice(6), args, callCtx);
+      return await this.executeSubAgent(name.slice(6), args, callCtx, deltaEmitter);
     }
 
     // 常规 tool
@@ -875,6 +880,7 @@ export class Agent {
     subName: string,
     args: Record<string, unknown>,
     callCtx: AgentCallContext,
+    deltaEmitter?: SubAgentDeltaEmitter,
   ): Promise<unknown | SubAgentToolResult> {
     const newDepth = this.depth + 1;
     const maxDepth = this.deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
@@ -897,16 +903,74 @@ export class Agent {
       }
     }
 
-    // 默认 reactLoop：继承父调用的 provider；sub 元数据声明 model 时优先用自身的,
+    // 继承父调用的 provider；sub 元数据声明 model 时优先用自身的,
     // 未声明时沿用父 model。单字段 { input } 直传字符串（与显式入参 schema 形状一致）,
     // 其余形状 stringify 兜底;传递 enableTracing 让 sub-agent 采集 trace
     const subMeta = this.deps.getAgent(subName);
-    const result = await subAgent.run(extractSubAgentUserInput(args), {
+    const subOptions: AgentRunOptions = {
       agent: subName,
       provider: callCtx.provider,
       model: subMeta?.model ?? callCtx.model,
       enableTracing: callCtx.enableTracing,
-    });
+    };
+
+    // 流式父循环（deltaEmitter 存在）：子循环也跑流式,嵌套循环的 deltaContent /
+    // deltaReasoning 经 emitter 实时冒泡为父流的 subagentDelta chunk（reasoning 仅
+    // 透出不进历史,与 thinking 剥离纪律一致）;done/traceEvent 在父侧拼装出与
+    // run() 等价的结果,usage/turns 上卷与 trace 结构不回归。详见 reactLoop.md
+    // 「子代理 delta 冒泡」章节
+    if (deltaEmitter) {
+      const toolName = `agent.${subName}`;
+      const startedAt = performance.now();
+      const traceEvents: AgentTraceEvent[] | undefined = callCtx.enableTracing ? [] : undefined;
+      let done: NonNullable<ReactLoopStreamChunk['done']> | undefined;
+      for await (const chunk of subAgent.stream(extractSubAgentUserInput(args), subOptions)) {
+        if (chunk.subagentDelta) {
+          // 更深层代理的冒泡（孙代理）:name/depth 已是深层信息,原样透传
+          deltaEmitter.onSubAgentDelta(chunk.subagentDelta);
+        } else if (
+          (typeof chunk.deltaContent === 'string' && chunk.deltaContent.length > 0) ||
+          (typeof chunk.deltaReasoning === 'string' && chunk.deltaReasoning.length > 0)
+        ) {
+          // 该子代理自身 LLM 的增量
+          deltaEmitter.onSubAgentDelta({
+            name: toolName,
+            depth: newDepth,
+            deltaContent: chunk.deltaContent,
+            deltaReasoning: chunk.deltaReasoning,
+          });
+        }
+        if (chunk.traceEvent) {
+          traceEvents!.push(chunk.traceEvent);
+        }
+        if (chunk.done) {
+          done = chunk.done;
+        }
+      }
+      this.deps.config?.afterToolCall?.(toolName, args, done?.content, this.deps.ctx);
+      const wrapped: SubAgentToolResult = {
+        __subAgent: true,
+        result: done?.content ?? '',
+        usage: done?.usage,
+        turns: done?.turns ?? 0,
+      };
+      if (traceEvents) {
+        wrapped.trace = {
+          agentName: '',
+          startedAt,
+          durationMs: performance.now() - startedAt,
+          turns: done?.turns ?? 0,
+          usage: done?.usage,
+          stopReason: done?.stopReason,
+          content: done?.content,
+          events: traceEvents,
+        };
+      }
+      return wrapped;
+    }
+
+    // 非流式父循环：结果一次性返回,子循环跑非流式 run
+    const result = await subAgent.run(extractSubAgentUserInput(args), subOptions);
 
     // 统一包装 SubAgentToolResult（无论 tracing 开关）:usage/turns 是子循环整树口径,
     // reactLoop 累加进父循环（父 run 台账 = 全部 llm_call 之和,详见 reactLoop.md）;

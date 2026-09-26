@@ -754,6 +754,118 @@ describe('Agent', () => {
     });
   });
 
+  describe('stream 路径 subagentDelta 冒泡', () => {
+    it('子代理循环的 deltaContent/deltaReasoning 实时冒泡为 subagentDelta chunk', async () => {
+      // chunk 按消费序：父轮1(tool_call) → 子轮1(thinking+内容) → 父轮2(最终回答)
+      const { provider, streamCalls } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [toolCall('c1', 'agent.writer', { input: '查' })],
+            finishReason: 'tool_calls',
+          },
+        ],
+        [{ deltaReasoning: '子思考' }, { deltaContent: '子内容', finishReason: 'stop' }],
+        [{ deltaContent: 'final', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub' })],
+        }),
+      );
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      // 顺序：toolCall → subagentDelta×2 → toolResult → 父 deltaContent → done
+      const kind = chunks.map((c) =>
+        c.toolCall
+          ? 'call'
+          : c.subagentDelta
+            ? 'delta'
+            : c.toolResult
+              ? 'result'
+              : c.done
+                ? 'done'
+                : 'llm',
+      );
+      expect(kind).toEqual(['call', 'delta', 'delta', 'result', 'llm', 'done']);
+
+      const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
+      expect(deltas).toEqual([
+        { name: 'agent.writer', depth: 2, deltaReasoning: '子思考' },
+        { name: 'agent.writer', depth: 2, deltaContent: '子内容' },
+      ]);
+
+      // done/toolResult 不回归;子循环 usage 上卷（mock 子流无 usage → done.usage undefined）
+      expect(chunks.at(-1)!.done).toMatchObject({ content: 'final', stopReason: 'stop' });
+      expect(chunks.find((c) => c.toolResult)!.toolResult!.result).toBe('子内容');
+      // 子循环真的走了流式（stream 被调两次:父一次 + 子一次）
+      expect(streamCalls).toHaveBeenCalledTimes(3);
+    });
+
+    it('两层嵌套 depth 递增（子 = 2,孙 = 3）,冒泡顺序即实际执行顺序', async () => {
+      const { provider } = createMockStreamProvider([
+        // 父轮1:调 agent.a
+        [{ toolCalls: [toolCall('c1', 'agent.a', { input: 'x' })], finishReason: 'tool_calls' }],
+        // a 轮1:调 agent.b
+        [{ toolCalls: [toolCall('d1', 'agent.b', { input: 'y' })], finishReason: 'tool_calls' }],
+        // b 轮:直接回答
+        [{ deltaContent: '孙产出', finishReason: 'stop' }],
+        // a 轮2:回答
+        [{ deltaContent: '子产出', finishReason: 'stop' }],
+        // 父轮2:回答
+        [{ deltaContent: 'final', finishReason: 'stop' }],
+      ]);
+      const aMeta = agentMeta({ name: 'a', systemPrompt: 'a' });
+      const bMeta = agentMeta({ name: 'b', systemPrompt: 'b' });
+      const deps = createDeps({
+        provider,
+        agent: agentMeta({ agents: ['a'] }),
+        subAgents: [aMeta],
+      });
+      // createDeps 默认只挂根的 sub-agents/getAgent——覆盖为两层解析
+      deps.resolveSubAgents = (name: string) =>
+        name === 'researcher' ? [aMeta] : name === 'a' ? [bMeta] : [];
+      deps.getAgent = (name: string) =>
+        name === 'researcher' ? agentMeta({ agents: ['a'] }) : name === 'a' ? aMeta : bMeta;
+      const agent = new Agent(deps);
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
+      // b 先产出（a 在等 b 的 toolResult）,然后 a 产出
+      expect(deltas.map((d) => [d.name, d.depth, d.deltaContent])).toEqual([
+        ['agent.b', 3, '孙产出'],
+        ['agent.a', 2, '子产出'],
+      ]);
+      expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
+    });
+
+    it('非流式 run() 不冒泡（结果一次性返回,行为不变）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent.writer', { input: '查' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: '子结果', stopReason: 'stop' }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub' })],
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('final');
+      // 子循环走非流式 complete（父轮1 + 子轮 + 父轮2 = 3 次 complete）
+      expect(completeCalls).toHaveBeenCalledTimes(3);
+    });
+  });
+
   describe('executeTool — sub-agent 递归', () => {
     it('sub-agent 有 hasRun 时调自定义 run,结果回传父 LLM', async () => {
       // 父 provider:第一轮请求 agent.writer → 收 sub 结果 → 最终答案

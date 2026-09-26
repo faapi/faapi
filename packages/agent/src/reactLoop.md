@@ -167,6 +167,32 @@ interface ReactLoopStreamChunk {
 
 每个 chunk 至多含一个字段。`deltaContent` / `deltaReasoning` 在 LLM 流式输出时多次 yield；`toolCall`/`toolResult` 在 tool 执行时配对 yield；`done` 只在结束时 yield 一次。
 
+### 子代理 delta 冒泡（流式）
+
+子代理（`agent.<name>` tool call）在 `executeSubAgent` 内递归跑自己的循环。流式父循环执行 sub-agent 时，嵌套循环的 `deltaContent` / `deltaReasoning` 经新增的 `subagentDelta` chunk **实时冒泡**到父流——多 agent 协作页面可直播子代理的思考与产出过程：
+
+```ts
+interface SubAgentDelta {
+  /** 发起调用的 tool 名（agent.<name>） */
+  name: string;
+  /** 该子代理循环的递归深度（根循环 = 1,首次嵌套的子代理 = 2,与 maxAgentDepth 口径一致） */
+  depth: number;
+  deltaContent?: string;
+  deltaReasoning?: string;
+}
+
+interface ReactLoopStreamChunk {
+  // …现有字段…
+  /** 嵌套子代理循环的增量（冒泡透传;仅流式路径,与现有字段互斥） */
+  subagentDelta?: SubAgentDelta;
+}
+```
+
+- **机制**：`await executeTool` 期间 async generator 挂起无法 yield——流式路径对每个 tool call 采用 fire-and-drain 泵：fire executeTool（携带 delta emitter）→ generator 循环 drain 队列逐个 yield `subagentDelta` → executeTool 完成后 flush 剩余。冒泡顺序即子代理实际输出顺序；流式路径同轮多 tool_call 串行执行,天然有序
+- **子循环升级**：父为流式时 `executeSubAgent` 让子循环也跑流式（`subAgent.stream()`）——此前固定跑非流式 `run()`,子循环根本没有 delta 可冒泡。done/trace 语义不变：父侧从子流 `done` chunk 拼装与 `run()` 等价的结果（content/usage/turns）,tracing 开启时从 `traceEvent` 收集拼装 `AgentTrace`（结构不变,`subagent_call` 嵌套 trace 不回归）
+- **非流式 `run()` 不受影响**：结果一次性返回,无冒泡需求;自定义 `run` 的 sub-agent（hasRun）无结构化增量,不冒泡（与 usage 计 0 同口径）
+- **语义不变式**：嵌套 `reasoning_content` 依旧**不进** messages 历史与续跑源（delta 仅透出给调用方,与 thinking 章节的剥离纪律一致）;`ReactLoopResult` / trace 结构不受影响;中断/`maxAgentDepth`/历史剥离全部不回归
+
 ### thinking（推理内容）
 
 thinking 模型（DeepSeek-R1 / Qwen-thinking / OpenAI o 系列等）在 `content` 之外返回推理过程。reactLoop 层的策略：**推理内容只透出给调用方，不进入对话历史**。
