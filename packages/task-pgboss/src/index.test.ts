@@ -225,12 +225,14 @@ describe('createPgBossDriver', () => {
     expect(options.expireInSeconds).toBe(Math.ceil((30 * 60_000 + 5000) / 1000) + 60);
   });
 
-  it('未声明 timeoutMs 的任务用 defaultExpireSeconds 兜底（可配置，默认 24h）', async () => {
+  it('未声明 timeoutMs 的任务用 defaultExpireSeconds 兜底（可配置，默认 24h − 1s）', async () => {
     const driver = createPgBossDriver();
     await driver.enqueue('short', {});
     const boss = fakeBosses()[0]!;
     let options = boss.sent[0]!.options as { expireInSeconds: number };
-    expect(options.expireInSeconds).toBe(24 * 60 * 60);
+    // 回归：pg-boss 10 断言 expireIn/3600 < 24（严格小于），默认值顶到 24h 整
+    // 会让 send() 在参数校验阶段必抛 AssertionError（入队全挂）——必须落在上界之内
+    expect(options.expireInSeconds).toBe(24 * 60 * 60 - 1);
 
     const custom = createPgBossDriver({ defaultExpireSeconds: 3600 });
     await custom.enqueue('short', {});

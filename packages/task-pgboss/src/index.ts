@@ -10,11 +10,13 @@ import PgBoss from 'pg-boss';
  */
 export type PgBossDriverOptions = PgBoss.ConstructorOptions & {
   /**
-   * 未声明 `timeoutMs` 的任务的 expire_in 兜底秒数（默认 24 小时）。
+   * 未声明 `timeoutMs` 的任务的 expire_in 兜底秒数（默认 24h − 1s）。
    *
    * pg-boss 以 job 的 expire_in 硬限 handler 执行（DDL 默认 15 分钟）：超时判失败
    * 重试，而任务还在后台跑 → 同一任务两份并发执行。声明了 `timeoutMs` 的任务由
    * 驱动按 `timeoutMs + graceMs + 60s` 缓冲给足；未声明的任务用本兜底。
+   * 上界 24h 为排他（pg-boss 10 断言 `expireIn/3600 < 24`）——显式配置 >= 86400
+   * 会被 pg-boss 在 send 参数校验阶段拒绝。
    */
   defaultExpireSeconds?: number;
 };
@@ -57,8 +59,9 @@ function dedupIdToUuid(dedupId: string): string {
   ].join('-');
 }
 
-/** 未声明 timeoutMs 的任务 expire_in 兜底（秒） */
-const DEFAULT_EXPIRE_SECONDS = 24 * 60 * 60;
+/** 未声明 timeoutMs 的任务 expire_in 兜底（秒）——pg-boss 10 断言 expireIn/3600 < 24
+ * （严格小于），顶到 24h 整会让 send() 在参数校验阶段必抛 AssertionError，减 1 秒落界内 */
+const DEFAULT_EXPIRE_SECONDS = 24 * 60 * 60 - 1;
 /** expire_in 在任务执行预算之外的缓冲（秒）——留出调度/网络抖动余量 */
 const EXPIRE_BUFFER_SECONDS = 60;
 /** graceMs 未声明时的默认值（与主包 taskWorker 的取消宽限期默认一致） */

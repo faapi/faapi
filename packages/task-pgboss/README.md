@@ -37,7 +37,7 @@ export function POST(body, tasks) {
 
 | faapi 驱动接口 | pg-boss |
 | --- | --- |
-| `enqueue(name, payload, { retries, delayMs, dedupId, timeoutMs, graceMs })` | 幂等 `createQueue(name)`（每任务名每进程一次，缓存短路）→ `boss.send(name, payload, { retryLimit, retryDelay: 1, retryBackoff: true, expireInSeconds, startAfter, id })`。`expireInSeconds` = `timeoutMs + graceMs + 60s` 缓冲（未声明 `timeoutMs` 的任务用 `defaultExpireSeconds` 兜底，默认 24h）——pg-boss 以 expire_in 硬限执行，不映射会让 DDL 默认 15 分钟强杀仍在运行的长任务并重试 |
+| `enqueue(name, payload, { retries, delayMs, dedupId, timeoutMs, graceMs })` | 幂等 `createQueue(name)`（每任务名每进程一次，缓存短路）→ `boss.send(name, payload, { retryLimit, retryDelay: 1, retryBackoff: true, expireInSeconds, startAfter, id })`。`expireInSeconds` = `timeoutMs + graceMs + 60s` 缓冲（未声明 `timeoutMs` 的任务用 `defaultExpireSeconds` 兜底，默认 24h − 1s；pg-boss 10 断言 expire 严格小于 24h，上界排他）——pg-boss 以 expire_in 硬限执行，不映射会让 DDL 默认 15 分钟强杀仍在运行的长任务并重试 |
 | `startWorker(name, { concurrency, process })` | 幂等 `createQueue(name)` → `boss.work(name, { batchSize: concurrency }, handler)`。批内任务并发执行、逐任务 `complete`/`fail` 结算——单个任务失败只消耗自己的重试额度，不毒化同批 |
 | `stop(timeoutMs)` | `offWork`（与 deadline 竞速，卡死任务不悬挂停机）+ `boss.stop({ close: true, graceful: true, timeout })`（timeout 单位毫秒）；deadline 到点 abort 在跑任务的 signal |
 | `stopWorkers()` | `offWork()`（不断开连接，dev 热替换重注册用） |
