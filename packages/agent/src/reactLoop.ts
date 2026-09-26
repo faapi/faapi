@@ -721,7 +721,10 @@ export async function* reactLoopStream(
           finishReason = chunk.finishReason;
         }
         if (chunk.usage) {
-          totalUsage = accumulateUsage(totalUsage, chunk.usage);
+          // 覆盖式取值:单轮流内以最后出现的 usage 为准——OpenAI 官方只在最终 chunk
+          // 回 usage(单次覆盖等价),部分 OpenAI 兼容网关按流式惯例每 chunk 回**累计**
+          // usage(逐 chunk 累加会把台账放大数倍)。整树口径的跨轮累加在该轮流结束、
+          // 提交 turnUsage 时进行(下方 done/trace 消费处单次累加)
           turnUsage = chunk.usage;
         }
       }
@@ -730,6 +733,12 @@ export async function* reactLoopStream(
         throw new AgentAbortError(err.message, messages);
       }
       throw err;
+    }
+
+    // 本轮 usage 单次提交总台账（流内多个 usage chunk 已在 turnUsage 覆盖收敛,
+    // 官方单 chunk 与网关累计 chunk 两种惯例下口径一致）
+    if (turnUsage) {
+      totalUsage = accumulateUsage(totalUsage, turnUsage);
     }
 
     // 把 assistant 消息加入历史（含 tool_calls，供下一轮 LLM 上下文；规范形，
