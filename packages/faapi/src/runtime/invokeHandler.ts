@@ -168,22 +168,9 @@ export async function invokeHandler(
     }
   };
 
-  // 无中间件：直接执行 handler
-  if (!middlewares || middlewares.length === 0) {
-    try {
-      const result = await injectParamsAsync(handler, ctx, body, injectors);
-      const sseResponse = pickSseAndAutoClose();
-      if (sseResponse) return sseResponse;
-      return toResponse(wrapResult(result, ctx), meta);
-    } catch (err) {
-      // handler 抛错时关闭未完成的 SSE 流，避免泄漏
-      autoCloseSseOnError();
-      throw err;
-    }
-  }
-
-  // 有中间件：洋葱模型调度
-  const finalHandler = async (): Promise<Response> => {
+  // 执行 handler 的统一尾部：注入 → SSE 优先 → 自动包装。
+  // 无中间件与有中间件（洋葱 finalHandler）此前是两份相同逻辑的复制，收敛于此
+  const executeAndFormat = async (): Promise<Response> => {
     try {
       const result = await injectParamsAsync(handler, ctx, body, injectors);
       const sseResponse = pickSseAndAutoClose();
@@ -195,6 +182,14 @@ export async function invokeHandler(
       throw err;
     }
   };
+
+  // 无中间件：直接执行 handler
+  if (!middlewares || middlewares.length === 0) {
+    return executeAndFormat();
+  }
+
+  // 有中间件：洋葱模型调度
+  const finalHandler = executeAndFormat;
 
   return await compose(middlewares, ctx, finalHandler);
 }
