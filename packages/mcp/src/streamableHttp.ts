@@ -22,9 +22,6 @@ import {
   JsonRpcParseError,
 } from './jsonRpc';
 
-/** 默认 SSE 心跳间隔 */
-const DEFAULT_SSE_HEARTBEAT_MS = 30_000;
-
 /**
  * Streamable HTTP transport 选项
  */
@@ -104,7 +101,28 @@ export async function handleMcpRequest(
  * 客户端断开时 stream cancel 触发,清理定时器 + 注销订阅者避免泄漏。
  */
 function handleGet(server: McpServer, request: Request): Response {
-  const heartbeatMs = server.getSseHeartbeatMs() ?? DEFAULT_SSE_HEARTBEAT_MS;
+  // MCP 2025-06-18 规范:GET(打开 SSE 流)必须接受 text/event-stream——
+  // 与 POST 的双类型校验对称(POST 要求两者都有,GET 只要 SSE)
+  const acceptHeader = request.headers.get('accept') ?? '';
+  const accepts = acceptHeader
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
+  const hasSse = accepts.some(
+    (s) => s === 'text/event-stream' || s.startsWith('text/event-stream;'),
+  );
+  if (!hasSse) {
+    return jsonResponse(
+      406,
+      createErrorResponse(
+        null,
+        ErrorCode.InvalidRequest,
+        'Accept header must include text/event-stream',
+      ),
+    );
+  }
+
+  const heartbeatMs = server.getSseHeartbeatMs();
   const encoder = new TextEncoder();
   let interval: ReturnType<typeof setInterval> | undefined;
   let subscriber:

@@ -480,7 +480,10 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
 
   describe('GET', () => {
     it('返回 200 + text/event-stream', async () => {
-      const req = new Request('http://localhost/mcp', { method: 'GET' });
+      const req = new Request('http://localhost/mcp', {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' },
+      });
       const res = await handleMcpRequest(req, mcp);
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Type')).toBe('text/event-stream');
@@ -490,13 +493,27 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       await res.body!.cancel();
     });
 
+    it('Accept 头缺 text/event-stream → 406（MCP 2025-06-18 规范）', async () => {
+      const req = new Request('http://localhost/mcp', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
+      const res = await handleMcpRequest(req, mcp);
+      expect(res.status).toBe(406);
+      const body = await res.json();
+      expect(body.error.code).toBe(-32600);
+    });
+
     it('SSE 流推送心跳(自定义短间隔便于测试)', async () => {
       const mcpWithFastHeartbeat = createMcpServer({
         name: 'fast',
         version: '1.0.0',
         sseHeartbeatMs: 30,
       });
-      const req = new Request('http://localhost/mcp', { method: 'GET' });
+      const req = new Request('http://localhost/mcp', {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' },
+      });
       const res = await handleMcpRequest(req, mcpWithFastHeartbeat);
 
       const reader = res.body!.getReader();
@@ -521,7 +538,10 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
         version: '1.0.0',
         sseHeartbeatMs: 30,
       });
-      const req = new Request('http://localhost/mcp', { method: 'GET' });
+      const req = new Request('http://localhost/mcp', {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' },
+      });
       const res = await handleMcpRequest(req, mcpWithFastHeartbeat);
 
       const reader = res.body!.getReader();
@@ -557,7 +577,7 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       // GET 携带 session id
       const req = new Request('http://localhost/mcp', {
         method: 'GET',
-        headers: { 'Mcp-Session-Id': sid },
+        headers: { 'Mcp-Session-Id': sid, Accept: 'text/event-stream' },
       });
       const res = await handleMcpRequest(req, mcp);
       expect(res.status).toBe(200);
@@ -594,7 +614,7 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
       // GET 携带 session id,打开 SSE 流
       const getReq = new Request('http://localhost/mcp', {
         method: 'GET',
-        headers: { 'Mcp-Session-Id': sid },
+        headers: { 'Mcp-Session-Id': sid, Accept: 'text/event-stream' },
       });
       const getRes = await handleMcpRequest(getReq, mcp);
       const reader = getRes.body!.getReader();
@@ -616,7 +636,10 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
     });
 
     it('GET 无 Mcp-Session-Id 时不注册订阅者(仅心跳)', async () => {
-      const req = new Request('http://localhost/mcp', { method: 'GET' });
+      const req = new Request('http://localhost/mcp', {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' },
+      });
       const res = await handleMcpRequest(req, mcp);
       const reader = res.body!.getReader();
       await reader.read();
@@ -632,7 +655,7 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
     it('GET 携带不存在的 Mcp-Session-Id 时返回 404(MCP 规范:无效 session)', async () => {
       const req = new Request('http://localhost/mcp', {
         method: 'GET',
-        headers: { 'Mcp-Session-Id': 'nonexistent' },
+        headers: { 'Mcp-Session-Id': 'nonexistent', Accept: 'text/event-stream' },
       });
       const res = await handleMcpRequest(req, mcp);
       expect(res.status).toBe(404);
@@ -660,7 +683,7 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
 
       const req = new Request('http://localhost/mcp', {
         method: 'GET',
-        headers: { 'Mcp-Session-Id': sid },
+        headers: { 'Mcp-Session-Id': sid, Accept: 'text/event-stream' },
       });
       const res = await handleMcpRequest(req, shortTtl);
       expect(res.status).toBe(404);
@@ -687,7 +710,7 @@ describe('handleMcpRequest (Streamable HTTP)', () => {
 
       const getReq = new Request('http://localhost/mcp', {
         method: 'GET',
-        headers: { 'Mcp-Session-Id': sid },
+        headers: { 'Mcp-Session-Id': sid, Accept: 'text/event-stream' },
       });
       const getRes = await handleMcpRequest(getReq, server);
       expect(getRes.status).toBe(200);

@@ -13,6 +13,9 @@
 
 import { randomUUID } from 'node:crypto';
 
+/** SSE 帧编码器（无状态,模块级共享,免每次推送新建） */
+const sharedTextEncoder = new TextEncoder();
+
 /** 日志级别(syslog 严重度,从低到高) */
 export type LoggingLevel =
   | 'debug'
@@ -261,7 +264,7 @@ export class SessionManager {
       this.sessions.delete(sessionId);
       return;
     }
-    const encoder = new TextEncoder();
+    const encoder = sharedTextEncoder;
     for (const sub of session.subscribers) {
       try {
         sub.controller.enqueue(encoder.encode(data));

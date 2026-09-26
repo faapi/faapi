@@ -117,7 +117,10 @@ describe('faapiAdapter', () => {
     it('GET 返回 200 + text/event-stream(SSE 流)', async () => {
       const { GET } = createMcpHandler(mcp);
       const res = await GET({
-        request: new Request('http://localhost/mcp', { method: 'GET' }),
+        request: new Request('http://localhost/mcp', {
+          method: 'GET',
+          headers: { Accept: 'text/event-stream' },
+        }),
       });
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Type')).toBe('text/event-stream');
