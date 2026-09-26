@@ -2,6 +2,7 @@ import { isPlainObject } from '../utils/isPlainObject';
 import { stringifyJson } from '../utils/stringifyJson';
 import type { ResponseMeta } from '../runtime/contextTypes';
 import { deferMetaHeaders, isHeadersOnlyMeta } from './pendingMeta';
+import { markBufferedBody } from './bufferedBody';
 
 /**
  * 将 handler 返回值统一转换为 Response
@@ -81,18 +82,22 @@ export async function toResponse(value: unknown, meta?: ResponseMeta): Promise<R
   if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) {
     const headers = new Headers({ 'Content-Type': 'application/octet-stream' });
     applyMeta(headers);
-    return new Response(value as BodyInit, {
-      status: meta?.status ?? 200,
-      headers,
-    });
+    return markBuffered(
+      new Response(value as BodyInit, {
+        status: meta?.status ?? 200,
+        headers,
+      }),
+    );
   }
   if (value instanceof Uint8Array) {
     const headers = new Headers({ 'Content-Type': 'application/octet-stream' });
     applyMeta(headers);
-    return new Response(value as BodyInit, {
-      status: meta?.status ?? 200,
-      headers,
-    });
+    return markBuffered(
+      new Response(value as BodyInit, {
+        status: meta?.status ?? 200,
+        headers,
+      }),
+    );
   }
 
   // 普通对象/数组：JSON.stringify（BigInt 安全，BigInt → 字符串），Content-Type: application/json
@@ -100,38 +105,52 @@ export async function toResponse(value: unknown, meta?: ResponseMeta): Promise<R
     const body = stringifyJson(value);
     const headers = new Headers({ 'Content-Type': 'application/json' });
     applyMeta(headers);
-    return new Response(body, {
-      status: meta?.status ?? 200,
-      headers,
-    });
+    return markBuffered(
+      new Response(body, {
+        status: meta?.status ?? 200,
+        headers,
+      }),
+    );
   }
 
   // string：text/plain
   if (typeof value === 'string') {
     const headers = new Headers({ 'Content-Type': 'text/plain' });
     applyMeta(headers);
-    return new Response(value, {
-      status: meta?.status ?? 200,
-      headers,
-    });
+    return markBuffered(
+      new Response(value, {
+        status: meta?.status ?? 200,
+        headers,
+      }),
+    );
   }
 
   // number/boolean：text/plain，String(value)
   if (typeof value === 'number' || typeof value === 'boolean') {
     const headers = new Headers({ 'Content-Type': 'text/plain' });
     applyMeta(headers);
-    return new Response(String(value), {
-      status: meta?.status ?? 200,
-      headers,
-    });
+    return markBuffered(
+      new Response(String(value), {
+        status: meta?.status ?? 200,
+        headers,
+      }),
+    );
   }
 
   // 其他类型 fallback：JSON.stringify（BigInt 安全）
   const body = stringifyJson(value);
   const headers = new Headers({ 'Content-Type': 'application/json' });
   applyMeta(headers);
-  return new Response(body, {
-    status: meta?.status ?? 200,
-    headers,
-  });
+  return markBuffered(
+    new Response(body, {
+      status: meta?.status ?? 200,
+      headers,
+    }),
+  );
+}
+
+/** 标记缓冲型 body 并原样返回（发送层快路径直写，见 bufferedBody.ts） */
+function markBuffered(response: Response): Response {
+  markBufferedBody(response);
+  return response;
 }

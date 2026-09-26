@@ -1,4 +1,5 @@
 import type { ResponseConfig } from '../config/configTypes';
+import { markBufferedBody } from './bufferedBody';
 import { FaapiError } from '../errors/FaapiError';
 import { ValidationError, MethodNotAllowedError, PayloadTooLargeError } from '../errors/httpErrors';
 import { stringifyJson } from '../utils/stringifyJson';
@@ -72,7 +73,9 @@ function jsonRaw(body: unknown, status: number, extraHeaders?: HeadersInit): Res
     const extra = new Headers(extraHeaders);
     extra.forEach((value, key) => headers.set(key, value));
   }
-  return new Response(stringifyJson(body), { status, headers });
+  const response = new Response(stringifyJson(body), { status, headers });
+  markBufferedBody(response);
+  return response;
 }
 
 /**
@@ -138,12 +141,13 @@ export function formatErrorResponse(
 ): Response {
   const failFn = resolveFailFn(config);
 
+  // 通用 fail 分支：FaapiError 家族共享同一 failFn 调用形态，差异只在附加 headers
+  // 与额外字段——此前四个同构 if 各自复制 failFn 调用，收敛为此处单一实现
+  const buildFailBody = (e: FaapiError): ReturnType<typeof failFn> =>
+    failFn({ status: e.statusCode, code: e.code, message: e.message });
+
   if (error instanceof ValidationError) {
-    const body = failFn({
-      status: error.statusCode,
-      code: error.code,
-      message: error.message,
-    });
+    const body = buildFailBody(error);
     // ValidationError 需要附加 issues 字段。业务方 failFn 可能返回共享/复用对象
     // （性能优化写法）或冻结对象——就地改写会让 issues 跨请求残留污染或静默失败，
     // 因此浅拷贝后再扩展，不改写业务方返回的原对象
@@ -164,30 +168,17 @@ export function formatErrorResponse(
   }
 
   if (error instanceof MethodNotAllowedError) {
-    const body = failFn({
-      status: error.statusCode,
-      code: error.code,
-      message: error.message,
+    return jsonOk(buildFailBody(error), error.statusCode, {
+      Allow: error.allowedMethods.join(', '),
     });
-    return jsonOk(body, error.statusCode, { Allow: error.allowedMethods.join(', ') });
   }
 
   if (error instanceof PayloadTooLargeError) {
-    const body = failFn({
-      status: error.statusCode,
-      code: error.code,
-      message: error.message,
-    });
-    return jsonOk(body, error.statusCode);
+    return jsonOk(buildFailBody(error), error.statusCode);
   }
 
   if (error instanceof FaapiError) {
-    const body = failFn({
-      status: error.statusCode,
-      code: error.code,
-      message: error.message,
-    });
-    return jsonOk(body, error.statusCode);
+    return jsonOk(buildFailBody(error), error.statusCode);
   }
 
   // 未知错误:500 INTERNAL_ERROR

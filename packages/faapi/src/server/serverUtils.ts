@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http';
+import { markBufferedBody } from '../response/bufferedBody';
 import { formatErrorResponse } from '../errors/formatErrorResponse';
 
 /**
@@ -39,12 +40,14 @@ export function buildErrorResponse(
     return formatErrorResponse(err, config);
   } catch {
     // 极端情况:内置兜底也失败,返回最简 500
-    return new Response(
+    const fallback = new Response(
       JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: 'Internal Server Error' } }),
       {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       },
     );
+    markBufferedBody(fallback);
+    return fallback;
   }
 }

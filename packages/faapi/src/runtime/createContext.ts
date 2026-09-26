@@ -1,4 +1,5 @@
 import type { FaapiContext, ResponseMeta, CookieOptions, FailOptions } from './contextTypes';
+import { markBufferedBody } from '../response/bufferedBody';
 import { createSseWriter, type SseWriter } from './sse';
 import { wrapOkResult, formatFailResponse, jsonOk } from '../response/responseFormatter';
 import { createLogger } from '../logger/logger';
@@ -134,10 +135,12 @@ export function createContextFromUrl(
 
     html(html: string, status?: number): Response {
       const headers: Record<string, string> = { 'Content-Type': 'text/html; charset=utf-8' };
-      return new Response(html, {
+      const response = new Response(html, {
         status: status ?? 200,
         headers,
       });
+      markBufferedBody(response);
+      return response;
     },
 
     getCookie(name: string): string | undefined {

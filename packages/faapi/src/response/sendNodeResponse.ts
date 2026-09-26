@@ -1,6 +1,7 @@
 import type { ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { consumePendingMetaHeaders } from './pendingMeta';
+import { hasBufferedBody } from './bufferedBody';
 
 /**
  * 将 Web Response 写入 Node.js ServerResponse
@@ -37,6 +38,24 @@ export async function sendNodeResponse(response: Response, res: ServerResponse):
 
   // 写入 body（使用 pipe 处理背压）
   if (response.body) {
+    // 快路径：构造点标记为缓冲型的 body（string/Buffer——绝大多数 JSON 响应的形态，
+    // 见 bufferedBody.ts）整体读出后 res.end 直写，免掉 Readable.fromWeb + pipe 的
+    // 全套流机器。未标记的（SSE、handler 自建流）保持 pipe 流式语义
+    if (hasBufferedBody(response)) {
+      const buffer = await readBufferedBody(response.body);
+      await new Promise<void>((resolve) => {
+        res.on('close', () => {
+          // 正常完成也会触发 'close'（'finish' 之后），未写完才是断连
+          if (!res.writableEnded) res.destroy();
+        });
+        if (res.destroyed) {
+          resolve();
+          return;
+        }
+        res.end(buffer, () => resolve());
+      });
+      return;
+    }
     // TS 5.7 lib.dom 的 ReadableStream 与 node:stream/web 的 ReadableStream 是不同类型，cast 绕过
     const nodeStream = Readable.fromWeb(response.body as never);
     await new Promise<void>((resolve, reject) => {
@@ -61,4 +80,31 @@ export async function sendNodeResponse(response: Response, res: ServerResponse):
   }
 
   res.end();
+}
+
+/**
+ * 读取缓冲型 body 的完整内容
+ *
+ * 仅对构造点标记 hasBufferedBody 的 Response 调用——body 保证有限（内存型），
+ * 读到 done 即返回。读取错误向上抛（与 pipe 路径的 reject 语义一致，走错误响应）。
+ */
+async function readBufferedBody(body: ReadableStream): Promise<Uint8Array> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // releaseLock 在流 errored 后可能抛错，忽略
+    }
+  }
+  if (chunks.length === 0) return new Uint8Array(0);
+  if (chunks.length === 1) return chunks[0]!;
+  return Buffer.concat(chunks);
 }
