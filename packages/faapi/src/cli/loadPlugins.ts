@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import type { FaapiPlugin, PluginDeclaration } from '../config/pluginTypes';
 import type { RequestHandler, UpgradeHandler } from '../config/pluginTypes';
-import { ensureCompiled, isDevOnDemandEnabled } from './compileOnDemand';
+import { ensureCompiled, isDevOnDemandEnabled, isProductFresh } from './compileOnDemand';
 import { compileProjectModules } from './compileConfig';
 
 /** loadPlugins 的输入上下文（不含 wrap 能力，由 loadPlugins 内部注入） */
@@ -183,15 +183,6 @@ function mirrorProductPath(sourcePath: string, baseDir: string, distDir: string)
 /** 插件模块形态：default 导出优先 */
 type PluginModule = { default?: FaapiPlugin } & Record<string, unknown>;
 
-/** 产物是否比源码旧（stale） */
-function isSourceNewer(sourcePath: string, productPath: string): boolean {
-  try {
-    return fs.statSync(sourcePath).mtimeMs > fs.statSync(productPath).mtimeMs;
-  } catch {
-    return true;
-  }
-}
-
 /**
  * 加载插件模块
  *
@@ -220,7 +211,7 @@ async function importPluginModule(
   if (
     productPath !== null &&
     fs.existsSync(productPath) &&
-    (sourcePath === null || !isSourceNewer(sourcePath, productPath))
+    (sourcePath === null || isProductFresh(sourcePath, productPath))
   ) {
     return import(pathToFileURL(productPath).href);
   }

@@ -40,9 +40,11 @@ import type { RouteManifest } from '../router/routeTypes';
 /**
  * 比较源文件和产物文件的 mtime
  *
- * @returns true 表示产物是最新的（可复用），false 表示需要重新生成
+ * @returns true 表示产物是最新的（可复用），false 表示需要重新生成。
+ * 注意与取反形式 `source.mtime > product.mtime`（"源码更新"）完全等价——
+ * 同毫秒保存时产物视为 fresh（`>=`），两种写法结论一致，只是表达方向不同
  */
-function isProductFresh(sourceAbsPath: string, productAbsPath: string): boolean {
+export function isProductFresh(sourceAbsPath: string, productAbsPath: string): boolean {
   try {
     const srcStat = fs.statSync(sourceAbsPath);
     const prodStat = fs.statSync(productAbsPath);

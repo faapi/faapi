@@ -1,6 +1,6 @@
 import { scanRoutes } from '../router/scanRoutes';
 import { sortRoutes } from '../router/sortRoutes';
-import { detectRouteConflicts } from '../router/detectRouteConflicts';
+import { reportRouteConflicts } from '../router/detectRouteConflicts';
 import { scanTools } from '../tools/scanTools';
 import { TOOL_PATTERNS } from '../tools/scanTools';
 import { generateToolArtifacts } from './generateToolArtifacts';
@@ -143,17 +143,8 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   const sorted = sortRoutes(routes);
   console.log(`  Found ${sorted.length} routes, ${wsRoutes.length} WS routes`);
 
-  // 检测路由冲突
-  const conflicts = detectRouteConflicts(sorted);
-  if (conflicts.length > 0) {
-    console.warn('! 检测到路由冲突：');
-    for (const conflict of conflicts) {
-      console.warn(`  ${conflict.method} ${conflict.urlPath}`);
-      for (const file of conflict.files) {
-        console.warn(`    - ${file}`);
-      }
-    }
-  }
+  // 检测路由冲突（与 createAppCore 共用单一实现）
+  reportRouteConflicts(sorted);
 
   // 4. 生成 schema 文件
   console.log('\n[4/8] Generating schema...');
