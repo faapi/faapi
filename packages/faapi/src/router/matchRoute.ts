@@ -126,13 +126,19 @@ function matchByMethod(index: HttpRoutesIndex, method: string, path: string): Ro
     return { route: staticHit, params: {} };
   }
 
-  // 动态路由按清单顺序匹配（pattern segments 已预编译）
+  // 无动态路由时直接返回（path.split 也不必做——纯静态清单的热路径）
+  if (index.dynamics.length === 0) {
+    return null;
+  }
+
+  // 请求路径 segments 循环外 split 一次——N 条候选动态路由不再重复分割同一 path
+  const pathSegments = path.split('/').filter(Boolean);
   for (const entry of index.dynamics) {
     const route = entry.route;
     if (route.method !== method) {
       continue;
     }
-    const params = matchSegments(entry.segments, path, route.paramNames, route.isCatchAll);
+    const params = matchSegments(entry.segments, pathSegments, route.paramNames, route.isCatchAll);
     if (params !== null) {
       return { route, params };
     }
@@ -184,16 +190,19 @@ export function findAllowedMethods(routes: RouteManifest, path: string): string[
     }
   }
 
-  // 动态路由：线性扫描（segments 已预编译）
-  for (const entry of index.dynamics) {
-    const params = matchSegments(
-      entry.segments,
-      path,
-      entry.route.paramNames,
-      entry.route.isCatchAll,
-    );
-    if (params !== null) {
-      methods.add(entry.route.method);
+  // 动态路由：线性扫描（segments 已预编译,path 循环外 split 一次）
+  if (index.dynamics.length > 0) {
+    const pathSegments = path.split('/').filter(Boolean);
+    for (const entry of index.dynamics) {
+      const params = matchSegments(
+        entry.segments,
+        pathSegments,
+        entry.route.paramNames,
+        entry.route.isCatchAll,
+      );
+      if (params !== null) {
+        methods.add(entry.route.method);
+      }
     }
   }
 
@@ -218,23 +227,26 @@ export function matchDynamicPath(
   paramNames: string[],
   isCatchAll?: boolean,
 ): Record<string, string> | null {
-  return matchSegments(pattern.split('/').filter(Boolean), path, paramNames, isCatchAll);
+  return matchSegments(
+    pattern.split('/').filter(Boolean),
+    path.split('/').filter(Boolean),
+    paramNames,
+    isCatchAll,
+  );
 }
 
 /**
  * 基于**预编译 segments** 的动态匹配（热路径内部用）
  *
- * 与 matchDynamicPath 语义一致，但模式段由索引构建期一次性 split，
- * 免去每请求对固定 pattern 重复字符串分割
+ * 与 matchDynamicPath 语义一致，但模式段由索引构建期一次性 split、请求段由
+ * 调用方循环外 split 一次传入，免去对同一字符串的重复分割
  */
 function matchSegments(
   patternSegments: string[],
-  path: string,
+  pathSegments: string[],
   paramNames: string[],
   isCatchAll?: boolean,
 ): Record<string, string> | null {
-  const pathSegments = path.split('/').filter(Boolean);
-
   // catch-all 路由：最后一个模式段为 :...slug
   if (isCatchAll) {
     // catch-all 前面的静态/动态段必须匹配
