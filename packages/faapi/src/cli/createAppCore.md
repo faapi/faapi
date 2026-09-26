@@ -131,6 +131,8 @@ async function Page() {
 
 `loadAndHydrateTools(rootDir, dist)` 导出供 `reloadTools` 热替换后重新水合——读 `faapi-tools.js` → `hydrateTools` → `hydrateToolRegistry`。
 
+> 模块构成：编排主流程在本文件；清单装载见 [manifestLoader](./manifestLoader.md)、单例与停机信号见 [appSingleton](./appSingleton.md)、`app.inject()` 的 mock 传输层见 [injectMock](./injectMock.md)（公开导出经本文件 re-export，API 路径不变）。
+
 ## 相关模块
 
 - `createDevApp.ts` - dev 模式启动，基于 `createAppBase` 增加 `reloadRoutes` + `reloadTools`（重新生成 + 重新水合 tool 清单）

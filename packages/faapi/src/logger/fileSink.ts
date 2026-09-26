@@ -99,17 +99,24 @@ export function createFileLogSink(options: FileLogSinkOptions): FileLogSinkHandl
       drainWaiters.push(resolve);
     });
 
-  const close = (): Promise<void> =>
-    Promise.all(
-      [...streams.values()].map(
-        (stream) =>
-          new Promise<void>((resolve) => {
-            stream.end(() => resolve());
-          }),
-      ),
-    ).then(() => {
-      streams.clear();
-    });
+  // 关闭中/已关闭标志：堵住 close 与 write 的竞态窗口——此前 end() 已调用但
+  // streams Map 尚未清空的间隙里,write 仍能取到流写入（ERR_STREAM_WRITE_AFTER_END
+  // 被流 error 监听吞掉,条目静默丢失）
+  let closed = false;
+
+  const close = (): Promise<void> => {
+    if (closed) return Promise.resolve();
+    closed = true;
+    const closing = [...streams.values()].map(
+      (stream) =>
+        new Promise<void>((resolve) => {
+          stream.end(() => resolve());
+        }),
+    );
+    // 立即清空 Map：write 经 getStream 取不到流自然丢弃,不再依赖 end 回调时序
+    streams.clear();
+    return Promise.all(closing).then(() => {});
+  };
 
   return { write, flush, close };
 }
