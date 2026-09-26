@@ -1,5 +1,40 @@
 # @faapi/faapi
 
+## 6.18.0
+
+### Minor Changes
+
+- 4aea6d1: SSE 背压感知 + 服务器/中间件健壮性批次：
+
+  - **SSE 背压**：`SseWriter` 新增 `desiredSize`（透传 `controller.desiredSize`，`null` = 已关闭/断开）与 `waitForDrain()`（缓冲超高水位时挂起，消费者拉取/流关闭/客户端断开时返回）；流设显式高水位 16 chunk。`send`/`sendRaw` 同步签名不变——快生产者（LLM token 流）+ 慢客户端此前会让缓冲无界增长（每连接一处内存泄漏点），生产循环现在可感知并暂停
+  - **WS 用户回调异常隔离**：`onOpen`/`onMessage`/`onClose` 抛错被框架捕获，故障半径限定当前连接——有 `onError` 时转交业务方（可 `ws.close()` 自决），无 `onError` 时 `console.error`；`onError` 自身抛错同样捕获。此前 EventEmitter 监听器同步抛出会沿 emit 传播成 uncaughtException（Node 15+ 默认终止进程），一条消息里的 `JSON.parse` 抛错等于 `process.exit`
+  - **413 连接处理**：请求体超限响应附 `Connection: close` 并在写出后销毁请求连接——此前请求流既未消费也未断开，keep-alive 连接无法复用，客户端上传只会收到晦涩的连接重置
+  - **请求管线兜底留痕**：最外层 catch（`sendErrorResponse` 自身失败的极端场景）此前静默吞错，现 `console.error` 留痕并对 headers 已发场景安全收尾
+  - **按需编译 mutex 错误传播**：并发等待方原样重抛首个触发方的真实编译/生成错误——此前吞错返回 false，调用方去 import 不存在的产物，报误导性的 `ERR_MODULE_NOT_FOUND` 掩盖真实编译错误
+  - **CORS Vary 合并修复**：动态 origin 下的 `Vary: Origin` 改从权威来源 meta.headers 合并（新增共享 `mergeVary`，与 compression 的 `Accept-Encoding` 同一实现）——此前读请求头，既看不到其他中间件已设置的响应 Vary（会被覆盖），客户端伪造的 Vary 请求头还会被带进响应
+  - **性能**：请求管线合并注入器按 route WeakMap 缓存（不再每请求 spread 重建）；`queryToObject` 按实例缓存（GET 请求每请求两次 query 解析降为一次）
+  - **内部清理**：删除从未导出的 `startServer()` 死代码（与 createServer 的功能子集漂移、listen 无 reject 与 error 监听），保留 `applyPluginWrappers`（文件名为历史路径，公开 API 无变化）
+
+### Patch Changes
+
+- 5f7a69a: 框架修复与性能批次：
+
+  - **cron 多实例防重修复**：幂等键从 croner `currentRun()`（实际触发时刻，毫秒精度——多实例各自 setTimeout 的毫秒级抖动导致键几乎必然不同，"只入队一份"承诺实际失效）改为 `nextRun()` 捕获的**计划槽位**（秒级对齐、毫秒恒为 0，与实际触发时刻无关）。时钟同步下多实例同窗同键，防重语义恢复；跳过的槽位不补投（与 croner"错过即错过"语义一致）
+  - **dev watcher 删除文件修复**：`unlink` 事件现在把文件从待编译集合剔除（rebuildScheduler 新增 `removeFiles`），重建批次编译前再过滤已删除文件——此前 git 切分支等 change+unlink 批量场景下，幽灵文件随失败回灌永久卡住整批编译（每轮撞同一个 "Could not read from file"），同批新文件永远编译不到，直到重启
+  - **JSON 序列化快路径**：整棵值树均为 JSON 原生类型（绝大多数响应形态）时零分配直通原生 `JSON.stringify`，不再对每个响应付出一次全量深拷贝（此前 plain object/array 无条件递归重建，大响应 GC 压力翻倍）；Date/BigInt/Map/Set/NaN/RegExp/toJSON/循环引用等转换语义与错误行为完全不变
+  - **dev 保存延迟优化**：新增 `DevApp.reloadAll()` 批量热替换入口，watcher 一轮重建的 Program 缓存失效从 4 次收敛为 1 次——此前 `reloadRoutes/reloadTools/reloadAgents/reloadTasks` 各自开头清 Program 缓存，单次保存触发 4 次全项目 ts.Program 重建（保存延迟随项目体积而非变更大小增长）；程序化直调单个 reload\* 的语义不变（各自失效）
+
+- 6124a42: 内部质量与性能收尾批次（无公开 API 变化，行为语义不变）：
+
+  - **路由匹配**：动态路由匹配时请求路径由「每条候选路由 split 一次」改为「循环外 split 一次传入」（N 条动态路由场景省 N-1 次重复分割；纯静态清单连 split 也不再做）
+  - **响应发送**：缓冲型 body（string/Buffer——绝大多数 JSON 响应）的 Response 在构造点标记，发送层整体读出后 `res.end` 直写，免掉 `Readable.fromWeb + pipe` 全套流机器；SSE 等活跃流保持 pipe 流式语义（标记机制见 `response/bufferedBody.ts`）
+  - **请求管线**：合并注入器按 route WeakMap 缓存（对固定 route 恒定，不再每请求 spread 重建）
+  - **内部收敛**：`invokeHandler` 无中间件/有中间件两份相同执行尾部合并；`formatErrorResponse` 四个同构 fail 分支收敛为 `buildFailBody` 单一实现；路由冲突检测统一为 `reportRouteConflicts`（dev/build 打印格式一致）；产物新鲜度判断收敛为 `isProductFresh` 单一实现（loadPlugins 不再持有语义相同的本地副本）
+  - **zod 产物管线**：routes/tools/tasks 三份复制粘贴的「分组 → helpers 路径 → 生成 → helpers 按需生成 → 并行原子写」收敛为共享的 `generateZodArtifacts` 管线（差异只剩每文件源码生成回调），helpers 生成语义统一为「已存在跳过」
+  - **模块拆分**：`createAppCore.ts`（822 行）拆出 `appSingleton.ts`（单例 + 停机信号）、`manifestLoader.ts`（清单装载）、`injectMock.ts`（`app.inject()` mock 传输层），createAppCore 保留编排主流程并 re-export 全部公开导出——公开 API 路径不变
+  - **logger**：修复 `close()` 与 `write()` 的竞态窗口（end 已调用但流 Map 未清空的间隙里写入会 ERR_STREAM_WRITE_AFTER_END 被吞、条目静默丢失）；关闭标志 + Map 立即清空
+  - **工程**：根 `typecheck` script 加 `--no-bail`（失败时看到全部包的报错而非首个短路）；mcp/next 包补 `sideEffects: false`；清理 mcp/schema vitest 配置的未使用变量
+
 ## 6.17.0
 
 ## 6.16.0
