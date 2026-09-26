@@ -234,6 +234,13 @@ interface AgentCallContext {
   enableTracing: boolean;
   provider: LLMProvider;
   model: string | undefined;
+  /**
+   * 执行白名单（agent 声明的 tools + sub-agents,`agent.` 前缀）
+   *
+   * run 开始时构建一次——executeTool 每次执行重建 Set 在长循环多 tool 下是
+   * 重复查表 + 分配;filterTools 只影响 LLM 可见性,白名单保持全量声明语义
+   */
+  declaredTools: ReadonlySet<string>;
 }
 
 /**
@@ -488,6 +495,23 @@ export class Agent {
    * `options.messages` 提供时先经 `validateResumeHistory` 结构校验,非法抛
    * `AgentError`,不发起 LLM 请求。
    */
+  /**
+   * 构建执行白名单：agent 声明的 tools + sub-agents（`agent.` 前缀）
+   *
+   * 每次 run 构建一次存入 callCtx（executeTool 复用）——reload 场景注册表换代后
+   * 新 run 重新构建，声明变化自然生效
+   */
+  private buildDeclaredTools(agentName: string): ReadonlySet<string> {
+    const declared = new Set<string>();
+    for (const tool of this.deps.resolveAgentTools(agentName)) {
+      declared.add(tool.name);
+    }
+    for (const sub of this.deps.resolveSubAgents(agentName)) {
+      declared.add(`agent.${sub.name}`);
+    }
+    return declared;
+  }
+
   private async buildLoopConfig(
     input: string | undefined,
     options?: AgentRunOptions,
@@ -527,9 +551,15 @@ export class Agent {
     // enableTracing 优先级:options > deps.config > 默认 false（opt-in,零开销）
     const enableTracing = options?.enableTracing ?? this.deps.config?.enableTracing ?? false;
 
-    // 本次调用的解析结果——executeTool / executeSubAgent 复用（白名单校验用 agentName,
-    // sub-agent 递归继承 provider/model）
-    const callCtx = { agentName, enableTracing, provider, model };
+    // 本次调用的解析结果——executeTool / executeSubAgent 复用（白名单校验用
+    // declaredTools,sub-agent 递归继承 provider/model）
+    const callCtx: AgentCallContext = {
+      agentName,
+      enableTracing,
+      provider,
+      model,
+      declaredTools: this.buildDeclaredTools(agentName),
+    };
 
     return {
       provider,
@@ -754,14 +784,7 @@ export class Agent {
     // LLM 可见性过滤——LLM 幻觉或被提示注入时可能请求未声明的任意已注册 tool
     // （如管理类 tool）,执行前按声明集合强制校验,未声明一律拒绝（错误回传 LLM,
     // 与参数校验失败语义一致）。sub-agent 递归时每个 depth 层按自己的声明集合校验。
-    const declared = new Set<string>();
-    for (const tool of this.deps.resolveAgentTools(callCtx.agentName)) {
-      declared.add(tool.name);
-    }
-    for (const sub of this.deps.resolveSubAgents(callCtx.agentName)) {
-      declared.add(`agent.${sub.name}`);
-    }
-    if (!declared.has(name)) {
+    if (!callCtx.declaredTools.has(name)) {
       return {
         error: `Tool "${name}" is not declared by agent "${callCtx.agentName}" (add it to the agent's tools/agents declaration)`,
       };
