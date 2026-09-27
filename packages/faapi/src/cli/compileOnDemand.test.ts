@@ -340,11 +340,11 @@ describe('按需编译（Vite 风格）', () => {
 
     try {
       // 首次请求：按需编译 + 按需生成 schema → query 参数校验通过
-      // 注：query 注入值为原始 string（框架现有行为），zod 校验确认可 coerce 为 number
+      // query 注入值为 schema 解析后的声明类型（number），不再是原始 string
       const res = await fetch(`${baseUrl}/api/user?page=1&pageSize=10`);
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body).toEqual({ data: { page: '1', pageSize: '10' } });
+      expect(body).toEqual({ data: { page: 1, pageSize: 10 } });
 
       // 无效 query（page=abc 无法 coerce 为 number）→ 校验失败 → 422
       const res2 = await fetch(`${baseUrl}/api/user?page=abc&pageSize=10`);

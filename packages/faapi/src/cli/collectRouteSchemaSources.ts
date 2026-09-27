@@ -110,6 +110,21 @@ export function collectRouteSchemaSources(
         typeInfo,
         coerce: isForm || undefined,
       });
+
+      // params 形参：handler 声明了 `params: XxxParams` 时为每个方法生成
+      // <METHOD>Params schema（GETParams / POSTParams / ...），运行时据此校验
+      // 路径参数并把 coerce 后的值回写 ctx.params。路径段来源均为 string，
+      // coerce 由命名后缀正则推断（Params → true）。未声明则不生成 schema，
+      // 运行时跳过校验，ctx.params 保持原始字符串（与未声明行为一致）。
+      const paramsArg = meta.params.find((p) => p.type === 'params');
+      if (paramsArg?.typeName) {
+        sources.push({
+          urlPath: entry.urlPath,
+          filePath,
+          schemaName: getSchemaName(method, 'params'),
+          typeInfo: resolver.resolve(paramsArg.typeName) ?? null,
+        });
+      }
     }
   }
 

@@ -36,6 +36,12 @@ export const GETQuerySchema = z.object({
   "name": z.string().optional(),
 });
 
+// GET params schema（handler 声明 `params: XxxParams` 时生成，coerce=true：路径段来源均为 string；
+// 运行时 createServer 校验后把转换值回写 ctx.params。未声明 params 形参则不导出）
+export const GETParamsSchema = z.object({
+  "id": z.preprocess(coerceNumber, z.number()),
+});
+
 // POST body schema（coerce=false：JSON 解析已是天然 JS 类型，不含 preprocess，不引用公用变量）
 export const POSTBodySchema = z.object({
   name: z.string(),

@@ -188,4 +188,64 @@ describe('collectRouteSchemaSources', () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.name).toBe('TreeNode');
   });
+
+  it('handler 声明 params 参数时额外生成 <METHOD>Params schema 源', () => {
+    const filePath = writeHandler(
+      'order.ts',
+      `export interface OrderParams { orderId: number; }\nexport interface Query { verbose: boolean; }\nexport function GET(params: OrderParams, query: Query) { return { params, query }; }\n`,
+    );
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/order/:orderId',
+        filePath,
+        paramNames: ['orderId'],
+        isDynamic: true,
+      },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources).toHaveLength(2);
+    expect(sources.map((s) => s.schemaName)).toEqual(['GETQuery', 'GETParams']);
+    const paramsSource = sources[1]!;
+    expect(paramsSource.typeInfo).not.toBeNull();
+    expect(paramsSource.typeInfo!.name).toBe('OrderParams');
+    // coerce 未显式设置：由命名后缀正则（Params → true）在生成端推断
+    expect(paramsSource.coerce).toBeUndefined();
+  });
+
+  it('body 方法的 params 参数生成 POSTParams（POST/GET 同文件各得一份）', () => {
+    const filePath = writeHandler(
+      'multi.ts',
+      `export interface ItemParams { id: number; }\nexport interface ItemBody { title: string; }\nexport function GET(params: ItemParams) { return params; }\nexport function POST(params: ItemParams, body: ItemBody) { return body; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'GET', urlPath: '/api/item/:id', filePath, paramNames: ['id'], isDynamic: true },
+      { method: 'POST', urlPath: '/api/item/:id', filePath, paramNames: ['id'], isDynamic: true },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    const schemaNames = sources.map((s) => s.schemaName);
+    expect(schemaNames).toContain('GETParams');
+    expect(schemaNames).toContain('POSTParams');
+    expect(schemaNames).toContain('POSTBody');
+  });
+
+  it('handler 未声明 params 参数时不生成 Params schema 源（运行时跳过校验）', () => {
+    const filePath = writeHandler('free.ts', `export function GET() { return {}; }\n`);
+    const routes: RouteManifest = [
+      {
+        method: 'GET',
+        urlPath: '/api/free/:id',
+        filePath,
+        paramNames: ['id'],
+        isDynamic: true,
+      },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].schemaName).toBe('GETQuery');
+    expect(sources[0].typeInfo).toBeNull();
+  });
 });

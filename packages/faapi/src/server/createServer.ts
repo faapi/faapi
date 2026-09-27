@@ -503,6 +503,42 @@ function createRoutePipeline(opts: {
     if (!result.valid) {
       throw new ValidationError('参数校验失败', result.issues);
     }
+
+    // 主输入是 query 的方法（GET/DELETE/HEAD）：校验后的值挂到 ctx 内部字段，
+    // handler 的 query 注入优先取它（声明 number/boolean 的字段已是转换后的值）。
+    // 以原始 query 打底合并——schema 是 z.object，声明之外的字段会被剥掉，
+    // 未声明的兜底键保持原始字符串，行为与未声明 schema 时一致。
+    // result.data !== input 即 schema 存在且完成了解析（无声明时原样透传，不挂载）。
+    if (
+      inputType === 'query' &&
+      result.data !== input &&
+      typeof result.data === 'object' &&
+      result.data !== null
+    ) {
+      (ctx as FaapiContext & { __validatedQuery?: Record<string, unknown> }).__validatedQuery = {
+        ...(input as Record<string, unknown>),
+        ...(result.data as Record<string, unknown>),
+      };
+    }
+
+    // params 校验与回写：handler 声明了 `params: XxxParams` 时按声明类型校验
+    // 路径参数（number/boolean 由 schema 内联 coerce 完成字符串→值转换），并把
+    // 转换后的值回写 ctx.params——handler 注入、目录/全局中间件与诊断日志拿到的
+    // 都是转换后的值。同样以原始 params 打底合并（防 catch-all 等声明之外的段被
+    // z.object 剥掉）；无声明时 validateInput 原样透传，回写等于无操作。
+    const paramsResult = await validateInput(schemaPath, route.method, 'params', match.params);
+    if (!paramsResult.valid) {
+      throw new ValidationError('参数校验失败', paramsResult.issues);
+    }
+    if (paramsResult.data !== match.params) {
+      ctx.params =
+        typeof paramsResult.data === 'object' && paramsResult.data !== null
+          ? {
+              ...match.params,
+              ...(paramsResult.data as Record<string, string | number | boolean>),
+            }
+          : match.params;
+    }
     // body 计算与主输入分流：
     // - POST/PUT/PATCH：主输入就是 body，用校验后的值
     // - DELETE：主输入是 query（校验 DELETEQuery），body 单独解析注入——

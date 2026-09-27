@@ -15,6 +15,12 @@
 
 schema key 使用 `urlPath`（如 `/api/hello`）而非 `filePath`，因为 `urlPath` 在 dev/prod 完全一致，无需路径桥接。
 
+## params 形参的收集
+
+除方法主输入（GET/DELETE/HEAD 的 query、POST/PUT/PATCH 的 body/form）外，handler 声明了 `params: XxxParams` 形参时按方法额外收集一份 `getSchemaName(method, 'params')` 源（如 `GETParams` / `POSTParams`），生成端为命名后缀 `Params` 自动 coerce（路径段来源均为 string）。运行时 createServer 据此校验路径参数并把 coerce 后的值回写 `ctx.params`。
+
+未声明 `params` 形参则不收集——无 schema 即无校验，路径参数保持 URL 原始字符串（与未声明行为一致）。
+
 ## 使用场景
 
 - `generateSchemaFiles` 调用本函数收集 sources，再基于 sources 生成各 `zod.js`（ref 解析用 `resolversByFile`）

@@ -18,9 +18,17 @@ import { getAgentHandle } from './agentHandle';
  */
 function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?: unknown): unknown {
   switch (type) {
-    case 'query':
-      return queryToObject(ctx.query);
+    case 'query': {
+      // 管线已完成 schema 校验时（__validatedQuery 由 createServer 挂载），handler
+      // 拿到按声明类型转换后的值（number/boolean）；未挂载（无声明/编程式直调）
+      // 回退原始 query 对象，行为与既往一致。
+      const validated = (ctx as FaapiContext & { __validatedQuery?: Record<string, unknown> })
+        .__validatedQuery;
+      return validated ?? queryToObject(ctx.query);
+    }
     case 'params':
+      // 路径参数：管线已按声明类型校验并回写 ctx.params（转换后的值），
+      // 未声明 params 类型的路由保持原始字符串
       return ctx.params;
     case 'headers':
       return ctx.headers;

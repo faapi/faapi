@@ -95,7 +95,14 @@ export interface FaapiContext {
    */
   log: Logger;
   request: Request;
-  params: Record<string, string>;
+  /**
+   * 动态路由参数
+   *
+   * handler 声明了 `params: XxxParams` 类型时，管线按声明类型校验并回写
+   * 转换后的值（number/boolean 字段不再是字符串）；未声明时保持 URL 原始
+   * 字符串。以 handler 形参上的接口声明为准读取（注入即本对象）。
+   */
+  params: Record<string, string | number | boolean>;
   query: URLSearchParams;
   headers: Headers;
   method: string;

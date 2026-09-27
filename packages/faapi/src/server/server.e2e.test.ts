@@ -130,6 +130,47 @@ describe('HTTP Server E2E', () => {
     expect(body).toEqual({ data: { id: '1' } });
   });
 
+  it('路径参数按声明类型转换：number 段拿到数字，query 声明字段拿到转换值，未声明字段保留原始字符串', async () => {
+    const res = await fetchFromServer('/api/order/42?verbose=true&limit=5&extra=abc');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      data: {
+        orderId: 42,
+        orderIdType: 'number',
+        verbose: true,
+        verboseType: 'boolean',
+        limit: 5,
+        extra: 'abc',
+      },
+    });
+  });
+
+  it('路径参数类型不匹配（number 段传非数字）返回 422', async () => {
+    const res = await fetchFromServer('/api/order/abc?verbose=true');
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('POST 方法路径参数同样按声明类型转换', async () => {
+    const res = await fetchFromServer('/api/order/7', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'x' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({ orderId: 7, orderIdType: 'number', title: 'x' });
+  });
+
+  it('params 声明为 string 时保持字符串（转换由声明类型驱动）', async () => {
+    const res = await fetchFromServer('/api/legacy/zz');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({ key: 'zz', keyType: 'string' });
+  });
+
   it('GET /unknown 返回 404', async () => {
     const res = await fetchFromServer('/unknown');
     expect(res.status).toBe(404);
