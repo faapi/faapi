@@ -973,6 +973,43 @@ describe('HTTP Server E2E', () => {
       const body = await res.text();
       expect(body).toBe('data: first\n\nevent: progress\ndata: 50\n\nevent: done\ndata: 100\n\n');
     });
+
+    it('首次写入即接管：事件到达时间随推送节奏散开，不积压到 handler 结束', async () => {
+      const startedAt = Date.now();
+      const res = await fetchFromServer('/api/sse/stream');
+      expect(res.status).toBe(200);
+
+      // 逐 chunk 读取并记录到达时刻
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      const arrivals: Array<{ at: number; text: string }> = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        arrivals.push({ at: Date.now(), text: decoder.decode(value, { stream: true }) });
+      }
+
+      // 内容完整：4 个事件全部到达
+      expect(arrivals.map((a) => a.text).join('')).toBe(
+        'data: chunk-1\n\ndata: chunk-2\n\ndata: chunk-3\n\ndata: chunk-4\n\n',
+      );
+
+      // 首末 chunk 到达时间差 ≥ 2.5×间隔（100ms）：fixture 每 100ms 推一个，
+      // 首次写入即接管时字节随节奏散开；积压路径（旧行为）下全部字节在
+      // handler 结束后一次 pipe，首末时间差趋近 0
+      const spread = arrivals[arrivals.length - 1]!.at - arrivals[0]!.at;
+      expect(spread).toBeGreaterThanOrEqual(250);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(spread);
+    });
+
+    it('首次写入后 handler 抛错：已推事件照常送达，流终止而非改发 500', async () => {
+      const res = await fetchFromServer('/api/sse/mid-stream-error');
+      // 响应头已在首次写入时发出，状态码定格 200
+      expect(res.status).toBe(200);
+      // 已 enqueue 的事件送达，随后流关闭（无 500 错误体）
+      const body = await res.text();
+      expect(body).toBe('data: before-error\n\n');
+    });
   });
 
   // 请求体大小限制

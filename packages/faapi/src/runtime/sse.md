@@ -88,7 +88,11 @@ export function POST(ctx) {
 
 ### ctx.sse() 的返回值
 
-`ctx.sse()` 返回一个 `SseWriter` 对象，**不直接返回 Response**。handler 调用 `sse.send()` 推送事件，调用 `sse.close()` 结束流。框架在 handler 返回后，识别到 ctx 持有活跃的 SSE writer，自动构造 `text/event-stream` Response。
+`ctx.sse()` 返回一个 `SseWriter` 对象，**不直接返回 Response**。handler 调用 `sse.send()` 推送事件，调用 `sse.close()` 结束流。
+
+**流式接管时机（首次写入即下发）**：HTTP 服务场景下，首次 `send` / `sendRaw` / `sendError` 触发时框架即把 SSE Response（含 `text/event-stream` 头）接入底层连接并开始 pipe——流式期间字节即产即达，打字机/思考过程增量实时可见，不会积压到 handler 结束才一次性到达。在首次写入之前 handler 抛错，仍走常规错误兜底链（客户端拿到 500 而非 SSE 流）；首次写入之后响应已开始（头已发出），错误只能终止流，无法再改发错误响应。
+
+未安装提前接管通道的场景（`app.inject()`、测试直调 `invokeHandler`），SSE Response 仍在 handler 返回后一次性交出——`app.inject()` 本身就是等流结束后整体返回 `{ status, headers, body }` 的语义，两条路径最终字节序列一致，差异仅在到达时机。
 
 这种设计的好处：
 - handler 可以"边写边等"（异步推送），符合"函数即接口"的直观风格
@@ -105,7 +109,7 @@ export function POST(ctx) {
 | `close()` | 方法 | 关闭流（重复调用幂等） |
 | `aborted` | 只读属性 | 客户端断开时变 `true`,底层监听 ReadableStream cancel 信号 |
 | `closed` | 只读属性 | 流已关闭时为 `true` |
-| `response` | 只读属性 | 框架构造的 `Response` 对象（handler 返回后由框架读取） |
+| `response` | 只读属性 | 框架构造的 `Response` 对象（首次写入时由框架读取接入连接） |
 
 #### `send` vs `sendRaw` 的职责分工
 
@@ -173,19 +177,21 @@ handler 可经 `ctx.setHeader('X-Accel-Buffering', 'yes')` 覆盖默认值（见
 
 | 机制 | 与 SSE 的关系 |
 |------|--------------|
-| `ctx.setStatus / setHeader` | 生效：合并到 SSE Response 的 headers（status 默认 200） |
-| 全局错误中间件 | 流开始前报错可被中间件 `try/catch` 拦截；流开始后报错由框架向流写入 error 事件后关闭 |
-| 中间件洋葱模型 | 中间件返回 Response 时，若 handler 已用 ctx.sse()，handler 返回的值被忽略（SSE 优先） |
+| `ctx.setStatus / setHeader` | 生效：合并到 SSE Response 的 headers（status 默认 200）；**需在首次写入前设置**——接管发生在首次写入时，之后的设置不再合并 |
+| 全局错误中间件 | 首次写入前报错可被中间件 `try/catch` 拦截；首次写入后报错由框架关闭流终止连接 |
+| 中间件洋葱模型 | 中间件返回 Response 时，若 handler 已用 ctx.sse()，handler 返回的值被忽略（SSE 优先）；**首次写入接管后**响应已上线，中间件 `await next()` 之后替换/改写的响应被忽略（仅日志等副作用仍正常） |
 | `ctx.json / ctx.html` | 与 ctx.sse 互斥：一个 handler 只能用一种响应方式 |
 
 ### 错误处理
 
-- **流开始前**（handler 同步抛错或返回前异常）：走错误兜底链（全局错误中间件 → formatErrorResponse → 500）
-- **流开始后**（已调用 sse.send）：向流写入 `event: error\ndata: <message>\n\n`，然后关闭流。客户端收到 error 事件后自行处理
+- **首次写入前**（未调用过 `send`/`sendRaw`/`sendError` 时抛错）：走错误兜底链（全局错误中间件 → formatErrorResponse → 500），客户端拿到错误响应而非 SSE 流
+- **首次写入后**（流已开始，响应头已发出）：无法再改发错误响应。handler 抛错时框架关闭 SSE 流终止连接（已 enqueue 的事件照常送达，`onError` 钩子仍触发供告警观测）；需在流内表达错误时用 `sse.sendError(...)`，客户端收到 `event: error` 后自行处理
 
 ### 客户端断开
 
 客户端断开连接时，`sse.aborted` 变为 true，`sse.send()` 静默忽略。handler 可通过 `sse.aborted` 退出循环；若 handler 未退出，框架在 handler 返回后自动 close。
+
+断开检测依赖响应已被消费——首次写入提前接管后（见「ctx.sse() 的返回值」），流式期间断开即触发 cancel，`aborted` 实时可观测，handler 循环即时退出。
 
 无需 try/finally 强制 close，框架兜底保证不泄漏连接。
 
@@ -203,7 +209,7 @@ for await (const token of llmStream()) {
 }
 ```
 
-`waitForDrain()` 在缓冲低于水位时立即返回；否则挂起直到 ReadableStream 的 pull 钩子被消费者触发（缓冲排空）、流关闭或客户端断开（避免生产循环悬挂）。不感知背压的循环在"快生产者 + 慢客户端"场景下缓冲无界增长（每连接一处内存泄漏点）。
+`waitForDrain()` 在缓冲低于水位时立即返回；否则挂起直到 ReadableStream 的 pull 钩子被消费者触发（缓冲排空）、流关闭或客户端断开（避免生产循环悬挂）。不感知背压的循环在"快生产者 + 慢客户端"场景下缓冲无界增长（每连接一处内存泄漏点）。首次写入提前接管后管道即接入连接，pull 持续发生，背压感知在流式期间实时生效。
 
 ## 相关模块
 

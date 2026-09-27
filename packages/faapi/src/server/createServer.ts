@@ -714,6 +714,8 @@ async function handleRequest(
   // meta/ctx 兜底：请求准备阶段抛错（如 content-length 超限的 413）时尚无 ctx
   let meta: ResponseMeta = { headers: {}, setCookies: [] };
   let ctx: FaapiContext | undefined;
+  // SSE 提前接管标记：声明在 try 之外——catch 错误路径需读取（流已开始则不再发错误响应）
+  let sseEarlySent = false;
   // 客户端断连信号：每请求一个 AbortController，signal 进入 Request（ctx.request.signal）
   // res 'close' 在响应正常完成（keep-alive）时也会触发，用 writableEnded 区分——
   // 响应未写完连接就断开（客户端提前断连）才 abort，正常完成不误触发
@@ -744,6 +746,22 @@ async function handleRequest(
     ctx = prepared.ctx;
     meta = prepared.meta;
 
+    // SSE 提前接管（详见 createServer.md「SSE 提前接管」）：ctx.sse() 首次写入
+    // （send/sendRaw/sendError）触发本钩子，立即把 SSE Response 接入 res——流式
+    // 期间字节即产即达，writer.aborted 也能实时感知客户端断开。early-sent 后
+    // 正常/错误路径均不再发送响应
+    (ctx as FaapiContext & { __earlyRespond?: (response: Response) => void }).__earlyRespond = (
+      response: Response,
+    ) => {
+      if (sseEarlySent) return;
+      sseEarlySent = true;
+      // meta（含 CORS 头等）在首次写入时刻合并；此后的 setStatus/setHeader 不再生效。
+      // fire-and-forget：接管完成在流关闭后，不阻塞 handler；管道错误按断连收尾
+      void sendNodeResponse(mergeMeta(response, meta), res).catch(() => {
+        if (!res.writableEnded) res.destroy();
+      });
+    };
+
     // 3. 创建路由执行管线（校验 + 中间件加载 + handler 调用）
     const routePipeline = createRoutePipeline({
       routes,
@@ -765,12 +783,27 @@ async function handleRequest(
       outerMiddlewares.length > 0
         ? await compose(outerMiddlewares, ctx, routePipeline)
         : await routePipeline();
-    // 5. 发送响应
-    await sendSuccessResponse(response, res);
+    // 5. 发送响应。SSE 已在首次写入时提前接管（响应在线上）：handler 返回值及
+    //    中间件 await next() 之后替换的响应被忽略（日志等副作用仍正常执行）
+    if (!sseEarlySent) {
+      await sendSuccessResponse(response, res);
+    }
   } catch (err: unknown) {
     // 客户端已断开或响应已完成：网络中断/连接销毁不是服务端错误，
     // 不向已销毁的连接写 500（写入无效），也不触发 onError 误报
     if (res.destroyed || res.writableEnded) return;
+    // SSE 流已开始（响应头已发出）：无法再改发错误响应——流由 writer 关闭自然
+    // 收尾（invokeHandler 的 autoClose 保证），仍触发 onError 副作用供告警观测
+    if (sseEarlySent) {
+      if (onError && ctx) {
+        try {
+          await onError(err, ctx);
+        } catch {
+          // onError 自身抛错不影响已发出的响应
+        }
+      }
+      return;
+    }
     // 413（请求体超限）：客户端可能仍在上传——响应附 Connection: close 并在写出
     // 后销毁请求连接。不关闭的话：请求体未消费，keep-alive 连接无法复用，客户端
     // 上传也只会收到晦涩的连接重置而非明确的 413

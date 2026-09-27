@@ -21,7 +21,8 @@ describe('scanRoutes', () => {
     // + legacy/[key](GET——string 声明) + docs/[lang]/[...rest](GET——catch-all 打底合并)
     // + search(POST——body 方法次输入 query 声明验证 fixture)
     // + raw(GET) + raw/[id](GET) + raw/echo(POST+PUT——raw 系字段验证 fixture)
-    expect(routes).toHaveLength(30);
+    // + sse/stream(GET) + sse/mid-stream-error(GET——SSE 流式时机/流中抛错验证 fixture)
+    expect(routes).toHaveLength(32);
     // chat + room/[id] + ws-auth + ws-chain/inner + ws-typed/[id]（声明即校验验证）
     expect(wsRoutes).toHaveLength(5);
 
@@ -185,10 +186,10 @@ describe('scanRoutes', () => {
   it('WS 路由：扫描 fixtures 目录返回 WS 路由清单', async () => {
     const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
 
-    // HTTP 路由数量（30 条：含 DELETE body/form 语义验证、raw 系字段验证与
+    // HTTP 路由数量（32 条：含 DELETE body/form 语义验证、raw 系字段验证与
     // order/legacy/docs/search 输入类型声明验证 fixture——order 的 GET/POST/DELETE
-    // 三条，legacy/docs/search 各一条，raw 系五条，item-form 一条）
-    expect(routes).toHaveLength(30);
+    // 三条，legacy/docs/search 各一条，raw 系五条，item-form 一条，sse 流式验证两条）
+    expect(routes).toHaveLength(32);
 
     // WS 路由：chat + room/[id] + ws-auth + ws-chain/inner + ws-typed/[id] = 5 条
     expect(wsRoutes).toHaveLength(5);

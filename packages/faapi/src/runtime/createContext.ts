@@ -163,13 +163,21 @@ export function createContextFromUrl(
     /**
      * 创建 SSE writer，用于流式推送事件
      *
-     * handler 调用此方法后，通过返回的 writer 推送事件，框架自动把 writer.response
-     * 作为 HTTP 响应（Content-Type: text/event-stream）。
+     * handler 调用此方法后，通过返回的 writer 推送事件。HTTP 服务场景下首次
+     * 写入（send/sendRaw/sendError）即触发 server 层提前接管钩子，把 writer.response
+     * 接入底层连接——流式期间字节即产即达（见 createServer.md「SSE 提前接管」）。
+     * 无钩子场景（app.inject / 测试直调 invokeHandler）回落为 handler 返回后交出。
      *
      * 与 ctx.json / ctx.html 互斥：一个 handler 只能用一种响应方式。
      */
     sse(): SseWriter {
-      const writer = createSseWriter();
+      const writer = createSseWriter({
+        onFirstWrite: (response) => {
+          (
+            ctx as FaapiContext & { __earlyRespond?: (response: Response) => void }
+          ).__earlyRespond?.(response);
+        },
+      });
       const ctxWithSse = ctx as FaapiContext & {
         __sseResponse?: Response;
         __sseWriter?: SseWriter;

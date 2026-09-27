@@ -20,7 +20,9 @@
  *
  * 与 ctx 的集成：
  * - ctx.sse() 调用 createSseWriter()，并把 response 缓存到 ctx 内部字段
- * - invokeHandler 在 handler 返回后检查 ctx 是否持有 SSE response，有则优先使用
+ * - 首次写入（send/sendRaw/sendError）经 onFirstWrite 触发 server 层提前接管钩子，
+ *   响应立即接入底层连接（流式即产即达）；无钩子场景回落为 handler 返回后由
+ *   invokeHandler 检查 ctx 持有的 SSE response，有则优先使用
  */
 
 import { stringifyJson } from '../utils/stringifyJson';
@@ -157,12 +159,21 @@ export interface SseWriter {
  *
  * aborted 检测：监听 ReadableStream 的 cancel 钩子，客户端断开（cancel）时置为 true。
  * 此时 send 静默忽略，handler 可通过 writer.aborted 退出循环。
+ *
+ * onFirstWrite：首次成功写入（send/sendRaw/sendError）时以 response 调用一次。
+ * HTTP 服务场景由 ctx.sse() 接到 server 层的提前接管钩子——首次写入即把响应
+ * 接入底层连接，流式期间字节即产即达（见 createServer.md「SSE 提前接管」）。
  */
-export function createSseWriter(): SseWriter {
+export function createSseWriter(
+  options: { onFirstWrite?: (response: Response) => void } = {},
+): SseWriter {
+  const { onFirstWrite } = options;
   const encoder = new TextEncoder();
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let closed = false;
   let aborted = false;
+  /** 首次写入回调是否已触发（幂等：多次写入只触发一次） */
+  let firstWriteTriggered = false;
   /** waitForDrain 挂起中的等待方——消费者拉取（pull）/关闭/断开时唤醒 */
   let drainWaiters: Array<() => void> = [];
 
@@ -170,6 +181,14 @@ export function createSseWriter(): SseWriter {
     const waiters = drainWaiters;
     drainWaiters = [];
     for (const resolve of waiters) resolve();
+  };
+
+  // 首次成功 enqueue 后触发（幂等）。放在 enqueue 之后：接管开始消费时首个
+  // chunk 已在流中，字节顺序不因接管时机改变
+  const triggerFirstWrite = (): void => {
+    if (firstWriteTriggered) return;
+    firstWriteTriggered = true;
+    onFirstWrite?.(response);
   };
 
   // 高水位 16 个 chunk（SSE chunk 小）：给消费者留缓冲余量，超过即 desiredSize <= 0，
@@ -211,12 +230,14 @@ export function createSseWriter(): SseWriter {
       if (closed || !controller) return;
       const text = encodeSseEvent(event);
       controller.enqueue(encoder.encode(text));
+      triggerFirstWrite();
     },
 
     sendRaw(chunk: string | Uint8Array): void {
       if (closed || !controller) return;
       const bytes = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
       controller.enqueue(bytes);
+      triggerFirstWrite();
     },
 
     sendError(error: unknown): void {
@@ -225,6 +246,7 @@ export function createSseWriter(): SseWriter {
       const text = encodeSseEvent({ event: 'error', data: message });
       try {
         controller.enqueue(encoder.encode(text));
+        triggerFirstWrite();
       } finally {
         writer.close();
       }

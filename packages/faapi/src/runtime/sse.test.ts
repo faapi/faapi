@@ -417,4 +417,65 @@ describe('createSseWriter', () => {
       expect(writer2.desiredSize).toBeNull();
     });
   });
+
+  describe('onFirstWrite 首次写入回调（流式接管时机）', () => {
+    it('首次 send 触发一次，传入 response', () => {
+      const calls: Response[] = [];
+      const writer = createSseWriter({ onFirstWrite: (response) => calls.push(response) });
+      expect(calls.length).toBe(0);
+      writer.send({ data: 'a' });
+      expect(calls.length).toBe(1);
+      expect(calls[0]).toBe(writer.response);
+    });
+
+    it('sendRaw 首次写入同样触发', () => {
+      const calls: Response[] = [];
+      const writer = createSseWriter({ onFirstWrite: (response) => calls.push(response) });
+      writer.sendRaw('data: raw\n\n');
+      expect(calls.length).toBe(1);
+      expect(calls[0]).toBe(writer.response);
+    });
+
+    it('sendError 作为首次写入同样触发', () => {
+      const calls: Response[] = [];
+      const writer = createSseWriter({ onFirstWrite: (response) => calls.push(response) });
+      writer.sendError(new Error('boom'));
+      expect(calls.length).toBe(1);
+      expect(writer.closed).toBe(true);
+    });
+
+    it('多次写入只触发一次', () => {
+      let count = 0;
+      const writer = createSseWriter({ onFirstWrite: () => count++ });
+      writer.send({ data: '1' });
+      writer.sendRaw('data: 2\n\n');
+      writer.send({ data: '3' });
+      expect(count).toBe(1);
+    });
+
+    it('仅创建 writer 不触发；close 前未写入也不触发', () => {
+      let count = 0;
+      const writer = createSseWriter({ onFirstWrite: () => count++ });
+      expect(count).toBe(0);
+      writer.close();
+      expect(count).toBe(0);
+    });
+
+    it('close 后再 send 静默忽略，不触发回调', () => {
+      let count = 0;
+      const writer = createSseWriter({ onFirstWrite: () => count++ });
+      writer.close();
+      writer.send({ data: 'after' });
+      writer.sendRaw('data: after\n\n');
+      expect(count).toBe(0);
+    });
+
+    it('客户端 cancel（aborted）后再 send 不触发回调', async () => {
+      let count = 0;
+      const writer = createSseWriter({ onFirstWrite: () => count++ });
+      await writer.response.body!.cancel();
+      writer.send({ data: 'after-abort' });
+      expect(count).toBe(0);
+    });
+  });
 });

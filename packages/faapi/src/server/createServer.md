@@ -95,8 +95,19 @@ export async function POST(ctx, body) {
 }
 ```
 
-- **与 SSE 的关系**：SSE 路径的 `ctx.sse().aborted`（stream cancel 检测）保持独立并存——SSE handler 用 `writer.aborted` 轮询，非流式 handler 用 `ctx.request.signal`，互不影响
+- **与 SSE 的关系**：SSE 路径的 `ctx.sse().aborted`（stream cancel 检测）保持独立并存——SSE handler 用 `writer.aborted` 轮询，非流式 handler 用 `ctx.request.signal`，互不影响。SSE 首次写入提前接管后（见下节），断开 → `res` close → destroy 源流 → stream cancel，`writer.aborted` 在流式期间实时变 true，handler 推送循环可即时退出
 - 信号触发后框架不自动中断 handler 执行，由业务代码通过 signal 自行决定中止点（fetch 传参 / `signal.addEventListener` / `throw signal.reason`）
+
+## SSE 提前接管（首次写入即下发）
+
+SSE Response 若等 handler 返回后才交给 `sendNodeResponse`，流式期间 `ReadableStream` 无消费者，所有字节积压到 handler 结束才一次性到达——流式语义失效（LLM 打字机/思考过程增量全部变成一次性到达），`writer.aborted` 也因 cancel 永不触发而恒 false。因此 `handleRequest` 在 ctx 创建后安装内部钩子 `__earlyRespond(response)`：
+
+1. `ctx.sse()` 创建 writer 时把钩子接到**首次写入**（`send`/`sendRaw`/`sendError`）——首次写入触发 `mergeMeta(当前 meta)` 后 fire-and-forget 调 `sendNodeResponse` 接管 `res`，并置 early-sent 标记（不 await 完成，finish 在流关闭后）
+2. **正常返回路径**：early-sent 时跳过 `sendSuccessResponse`——响应已上线，handler 返回值及中间件 `await next()` 之后替换的响应被忽略（日志等副作用仍正常）
+3. **错误路径**：early-sent 时不再发错误响应（头已发出）——流由 writer 关闭自然收尾，仍触发 `onError` 副作用（流式中断的告警观测点）
+4. **无钩子场景**（`app.inject()`、测试直调 `invokeHandler`）：回落为 handler 返回后一次交出——`app.inject()` 等流结束整体返回，最终字节序列与真实请求一致
+
+meta（含 CORS 头，均在 handler 之前经 `ctx.setHeader` 写入）在首次写入时刻合并；首次写入之后的 `setStatus`/`setHeader` 不再生效。compression/etag 均按 Content-Type 跳过 `text/event-stream`，不会触碰已接入管道的 body 流。
 
 ## 相关模块
 
