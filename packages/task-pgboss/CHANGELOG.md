@@ -1,5 +1,7 @@
 # @faapi/task-pgboss
 
+## 6.19.0
+
 ## 6.18.1
 
 ### Patch Changes
