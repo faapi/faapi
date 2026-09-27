@@ -7,8 +7,9 @@ import {
 import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
 import { getSchemaName } from '../validator/schemaName';
 import { analyzeInjectionInSourceFile } from '../injection/analyzeInjection';
-import type { RouteManifest } from '../router/routeTypes';
+import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
 import path from 'node:path';
+import ts from 'typescript';
 
 /**
  * 单个路由的 schema 提取结果
@@ -51,9 +52,33 @@ export interface RouteSchemaSource {
  * 惰性语义：与路由无关的类型（未被任何入口类型引用）不会被解析——文件里
  * 存在一个含不支持语法的无关类型不再拖垮整个 build/reload。
  */
+/**
+ * 查找源文件中导出的约定命名类型（interface / type alias）
+ *
+ * WS handler 的输入声明是文件级约定（WS 函数形参是 ctx，不携带类型名）：
+ * handler.ts 导出 `WS` 且同文件声明 `export interface Query` / `export interface
+ * Params`（type alias 同样生效）时，为该 WS 路由生成 WSQuery / WSParams schema。
+ * 与 HTTP 导出共存时共享同一 interface（同文件同源）。
+ */
+function findExportedTypeName(sourceFile: ts.SourceFile, name: string): boolean {
+  for (const statement of sourceFile.statements) {
+    const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) : undefined;
+    const isExported = modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+    if (!isExported) continue;
+    if (
+      (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) &&
+      statement.name?.text === name
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function collectRouteSchemaSources(
   routes: RouteManifest,
   rootDir?: string,
+  wsRoutes?: WsRouteManifest,
 ): {
   sources: RouteSchemaSource[];
   /** 按文件分组的惰性类型解析器（generateSchemaFiles 解析 ref 用） */
@@ -72,12 +97,23 @@ export function collectRouteSchemaSources(
     entry.methods.add(route.method);
   }
 
+  // WS 路由文件：约定 interface（Query/Params）收集进同一批 Program（WS-only
+  // 文件不在 HTTP 集合里，需要单独建 Program 与解析器）
+  const wsFiles: Array<{ filePath: string; urlPath: string }> = [];
+  for (const wsRoute of wsRoutes ?? []) {
+    wsFiles.push({
+      filePath: rootDir ? path.resolve(rootDir, wsRoute.filePath) : wsRoute.filePath,
+      urlPath: wsRoute.urlPath,
+    });
+  }
+
   // 批量共享 Program：同一次提取只创建一个 Program，避免逐文件全量解析
-  const programByFile = createPrograms([...methodsByFile.keys()]);
+  const allFiles = [...new Set([...methodsByFile.keys(), ...wsFiles.map((f) => f.filePath)])];
+  const programByFile = createPrograms(allFiles);
 
   // 每个文件一个惰性解析器：入口类型立即解析，ref 按需解析（缓存幂等）
   const resolversByFile = new Map<string, LazyTypeResolver>();
-  for (const filePath of methodsByFile.keys()) {
+  for (const filePath of allFiles) {
     resolversByFile.set(filePath, createLazyTypeResolver(programByFile.get(filePath)!, filePath));
   }
 
@@ -156,6 +192,33 @@ export function collectRouteSchemaSources(
           });
         }
       }
+    }
+  }
+
+  // WS 路由 schema 源：文件级约定声明（export interface/type Query / Params）
+  // → WSQuery / WSParams schema（coerce 由 schemaName 后缀正则推断，与 HTTP 的
+  // Query/Params 一致）。未声明约定的 WS 文件不生成 schema，握手时透传原始值
+  //（params/query 保持 URL 原始字符串），与 HTTP 未声明形参行为对齐。
+  for (const wsFile of wsFiles) {
+    const program = programByFile.get(wsFile.filePath);
+    const sourceFile = program?.getSourceFile(wsFile.filePath);
+    if (!sourceFile) continue;
+    const resolver = resolversByFile.get(wsFile.filePath)!;
+    if (findExportedTypeName(sourceFile, 'Query')) {
+      sources.push({
+        urlPath: wsFile.urlPath,
+        filePath: wsFile.filePath,
+        schemaName: getSchemaName('WS', 'query'),
+        typeInfo: resolver.resolve('Query') ?? null,
+      });
+    }
+    if (findExportedTypeName(sourceFile, 'Params')) {
+      sources.push({
+        urlPath: wsFile.urlPath,
+        filePath: wsFile.filePath,
+        schemaName: getSchemaName('WS', 'params'),
+        typeInfo: resolver.resolve('Params') ?? null,
+      });
     }
   }
 

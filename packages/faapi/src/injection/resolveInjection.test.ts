@@ -62,6 +62,24 @@ describe('resolveInjection', () => {
       const result = resolveInjection(fn);
       expect(result).toEqual([{ name: 'agents', type: 'agents', hasType: false }]);
     });
+
+    it('识别 rawQuery 参数（原始 query，恒 URLSearchParams）', () => {
+      const fn = eval('(rawQuery) => {}');
+      const result = resolveInjection(fn);
+      expect(result).toEqual([{ name: 'rawQuery', type: 'rawQuery', hasType: false }]);
+    });
+
+    it('识别 rawParams 参数（原始路径段，恒字符串）', () => {
+      const fn = eval('(rawParams) => {}');
+      const result = resolveInjection(fn);
+      expect(result).toEqual([{ name: 'rawParams', type: 'rawParams', hasType: false }]);
+    });
+
+    it('识别 rawBody 参数（原始请求体文本）', () => {
+      const fn = eval('(rawBody) => {}');
+      const result = resolveInjection(fn);
+      expect(result).toEqual([{ name: 'rawBody', type: 'rawBody', hasType: false }]);
+    });
   });
 
   describe('多参数支持', () => {

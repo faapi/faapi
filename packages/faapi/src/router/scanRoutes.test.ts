@@ -16,12 +16,14 @@ describe('scanRoutes', () => {
     // + error/throw(GET) + error/validate(GET+POST)
     // + sse(GET) + inject(GET)
     // + item(DELETE——DELETE body 语义验证 fixture)
+    // + item-form(DELETE——DELETE form-urlencoded 验证 fixture)
     // + order/[orderId](GET+POST+DELETE——params/query 类型转换验证 fixture)
     // + legacy/[key](GET——string 声明) + docs/[lang]/[...rest](GET——catch-all 打底合并)
     // + search(POST——body 方法次输入 query 声明验证 fixture)
-    expect(routes).toHaveLength(25);
-    // chat + room/[id] + ws-auth + ws-chain/inner
-    expect(wsRoutes).toHaveLength(4);
+    // + raw(GET) + raw/[id](GET) + raw/echo(POST+PUT——raw 系字段验证 fixture)
+    expect(routes).toHaveLength(30);
+    // chat + room/[id] + ws-auth + ws-chain/inner + ws-typed/[id]（声明即校验验证）
+    expect(wsRoutes).toHaveLength(5);
 
     // 检查 auth/login GET
     const loginGet = routes.find((r) => r.method === 'GET' && r.urlPath === '/api/auth/login');
@@ -183,12 +185,13 @@ describe('scanRoutes', () => {
   it('WS 路由：扫描 fixtures 目录返回 WS 路由清单', async () => {
     const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
 
-    // HTTP 路由数量（25 条：含 DELETE body 语义验证与 order/legacy/docs/search
-    // 输入类型声明验证 fixture——order 的 GET/POST/DELETE 三条，legacy/docs/search 各一条）
-    expect(routes).toHaveLength(25);
+    // HTTP 路由数量（30 条：含 DELETE body/form 语义验证、raw 系字段验证与
+    // order/legacy/docs/search 输入类型声明验证 fixture——order 的 GET/POST/DELETE
+    // 三条，legacy/docs/search 各一条，raw 系五条，item-form 一条）
+    expect(routes).toHaveLength(30);
 
-    // WS 路由：chat + room/[id] + ws-auth + ws-chain/inner = 4 条
-    expect(wsRoutes).toHaveLength(4);
+    // WS 路由：chat + room/[id] + ws-auth + ws-chain/inner + ws-typed/[id] = 5 条
+    expect(wsRoutes).toHaveLength(5);
 
     // 检查 /api/chat WS 路由
     const chatWs = wsRoutes.find((r) => r.urlPath === '/api/chat');

@@ -3,6 +3,7 @@ import { markBufferedBody } from '../response/bufferedBody';
 import { createSseWriter, type SseWriter } from './sse';
 import { wrapOkResult, formatFailResponse, jsonOk } from '../response/responseFormatter';
 import { createLogger } from '../logger/logger';
+import { queryToObject } from '../utils/queryToObject';
 
 /**
  * 解析请求 ID：请求头 `x-request-id` 第一段（逗号分隔取首段，网关透传场景跨服务
@@ -100,7 +101,11 @@ export function createContextFromUrl(
     log,
     request,
     params,
-    query: url.searchParams,
+    rawParams: params,
+    // ctx.query 为对象口径（createContext 挂原始 string 值对象；handler 声明
+    // query 类型时管线校验后替换为转换值）。原始 URLSearchParams 恒在 rawQuery。
+    query: queryToObject(url.searchParams),
+    rawQuery: url.searchParams,
     headers: request.headers,
     method: request.method,
     path: url.pathname,

@@ -338,6 +338,7 @@ export function createServer(options: CreateServerOptions): {
       bodyLimit,
       trustedProxy,
       registries,
+      routesRef.wsCurrent,
     ).catch((err) => {
       // 兜底留痕：进入这里说明 sendErrorResponse 自身也失败（如响应头已发的二次
       // 响应尝试），恰恰是最需要排查痕迹的极端场景，静默吞掉会让 500 无从定位
@@ -362,6 +363,7 @@ export function createServer(options: CreateServerOptions): {
     server,
     routesRef,
     rootDir,
+    dist,
     config,
     globalMiddlewares,
     trustedProxy,
@@ -372,21 +374,27 @@ export function createServer(options: CreateServerOptions): {
 }
 
 /**
- * 准备请求上下文：Node IncomingMessage → Web Request + FaapiContext
+ * 准备请求上下文：已解析的 Web Request + FaapiContext
  *
  * 提取为独立函数，让 handleRequest 主流程聚焦于路由 + 中间件调度，
  * 便于单测与未来扩展（如自定义 context 字段来源）。
  *
- * URL 全请求只解析一次（toWebRequest 内），pathname/searchParams
- * 由 ctx / routePipeline 共享，避免一次请求重复 new URL 3~4 次。
+ * Web Request / URL 由调用方（handleRequest）解析一次后传入——提前路由匹配
+ * 需要在构造 ctx 之前拿到 method/urlPath，且 Request 的 body 流只能包装一次。
+ *
+ * preMatched：提前匹配的路由结果（handleRequest 在构造 ctx 前完成匹配，
+ * 让全局中间件 next() 之前即可见 ctx.params/ctx.rawParams 原始段）。
+ * 未命中传 null——ctx.params 挂空对象，404/405 仍由 routePipeline 抛出
+ * （错误响应保持经过完整外层中间件链，CORS 头不丢）。
  */
 function prepareRequest(
   req: IncomingMessage,
+  request: Request,
+  url: URL,
   config: Record<string, unknown> | undefined,
-  bodyLimit: number,
   trustedProxy: boolean,
   registries?: AppRegistries,
-  requestSignal?: AbortSignal,
+  preMatched?: RouteMatch | null,
 ): {
   request: Request;
   url: URL;
@@ -395,13 +403,14 @@ function prepareRequest(
   method: string;
   urlPath: string;
 } {
-  const { request, url } = toWebRequest(req, bodyLimit, requestSignal);
   const method = request.method.toUpperCase();
   const urlPath = url.pathname;
+  // 路由匹配后构造 ctx：params 初值即匹配的原始段（全局中间件 next() 前可见），
+  // createContext 内部把 params 同时挂为 ctx.rawParams（恒原始引用）
   const ctx = createContextFromUrl(
     request,
     url,
-    {},
+    preMatched?.params ?? {},
     config,
     getClientIp(req, trustedProxy),
     registries,
@@ -473,20 +482,40 @@ function createRoutePipeline(opts: {
   rootDir: string;
   dist: string;
   globalInjectors: InjectorMap | undefined;
+  /** 提前匹配的路由结果；null 时由本管线抛 404/405（保持错误经过全局中间件链） */
+  preMatched: RouteMatch | null;
+  /** WS 路由清单（同文件 WS 路由的 schema 一并按需生成，防静默缺失） */
+  wsRoutes?: WsRouteManifest;
 }): () => Promise<Response> {
-  const { routes, method, urlPath, url, ctx, request, rootDir, dist, globalInjectors } = opts;
+  const {
+    routes,
+    method,
+    urlPath,
+    url,
+    ctx,
+    request,
+    rootDir,
+    dist,
+    globalInjectors,
+    preMatched,
+    wsRoutes,
+  } = opts;
   return async () => {
-    // 1. 路由匹配（未命中抛 RouteNotFound / MethodNotAllowed）
-    const match = resolveRouteOrThrow(routes, method, urlPath);
-    ctx.params = match.params;
+    // 1. 路由匹配：命中已在 handleRequest 提前完成（ctx.params/rawParams 已挂原始段）；
+    //    未命中在此抛 RouteNotFound / MethodNotAllowed
+    const match = preMatched ?? resolveRouteOrThrow(routes, method, urlPath);
     const { route } = match;
     const { absFilePath, schemaPath } = getRoutePaths(route, rootDir, dist);
 
     // 2. 加载 handler.js（dev 按需编译 + import，prod 直接 import）
     const routeModule = await loadRouteModule(absFilePath, route.method, rootDir);
 
-    // 3. 参数解析（query / body / form / files 等）——复用已解析的 URL
-    const input = await resolveInputFromUrl(route.method, request, url);
+    // 3. 参数解析（query / body / form / files 等）——复用已解析的 URL；
+    //    rawBody（请求体原始文本）随之挂载（GET/HEAD 与 multipart 为 undefined）
+    const { input, rawBody } = await resolveInputFromUrl(route.method, request, url);
+    if (rawBody !== undefined) {
+      ctx.rawBody = rawBody;
+    }
 
     // 4. schema 校验（运行时按 route.filePath 计算 zod.js 路径 + safeParse）
     const inputType = getInputTypeForMethod(route.method);
@@ -496,7 +525,7 @@ function createRoutePipeline(opts: {
     if (isDevOnDemandEnabled()) {
       const devDist = getDevDist();
       if (devDist) {
-        await ensureSchemaGenerated(schemaPath, route.filePath, routes, rootDir, dist);
+        await ensureSchemaGenerated(schemaPath, route.filePath, routes, rootDir, dist, wsRoutes);
       }
     }
 
@@ -505,18 +534,18 @@ function createRoutePipeline(opts: {
       throw new ValidationError('参数校验失败', result.issues);
     }
 
-    // 主输入是 query 的方法（GET/DELETE/HEAD）：校验后的值挂到 ctx 内部字段，
-    // handler 的 query 注入优先取它（声明 number/boolean 的字段已是转换后的值）。
-    // 以原始 query 打底合并——schema 是 z.object，声明之外的字段会被剥掉，
-    // 未声明的兜底键保持原始字符串，行为与未声明 schema 时一致。
-    // result.data !== input 即 schema 存在且完成了解析（无声明时原样透传，不挂载）。
+    // 主输入是 query 的方法（GET/DELETE/HEAD）：校验后的值替换 ctx.query
+    //（声明 number/boolean 的字段已是转换后的值）。以原始 query 打底合并——
+    // schema 是 z.object，声明之外的字段会被剥掉，未声明的兜底键保持原始
+    // 字符串，行为与未声明 schema 时一致。ctx.query 即 handler 的 query 注入
+    //（同一对象），无声明时 validateInput 原样透传、不替换。
     if (
       inputType === 'query' &&
       result.data !== input &&
       typeof result.data === 'object' &&
       result.data !== null
     ) {
-      (ctx as FaapiContext & { __validatedQuery?: Record<string, unknown> }).__validatedQuery = {
+      ctx.query = {
         ...(input as Record<string, unknown>),
         ...(result.data as Record<string, unknown>),
       };
@@ -526,7 +555,8 @@ function createRoutePipeline(opts: {
     // 路径参数（number/boolean 由 schema 内联 coerce 完成字符串→值转换），并把
     // 转换后的值回写 ctx.params——handler 注入、目录/全局中间件与诊断日志拿到的
     // 都是转换后的值。同样以原始 params 打底合并（防 catch-all 等声明之外的段被
-    // z.object 剥掉）；无声明时 validateInput 原样透传，回写等于无操作。
+    // z.object 剥掉）；ctx.rawParams 保持原始引用不受影响。无声明时 validateInput
+    // 原样透传，回写等于无操作。
     const paramsResult = await validateInput(schemaPath, route.method, 'params', match.params);
     if (!paramsResult.valid) {
       throw new ValidationError('参数校验失败', paramsResult.issues);
@@ -543,9 +573,9 @@ function createRoutePipeline(opts: {
 
     // 次输入校验（声明即校验，与主输入同一 validateInput 通道）：
     // body 方法（POST/PUT/PATCH）声明 query 形参时存在 POSTQuery schema——校验 query
-    // 并挂载 __validatedQuery（声明字段拿到转换值，未声明字段以原始 query 打底保留
-    // 原始字符串）；无声明时 schema 缺失、data === input，不挂载，注入回退
-    // queryToObject 行为不变。
+    // 并替换 ctx.query（声明字段拿到转换值，未声明字段以原始 query 打底保留
+    // 原始字符串）；无声明时 schema 缺失、data === input，不替换，ctx.query 保持
+    // createContext 挂载的原始 query 对象。
     if (inputType === 'body') {
       const rawQuery = queryToObject(url.searchParams);
       const queryResult = await validateInput(schemaPath, route.method, 'query', rawQuery);
@@ -557,7 +587,7 @@ function createRoutePipeline(opts: {
         typeof queryResult.data === 'object' &&
         queryResult.data !== null
       ) {
-        (ctx as FaapiContext & { __validatedQuery?: Record<string, unknown> }).__validatedQuery = {
+        ctx.query = {
           ...(rawQuery as Record<string, unknown>),
           ...(queryResult.data as Record<string, unknown>),
         };
@@ -569,20 +599,28 @@ function createRoutePipeline(opts: {
     //   若把校验后的 query 当 body 传入，handler 声明 body 会静默拿到 query；
     //   同时请求体流不被消费，keep-alive 连接无法复用。
     //   声明 body/form 形参时存在 DELETEBody schema：解析结果校验后再注入
-    //   （Date 字段转换与 POST body 一致）；空请求体（undefined）跳过校验
+    //   （Date 字段转换与 POST body 一致；form 声明 coerce=true）。空请求体
+    //   （null）与 POST 同路径：有 schema 时 safeParse 失败 422，无 schema 透传
     // - GET/HEAD：无 body
     let body: unknown;
     if (inputType === 'query' && hasBody(route.method)) {
       const parsed = await resolveBodyForQueryMethod(request);
-      if (parsed !== undefined) {
-        const bodyResult = await validateInput(schemaPath, route.method, 'body', parsed);
-        if (!bodyResult.valid) {
-          throw new ValidationError('参数校验失败', bodyResult.issues);
-        }
-        body = bodyResult.data;
+      if (parsed.rawBody !== undefined) {
+        ctx.rawBody = parsed.rawBody;
       }
+      const bodyResult = await validateInput(schemaPath, route.method, 'body', parsed.input);
+      if (!bodyResult.valid) {
+        throw new ValidationError('参数校验失败', bodyResult.issues);
+      }
+      body = bodyResult.data;
     } else if (hasBody(route.method)) {
       body = result.data;
+    }
+    // 挂载校验后的 body：目录中间件（handler 之前）可经 ctx.body 读取请求体；
+    // 与 handler 的 body 注入是同一对象。GET/HEAD 及空请求体（null，无 schema
+    // 透传场景）恒 undefined
+    if (body !== undefined && body !== null) {
+      ctx.body = body;
     }
 
     // 5. 中间件按需加载（Vite 风格）：route.middlewares 为 undefined 时从 middlewarePaths 加载
@@ -671,6 +709,7 @@ async function handleRequest(
   bodyLimit: number,
   trustedProxy: boolean,
   registries?: AppRegistries,
+  wsRoutes?: WsRouteManifest,
 ): Promise<void> {
   // meta/ctx 兜底：请求准备阶段抛错（如 content-length 超限的 413）时尚无 ctx
   let meta: ResponseMeta = { headers: {}, setCookies: [] };
@@ -683,20 +722,29 @@ async function handleRequest(
     if (!res.writableEnded) abortController.abort();
   });
   try {
-    // 1. 准备请求上下文（toWebRequest + createContext）——URL 全请求只解析一次
+    // 1. 路由匹配提前：在构造 ctx 之前完成（matchRoute 纯函数无副作用），
+    //    命中则 params 原始段进入 ctx.params/ctx.rawParams——全局中间件
+    //    await next() 之前即可读取；未命中传 null，404/405 仍由 routePipeline
+    //    抛出（错误响应保持经过完整外层中间件链）
+    const { request, url } = toWebRequest(req, bodyLimit, abortController.signal);
+    const method = request.method.toUpperCase();
+    const urlPath = url.pathname;
+    const preMatched = matchRoute(routes, method, urlPath);
+
+    // 2. 准备请求上下文（createContext）——Request/URL 由上方解析一次后传入
     const prepared = prepareRequest(
       req,
+      request,
+      url,
       config,
-      bodyLimit,
       trustedProxy,
       registries,
-      abortController.signal,
+      preMatched,
     );
     ctx = prepared.ctx;
     meta = prepared.meta;
-    const { request, url, method, urlPath } = prepared;
 
-    // 2. 创建路由执行管线（路由匹配 + 校验 + 中间件加载 + handler 调用）
+    // 3. 创建路由执行管线（校验 + 中间件加载 + handler 调用）
     const routePipeline = createRoutePipeline({
       routes,
       method,
@@ -707,15 +755,17 @@ async function handleRequest(
       rootDir,
       dist,
       globalInjectors,
+      preMatched,
+      wsRoutes,
     });
 
-    // 3. 执行外层中间件链（CORS → helmet → logger → 全局 → routePipeline，
+    // 4. 执行外层中间件链（CORS → helmet → logger → 全局 → routePipeline，
     //    数组已在 createServer 启动期组装，此处仅按需 compose）
     const response =
       outerMiddlewares.length > 0
         ? await compose(outerMiddlewares, ctx, routePipeline)
         : await routePipeline();
-    // 4. 发送响应
+    // 5. 发送响应
     await sendSuccessResponse(response, res);
   } catch (err: unknown) {
     // 客户端已断开或响应已完成：网络中断/连接销毁不是服务端错误，

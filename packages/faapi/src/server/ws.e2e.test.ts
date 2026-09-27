@@ -104,7 +104,8 @@ beforeAll(async () => {
   const sorted = sortRoutes(routes);
   // 生成 zod.js 到临时目录（createServer 运行时按 route.filePath + dist 计算 zod.js 路径）
   schemaDist = await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-e2e-ws-schema-'));
-  await generateSchemaFiles(sorted, FIXTURES_DIR, schemaDist);
+  // 生成 zod.js 含 WS 路由的约定 interface schema（WSQuery/WSParams）
+  await generateSchemaFiles(sorted, FIXTURES_DIR, schemaDist, wsRoutes);
   const { server: srv } = createServer({
     routes: sorted,
     rootDir: FIXTURES_DIR,
@@ -237,6 +238,66 @@ describe('WebSocket 握手中间件链', () => {
   it('中间件拦截：无 token 返回 401，握手被拒绝、连接未建立', async () => {
     const ws = new WebSocket(`${wsBaseUrl}/api/ws-auth`);
     await expect(waitForOpen(ws)).rejects.toThrow();
+    ws.close();
+  });
+
+  it('声明 Query/Params 的 WS 路由：握手拿到转换后的 params/query，raw 系恒原始', async () => {
+    const { ws, queue } = await connect('/api/ws-typed/42?verbose=true');
+    const msg = JSON.parse(await queue.next());
+    expect(msg).toEqual({
+      id: 42,
+      idType: 'number',
+      rawId: '42',
+      rawIdType: 'string',
+      verbose: true,
+      verboseType: 'boolean',
+      rawVerbose: 'true',
+    });
+    ws.close();
+  });
+
+  it('声明 Params 的 WS 路由：params 非法（非数字段）时握手被拒绝（HTTP 422）', async () => {
+    const status = await new Promise<number>((resolve, reject) => {
+      const ws = new WebSocket(`${wsBaseUrl}/api/ws-typed/abc?verbose=true`);
+      ws.on('unexpected-response', (_req: unknown, res: { statusCode: number }) => {
+        resolve(res.statusCode);
+        ws.terminate();
+      });
+      ws.on('error', () => {
+        /* unexpected-response 之后附带的 error 忽略 */
+      });
+      ws.on('open', () => {
+        reject(new Error('握手不应成功'));
+        ws.terminate();
+      });
+    });
+    expect(status).toBe(422);
+  });
+
+  it('query 非法（verbose=abc）时握手同样被拒绝（HTTP 422）', async () => {
+    const status = await new Promise<number>((resolve, reject) => {
+      const ws = new WebSocket(`${wsBaseUrl}/api/ws-typed/42?verbose=abc`);
+      ws.on('unexpected-response', (_req: unknown, res: { statusCode: number }) => {
+        resolve(res.statusCode);
+        ws.terminate();
+      });
+      ws.on('error', () => {
+        /* unexpected-response 之后附带的 error 忽略 */
+      });
+      ws.on('open', () => {
+        reject(new Error('握手不应成功'));
+        ws.terminate();
+      });
+    });
+    expect(status).toBe(422);
+  });
+
+  it('未声明约定 interface 的 WS 路由：params/query 保持 URL 原始字符串（不误伤）', async () => {
+    // room/[id] 无约定 interface → 无 schema → 透传原始值；连接成功即证明未声明不拒绝
+    const { ws, queue } = await connect('/api/room/7?verbose=true');
+    const msg = await queue.next();
+    // room fixture onOpen 发送对象（自动 JSON.stringify），id 为原始字符串
+    expect(JSON.parse(msg)).toEqual({ roomId: '7' });
     ws.close();
   });
 

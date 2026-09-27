@@ -319,4 +319,37 @@ describe('collectRouteSchemaSources', () => {
     expect(sources).toHaveLength(1);
     expect(sources[0].schemaName).toBe('GETQuery');
   });
+
+  it('WS 路由声明约定 interface（Query/Params）时生成 WSQuery/WSParams schema 源', () => {
+    const filePath = writeHandler(
+      'ws-typed.ts',
+      `export interface Params { id: number }\nexport interface Query { verbose: boolean }\nexport function WS(ctx: unknown) { return ctx; }\n`,
+    );
+    const wsRoutes = [
+      { urlPath: '/api/ws-typed/:id', filePath, paramNames: ['id'], isDynamic: true },
+    ];
+
+    const { sources } = collectRouteSchemaSources([], undefined, wsRoutes);
+    expect(sources).toHaveLength(2);
+    const querySource = sources.find((s) => s.schemaName === 'WSQuery');
+    expect(querySource).toBeDefined();
+    expect(querySource!.typeInfo).not.toBeNull();
+    expect(querySource!.typeInfo!.name).toBe('Query');
+    const paramsSource = sources.find((s) => s.schemaName === 'WSParams');
+    expect(paramsSource).toBeDefined();
+    expect(paramsSource!.typeInfo!.name).toBe('Params');
+    // coerce 由 schemaName 后缀正则推断（Query/Params 后缀 → true），URL 来源均为 string
+    expect(querySource!.coerce).toBeUndefined();
+  });
+
+  it('WS 路由未声明约定 interface 时不生成 schema 源（握手透传原始值）', () => {
+    const filePath = writeHandler(
+      'ws-plain.ts',
+      `export function WS(ctx: unknown) { return ctx; }\n`,
+    );
+    const wsRoutes = [{ urlPath: '/api/ws-plain', filePath, paramNames: [], isDynamic: false }];
+
+    const { sources } = collectRouteSchemaSources([], undefined, wsRoutes);
+    expect(sources).toHaveLength(0);
+  });
 });

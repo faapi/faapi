@@ -43,6 +43,7 @@ describe('attachWebSocket', () => {
       server,
       routesRef,
       rootDir: '/tmp',
+      dist: '.faapi',
     });
     expect(wss).toBeDefined();
     expect(typeof wss.handleUpgrade).toBe('function');
@@ -52,7 +53,7 @@ describe('attachWebSocket', () => {
     server = createServer();
     const before = server.listenerCount('upgrade');
     const routesRef: RoutesRef = { current: [], wsCurrent: [] };
-    attachWebSocket({ server, routesRef, rootDir: '/tmp' });
+    attachWebSocket({ server, routesRef, rootDir: '/tmp', dist: '.faapi' });
     const after = server.listenerCount('upgrade');
     expect(after).toBe(before + 1);
   });
@@ -60,7 +61,7 @@ describe('attachWebSocket', () => {
   it('路由不匹配时写 404 并销毁 socket', async () => {
     server = createServer();
     const routesRef: RoutesRef = { current: [], wsCurrent: [] };
-    attachWebSocket({ server, routesRef, rootDir: '/tmp' });
+    attachWebSocket({ server, routesRef, rootDir: '/tmp', dist: '.faapi' });
 
     // 模拟 upgrade 事件（无匹配路由）
     const written: string[] = [];
@@ -91,7 +92,7 @@ describe('attachWebSocket', () => {
   it('routesRef 引用更新后使用新路由（watch 热替换）', () => {
     server = createServer();
     const routesRef: RoutesRef = { current: [], wsCurrent: [] };
-    attachWebSocket({ server, routesRef, rootDir: '/tmp' });
+    attachWebSocket({ server, routesRef, rootDir: '/tmp', dist: '.faapi' });
 
     // 模拟 reloadRoutes 更新 routesRef.wsCurrent
     const newWsRoutes = [

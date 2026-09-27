@@ -2,6 +2,15 @@
 
 一句话概括：从 Request 创建请求上下文；另导出 `createTestContext` 作为测试专用语法糖（接受选项对象，内部构造 Request）。
 
+输入字段挂载（与 createServer 校验管线共同构成「转换后 vs 原始」二分口径，详见
+[createServer](../server/createServer.md) 的「输入字段口径」）：
+
+- `ctx.query`：挂原始 query 对象（`queryToObject(searchParams)` 产物，string 值、
+  重复 key 聚合数组）；handler 声明 `query` 类型时管线校验后替换为转换值
+- `ctx.rawQuery`：原始 `URLSearchParams`（恒不被覆盖）
+- `ctx.params` / `ctx.rawParams`：同一原始段引用（调用方传入）；管线校验后仅
+  `ctx.params` 被替换为转换值，`ctx.rawParams` 保持原始
+
 ## 为什么需要
 
 将 Web 标准 Request 对象转换为 faapi 上下文，提取 params、query、headers 等信息。

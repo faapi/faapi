@@ -146,9 +146,9 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   // 检测路由冲突（与 createAppCore 共用单一实现）
   reportRouteConflicts(sorted);
 
-  // 4. 生成 schema 文件
+  // 4. 生成 schema 文件（含 WS 路由的约定 interface：WSQuery/WSParams）
   console.log('\n[4/8] Generating schema...');
-  await generateSchemaFiles(sorted, rootDir, outdir);
+  await generateSchemaFiles(sorted, rootDir, outdir, wsRoutes);
   console.log(`  Schema: zod.js files under ${path.resolve(rootDir, outdir)}`);
 
   // 5. 生成路由清单（prd 启动时直接读取，不再 scanRoutes）

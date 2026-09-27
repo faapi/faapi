@@ -20,7 +20,12 @@ describe('injectParams', () => {
     return {
       request: new Request(url),
       params: { id: '123' },
-      query: url.searchParams,
+      // 新口径：ctx.query 为对象（createContext 挂原始 query 对象，管线校验后替换为转换值）
+      query: { page: '1', pageSize: '10' },
+      // raw 系字段：恒原始，管线永不覆盖
+      rawQuery: url.searchParams,
+      rawParams: { id: '123' },
+      rawBody: undefined,
       headers: new Headers({ authorization: 'Bearer token' }),
       method: 'GET',
       path: '/test',
@@ -45,11 +50,12 @@ describe('injectParams', () => {
   };
 
   describe('单参数注入', () => {
-    it('注入 query', async () => {
+    it('注入 query（ctx.query 同一对象，未过管线时为原始字符串对象）', async () => {
       const ctx = createMockContext();
       const fn = eval('(query) => query');
       const result = await injectParamsAsync(fn, ctx);
       expect(result).toEqual({ page: '1', pageSize: '10' });
+      expect(result).toBe(ctx.query);
     });
 
     it('注入 params', async () => {
@@ -57,6 +63,30 @@ describe('injectParams', () => {
       const fn = eval('(params) => params');
       const result = await injectParamsAsync(fn, ctx);
       expect(result).toEqual({ id: '123' });
+    });
+
+    it('注入 rawQuery（URLSearchParams 实例，恒原始）', async () => {
+      const ctx = createMockContext();
+      const fn = eval('(rawQuery) => rawQuery');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBeInstanceOf(URLSearchParams);
+      expect(result).toBe(ctx.rawQuery);
+      expect((result as URLSearchParams).get('page')).toBe('1');
+    });
+
+    it('注入 rawParams（原始字符串对象，与 ctx.rawParams 同一）', async () => {
+      const ctx = createMockContext();
+      const fn = eval('(rawParams) => rawParams');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBe(ctx.rawParams);
+      expect(result).toEqual({ id: '123' });
+    });
+
+    it('注入 rawBody（ctx.rawBody 原始请求体文本）', async () => {
+      const ctx = createMockContext({ rawBody: '{"name":"John"}' } as Partial<FaapiContext>);
+      const fn = eval('(rawBody) => rawBody');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBe('{"name":"John"}');
     });
 
     it('注入 headers', async () => {

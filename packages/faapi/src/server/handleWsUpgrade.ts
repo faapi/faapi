@@ -25,9 +25,14 @@ import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { getClientIp } from '../utils/getClientIp';
+import { queryToObject } from '../utils/queryToObject';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
+import { validateInput } from '../validator/validateInput';
+import { ValidationError } from '../errors/httpErrors';
+import { getRuntimeSchemaPath } from '../cli/generateSchemaFiles';
 import {
   ensureCompiled,
+  ensureSchemaGenerated,
   ensureMiddlewaresCompiled,
   isDevOnDemandEnabled,
   getDevDist,
@@ -200,6 +205,8 @@ export interface AttachWsOptions {
   routesRef: RoutesRef;
   /** 项目根目录，用于解析路由文件绝对路径 */
   rootDir: string;
+  /** 产物输出目录（如 '.faapi' 或 'dist'），用于计算 WS schema 路径 */
+  dist: string;
   /** 业务配置，注入到 WsContext.config */
   config?: Record<string, unknown>;
   /** 全局中间件（来自 faapi.config.ts，WS 握手最外层） */
@@ -233,6 +240,7 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
     server,
     routesRef,
     rootDir,
+    dist,
     config,
     globalMiddlewares,
     trustedProxy = false,
@@ -281,18 +289,77 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
     const { route, params } = match;
     const headers = nodeHttpToWebHeaders(req);
     const host = req.headers.host ?? 'localhost';
-    const url = `http://${host}${req.url ?? '/'}`;
+    // 全握手唯一一次 URL 解析：Request 构造与 query 校验共享（searchParams 复用）
+    const fullUrl = new URL(`http://${host}${req.url ?? '/'}`);
 
     // 构造 Web Request 与 FaapiContext（与 HTTP 请求一致，供中间件使用）
-    const request = new Request(url, { method: 'GET', headers });
+    const request = new Request(fullUrl.toString(), { method: 'GET', headers });
     const ctx = createContext(request, params, config, getClientIp(req, trustedProxy), registries);
     const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
 
     // 标记握手是否已完成协议升级（用于判断 socket 是否可写）
     let upgraded = false;
 
-    // finalHandler：加载 WS handler + 协议升级 + 绑定事件
+    // finalHandler：schema 校验转换 + 加载 WS handler + 协议升级 + 绑定事件
     const finalHandler = async (): Promise<Response> => {
+      // 声明即校验（与 HTTP 管线同一 validateInput 通道）：handler.ts 导出 WS 且
+      // 同文件声明 `export interface Query` / `export interface Params` 时存在
+      // WSQuery / WSParams schema（coerce=true，URL 段/查询串来源均为 string）。
+      // 校验失败抛 ValidationError → 错误兜底链生成 422 JSON 响应写回 socket 拒绝
+      // 握手；未声明约定的文件无 schema，validateInput 原样透传（params/query 保持
+      // URL 原始字符串）。校验后的值回写 ctx.params/ctx.query（与 HTTP 一致：原始
+      // 打底合并防剥未声明段），ctx.rawParams/ctx.rawQuery 恒为原始值。
+      const schemaPath = getRuntimeSchemaPath(route.filePath, dist, rootDir);
+      // zod.js 不存在 = 该 WS 文件未声明约定 interface（无 WSQuery/WSParams 源时
+      // 生成器不产出文件）→ 无校验，params/query 透传 URL 原始字符串（文档化行为，
+      // 与 HTTP 未声明形参对齐）。文件存在但 schema key 缺失/加载失败仍按
+      // validateInput 语义抛 InternalError，不静默放行。
+      if (fs.existsSync(schemaPath)) {
+        if (isDevOnDemandEnabled()) {
+          const devDist = getDevDist();
+          if (devDist) {
+            await ensureSchemaGenerated(
+              schemaPath,
+              route.filePath,
+              routesRef.current,
+              rootDir,
+              dist,
+              routesRef.wsCurrent,
+            );
+          }
+        }
+        const searchParams = fullUrl.searchParams;
+        const rawQueryObject = queryToObject(searchParams);
+        const paramsResult = await validateInput(schemaPath, 'WS', 'params', params);
+        if (!paramsResult.valid) {
+          throw new ValidationError('参数校验失败', paramsResult.issues);
+        }
+        if (
+          paramsResult.data !== params &&
+          typeof paramsResult.data === 'object' &&
+          paramsResult.data !== null
+        ) {
+          ctx.params = {
+            ...params,
+            ...(paramsResult.data as Record<string, string | number | boolean>),
+          };
+        }
+        const queryResult = await validateInput(schemaPath, 'WS', 'query', rawQueryObject);
+        if (!queryResult.valid) {
+          throw new ValidationError('参数校验失败', queryResult.issues);
+        }
+        if (
+          queryResult.data !== rawQueryObject &&
+          typeof queryResult.data === 'object' &&
+          queryResult.data !== null
+        ) {
+          ctx.query = {
+            ...(rawQueryObject as Record<string, unknown>),
+            ...(queryResult.data as Record<string, unknown>),
+          };
+        }
+      }
+
       let handlers: WsEventHandlers | void;
       try {
         const absoluteFilePath = path.resolve(rootDir, route.filePath);

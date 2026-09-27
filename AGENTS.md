@@ -643,10 +643,13 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 
 | 参数名 | 注入内容 | 示例 |
 |--------|---------|------|
-| `query` | URL 查询参数对象 | `GET(query: Query)` |
-| `body` | 请求体（JSON） | `POST(body: CreateUserBody)` |
+| `query` | URL 查询参数对象（声明类型即校验转换，声明之外字段保留原始字符串；与 `ctx.query` 同一对象） | `GET(query: Query)` |
+| `body` | 请求体（JSON，校验转换后；与 `ctx.body` 同一对象） | `POST(body: CreateUserBody)` |
 | `form` | `application/x-www-form-urlencoded` 表单请求体（`Record<string, string>`，coerce=true，与 body 互斥） | `POST(form: LoginForm)` |
-| `params` | 动态路由参数 | `GET(params: { id: string })` |
+| `params` | 动态路由参数（声明类型即校验转换；与 `ctx.params` 同一对象） | `GET(params: { id: string })` |
+| `rawQuery` | URL 查询参数的原始值（恒 `URLSearchParams`，无 schema、无校验、管线永不转换） | `GET(rawQuery)` |
+| `rawParams` | URL 原始路径段（恒字符串对象） | `GET(rawParams)` |
+| `rawBody` | 请求体原始文本（JSON 为未解析字符串，签名验签场景；GET/HEAD/multipart 恒 undefined） | `POST(rawBody)` |
 | `headers` | 请求头 Headers 对象 | `GET(headers)` |
 | `context` / `ctx` | 完整请求上下文 | `GET(context)` |
 | `cookies` | Cookie 对象 | `GET(cookies)` |
@@ -658,6 +661,8 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 | `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
 | `tasks` | 任务队列客户端 `TaskClient`（`enqueue(name, payload)` / `list()`），与 `ctx.tasks` / `app.tasks` 指向同一 app 实例队列 | `POST(tasks)` |
 | `log` | 请求级日志器（与 `ctx.log` 同一实例，scope `http`，自动携带 `requestId`/`method`/`path` 字段，详见 5.5.4） | `GET(log)` |
+
+输入字段二分口径：**`query` / `params` / `body` 恒为校验转换后的值，`rawQuery` / `rawParams` / `rawBody` 恒为原始值**，在 ctx、目录/全局中间件、handler 注入所有访问点一致（挂载时序详见 `src/server/createServer.md` 的「输入字段口径」）。全局中间件 `await next()` 之前 `ctx.rawParams`/`ctx.rawQuery` 已可用（路由匹配已提前到中间件链之前），`ctx.rawBody`/`ctx.body` 为 undefined（请求体流只能消费一次的物理限制）。
 
 `form` 与 `body` 互斥：handler 声明其一即可。`form` 共享 `body` 的解析结果（`resolveInput` 已按 Content-Type 解析 form-urlencoded 为 `Record<string, string>`），差异仅在 schema 校验——`form` 的 schema coerce=true（与 query/params 一致，number/boolean 字段自动转换字符串），`body` 的 schema coerce=false。schema 名仍为 `POSTBody`（form 共享 body 的 schema key），通过 `RouteSchemaSource.coerce=true` 显式覆盖。
 
@@ -710,7 +715,7 @@ export function WS(ctx: WsContext): WsEventHandlers {
 
 **路由匹配**：WS 路由无 HTTP 方法维度，按 URL pathname 匹配。动态路由 `[id]`、catch-all `[...slug]`、分组 `(name)` 同样适用。未匹配路径返回 404 并销毁 socket。
 
-**WsContext**：握手阶段构造，包含 `params`/`query`/`headers`/`config`。可通过 `declare module '@faapi/faapi'` 增强自定义字段。WS 无 schema 管线——握手 `params`/`query` 恒为 URL 原始字符串，不做校验与类型转换（设计边界，与 HTTP 路由的「声明即校验」不同；业务侧需数字比较时自行 `Number()` 转换）。
+**WsContext**：握手阶段构造，包含 `params`/`rawParams`/`query`/`rawQuery`/`headers`/`config`。可通过 `declare module '@faapi/faapi'` 增强自定义字段。WS 输入口径与 HTTP 一致（二分）：**声明即校验**——handler.ts 导出 `WS` 且同文件声明文件级约定 `export interface Query` / `export interface Params`（type alias 同样生效，与 HTTP 导出共存时同源共享）时，生成 `WSQuery`/`WSParams` schema（coerce=true），握手阶段走与 HTTP 同一 `validateInput` 通道：校验通过转换值回写 `ctx.params`/`ctx.query`，校验失败抛 `ValidationError` → 422 JSON 响应写回 socket 拒绝握手；未声明约定则无 schema，`params`/`query` 透传 URL 原始字符串（`ctx.rawParams`/`ctx.rawQuery` 恒为原始值，`rawQuery` 为 `URLSearchParams`）。详见 `src/runtime/wsHandler.md` 的「声明即校验」。
 
 **WsSocket**：faapi 封装的 socket 抽象，不暴露 `ws` 库原生 socket：
 - `send(data)` — string/Buffer 直发，对象自动 JSON.stringify
@@ -854,7 +859,9 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
   - `generateSchemaFileSource` 根据 schemaName 推断 inputType：以 `Query`/`Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）。
   - `mapZodCode` 新增 `not_finite → COERCE_FAILED` 映射（实际场景中 coerce 失败多报 `invalid_type`）。
 - `Date` 字段输入双形态：schema 生成用 `z.preprocess` 同时接受 ISO 字符串与毫秒时间戳（`new Date(v)`），与响应序列化（Date → `getTime()` 毫秒时间戳，见 5.5「JSON 序列化契约」）可逆往返——GET 拿到的时间戳可直接 POST 回传。
-- 校验覆盖「声明即校验」（主输入 + 次输入 + params 统一）：body 方法（POST/PUT/PATCH）声明 `query` 形参生成 `<METHOD>Query` schema（coerce），校验后经 `__validatedQuery` 注入转换值（未声明字段保留原始字符串，未声明 query 形参则回退裸字符串）；DELETE 声明 `body`/`form` 生成 `<METHOD>Body` schema 校验后注入（Date 字段转换与 POST body 一致，空请求体 undefined 跳过校验）；GET/HEAD 声明 body 不生成 schema（注入恒为 undefined）。校验失败 422/400。详见 `src/server/createServer.md` 的「输入校验覆盖」。
+- 校验覆盖「声明即校验」（主输入 + 次输入 + params 统一）：body 方法（POST/PUT/PATCH）声明 `query` 形参生成 `<METHOD>Query` schema（coerce），校验后挂载 `ctx.query` 转换值（未声明字段保留原始字符串，未声明 query 形参则保持原始对象）；DELETE 声明 `body`/`form` 生成 `<METHOD>Body` schema 校验后注入（Date 字段转换与 POST body 一致，form 与 POST 对称支持；空请求体 null 与 POST 同路径——有 schema 时 safeParse 失败 422，无 schema 透传）；GET/HEAD 声明 body 不生成 schema（注入恒为 undefined）。校验失败 422/400。详见 `src/server/createServer.md` 的「输入校验覆盖」。
+- 输入字段二分口径：`query`/`params`/`body` 恒为校验转换后的值，`rawQuery`/`rawParams`/`rawBody` 恒为原始值（`rawBody` 为请求体原始文本，签名验签场景；全局中间件 `await next()` 前仅 rawParams/rawQuery 可用）。路由匹配提前到中间件链之前，全局中间件 `next()` 前 `ctx.params` 为原始段（不再是空对象）。详见 `src/server/createServer.md` 的「输入字段口径」。
+- WS 握手输入同样声明即校验：同文件约定 `interface Query`/`Params` 生成 `WSQuery`/`WSParams` schema，校验失败 422 拒绝握手，未声明透传原始字符串（见 5.9）。
 - dev 和 prd 行为一致，不降级：
   - dev（Vite 风格按需模式）：启动时仅编译 config + 生成路由清单，**不预生成 `zod.js`**；首次请求时 `ensureSchemaGenerated` 按需生成（mtime 缓存复用未变更的产物），watch 时删 stale zod.js + 清缓存 + 下次请求按需重建。
   - prd：`faapi build` 全量生成 `zod.js`，启动时按需 import。

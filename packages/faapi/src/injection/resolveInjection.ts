@@ -24,6 +24,9 @@ export type InjectionType =
   | 'agents'
   | 'tasks'
   | 'log'
+  | 'rawQuery'
+  | 'rawParams'
+  | 'rawBody'
   | 'unknown';
 
 /**
@@ -66,6 +69,11 @@ export const PARAM_TYPE_MAP: Record<string, InjectionType> = {
   agents: 'agents', // Phase 2.3
   tasks: 'tasks', // 任务子系统：TaskClient（入队/查询）
   log: 'log', // 请求级日志器（ctx.log 同一实例：scope http，自动带 requestId 等字段）
+  // raw 系：恒原始输入（无 schema、无校验、管线永不转换），与 query/params/body
+  // 的「校验转换后」口径二分互补
+  rawQuery: 'rawQuery', // URLSearchParams（原始查询参数）
+  rawParams: 'rawParams', // Record<string, string>（URL 原始路径段）
+  rawBody: 'rawBody', // string | undefined（请求体原始文本）
 };
 
 /**

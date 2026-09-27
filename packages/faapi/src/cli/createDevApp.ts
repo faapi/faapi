@@ -105,7 +105,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
       void (async (): Promise<void> => {
         try {
           const { generateSchemaFiles } = await import('./generateSchemaFiles');
-          await generateSchemaFiles(sorted, ctx.rootDir, ctx.dist);
+          await generateSchemaFiles(sorted, ctx.rootDir, ctx.dist, reScanned.wsRoutes);
         } catch (err) {
           // 后台失败不崩进程——请求路径的按需生成仍会兜底
           console.error('[faapi] Background schema regeneration failed:', err);
@@ -114,7 +114,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     } else {
       // 非按需模式（兼容旧路径）：全量重新生成 zod.js
       const { generateSchemaFiles } = await import('./generateSchemaFiles');
-      await generateSchemaFiles(sorted, ctx.rootDir, ctx.dist);
+      await generateSchemaFiles(sorted, ctx.rootDir, ctx.dist, reScanned.wsRoutes);
     }
 
     // 更新 app 和 server 路由引用

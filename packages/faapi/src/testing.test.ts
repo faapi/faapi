@@ -19,8 +19,8 @@ describe('业务方测试支持', () => {
       });
       expect(ctx.method).toBe('GET');
       expect(ctx.path).toBe('/api/user');
-      expect(ctx.query.get('page')).toBe('1');
-      expect(ctx.query.get('pageSize')).toBe('10');
+      expect(ctx.query).toEqual({ page: '1', pageSize: '10' });
+      expect(ctx.rawQuery.get('page')).toBe('1');
       expect(ctx.headers.get('x-custom')).toBe('yes');
     });
 

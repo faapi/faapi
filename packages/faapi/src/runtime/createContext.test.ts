@@ -32,17 +32,21 @@ describe('createContext', () => {
     expect(ctx.ua).toBe(ua);
   });
 
-  it('query 参数正确提取', () => {
+  it('query 参数正确提取（ctx.query 为原始字符串对象，rawQuery 为 URLSearchParams）', () => {
     const request = new Request('http://localhost/api/users?name=alice&age=30');
     const ctx = createContext(request, {});
-    expect(ctx.query.get('name')).toBe('alice');
-    expect(ctx.query.get('age')).toBe('30');
+    // 新口径：ctx.query 为对象（string 值），rawQuery 恒为 URLSearchParams
+    expect(ctx.query).toEqual({ name: 'alice', age: '30' });
+    expect(ctx.rawQuery).toBeInstanceOf(URLSearchParams);
+    expect(ctx.rawQuery.get('name')).toBe('alice');
   });
 
-  it('params 正确传入', () => {
+  it('params 正确传入且 rawParams 同引用（恒原始）', () => {
     const request = new Request('http://localhost/api/users/123');
     const ctx = createContext(request, { id: '123' });
     expect(ctx.params).toEqual({ id: '123' });
+    expect(ctx.rawParams).toEqual({ id: '123' });
+    expect(ctx.rawParams).toBe(ctx.params as Record<string, string>);
   });
 
   it('headers 可访问', () => {
@@ -247,8 +251,7 @@ describe('createTestContext', () => {
       path: '/api/users',
       query: { name: 'alice', age: '30' },
     });
-    expect(ctx.query.get('name')).toBe('alice');
-    expect(ctx.query.get('age')).toBe('30');
+    expect(ctx.query).toEqual({ name: 'alice', age: '30' });
   });
 
   it('query 支持 number/boolean 值（自动 String() 转换）', () => {
@@ -256,16 +259,16 @@ describe('createTestContext', () => {
       path: '/api/users',
       query: { page: 1, active: true },
     });
-    expect(ctx.query.get('page')).toBe('1');
-    expect(ctx.query.get('active')).toBe('true');
+    expect(ctx.query).toEqual({ page: '1', active: 'true' });
   });
 
-  it('query 数组值生成同名多值参数', () => {
+  it('query 数组值生成同名多值参数（对象形态聚合为数组）', () => {
     const ctx = createTestContext({
       path: '/api/users',
       query: { tags: ['a', 'b'] },
     });
-    expect(ctx.query.getAll('tags')).toEqual(['a', 'b']);
+    expect(ctx.query).toEqual({ tags: ['a', 'b'] });
+    expect(ctx.rawQuery.getAll('tags')).toEqual(['a', 'b']);
   });
 
   it('headers 对象形式可访问', () => {
@@ -343,7 +346,8 @@ describe('createTestContext', () => {
 
     expect(fromTest.method).toBe(fromCreate.method);
     expect(fromTest.path).toBe(fromCreate.path);
-    expect(fromTest.query.get('page')).toBe(fromCreate.query.get('page'));
+    expect(fromTest.query).toEqual(fromCreate.query);
+    expect(fromTest.rawQuery.get('page')).toBe(fromCreate.rawQuery.get('page'));
     expect(fromTest.headers.get('authorization')).toBe(fromCreate.headers.get('authorization'));
     expect(fromTest.params).toEqual(fromCreate.params);
     expect(fromTest.ip).toBe(fromCreate.ip);

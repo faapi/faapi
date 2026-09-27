@@ -142,6 +142,9 @@ describe('HTTP Server E2E', () => {
         verboseType: 'boolean',
         limit: 5,
         extra: 'abc',
+        // ctx.query / ctx.params 与 handler 注入是同一对象（转换后口径全链路一致）
+        ctxQuerySame: true,
+        ctxParamsSame: true,
       },
     });
   });
@@ -153,7 +156,7 @@ describe('HTTP Server E2E', () => {
     expect(body.error.code).toBe('VALIDATION_ERROR');
   });
 
-  it('POST 方法路径参数同样按声明类型转换', async () => {
+  it('POST 方法路径参数同样按声明类型转换，目录中间件可见 ctx.body 转换值', async () => {
     const res = await fetchFromServer('/api/order/7', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -161,7 +164,7 @@ describe('HTTP Server E2E', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual({ orderId: 7, orderIdType: 'number', title: 'x' });
+    expect(body.data).toEqual({ orderId: 7, orderIdType: 'number', title: 'x', mwBodyTitle: 'x' });
   });
 
   it('params 声明为 string 时保持字符串（转换由声明类型驱动）', async () => {
@@ -192,8 +195,9 @@ describe('HTTP Server E2E', () => {
       orderIdType: 'number',
       verbose: true,
       verboseType: 'boolean',
-      // 目录中间件先于 handler 执行，读到的 orderId 已被管线回写为 number
       mwOrderIdType: 'number',
+      // DELETE 主输入是 query、未声明 body 形参：ctx.body 恒 undefined
+      ctxBodyUndefined: true,
     });
   });
 
@@ -215,7 +219,7 @@ describe('HTTP Server E2E', () => {
     expect(allow).toContain('POST');
   });
 
-  it('DELETE 携带 JSON body：body 参数收到请求体而非 query', async () => {
+  it('DELETE 携带 JSON body：body 参数收到请求体而非 query，ctx.body 为同一对象', async () => {
     const res = await fetchFromServer('/api/item?id=99', {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
@@ -223,15 +227,15 @@ describe('HTTP Server E2E', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    // body 注入的是请求体 { id: 7 }，不是 query { id: '99' }
-    expect(body).toEqual({ data: { deleted: 7, at: null } });
+    // body 注入的是请求体 { id: 7 }，不是 query { id: '99' }；ctx.body 为同一对象
+    expect(body).toEqual({ data: { deleted: 7, at: null, ctxBodySame: true } });
   });
 
-  it('DELETE 无请求体：body 注入 undefined（跳过校验），返回兜底结构', async () => {
+  it('DELETE 声明 body 且空请求体：与 POST 同路径返回 422（不再注入 undefined）', async () => {
     const res = await fetchFromServer('/api/item?id=1', { method: 'DELETE' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(422);
     const body = await res.json();
-    expect(body).toEqual({ data: { deleted: null, at: null } });
+    expect(body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('DELETE body 声明类型后走 schema 校验：非法 payload 返回 422', async () => {
@@ -255,7 +259,35 @@ describe('HTTP Server E2E', () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.data).toEqual({ deleted: 7, at: 1750000000000 });
+    expect(body.data).toEqual({ deleted: 7, at: 1750000000000, ctxBodySame: true });
+  });
+
+  it('DELETE 声明 form 形参：form-urlencoded 请求体按 schema 校验转换（此前 400）', async () => {
+    const res = await fetchFromServer('/api/item-form?id=99', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'id=7&force=true',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // form 值来源均为 string，DELETEBody schema coerce=true 转换 number/boolean
+    expect(body.data).toEqual({
+      deleted: 7,
+      deletedType: 'number',
+      force: true,
+      forceType: 'boolean',
+    });
+  });
+
+  it('DELETE form 值非法（id=abc）返回 422', async () => {
+    const res = await fetchFromServer('/api/item-form?id=99', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'id=abc',
+    });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('POST 声明 query 形参：主输入 body 之外，query 按声明类型校验转换', async () => {
@@ -283,6 +315,70 @@ describe('HTTP Server E2E', () => {
     expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('ctx.query 为转换后对象且与注入同源，rawQuery 恒为原始 URLSearchParams', async () => {
+    const res = await fetchFromServer('/api/raw?page=3');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({
+      sameObject: true,
+      page: 3,
+      pageType: 'number',
+      ctxPageType: 'number',
+      rawPage: '3',
+      rawPageType: 'string',
+    });
+  });
+
+  it('rawParams 注入原始字符串，ctx.params 为转换值，ctx.rawParams 与注入同一对象', async () => {
+    const res = await fetchFromServer('/api/raw/55');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({
+      sameObject: true,
+      id: 55,
+      idType: 'number',
+      rawId: '55',
+      rawIdType: 'string',
+      ctxRawParamsSame: true,
+    });
+  });
+
+  it('rawBody 注入原始请求体文本（JSON 未解析字符串），ctx.body 为同一校验后对象', async () => {
+    const res = await fetchFromServer('/api/raw/echo', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({
+      title: 'hello',
+      ctxBodySame: true,
+      rawBodyType: 'string',
+      rawBodyIsRawJson: true,
+    });
+  });
+
+  it('form 场景 rawBody 为原始 urlencoded 文本，form 字段按 schema 转换', async () => {
+    const res = await fetchFromServer('/api/raw/echo', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'title=form-title',
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({
+      title: 'form-title',
+      titleType: 'string',
+      rawBody: 'title=form-title',
+    });
+  });
+
+  it('raw 路由 params 非法（非数字段）仍按声明校验返回 422', async () => {
+    const res = await fetchFromServer('/api/raw/abc');
+    expect(res.status).toBe(422);
   });
 
   it('handler 返回 object 时 Content-Type 为 application/json', async () => {
@@ -686,6 +782,86 @@ describe('HTTP Server E2E', () => {
 
     it('未知路由由内置 formatErrorResponse 兜底(404 + 标准 error 结构)', async () => {
       const res = await fetch(`${rawBaseUrl}/unknown-route`);
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error.code).toBe('ROUTE_NOT_FOUND');
+    });
+  });
+
+  // 全局中间件输入可见性 E2E：路由匹配已提前到中间件链之前
+  describe('全局中间件输入可见性', () => {
+    let gwServer: Server;
+    let gwBaseUrl: string;
+    const snapshots: Array<{
+      beforeRawParamsId: string | undefined;
+      beforeParams: unknown;
+      beforeRawQueryGet: string | null;
+      beforeQuery: unknown;
+      afterParamsId: unknown;
+    }> = [];
+
+    beforeAll(async () => {
+      const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
+      const sorted = sortRoutes(routes);
+      const gw: FaapiMiddleware = async (ctx, next) => {
+        const beforeRawParamsId = ctx.rawParams?.['orderId'];
+        const beforeParams = JSON.parse(JSON.stringify(ctx.params));
+        const beforeRawQueryGet = ctx.rawQuery.get('verbose');
+        const beforeQuery = JSON.parse(JSON.stringify(ctx.query));
+        const res = await next();
+        snapshots.push({
+          beforeRawParamsId,
+          beforeParams,
+          beforeRawQueryGet,
+          beforeQuery,
+          afterParamsId: ctx.params['orderId'] ?? null,
+        });
+        return res;
+      };
+      const { server: srv } = createServer({
+        routes: sorted,
+        rootDir: FIXTURES_DIR,
+        dist: schemaDist,
+        middlewares: [gw],
+      });
+      await new Promise<void>((resolve, reject) => {
+        srv.listen(0, () => {
+          const addr = srv.address();
+          if (typeof addr === 'object' && addr !== null) {
+            gwServer = srv;
+            gwBaseUrl = `http://localhost:${addr.port}`;
+            resolve();
+          } else {
+            reject(new Error('Failed to get server address'));
+          }
+        });
+      });
+    });
+
+    afterAll(async () => {
+      await closeServer(gwServer);
+    });
+
+    it('next() 前：ctx.rawParams 可用（原始段），ctx.query 为原始对象；next() 后 ctx.params 为转换值', async () => {
+      const res = await fetch(`${gwBaseUrl}/api/order/42?verbose=true`, {
+        headers: { 'content-type': 'application/json' },
+      });
+      expect(res.status).toBe(200);
+      expect(snapshots.length).toBeGreaterThanOrEqual(1);
+      const snap = snapshots[snapshots.length - 1]!;
+      // next() 前：路由已匹配，rawParams 为原始段
+      expect(snap.beforeRawParamsId).toBe('42');
+      // next() 前：params 尚未校验回写，为原始字符串段
+      expect(snap.beforeParams).toEqual({ orderId: '42' });
+      // next() 前：rawQuery 恒原始，query 为原始字符串对象
+      expect(snap.beforeRawQueryGet).toBe('true');
+      expect(snap.beforeQuery).toEqual({ verbose: 'true' });
+      // next() 后：管线已按声明类型校验并回写 ctx.params
+      expect(snap.afterParamsId).toBe(42);
+    });
+
+    it('404 请求仍经过全局中间件（匹配提前不改变响应路径）', async () => {
+      const res = await fetch(`${gwBaseUrl}/unknown-gw`);
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error.code).toBe('ROUTE_NOT_FOUND');

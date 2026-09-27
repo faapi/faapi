@@ -25,7 +25,9 @@ function createMockContext(
   return {
     request,
     params: {},
-    query: new URLSearchParams(),
+    rawParams: {},
+    query: {}, // 新口径：ctx.query 为对象（原始 string 值）
+    rawQuery: new URLSearchParams(),
     headers,
     method,
     path: '/test',

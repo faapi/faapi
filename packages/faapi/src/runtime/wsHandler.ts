@@ -46,12 +46,21 @@ export interface WsEventHandlers {
  *
  * 与 HTTP FaapiContext 类似但精简，提供路由参数、查询参数、请求头、配置。
  * 可通过 declare module '@faapi/faapi' 增强自定义字段。
+ *
+ * 输入口径与 HTTP 一致（二分）：params/query 为校验转换后的值，rawParams/rawQuery
+ * 恒为原始值。声明来源是 handler.ts 的文件级约定——导出 `WS` 且同文件声明
+ * `export interface Query` / `export interface Params` 时，握手阶段按声明类型
+ * 校验并转换（失败拒绝握手）；未声明时 params/query 保持 URL 原始字符串。
  */
 export interface WsContext {
-  /** 动态路由参数（如 [id] → params.id） */
-  params: Record<string, string>;
-  /** URL 查询参数 */
-  query: URLSearchParams;
+  /** 动态路由参数（声明 Params 时校验转换，未声明为 URL 原始字符串） */
+  params: Record<string, string | number | boolean>;
+  /** 动态路由参数的原始值（恒 URL 字符串，校验不触及） */
+  rawParams: Record<string, string>;
+  /** URL 查询参数（声明 Query 时校验转换，未声明为原始字符串对象） */
+  query: Record<string, unknown>;
+  /** URL 查询参数的原始值（恒 URLSearchParams） */
+  rawQuery: URLSearchParams;
   /** 请求头 */
   headers: Headers;
   /** 业务配置（来自 faapi.config.ts） */

@@ -293,6 +293,8 @@ export function clearGeneratedSchemas(): void {
  * @param routes 完整路由清单（用于过滤同文件的所有方法）
  * @param rootDir 项目根目录
  * @param dist 产物目录
+ * @param wsRoutes WS 路由清单（可选）——同文件 WS 路由的约定 interface（Query/Params）
+ *        一并生成，避免"HTTP 请求先触发生成 → WS schema 缺失"的静默降级；反向同理
  * @returns 是否实际触发了生成（false 表示已生成过或产物已最新或源文件不存在）
  * @throws schema 生成失败时抛错（带原始 cause），由 createServer 错误处理链接管
  */
@@ -302,6 +304,7 @@ export async function ensureSchemaGenerated(
   routes: RouteManifest,
   rootDir: string,
   dist: string,
+  wsRoutes?: import('../router/routeTypes').WsRouteManifest,
 ): Promise<boolean> {
   // mutex: 同一 schemaPath 正在被别的请求生成 → 等待并返回 false；
   // 失败时 inFlight 的 rejection 原样传播（与 ensureCompiled 同语义）
@@ -329,9 +332,11 @@ export async function ensureSchemaGenerated(
     return false;
   }
 
-  // 过滤同文件的所有路由（一个 handler.ts 可能有 GET/POST/WS 多个方法）
+  // 过滤同文件的所有路由（一个 handler.ts 可能有 GET/POST/WS 多个方法——
+  // HTTP 清单与 WS 清单合并过滤，保证生成的 zod.js 同时含两类 schema）
   const fileRoutes = routes.filter((r) => r.filePath === routeFilePath);
-  if (fileRoutes.length === 0) {
+  const fileWsRoutes = (wsRoutes ?? []).filter((r) => r.filePath === routeFilePath);
+  if (fileRoutes.length === 0 && fileWsRoutes.length === 0) {
     return false;
   }
 
@@ -339,11 +344,12 @@ export async function ensureSchemaGenerated(
   // 需要源码 .ts 路径做 AST 分析）
   const sourceRelPath = path.relative(rootDir, sourceAbsPath).replace(/\\/g, '/');
   const sourceRoutes = fileRoutes.map((r) => ({ ...r, filePath: sourceRelPath }));
+  const sourceWsRoutes = fileWsRoutes.map((r) => ({ ...r, filePath: sourceRelPath }));
 
   // 触发生成：注册 in-flight Promise 防止并发重复生成
   const generatePromise = (async () => {
     // 生成失败时抛错（不吞错误），由 createServer 错误处理链接管
-    await generateSchemaFiles(sourceRoutes, rootDir, dist);
+    await generateSchemaFiles(sourceRoutes, rootDir, dist, sourceWsRoutes);
     state.generatedSchemas.add(schemaPath);
   })();
 

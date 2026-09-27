@@ -41,7 +41,14 @@ handler 函数在路由模块加载后引用稳定（ESM import 同一模块返�
 | `fields` | fields | multipart 表单字段 |
 | `agent` | agent | 默认 agent 的 `AgentHandle`（由 [agentHandle](./agentHandle.md) 工厂注入） |
 | `agents` | agents | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`） |
+| `rawQuery` | rawQuery | URL 查询参数的原始值（恒 `URLSearchParams`，无 schema、无校验、管线永不转换） |
+| `rawParams` | rawParams | URL 原始路径段（恒字符串对象） |
+| `rawBody` | rawBody | 请求体原始文本（`string \| undefined`；GET/HEAD/multipart 恒 undefined） |
 | 其他 | unknown | 不注入（由注入器提供） |
+
+raw 系参数与 `query`/`params`/`body` 的「校验转换后」口径二分互补：带 raw 前缀的
+注入/ctx 字段恒为原始值，其余恒为校验转换后的值（详见
+[createServer](../server/createServer.md) 的「输入字段口径」）。
 
 `agent` / `agents` 注入类型在 `PARAM_TYPE_MAP` 中映射，识别参数名后由 [injectParams](./injectParams.md) 的内置注入处理：
 - `agents` → 返回 `listAgents()`（[agentRegistry](./agentRegistry.md) 中所有 agent 的 `AgentCore[]`，合并文件型 + DB skill）

@@ -19,7 +19,14 @@ faapi 的核心设计是"函数即接口"。框架根据 handler 参数名自动
 | `fields` | fields | multipart 表单字段（Record<string, string>） |
 | `agent` | agent | `AgentHandle`（由 `@faapi/agent` 插件工厂注入；`run`/`stream` 需显式传 `options.agent`；未启用插件时为 `undefined`） |
 | `agents` | agents | 所有已注册**文件型 agent** 的 `AgentCore` 列表（`agentRegistry.listAgents()`；不合并 skillRegistry——skill 与 agent 物理隔离） |
+| `rawQuery` | rawQuery | URL 查询参数的原始值（恒 `URLSearchParams`，无 schema、无校验、管线永不转换） |
+| `rawParams` | rawParams | URL 原始路径段（恒字符串对象） |
+| `rawBody` | rawBody | 请求体原始文本（`string \| undefined`；GET/HEAD/multipart 恒 undefined） |
 | 其他 | unknown | 不注入（由中间件 resolve 提供） |
+
+raw 系参数与 `query`/`params`/`body` 的「校验转换后」口径二分互补：带 raw 前缀的
+注入/ctx 字段恒为原始值，其余恒为校验转换后的值（详见
+[createServer](../server/createServer.md) 的「输入字段口径」）。
 
 ## 模块
 

@@ -96,14 +96,52 @@ export interface FaapiContext {
   log: Logger;
   request: Request;
   /**
-   * 动态路由参数
+   * 动态路由参数（校验转换后的值）
    *
-   * handler 声明了 `params: XxxParams` 类型时，管线按声明类型校验并回写
-   * 转换后的值（number/boolean 字段不再是字符串）；未声明时保持 URL 原始
-   * 字符串。以 handler 形参上的接口声明为准读取（注入即本对象）。
+   * 路由匹配后挂载 URL 原始段；handler 声明了 `params: XxxParams` 类型时，管线
+   * 按声明类型校验并回写转换后的值（number/boolean 字段不再是字符串，catch-all
+   * 等声明之外的段保留原始值）；未声明时保持 URL 原始字符串。以 handler 形参上的
+   * 接口声明为准读取（注入即本对象）。需要恒原始的段用 rawParams。
    */
   params: Record<string, string | number | boolean>;
-  query: URLSearchParams;
+  /**
+   * 动态路由参数的原始值（恒为 URL 字符串，管线永不覆盖）
+   *
+   * 与 ctx.params 同点挂载（路由匹配后），转换/校验不触及。校验失败（422）时
+   * 中间件也可用它拿到请求的原始路径段。
+   */
+  rawParams: Record<string, string>;
+  /**
+   * URL 查询参数（校验转换后的值）
+   *
+   * createContext 时挂原始 query 对象（string 值，重复 key 为数组）；handler
+   * 声明 `query: XxxQuery` 时管线校验并替换为转换值（声明字段 coerce，未声明
+   * 字段保留原始字符串）；未声明时保持原始对象。与 handler 的 query 注入是
+   * 同一对象。需要恒原始的形态用 rawQuery。
+   */
+  query: Record<string, unknown>;
+  /**
+   * URL 查询参数的原始值（恒为 URLSearchParams，管线永不覆盖）
+   *
+   * `rawQuery.get('page')` 恒返回字符串形态。与 ctx.query（转换后对象）互补。
+   */
+  rawQuery: URLSearchParams;
+  /**
+   * 请求体的原始文本（body 类方法才有值）
+   *
+   * POST/PUT/PATCH/DELETE 的 body 解析时挂载：JSON 请求体为未解析的原始字符串
+   * （签名验签场景），form-urlencoded 为原始编码文本；GET/HEAD 及 multipart
+   * 请求体恒为 undefined（请求体流只能消费一次，全局中间件 await next() 之前
+   * 不可读；multipart 是二进制流无文本形态）。
+   */
+  rawBody?: string;
+  /**
+   * 请求体（校验转换后的值）
+   *
+   * 管线校验通过后挂载，与 handler 的 body 注入是同一对象（目录中间件可借此
+   * 在 handler 之前读取请求体）；GET/HEAD 恒 undefined。
+   */
+  body?: unknown;
   headers: Headers;
   method: string;
   path: string;

@@ -1,7 +1,6 @@
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import { resolveInjection, type InjectionType } from './resolveInjection';
-import { queryToObject } from '../utils/queryToObject';
 import type { MultipartResult } from '../utils/parseMultipart';
 import { listAgents } from './agentRegistry';
 import { getAgentHandle } from './agentHandle';
@@ -18,18 +17,22 @@ import { getAgentHandle } from './agentHandle';
  */
 function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?: unknown): unknown {
   switch (type) {
-    case 'query': {
-      // 管线已完成 schema 校验时（__validatedQuery 由 createServer 挂载），handler
-      // 拿到按声明类型转换后的值（number/boolean）；未挂载（无声明/编程式直调）
-      // 回退原始 query 对象，行为与既往一致。
-      const validated = (ctx as FaapiContext & { __validatedQuery?: Record<string, unknown> })
-        .__validatedQuery;
-      return validated ?? queryToObject(ctx.query);
-    }
+    case 'query':
+      // ctx.query 与管线校验挂载的是同一对象：声明 query 类型时为转换值
+      //（number/boolean 字段已 coerce，未声明字段保留原始字符串），未声明时
+      // 为原始 query 对象（createContext 挂载后管线不触及）
+      return ctx.query;
     case 'params':
       // 路径参数：管线已按声明类型校验并回写 ctx.params（转换后的值），
       // 未声明 params 类型的路由保持原始字符串
       return ctx.params;
+    // raw 系：恒原始，管线永不覆盖（ctx 字段即注入值）
+    case 'rawQuery':
+      return ctx.rawQuery;
+    case 'rawParams':
+      return ctx.rawParams;
+    case 'rawBody':
+      return ctx.rawBody;
     case 'headers':
       return ctx.headers;
     case 'context':

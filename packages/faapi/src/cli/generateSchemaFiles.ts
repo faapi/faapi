@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { RouteManifest } from '../router/routeTypes';
+import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
 import type { RouteSchemaSource } from './collectRouteSchemaSources';
 import type { RuntimeType } from '../ast/resolveTypeNode';
 import { collectRouteSchemaSources } from './collectRouteSchemaSources';
@@ -200,15 +200,18 @@ export function generateSchemaFileSource(
  * @param routes 排序后的路由清单
  * @param rootDir 项目根目录
  * @param dist 输出目录（如 '.faapi' 或 'dist'）
+ * @param wsRoutes WS 路由清单（可选）——为声明了约定 interface（Query/Params）的
+ *        WS 路由生成 WSQuery / WSParams schema（握手校验转换用）
  */
 export async function generateSchemaFiles(
   routes: RouteManifest,
   rootDir: string,
   dist: string,
+  wsRoutes?: WsRouteManifest,
 ): Promise<void> {
-  if (routes.length === 0) return;
+  if (routes.length === 0 && (wsRoutes?.length ?? 0) === 0) return;
 
-  const { sources, resolversByFile } = collectRouteSchemaSources(routes, rootDir);
+  const { sources, resolversByFile } = collectRouteSchemaSources(routes, rootDir, wsRoutes);
 
   await generateZodArtifacts(sources, {
     generateFileSource: generateSchemaFileSource,

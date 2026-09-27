@@ -114,7 +114,8 @@ describe('Injection E2E', () => {
       const ctx = {
         request: new Request(url),
         params: {},
-        query: url.searchParams,
+        // 新口径：query 注入取 ctx.query（对象形态，未过管线时为原始字符串值）
+        query: { page: '2', pageSize: '20' },
         headers: new Headers(),
         method: 'GET',
         path: '/api/user',
@@ -140,7 +141,7 @@ describe('Injection E2E', () => {
           headers: { authorization: 'Bearer token123' },
         }),
         params: {},
-        query: url.searchParams,
+        query: { fields: 'name,email' },
         headers: new Headers({ authorization: 'Bearer token123' }),
         method: 'GET',
         path: '/api/auth',

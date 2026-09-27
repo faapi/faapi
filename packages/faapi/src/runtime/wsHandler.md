@@ -39,13 +39,30 @@ export function WS(ctx: WsContext) {
 
 - 与 `GET`/`POST` 同级，导出名 `WS` 即声明 WebSocket 路由
 - 返回事件对象（`onOpen`/`onMessage`/`onClose`/`onError`），不直接操作原生 socket
-- `ctx` 在握手阶段构造，包含 `params`/`query`/`headers`/`config`，事件回调通过闭包访问
+- `ctx` 在握手阶段构造，包含 `params`/`rawParams`/`query`/`rawQuery`/`headers`/`config`，事件回调通过闭包访问
+
+## 声明即校验（WS 握手输入校验）
+
+handler.ts 导出 `WS` 且同文件声明**文件级约定 interface**——`export interface Query`
+/ `export interface Params`（type alias 同样生效，与 HTTP 导出共存时同源共享）——时，
+为该 WS 路由生成 `WSQuery` / `WSParams` schema（coerce=true，与 HTTP 的 Query/Params
+后缀规则一致），握手阶段走与 HTTP 同一 `validateInput` 通道：
+
+- 校验通过：转换值回写 `ctx.params` / `ctx.query`（原始打底合并，防剥未声明段）；
+  `ctx.rawParams` / `ctx.rawQuery` 恒为原始值不触及
+- 校验失败：抛 `ValidationError` → 错误兜底链生成 422 JSON 响应写回 socket，拒绝握手
+- 未声明约定 interface：无 schema，`params`/`query` 透传 URL 原始字符串（与 HTTP
+  未声明形参行为对齐，不误伤）
+
+未声明约定的 WS 文件不产出 zod.js；握手侧以"zod.js 文件是否存在"判定是否走校验
+（文件存在但 schema key 缺失仍抛 `InternalError`，不静默放行）。dev 按需模式由
+`ensureSchemaGenerated` 生成（HTTP/WS 同文件两类 schema 一并产出）。
 
 ## 设计要点
 
 1. **路由级声明**：WS 路由与 HTTP 路由统一在 `handler.ts` 中，扫描器识别 `WS` 导出
 2. **事件对象 API**：返回 `{ onOpen, onMessage, onClose, onError }`，不暴露 `ws` 库原生 socket
-3. **握手阶段构造 WsContext**：协议升级前提取 `params`/`query`/`headers`/`config`，传入 WS handler
+3. **握手阶段构造 WsContext**：协议升级前提取 `params`/`rawParams`/`query`/`rawQuery`/`headers`/`config`，经声明即校验转换后传入 WS handler（见上节）
 4. **两阶段中间件策略**：
    - 握手阶段（HTTP upgrade 请求）：复用洋葱中间件链，与同目录 HTTP 路由共享鉴权/CORS/限流/日志。中间件塞入 ctx 的值（如 `ctx.user`）传入 WS handler
    - 事件回调阶段（连接建立后）：不走洋葱中间件（长连接事件流非请求-响应闭环，`await next()` 语义不符），由 WS handler 自管
@@ -77,8 +94,10 @@ mw1.before → mw2.before → [finalHandler: handleUpgrade + bindEvents] → mw2
 
 ```ts
 interface WsContext {
-  params: Record<string, string>;   // 动态路由参数
-  query: URLSearchParams;            // URL 查询参数
+  params: Record<string, string | number | boolean>; // 动态路由参数（声明 Params 时校验转换，未声明为 URL 原始字符串）
+  rawParams: Record<string, string>; // 动态路由参数的原始值（恒 URL 字符串）
+  query: Record<string, unknown>;    // URL 查询参数（声明 Query 时校验转换，未声明为原始字符串对象）
+  rawQuery: URLSearchParams;         // URL 查询参数的原始值（恒 URLSearchParams）
   headers: Headers;                  // 请求头
   config: Record<string, unknown>;   // 业务配置
   // 中间件塞入的字段会被拷贝过来（如 user）
