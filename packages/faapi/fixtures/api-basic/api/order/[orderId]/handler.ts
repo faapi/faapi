@@ -33,3 +33,20 @@ export function POST(params: OrderParams, body: OrderCreateBody) {
     title: body.title,
   };
 }
+
+// DELETE 主输入是 query（与 GET 同分支）——验证 query 转换在 DELETE 上同样生效，
+// 并回读目录中间件快照，锁住「中间件看到回写后 params」的管线顺序
+export function DELETE(
+  ctx: import('@faapi/faapi').FaapiContext,
+  params: OrderParams,
+  query: OrderQuery,
+) {
+  const mwSaw = (ctx as unknown as { __orderMwSaw?: { orderIdType: string } }).__orderMwSaw;
+  return {
+    orderId: params.orderId,
+    orderIdType: typeof params.orderId,
+    verbose: query.verbose,
+    verboseType: typeof query.verbose,
+    mwOrderIdType: mwSaw?.orderIdType ?? null,
+  };
+}

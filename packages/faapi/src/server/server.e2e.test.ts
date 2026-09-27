@@ -171,6 +171,32 @@ describe('HTTP Server E2E', () => {
     expect(body.data).toEqual({ key: 'zz', keyType: 'string' });
   });
 
+  it('catch-all 等声明之外的段不被 params schema 剥掉（原始值打底合并）', async () => {
+    const res = await fetchFromServer('/api/docs/zh/a/b');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({
+      lang: 'zh',
+      langType: 'string',
+      rest: 'a/b',
+      restType: 'string',
+    });
+  });
+
+  it('DELETE 主输入 query 按声明类型转换，目录中间件拿到回写后的 params', async () => {
+    const res = await fetchFromServer('/api/order/9?verbose=true', { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({
+      orderId: 9,
+      orderIdType: 'number',
+      verbose: true,
+      verboseType: 'boolean',
+      // 目录中间件先于 handler 执行，读到的 orderId 已被管线回写为 number
+      mwOrderIdType: 'number',
+    });
+  });
+
   it('GET /unknown 返回 404', async () => {
     const res = await fetchFromServer('/unknown');
     expect(res.status).toBe(404);
