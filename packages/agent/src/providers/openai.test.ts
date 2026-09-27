@@ -7,8 +7,8 @@ import type { LlmConfig } from '@faapi/faapi';
 /** 构造 OpenAI chat completions 成功响应 body */
 function openaiResponse(opts: {
   content?: string | null;
-  reasoningContent?: string;
-  reasoning?: string;
+  reasoningContent?: string | null;
+  reasoning?: string | null;
   toolCalls?: Array<{ id: string; function: { name: string; arguments: string } }>;
   finishReason?: string;
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
@@ -524,6 +524,20 @@ describe('createOpenAIProvider', () => {
 
         expect(res.message.reasoning_content).toBeUndefined();
       });
+
+      it('推理字段为空串/null → 视为无推理（reasoning_content undefined）', async () => {
+        // 网关序列化空字段常见 null / ''，提取函数需同样静默
+        fetchMock.mockResolvedValue(
+          jsonResponse(openaiResponse({ content: 'ok', reasoningContent: null, reasoning: '' })),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const res = await provider.complete({
+          messages: [{ role: 'user', content: 'hi' }],
+        });
+
+        expect(res.message.reasoning_content).toBeUndefined();
+      });
     });
 
     describe('stream — 增量解析', () => {
@@ -555,6 +569,44 @@ describe('createOpenAIProvider', () => {
           .filter((c) => c.deltaContent !== undefined)
           .map((c) => c.deltaContent);
         expect(contents).toEqual(['答案']);
+      });
+
+      it('逐字到达：reasoning_content 按单字符逐 chunk 原样透传，先于 content 结束', async () => {
+        // 模拟真实 thinking 模型的 SSE 时序：推理逐 token 出完，内容再逐 token 输出
+        fetchMock.mockResolvedValue(
+          sseResponse([
+            ...[...'先推理A'].map((ch) =>
+              sseData({ choices: [{ delta: { reasoning_content: ch } }] }),
+            ),
+            ...[...'答B'].map((ch) => sseData({ choices: [{ delta: { content: ch } }] })),
+            sseData({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+            SSE_DONE,
+          ]),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const chunks = [];
+        for await (const chunk of provider.stream({
+          messages: [{ role: 'user', content: 'hi' }],
+        })) {
+          chunks.push(chunk);
+        }
+
+        // 每个字符一个 chunk，不合并不丢字
+        expect(chunks.filter((c) => c.deltaReasoning !== undefined)).toEqual(
+          [...'先推理A'].map((ch) => ({ deltaReasoning: ch })),
+        );
+        // 消费方按到达顺序拼接得到完整推理（增量语义）
+        expect(
+          chunks
+            .filter((c) => c.deltaReasoning !== undefined)
+            .map((c) => c.deltaReasoning)
+            .join(''),
+        ).toBe('先推理A');
+        // reasoning 全部先于 content（最后一个 reasoning chunk 在第一个 content chunk 之前）
+        const lastReasoning = chunks.map((c) => c.deltaReasoning !== undefined).lastIndexOf(true);
+        const firstContent = chunks.findIndex((c) => c.deltaContent !== undefined);
+        expect(lastReasoning).toBeLessThan(firstContent);
       });
 
       it('delta.reasoning（OpenRouter 形状）→ deltaReasoning', async () => {
@@ -597,6 +649,29 @@ describe('createOpenAIProvider', () => {
         }
 
         expect(chunks.some((c) => c.deltaReasoning !== undefined)).toBe(false);
+      });
+
+      it('推理增量为空串/null → 不产生 deltaReasoning chunk', async () => {
+        fetchMock.mockResolvedValue(
+          sseResponse([
+            sseData({ choices: [{ delta: { reasoning_content: '' } }] }),
+            sseData({ choices: [{ delta: { reasoning: null } }] }),
+            sseData({ choices: [{ delta: { content: 'ok' } }] }),
+            sseData({ choices: [{ delta: {}, finish_reason: 'stop' }] }),
+            SSE_DONE,
+          ]),
+        );
+
+        const provider = createOpenAIProvider(baseConfig);
+        const chunks = [];
+        for await (const chunk of provider.stream({
+          messages: [{ role: 'user', content: 'hi' }],
+        })) {
+          chunks.push(chunk);
+        }
+
+        expect(chunks.some((c) => c.deltaReasoning !== undefined)).toBe(false);
+        expect(chunks.some((c) => c.deltaContent === 'ok')).toBe(true);
       });
     });
 

@@ -842,6 +842,37 @@ describe('Agent', () => {
       expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
     });
 
+    it('自定义 run 的 sub-agent：结果照常回传,无结构化增量不冒泡', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [toolCall('c1', 'agent.writer', { input: '查' })],
+            finishReason: 'tool_calls',
+          },
+        ],
+        [{ deltaContent: 'final', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer' })],
+          subAgentEntries: [
+            agentEntry({ name: 'writer', hasRun: true, filePath: 'dist/agents/writer/handler.js' }),
+          ],
+          loadAgentModuleImpl: async () => ({ run: async () => '自定义结果' }),
+        }),
+      );
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      // 自定义 run 无结构化增量 → 零 subagentDelta chunk（不冒泡）
+      expect(chunks.filter((c) => c.subagentDelta)).toEqual([]);
+      // 结果照常回传父循环作为 tool 结果,父流程不受影响
+      expect(chunks.find((c) => c.toolResult)!.toolResult!.result).toBe('自定义结果');
+      expect(chunks.at(-1)!.done).toMatchObject({ content: 'final', stopReason: 'stop' });
+    });
+
     it('非流式 run() 不冒泡（结果一次性返回,行为不变）', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({

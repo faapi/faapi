@@ -1512,6 +1512,85 @@ describe('thinking（推理内容）', () => {
       const assistantMsg = result.messages.find((m) => m.role === 'assistant')!;
       expect(assistantMsg).not.toHaveProperty('reasoning_content');
     });
+
+    it('续跑历史：config.messages 携带 reasoning_content 时以副本剥离,原历史不被篡改', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'resumed', stopReason: 'stop' }),
+      ]);
+      const resumeWithReasoning: LLMMessage[] = [
+        { role: 'system', content: 'sys' },
+        { role: 'assistant', content: 'earlier', reasoning_content: '历史里的思考' },
+        { role: 'user', content: '继续' },
+      ];
+
+      const result = await reactLoop(undefined, {
+        provider,
+        executeTool: baseConfig.executeTool,
+        messages: resumeWithReasoning,
+      });
+
+      // 发给 LLM 的历史已剥离（reactLoop 自身剥离,不依赖 provider 发送侧兜底）
+      expect(completeCalls.mock.calls[0][0].messages).toEqual([
+        { role: 'system', content: 'sys' },
+        { role: 'assistant', content: 'earlier' },
+        { role: 'user', content: '继续' },
+      ]);
+      // result.messages 同样剥离（持久化 / 续跑来源保持线格式纯净）
+      for (const m of result.messages) {
+        expect(m).not.toHaveProperty('reasoning_content');
+      }
+      // 剥离产生副本：调用方传入的原历史对象不被原地修改
+      expect(resumeWithReasoning[1]!.reasoning_content).toBe('历史里的思考');
+    });
+
+    it('中断：err.messages 断点历史不含 reasoning_content（轮组完整可续跑）', async () => {
+      const controller = new AbortController();
+      const { provider } = createMockProvider([
+        llmResponse({
+          content: '查一下',
+          reasoningContent: '第一轮思考',
+          toolCalls: [toolCall('c1', 't1', {})],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'never reached' }),
+      ]);
+
+      const err = await reactLoop('go', {
+        provider,
+        executeTool: async () => {
+          controller.abort(); // 模拟 tool 执行期间客户端断开
+          return 'r1';
+        },
+        signal: controller.signal,
+      }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(AgentAbortError);
+      // 断点历史保持 OpenAI 线格式纯净（DeepSeek 多轮回传推理内容 400），轮组完整可直接续跑
+      const assistant = err.messages.find((m: LLMMessage) => m.role === 'assistant');
+      expect(assistant).not.toHaveProperty('reasoning_content');
+      expect(assistant.tool_calls).toHaveLength(1);
+    });
+
+    it('maxTurns 耗尽：ReactLoopError.messages 历史不含 reasoning_content', async () => {
+      const { provider } = createMockProvider([
+        llmResponse({
+          reasoningContent: '思考',
+          toolCalls: [toolCall('c1', 't1', {})],
+          stopReason: 'tool_calls',
+        }),
+      ]);
+
+      const err = await reactLoop('hi', {
+        provider,
+        executeTool: baseConfig.executeTool,
+        maxTurns: 1,
+      }).catch((e) => e);
+
+      expect(err).toBeInstanceOf(ReactLoopError);
+      const assistant = err.messages.find((m: LLMMessage) => m.role === 'assistant');
+      expect(assistant).not.toHaveProperty('reasoning_content');
+      expect(assistant.tool_calls).toHaveLength(1);
+    });
   });
 
   describe('reactLoopStream — 流式', () => {
@@ -1574,6 +1653,50 @@ describe('thinking（推理内容）', () => {
       const done = chunks.find((c) => c.done !== undefined)!;
       expect(done.done!.reasoning).toBeUndefined();
       expect(chunks.some((c) => c.deltaReasoning !== undefined)).toBe(false);
+    });
+
+    it('逐字到达：deltaReasoning 逐 chunk 原样透传,done.reasoning 完整拼接', async () => {
+      // 模拟真实 thinking 模型逐 token 到达：每个字符一个增量
+      const { provider } = createMockStreamProvider([
+        [...'让我想想'].map((ch) => ({ deltaReasoning: ch })),
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', { provider, executeTool: baseConfig.executeTool }),
+      );
+
+      // 逐段透传,不合并不丢字,顺序保持
+      expect(chunks.filter((c) => c.deltaReasoning !== undefined)).toEqual(
+        [...'让我想想'].map((ch) => ({ deltaReasoning: ch })),
+      );
+      // 消费方按到达顺序拼接得到完整推理
+      const done = chunks.find((c) => c.done !== undefined)!;
+      expect(done.done!.reasoning).toBe('让我想想');
+      expect(done.done!.content).toBe('');
+    });
+
+    it('开启 tracing：流式 llm_call.response 保留该轮累积推理内容', async () => {
+      const { provider } = createMockStreamProvider([
+        [
+          { deltaReasoning: '思考一' },
+          { deltaReasoning: '思考二' },
+          { deltaContent: '答案', finishReason: 'stop' },
+        ],
+      ]);
+
+      const chunks = await collect(
+        reactLoopStream('hi', {
+          provider,
+          executeTool: baseConfig.executeTool,
+          enableTracing: true,
+        }),
+      );
+
+      const llmCall = chunks.find((c) => c.traceEvent?.type === 'llm_call')!.traceEvent! as {
+        type: 'llm_call';
+        response: LLMMessage;
+      };
+      expect(llmCall.response.reasoning_content).toBe('思考一思考二');
     });
   });
 });
