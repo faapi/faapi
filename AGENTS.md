@@ -710,7 +710,7 @@ export function WS(ctx: WsContext): WsEventHandlers {
 
 **路由匹配**：WS 路由无 HTTP 方法维度，按 URL pathname 匹配。动态路由 `[id]`、catch-all `[...slug]`、分组 `(name)` 同样适用。未匹配路径返回 404 并销毁 socket。
 
-**WsContext**：握手阶段构造，包含 `params`/`query`/`headers`/`config`。可通过 `declare module '@faapi/faapi'` 增强自定义字段。
+**WsContext**：握手阶段构造，包含 `params`/`query`/`headers`/`config`。可通过 `declare module '@faapi/faapi'` 增强自定义字段。WS 无 schema 管线——握手 `params`/`query` 恒为 URL 原始字符串，不做校验与类型转换（设计边界，与 HTTP 路由的「声明即校验」不同；业务侧需数字比较时自行 `Number()` 转换）。
 
 **WsSocket**：faapi 封装的 socket 抽象，不暴露 `ws` 库原生 socket：
 - `send(data)` — string/Buffer 直发，对象自动 JSON.stringify
@@ -854,6 +854,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
   - `generateSchemaFileSource` 根据 schemaName 推断 inputType：以 `Query`/`Params` 结尾 → `coerce=true`；以 `Body` 结尾 → `coerce=false`（JSON 解析已是天然 JS 类型）。
   - `mapZodCode` 新增 `not_finite → COERCE_FAILED` 映射（实际场景中 coerce 失败多报 `invalid_type`）。
 - `Date` 字段输入双形态：schema 生成用 `z.preprocess` 同时接受 ISO 字符串与毫秒时间戳（`new Date(v)`），与响应序列化（Date → `getTime()` 毫秒时间戳，见 5.5「JSON 序列化契约」）可逆往返——GET 拿到的时间戳可直接 POST 回传。
+- 校验覆盖「声明即校验」（主输入 + 次输入 + params 统一）：body 方法（POST/PUT/PATCH）声明 `query` 形参生成 `<METHOD>Query` schema（coerce），校验后经 `__validatedQuery` 注入转换值（未声明字段保留原始字符串，未声明 query 形参则回退裸字符串）；DELETE 声明 `body`/`form` 生成 `<METHOD>Body` schema 校验后注入（Date 字段转换与 POST body 一致，空请求体 undefined 跳过校验）；GET/HEAD 声明 body 不生成 schema（注入恒为 undefined）。校验失败 422/400。详见 `src/server/createServer.md` 的「输入校验覆盖」。
 - dev 和 prd 行为一致，不降级：
   - dev（Vite 风格按需模式）：启动时仅编译 config + 生成路由清单，**不预生成 `zod.js`**；首次请求时 `ensureSchemaGenerated` 按需生成（mtime 缓存复用未变更的产物），watch 时删 stale zod.js + 清缓存 + 下次请求按需重建。
   - prd：`faapi build` 全量生成 `zod.js`，启动时按需 import。

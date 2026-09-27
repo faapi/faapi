@@ -4,7 +4,7 @@ import {
   type HandlerTypeInfo,
   type LazyTypeResolver,
 } from '../ast/extractHandlerTypes';
-import { getInputTypeForMethod } from '../runtime/inputType';
+import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
 import { getSchemaName } from '../validator/schemaName';
 import { analyzeInjectionInSourceFile } from '../injection/analyzeInjection';
 import type { RouteManifest } from '../router/routeTypes';
@@ -124,6 +124,37 @@ export function collectRouteSchemaSources(
           schemaName: getSchemaName(method, 'params'),
           typeInfo: resolver.resolve(paramsArg.typeName) ?? null,
         });
+      }
+
+      // 次输入 schema：方法主输入之外显式声明的输入同样「声明即校验」。
+      // - body 方法（POST/PUT/PATCH）声明 query 形参 → <METHOD>Query（如 POSTQuery，
+      //   Query 后缀自动 coerce），运行时校验 query 并挂载 __validatedQuery
+      // - query 主输入且 hasBody 的方法（DELETE）声明 body/form 形参 → <METHOD>Body
+      //   （如 DELETEBody），form 与 body 共享 schema 名、coerce=true 显式覆盖
+      // - GET/HEAD 声明 body 不收集（hasBody=false，运行时 body 注入恒为 undefined，
+      //   该声明属无效标注，保持既往行为）
+      if (inputType === 'body') {
+        const queryArg = meta.params.find((p) => p.type === 'query');
+        if (queryArg?.typeName) {
+          sources.push({
+            urlPath: entry.urlPath,
+            filePath,
+            schemaName: getSchemaName(method, 'query'),
+            typeInfo: resolver.resolve(queryArg.typeName) ?? null,
+          });
+        }
+      } else if (hasBody(method)) {
+        const bodyArg =
+          meta.params.find((p) => p.type === 'body') ?? meta.params.find((p) => p.type === 'form');
+        if (bodyArg?.typeName) {
+          sources.push({
+            urlPath: entry.urlPath,
+            filePath,
+            schemaName: getSchemaName(method, 'body'),
+            typeInfo: resolver.resolve(bodyArg.typeName) ?? null,
+            coerce: bodyArg.type === 'form' || undefined,
+          });
+        }
       }
     }
   }

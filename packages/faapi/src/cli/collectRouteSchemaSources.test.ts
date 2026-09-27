@@ -248,4 +248,75 @@ describe('collectRouteSchemaSources', () => {
     expect(sources[0].schemaName).toBe('GETQuery');
     expect(sources[0].typeInfo).toBeNull();
   });
+
+  it('body 方法声明 query 形参时生成 POSTQuery schema 源（次输入）', () => {
+    const filePath = writeHandler(
+      'search.ts',
+      `export interface SearchQuery { page: number; }\nexport interface SearchBody { keyword: string; }\nexport function POST(query: SearchQuery, body: SearchBody) { return { page: query.page, keyword: body.keyword }; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'POST', urlPath: '/api/search', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    const names = sources.map((s) => s.schemaName);
+    expect(names).toContain('POSTBody');
+    expect(names).toContain('POSTQuery');
+    const querySource = sources.find((s) => s.schemaName === 'POSTQuery')!;
+    expect(querySource.typeInfo).not.toBeNull();
+    expect(querySource.typeInfo!.name).toBe('SearchQuery');
+    // coerce 未显式设置：由 Query 后缀正则在生成端推断为 true
+    expect(querySource.coerce).toBeUndefined();
+  });
+
+  it('DELETE 声明 body 生成 DELETEBody 源；声明 form 时 coerce=true', () => {
+    const filePath = writeHandler(
+      'del.ts',
+      `export interface ItemBody { id: number; }\nexport function DELETE(body: ItemBody) { return body; }\n`,
+    );
+    const formPath = writeHandler(
+      'delForm.ts',
+      `export interface LoginForm { email: string; }\nexport function DELETE(form: LoginForm) { return form; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'DELETE', urlPath: '/api/del', filePath, paramNames: [], isDynamic: false },
+      {
+        method: 'DELETE',
+        urlPath: '/api/del-form',
+        filePath: formPath,
+        paramNames: [],
+        isDynamic: false,
+      },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    const bodySource = sources.find(
+      (s) => s.urlPath === '/api/del' && s.schemaName === 'DELETEBody',
+    );
+    expect(bodySource).toBeDefined();
+    expect(bodySource!.typeInfo).not.toBeNull();
+    expect(bodySource!.typeInfo!.name).toBe('ItemBody');
+    expect(bodySource!.coerce).toBeUndefined();
+
+    const formSource = sources.find(
+      (s) => s.urlPath === '/api/del-form' && s.schemaName === 'DELETEBody',
+    );
+    expect(formSource).toBeDefined();
+    expect(formSource!.typeInfo!.name).toBe('LoginForm');
+    expect(formSource!.coerce).toBe(true);
+  });
+
+  it('GET 声明 body 形参不生成 Body schema（hasBody 为 false，注入恒为 undefined）', () => {
+    const filePath = writeHandler(
+      'ghost.ts',
+      `export interface GhostBody { x: number; }\nexport function GET(body: GhostBody) { return body; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'GET', urlPath: '/api/ghost', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].schemaName).toBe('GETQuery');
+  });
 });

@@ -31,6 +31,21 @@ request → toWebRequest → createContext → matchRoute
 
 dev 按需模式下，handler.js 由 `loadRouteModule` 先 `ensureCompiled` 编译再 import，zod.js 由 `ensureSchemaGenerated` 触发生成，均在首次请求时完成（详见 [compileOnDemand](../cli/compileOnDemand.md)）。prod 模式跳过 `ensureSchemaGenerated`——build 阶段已固化全部 zod.js。
 
+## 输入校验覆盖（主输入 + 次输入）
+
+管线在 `validateInput` 处按 schema 存在与否逐路校验，**声明即校验**：
+
+| 输入 | 适用方法 | schema 来源 | 校验后的值去向 |
+|------|---------|------------|--------------|
+| 主输入（query） | GET/DELETE/HEAD | `<METHOD>Query` | 挂载 `__validatedQuery`，handler 的 query 注入优先取用（原始 query 打底合并，未声明字段保留原始字符串） |
+| 主输入（body/form） | POST/PUT/PATCH | `<METHOD>Body` | 直接作为 body 注入 handler |
+| 次输入（query） | POST/PUT/PATCH | `<METHOD>Query`（handler 声明 query 形参时收集） | 同主输入 query：挂载 `__validatedQuery`（声明字段拿到转换值，未声明字段保留原始字符串） |
+| 次输入（body/form） | DELETE | `<METHOD>Body`（handler 声明 body/form 形参时收集） | 校验通过后作为 body 注入（Date 字段转换与 POST body 一致）；空请求体（undefined）跳过校验 |
+| params | 全部 | `<METHOD>Params`（handler 声明 params 形参时收集） | coerce 后回写 `ctx.params`（原始 params 打底合并，防剥 catch-all 段） |
+
+- 某路输入未声明对应形参 → 无 schema → `validateInput` 原样透传（query 注入回退 `queryToObject` 裸字符串、DELETE body 注入原始解析值），行为与 6.19.x 及之前一致
+- 校验失败统一抛 `ValidationError`（422/400 由 issue code 推导）
+
 ## 客户端断连信号（ctx.request.signal）
 
 每个请求创建一个 `AbortController`，其 signal 传入 `toWebRequest` 构造的 Web Request——即 `ctx.request.signal` 是**已接线客户端断连**的标准 Web AbortSignal：

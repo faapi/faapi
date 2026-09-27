@@ -224,14 +224,65 @@ describe('HTTP Server E2E', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     // body 注入的是请求体 { id: 7 }，不是 query { id: '99' }
-    expect(body).toEqual({ data: { deleted: 7 } });
+    expect(body).toEqual({ data: { deleted: 7, at: null } });
   });
 
-  it('DELETE 无请求体：body 注入 undefined，返回兜底结构', async () => {
+  it('DELETE 无请求体：body 注入 undefined（跳过校验），返回兜底结构', async () => {
     const res = await fetchFromServer('/api/item?id=1', { method: 'DELETE' });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ data: { deleted: null } });
+    expect(body).toEqual({ data: { deleted: null, at: null } });
+  });
+
+  it('DELETE body 声明类型后走 schema 校验：非法 payload 返回 422', async () => {
+    const res = await fetchFromServer('/api/item?id=9', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'not-a-number' }),
+    });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('DELETE body 的 Date 字段按 schema 转换（与 POST body 一致）', async () => {
+    const res = await fetchFromServer('/api/item?id=9', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      // 传 ISO 字符串：schema 转换为 Date 后序列化回毫秒时间戳；
+      // 若无 schema（裸透传）则原样返回字符串——用例借此区分两种行为
+      body: JSON.stringify({ id: 7, at: '2025-06-15T15:06:40.000Z' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({ deleted: 7, at: 1750000000000 });
+  });
+
+  it('POST 声明 query 形参：主输入 body 之外，query 按声明类型校验转换', async () => {
+    const res = await fetchFromServer('/api/search?page=2&extra=abc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keyword: 'x' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.data).toEqual({
+      page: 2,
+      pageType: 'number',
+      keyword: 'x',
+      extra: 'abc',
+    });
+  });
+
+  it('POST query 校验失败（page=abc）返回 422', async () => {
+    const res = await fetchFromServer('/api/search?page=abc', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ keyword: 'x' }),
+    });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('handler 返回 object 时 Content-Type 为 application/json', async () => {

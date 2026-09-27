@@ -91,6 +91,8 @@ dist/
 
 `form` 与 `body` 共享 schema 名（`POSTBody`），运行时 `validateInput` 无需感知 form/body 差异。`collectRouteSchemaSources` 在提取时若发现 handler 声明 `form` 参数（而非 `body`），会在 `RouteSchemaSource` 上设置 `coerce=true`，`generateSchemaFileSource` 优先采用 `source.coerce`，回退到 schemaName 后缀正则。
 
+次输入 schema 遵循同一后缀规则：body 方法的 `POSTQuery`（handler 声明 query 形参，`Query` 后缀 coerce=true）、DELETE 的 `DELETEBody`（handler 声明 body/form 形参，form 时 coerce=true 显式覆盖）。收集条件见 [collectRouteSchemaSources](./collectRouteSchemaSources.md) 的「次输入 schema 的收集」。
+
 coerce 的具体转换规则见 [generateZodSchema](../ast/generateZodSchema) 的 `coerce` 参数。
 
 ## 跨文件类型引用

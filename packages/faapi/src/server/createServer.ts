@@ -24,6 +24,7 @@ import {
 } from '../errors/httpErrors';
 import { validateInput } from '../validator/validateInput';
 import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
+import { queryToObject } from '../utils/queryToObject';
 import { getClientIp } from '../utils/getClientIp';
 import { cors, type CorsOptions } from '../middleware/cors';
 import { helmet, type HelmetOptions } from '../middleware/helmet';
@@ -539,18 +540,50 @@ function createRoutePipeline(opts: {
             }
           : match.params;
     }
+
+    // 次输入校验（声明即校验，与主输入同一 validateInput 通道）：
+    // body 方法（POST/PUT/PATCH）声明 query 形参时存在 POSTQuery schema——校验 query
+    // 并挂载 __validatedQuery（声明字段拿到转换值，未声明字段以原始 query 打底保留
+    // 原始字符串）；无声明时 schema 缺失、data === input，不挂载，注入回退
+    // queryToObject 行为不变。
+    if (inputType === 'body') {
+      const rawQuery = queryToObject(url.searchParams);
+      const queryResult = await validateInput(schemaPath, route.method, 'query', rawQuery);
+      if (!queryResult.valid) {
+        throw new ValidationError('参数校验失败', queryResult.issues);
+      }
+      if (
+        queryResult.data !== rawQuery &&
+        typeof queryResult.data === 'object' &&
+        queryResult.data !== null
+      ) {
+        (ctx as FaapiContext & { __validatedQuery?: Record<string, unknown> }).__validatedQuery = {
+          ...(rawQuery as Record<string, unknown>),
+          ...(queryResult.data as Record<string, unknown>),
+        };
+      }
+    }
     // body 计算与主输入分流：
     // - POST/PUT/PATCH：主输入就是 body，用校验后的值
     // - DELETE：主输入是 query（校验 DELETEQuery），body 单独解析注入——
     //   若把校验后的 query 当 body 传入，handler 声明 body 会静默拿到 query；
-    //   同时请求体流不被消费，keep-alive 连接无法复用
+    //   同时请求体流不被消费，keep-alive 连接无法复用。
+    //   声明 body/form 形参时存在 DELETEBody schema：解析结果校验后再注入
+    //   （Date 字段转换与 POST body 一致）；空请求体（undefined）跳过校验
     // - GET/HEAD：无 body
-    const body =
-      inputType === 'query' && hasBody(route.method)
-        ? await resolveBodyForQueryMethod(request)
-        : hasBody(route.method)
-          ? result.data
-          : undefined;
+    let body: unknown;
+    if (inputType === 'query' && hasBody(route.method)) {
+      const parsed = await resolveBodyForQueryMethod(request);
+      if (parsed !== undefined) {
+        const bodyResult = await validateInput(schemaPath, route.method, 'body', parsed);
+        if (!bodyResult.valid) {
+          throw new ValidationError('参数校验失败', bodyResult.issues);
+        }
+        body = bodyResult.data;
+      }
+    } else if (hasBody(route.method)) {
+      body = result.data;
+    }
 
     // 5. 中间件按需加载（Vite 风格）：route.middlewares 为 undefined 时从 middlewarePaths 加载
     //    首次请求加载后缓存到 route 上，后续请求直接复用

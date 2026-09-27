@@ -102,9 +102,10 @@ function isBlankText(text: string): boolean {
  * 上有未读 body 时 Node 只能断开连接，无法复用），且 handler 声明 `body` 参数
  * 时应注入真正的请求体而非 query。
  *
- * 与主输入 body 的方法不同：DELETE body 无对应 schema（schema 提取只产出
- * DELETEQuery），不做校验，原样注入。空请求体返回 undefined（handler 未声明
- * body 参数时注入 undefined，行为一致）。
+ * 与主输入 body 的方法不同：本函数只负责解析，不做 schema 校验。解析结果的
+ * 校验由 createServer 管线执行——handler 声明 `body`/`form` 形参时存在
+ * DELETEBody schema，校验通过后注入（Date 字段转换与 POST body 一致）；空请求体
+ * 返回 undefined，跳过校验（handler 注入 undefined，行为一致）。
  *
  * @throws {ValidationError} 当请求体非空但 JSON 格式非法时
  */

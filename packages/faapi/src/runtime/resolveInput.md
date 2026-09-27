@@ -32,8 +32,11 @@ GET/DELETE 从 URL 提取 query，POST/PUT/PATCH 从请求体提取数据，需�
 DELETE 主输入（校验用）是 query，但请求体流必须被消费（keep-alive 连接上有未读
 body 时 Node 只能断开连接），且 handler 声明 `body` 参数时应注入真正的请求体。
 `createServer` 调 `resolveBodyForQueryMethod(request)` 单独解析：空请求体返回
-`undefined`；非法 JSON 抛 `ValidationError(INVALID_FORMAT)`；解析结果不做 schema
-校验（DELETE 只有 DELETEQuery schema），原样注入。
+`undefined`；非法 JSON 抛 `ValidationError(INVALID_FORMAT)`。解析结果的 schema
+校验由 `createServer` 管线执行——handler 声明 `body`/`form` 形参时存在
+`DELETEBody` schema，校验通过后注入（Date 字段转换与 POST body 一致；空请求体
+undefined 跳过校验）；未声明则无 schema，原样注入（详见
+[createServer](../server/createServer.md) 的「输入校验覆盖」）。
 
 ## 相关模块
 

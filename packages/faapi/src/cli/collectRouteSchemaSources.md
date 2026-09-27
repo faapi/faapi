@@ -21,6 +21,16 @@ schema key 使用 `urlPath`（如 `/api/hello`）而非 `filePath`，因为 `url
 
 未声明 `params` 形参则不收集——无 schema 即无校验，路径参数保持 URL 原始字符串（与未声明行为一致）。
 
+## 次输入 schema 的收集
+
+方法主输入之外、handler 显式声明的其余输入同样收集（与 params 同理——声明即校验）：
+
+- **body 方法（POST/PUT/PATCH）声明 `query` 形参**：收集 `<METHOD>Query` 源（如 `POSTQuery`），`Query` 后缀自动 coerce（URL query 来源均为 string）。运行时 createServer 校验 query 并把转换值挂载为 `__validatedQuery`，handler 的 query 注入优先取用（此前 body 方法上的 query 声明无 schema，注入恒为原始字符串）。
+- **query 主输入方法中 `hasBody` 为 true 的方法（即 DELETE）声明 `body` / `form` 形参**：收集 `<METHOD>Body` 源（如 `DELETEBody`）；声明 `form` 时与主输入 form 同规——schema 名仍为 `<METHOD>Body`、`coerce=true` 显式覆盖。运行时 createServer 校验请求体后注入（Date 字段转换与 POST body 一致；空请求体 undefined 跳过校验）。此前 DELETE body 无校验、Date 字段保持字符串。
+- **GET/HEAD 声明 `body`**：不收集（`hasBody` 为 false，运行时 body 注入恒为 undefined，该声明属无效标注，保持既往行为）。
+
+未声明次输入形参则不收集对应 schema：body 方法的 query 注入回退 `queryToObject` 裸字符串、DELETE body 注入原始解析值——与 6.19.x 及之前行为一致。
+
 ## 使用场景
 
 - `generateSchemaFiles` 调用本函数收集 sources，再基于 sources 生成各 `zod.js`（ref 解析用 `resolversByFile`）
