@@ -1,4 +1,4 @@
-import type { SseWriter } from './sse';
+import type { SseOptions, SseWriter } from './sse';
 
 /**
  * 请求上下文的响应元数据（内部使用，不暴露给用户）
@@ -231,8 +231,12 @@ export interface FaapiContext {
    *   sse.close();
    * }
    * ```
+   *
+   * @param options `{ keepOpen: true }` 声明流生命周期独立于 handler 返回（长连接
+   *   订阅模式）：handler 返回后框架不自动 close，连接长存直到显式 close()、客户端
+   *   断开或 handler 抛错兜底；清理推送源用 `writer.onClose(callback)`。默认 false。
    */
-  sse(): SseWriter;
+  sse(options?: SseOptions): SseWriter;
 
   /**
    * 显式包装成功响应(返回 Response 对象)

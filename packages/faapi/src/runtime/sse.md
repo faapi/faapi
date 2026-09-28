@@ -84,6 +84,20 @@ export function POST(ctx) {
 }
 ```
 
+### 5. 事件订阅推送（长连接，keepOpen）
+
+订阅型端点：handler 只负责把连接挂到推送源（事件总线、DB change stream、发布订阅通道），注册完立即返回，连接长存直到客户端断开或显式关闭。默认语义下 handler 返回会触发框架自动 close（见「自动 close」），这类端点必须用 `ctx.sse({ keepOpen: true })` 声明流生命周期独立于 handler 返回，详见「长连接订阅模式（keepOpen）」章节。
+
+```ts
+export function GET(ctx) {
+  const sse = ctx.sse({ keepOpen: true });
+  sse.send({ data: 'subscribed' });
+  const unsubscribe = bus.subscribe((event) => sse.send({ data: event }));
+  sse.onClose(unsubscribe); // 流结束（含客户端断开）时退订
+  // 立即返回，连接保持打开
+}
+```
+
 ## 设计要点
 
 ### ctx.sse() 的返回值
@@ -107,8 +121,10 @@ export function POST(ctx) {
 | `sendRaw(chunk)` | 方法 | 直接写入原始字节/字符串,不做 SSE 序列化（用于透传上游 SSE 原文） |
 | `sendError(message)` | 方法 | 推送 `event: error` 事件并关闭流（异常分支用） |
 | `close()` | 方法 | 关闭流（重复调用幂等） |
+| `onClose(callback)` | 方法 | 注册流结束回调：显式 close、框架兜底 close、客户端断开、sendError 任一路径结束流时恰好触发一次（多个回调按注册顺序执行，回调自身抛错被忽略）；注册时流已结束则立即触发。keepOpen 模式下用于退订/清理资源 |
 | `aborted` | 只读属性 | 客户端断开时变 `true`,底层监听 ReadableStream cancel 信号 |
 | `closed` | 只读属性 | 流已关闭时为 `true` |
+| `keepOpen` | 只读属性 | 创建时是否声明了 `{ keepOpen: true }`（handler 返回后框架不自动 close） |
 | `response` | 只读属性 | 框架构造的 `Response` 对象（首次写入时由框架读取接入连接） |
 
 #### `send` vs `sendRaw` 的职责分工
@@ -150,6 +166,31 @@ export async function POST(ctx) {
 ```
 
 **推荐写法**：仍然显式调用 `sse.close()`，让 handler 的结束时机明确；自动 close 用于异常分支和遗漏场景。
+
+`ctx.sse({ keepOpen: true })` 声明的 writer 豁免返回路径的自动 close——handler 返回后流保持打开（见下节）；**handler 抛错路径的兜底 close 不受 keepOpen 影响**，仍无条件关闭。
+
+### 长连接订阅模式（keepOpen）
+
+默认语义下，handler 返回即请求收尾，框架自动 close 未关闭的流——这对「handler 内推完再返回」的流式输出（LLM token 流、进度通知）恰好正确，但与另一类形态冲突：**handler 只负责把连接挂到推送源，注册完立即返回，连接长存**（事件订阅、实时通知）。返回瞬间自动 close 触发，连接立刻被掐断——订阅型端点在默认语义下无法存活。
+
+`ctx.sse({ keepOpen: true })` 显式声明「流的生命周期独立于 handler 返回」：
+
+```ts
+export function GET(ctx) {
+  const sse = ctx.sse({ keepOpen: true });
+  sse.send({ data: 'subscribed' });
+  const unsubscribe = bus.subscribe((event) => sse.send({ data: event }));
+  sse.onClose(unsubscribe); // 流结束（含客户端断开）时退订
+  // 立即返回，连接保持打开
+}
+```
+
+语义细则：
+
+- **keepOpen 只豁免「handler 正常返回」路径的自动 close**。handler 抛错仍被框架无条件 close——注册流程失败后无人再持有 writer 负责关流，连接悬挂没有任何意义；客户端收到流结束即重连，重新走一遍注册。
+- keepOpen 模式下流由三件事之一结束：调用方显式 `sse.close()`、客户端断开（`aborted`）、handler 抛错兜底。都不发生则连接一直存活，后续事件经订阅回调 `send` 持续送达（首次写入已提前接管，字节即产即达）。
+- `onClose(callback)` 是 keepOpen 模式的资源清理出口（退订、清定时器），任何结束路径都恰好触发一次。不用它的话，客户端断开后推送源仍在向已断开的 writer 投递事件（`send` 静默忽略），订阅随重连次数累积泄漏。
+- `app.inject()` / 测试直调 `invokeHandler` 语义不变：inject 本身等流结束才整体返回 `{ status, headers, body }`，keepOpen 下 handler 返回后 inject 继续等待流关闭，两条路径最终字节序列一致。
 
 ### SSE 事件格式
 
@@ -193,7 +234,7 @@ handler 可经 `ctx.setHeader('X-Accel-Buffering', 'yes')` 覆盖默认值（见
 
 断开检测依赖响应已被消费——首次写入提前接管后（见「ctx.sse() 的返回值」），流式期间断开即触发 cancel，`aborted` 实时可观测，handler 循环即时退出。
 
-无需 try/finally 强制 close，框架兜底保证不泄漏连接。
+无需 try/finally 强制 close，框架兜底保证不泄漏连接。需要在断开（或任何结束路径）时做资源清理（退订、清定时器）时，用 `sse.onClose(callback)` 注册流结束回调，见「长连接订阅模式（keepOpen）」。
 
 ### 背压
 

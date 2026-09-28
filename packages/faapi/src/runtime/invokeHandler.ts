@@ -149,12 +149,16 @@ export async function invokeHandler(
    *
    * 同时执行自动 close 兜底：若 handler 返回时 writer 仍未关闭，自动调用 close()，
    * 避免连接泄漏。handler 异步循环未退出、忘记 close、或抛错的场景由这里兜底。
+   *
+   * keepOpen 声明豁免返回路径的自动 close——流生命周期独立于 handler 返回
+   * （长连接订阅模式，handler 注册完推送源即返回，连接长存）；handler 抛错
+   * 路径（autoCloseSseOnError）不受 keepOpen 影响，仍无条件关闭。
    */
   const pickSseAndAutoClose = (): Response | null => {
     const sseWriter = (ctx as FaapiContext & { __sseWriter?: SseWriter }).__sseWriter;
     if (!sseWriter) return null;
-    // 兜底：handler 未显式 close 时自动关闭
-    if (!sseWriter.closed && !sseWriter.aborted) {
+    // 兜底：handler 未显式 close 时自动关闭（keepOpen 豁免）
+    if (!sseWriter.keepOpen && !sseWriter.closed && !sseWriter.aborted) {
       sseWriter.close();
     }
     return mergeMeta(sseWriter.response, meta);

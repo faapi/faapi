@@ -1,6 +1,6 @@
 import type { FaapiContext, ResponseMeta, CookieOptions, FailOptions } from './contextTypes';
 import { markBufferedBody } from '../response/bufferedBody';
-import { createSseWriter, type SseWriter } from './sse';
+import { createSseWriter, type SseOptions, type SseWriter } from './sse';
 import { wrapOkResult, formatFailResponse, jsonOk } from '../response/responseFormatter';
 import { createLogger } from '../logger/logger';
 import { queryToObject } from '../utils/queryToObject';
@@ -168,10 +168,15 @@ export function createContextFromUrl(
      * 接入底层连接——流式期间字节即产即达（见 createServer.md「SSE 提前接管」）。
      * 无钩子场景（app.inject / 测试直调 invokeHandler）回落为 handler 返回后交出。
      *
+     * `{ keepOpen: true }` 声明流生命周期独立于 handler 返回：handler 返回后框架
+     * 不自动 close（长连接订阅模式，清理推送源用 writer.onClose）；handler 抛错
+     * 的兜底 close 不受影响。详见 runtime/sse.md「长连接订阅模式」。
+     *
      * 与 ctx.json / ctx.html 互斥：一个 handler 只能用一种响应方式。
      */
-    sse(): SseWriter {
+    sse(options?: SseOptions): SseWriter {
       const writer = createSseWriter({
+        keepOpen: options?.keepOpen,
         onFirstWrite: (response) => {
           (
             ctx as FaapiContext & { __earlyRespond?: (response: Response) => void }

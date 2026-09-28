@@ -478,4 +478,83 @@ describe('createSseWriter', () => {
       expect(count).toBe(0);
     });
   });
+
+  describe('keepOpen 选项', () => {
+    it('默认不声明：keepOpen 为 false', () => {
+      expect(createSseWriter().keepOpen).toBe(false);
+    });
+
+    it('声明 { keepOpen: true }：keepOpen 为 true', () => {
+      expect(createSseWriter({ keepOpen: true }).keepOpen).toBe(true);
+    });
+  });
+
+  describe('onClose 流结束回调', () => {
+    it('显式 close() 触发，恰好一次（幂等 close 不重复触发）', () => {
+      const writer = createSseWriter();
+      let calls = 0;
+      writer.onClose(() => calls++);
+      expect(writer.closed).toBe(false);
+      writer.close();
+      expect(calls).toBe(1);
+      writer.close();
+      expect(calls).toBe(1);
+    });
+
+    it('客户端断开（cancel）触发', async () => {
+      const writer = createSseWriter();
+      let fired = false;
+      writer.onClose(() => {
+        fired = true;
+      });
+      writer.send({ data: 'x' });
+      await writer.response.body!.cancel();
+      expect(writer.aborted).toBe(true);
+      expect(fired).toBe(true);
+    });
+
+    it('sendError 关流触发', () => {
+      const writer = createSseWriter();
+      let fired = false;
+      writer.onClose(() => {
+        fired = true;
+      });
+      writer.sendError(new Error('boom'));
+      expect(writer.closed).toBe(true);
+      expect(fired).toBe(true);
+    });
+
+    it('注册时流已结束：立即触发', () => {
+      const writer = createSseWriter();
+      writer.close();
+      let fired = false;
+      writer.onClose(() => {
+        fired = true;
+      });
+      expect(fired).toBe(true);
+    });
+
+    it('cancel 后注册：同样立即触发', async () => {
+      const writer = createSseWriter();
+      await writer.response.body!.cancel();
+      let fired = false;
+      writer.onClose(() => {
+        fired = true;
+      });
+      expect(fired).toBe(true);
+    });
+
+    it('多个回调按注册顺序执行，回调抛错不影响其余、不向外抛', () => {
+      const writer = createSseWriter();
+      const order: string[] = [];
+      writer.onClose(() => order.push('a'));
+      writer.onClose(() => {
+        order.push('b');
+        throw new Error('callback boom');
+      });
+      writer.onClose(() => order.push('c'));
+      expect(() => writer.close()).not.toThrow();
+      expect(order).toEqual(['a', 'b', 'c']);
+    });
+  });
 });

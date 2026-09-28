@@ -23,7 +23,7 @@ export type {
   RequestHandler,
   UpgradeHandler,
 } from './config/pluginTypes';
-export type { SseWriter, SseEvent } from './runtime/sse';
+export type { SseWriter, SseEvent, SseOptions } from './runtime/sse';
 export type { WsContext, WsSocket, WsHandler, WsEventHandlers } from './runtime/wsHandler';
 export type {
   RouteManifest,

@@ -5,7 +5,7 @@
  *
  * 核心导出：
  * - `encodeSseEvent(event)`：把 SSE 事件对象编码为符合 HTML5 SSE 规范的字符串
- * - `createSseWriter()`：创建一个 SseWriter，封装 ReadableStream + Response，提供 send/close/sendError API
+ * - `createSseWriter()`：创建一个 SseWriter，封装 ReadableStream + Response，提供 send/close/onClose/sendError API
  * - `SseWriter`：writer 类型，ctx.sse() 返回此类型
  *
  * 设计要点：
@@ -104,6 +104,21 @@ export function encodeSseEvent(event: SseEvent): string {
 }
 
 /**
+ * ctx.sse() 的选项
+ */
+export interface SseOptions {
+  /**
+   * 声明流生命周期独立于 handler 返回（长连接订阅模式）
+   *
+   * `true` 时 handler 返回后框架不自动 close——handler 只负责把连接挂到推送源
+   * （事件总线、change stream），注册完立即返回，连接长存直到显式 close()、
+   * 客户端断开或 handler 抛错兜底。清理推送源用 `onClose(callback)`。
+   * 默认 false（handler 返回时框架自动 close 兜底）。
+   */
+  keepOpen?: boolean;
+}
+
+/**
  * SSE writer：封装流式推送 API
  *
  * 通过 `ctx.sse()` 创建，handler 调用 `send` 推送事件，`close` 关闭流。
@@ -127,10 +142,20 @@ export interface SseWriter {
   sendError(error: unknown): void;
   /** 关闭流（多次调用安全） */
   close(): void;
+  /**
+   * 注册流结束回调
+   *
+   * 显式 close、框架兜底 close、客户端断开、sendError 任一路径结束流时恰好触发
+   * 一次（多个回调按注册顺序执行，回调自身抛错被忽略）；注册时流已结束则立即触发。
+   * keepOpen 模式下用于退订/清理推送源，防止客户端断开后订阅随重连累积泄漏。
+   */
+  onClose(callback: () => void): void;
   /** 流是否已关闭（handler 主动 close 或框架自动 close） */
   readonly closed: boolean;
   /** 客户端是否已断开（ReadableStream 被 cancel） */
   readonly aborted: boolean;
+  /** 创建时是否声明了 `{ keepOpen: true }`（handler 返回后框架不自动 close） */
+  readonly keepOpen: boolean;
   /**
    * 流缓冲背压状态（透传 controller.desiredSize）
    *
@@ -163,11 +188,14 @@ export interface SseWriter {
  * onFirstWrite：首次成功写入（send/sendRaw/sendError）时以 response 调用一次。
  * HTTP 服务场景由 ctx.sse() 接到 server 层的提前接管钩子——首次写入即把响应
  * 接入底层连接，流式期间字节即产即达（见 createServer.md「SSE 提前接管」）。
+ *
+ * keepOpen：声明后 writer.keepOpen 为 true，invokeHandler 在 handler 正常返回时
+ * 跳过自动 close（长连接订阅模式）；handler 抛错路径的兜底 close 不受影响。
  */
 export function createSseWriter(
-  options: { onFirstWrite?: (response: Response) => void } = {},
+  options: SseOptions & { onFirstWrite?: (response: Response) => void } = {},
 ): SseWriter {
-  const { onFirstWrite } = options;
+  const { onFirstWrite, keepOpen = false } = options;
   const encoder = new TextEncoder();
   let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
   let closed = false;
@@ -176,6 +204,26 @@ export function createSseWriter(
   let firstWriteTriggered = false;
   /** waitForDrain 挂起中的等待方——消费者拉取（pull）/关闭/断开时唤醒 */
   let drainWaiters: Array<() => void> = [];
+  /** onClose 注册的结束回调——任一路径结束流时逐个执行一次 */
+  let closeCallbacks: Array<() => void> = [];
+  /** 结束回调是否已执行（保证恰好一次：close/cancel 幂等路径不重复触发） */
+  let closeCallbacksFired = false;
+
+  const safeRunCallback = (callback: () => void): void => {
+    try {
+      callback();
+    } catch {
+      // 回调自身抛错不影响流收尾与其他回调（与 onError 钩子「自身抛错被忽略」同约定）
+    }
+  };
+
+  const runCloseCallbacks = (): void => {
+    if (closeCallbacksFired) return;
+    closeCallbacksFired = true;
+    const callbacks = closeCallbacks;
+    closeCallbacks = [];
+    for (const callback of callbacks) safeRunCallback(callback);
+  };
 
   const resolveDrainWaiters = (): void => {
     const waiters = drainWaiters;
@@ -207,7 +255,8 @@ export function createSseWriter(
         aborted = true;
         closed = true;
         controller = null;
-        // 等待方立即放行（生产循环靠 aborted 退出）
+        // 结束回调与等待方立即放行（清理出口 + 生产循环靠 aborted 退出）
+        runCloseCallbacks();
         resolveDrainWaiters();
       },
     },
@@ -255,6 +304,8 @@ export function createSseWriter(
     close(): void {
       if (closed) return;
       closed = true;
+      // 结束回调先于 controller.close：清理出口（退订/清定时器）在流收尾前执行
+      runCloseCallbacks();
       // 关闭唤醒全部等待方（resolved 的 Promise 不会让生产循环悬挂）
       resolveDrainWaiters();
       if (controller) {
@@ -265,6 +316,15 @@ export function createSseWriter(
         }
         controller = null;
       }
+    },
+
+    onClose(callback: () => void): void {
+      // 流已结束（含 cancel 置位的 aborted 路径）：立即触发，保证恰好一次语义
+      if (closeCallbacksFired) {
+        safeRunCallback(callback);
+        return;
+      }
+      closeCallbacks.push(callback);
     },
 
     get closed(): boolean {
@@ -287,6 +347,10 @@ export function createSseWriter(
 
     get aborted(): boolean {
       return aborted;
+    },
+
+    get keepOpen(): boolean {
+      return keepOpen;
     },
 
     get response(): Response {

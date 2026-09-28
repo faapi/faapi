@@ -778,6 +778,78 @@ describe('invokeHandler', () => {
     });
   });
 
+  describe('SSE keepOpen（长连接模式）', () => {
+    it('keepOpen：handler 返回后框架不自动 close（豁免返回路径兜底）', async () => {
+      const ctx = makeCtx();
+      let writerRef: any;
+      const handler = (context: any) => {
+        const sse = context.sse({ keepOpen: true });
+        writerRef = sse;
+        sse.send({ data: 'subscribed' });
+        // 立即返回：默认语义下此处会被 auto-close 掐断，订阅连接无法存活
+      };
+      const response = await invokeHandler(handler, ctx);
+      expect(response.headers.get('Content-Type')).toBe('text/event-stream');
+      // 流保持打开：连接长存
+      expect(writerRef.closed).toBe(false);
+      // handler 返回后仍可继续推送（订阅回调写入场景）
+      writerRef.send({ event: 'tick', data: '1' });
+      writerRef.close(); // 显式收尾，流内容完整可读
+      const body = await response.text();
+      expect(body).toBe('data: subscribed\n\nevent: tick\ndata: 1\n\n');
+    });
+
+    it('keepOpen + 显式 close：onClose 触发（清理出口）', async () => {
+      const ctx = makeCtx();
+      let fired = false;
+      const handler = (context: any) => {
+        const sse = context.sse({ keepOpen: true });
+        sse.onClose(() => {
+          fired = true;
+        });
+        sse.send({ data: 'a' });
+        sse.close();
+      };
+      await invokeHandler(handler, ctx);
+      expect(fired).toBe(true);
+    });
+
+    it('keepOpen + handler 抛错：兜底 close 不被豁免，onClose 仍触发', async () => {
+      const ctx = makeCtx();
+      let writerRef: any;
+      let fired = false;
+      const handler = (context: any) => {
+        const sse = context.sse({ keepOpen: true });
+        writerRef = sse;
+        sse.onClose(() => {
+          fired = true;
+        });
+        sse.send({ data: 'partial' });
+        throw new Error('setup failed');
+      };
+      await expect(invokeHandler(handler, ctx)).rejects.toThrow('setup failed');
+      // 抛错路径无条件关流：注册流程失败后无人持有 writer，悬挂无意义
+      expect(writerRef.closed).toBe(true);
+      expect(fired).toBe(true);
+    });
+
+    it('keepOpen + 有中间件：洋葱链返回后同样不自动 close', async () => {
+      const ctx = makeCtx();
+      let writerRef: any;
+      const mw: FaapiMiddleware = async (_c, next) => {
+        await next();
+      };
+      const handler = (context: any) => {
+        const sse = context.sse({ keepOpen: true });
+        writerRef = sse;
+        sse.send({ data: 'a' });
+      };
+      await invokeHandler(handler, ctx, undefined, [mw]);
+      expect(writerRef.closed).toBe(false);
+      writerRef.close();
+    });
+  });
+
   describe('ctx.ok / ctx.fail 自动包裹与错误响应', () => {
     describe('ctx.ok', () => {
       it('ctx.ok(data) 返回 200 + { data: T }', async () => {
