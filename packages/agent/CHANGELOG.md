@@ -1,5 +1,7 @@
 # @faapi/agent
 
+## 6.22.0
+
 ## 6.21.1
 
 ### Patch Changes
