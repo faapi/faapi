@@ -40,12 +40,17 @@ OpenAI 的 chat completions API 已成为事实标准——Anthropic、Google、
 2. POST + 读 `response.body`（ReadableStream）
 3. 用 `TextDecoder` + 缓冲区解析 SSE：按两个连续行结束符分割事件（SSE 规范允许 LF / CRLF / CR，兼容 CRLF 行尾的 OpenAI 兼容网关），每行 `data: <json>` 或 `data: [DONE]`
 4. 对每个 chunk：
+   - `error` 非空 → 抛 `LLMProviderError`（携带上游错误文本，截断信号不被吞）
    - `delta.content` → emit `{ deltaContent: chunk }`
    - `delta.reasoning_content`（缺失时读 `delta.reasoning`）→ emit `{ deltaReasoning: chunk }`
    - `delta.tool_calls` → 按 `index` 累积 `id` / `function.name` / `function.arguments`（字符串拼接）
    - `finish_reason` → 标记结束
 5. 流结束前 emit 最终 chunk：`{ toolCalls: accumulated[] | undefined, finishReason, usage }`
 6. `[DONE]` 行 → 终止迭代
+7. 流自然结束（无 `[DONE]`）：有 `finish_reason` 视为省略哨兵的完整流（部分 OpenAI
+   兼容上游不发 `[DONE]`），正常 emit 最终 chunk；两者皆无则为截断流（上游/网关中途
+   掐断），抛 `LLMProviderError`——静默 finalize 会让部分累积的 tool_calls/内容冒充
+   完整响应污染 agent 历史
 
 ### 消息格式转换
 

@@ -118,6 +118,8 @@ interface OpenAIStreamChunkJson {
     finish_reason?: string | null;
   }>;
   usage?: OpenAIUsage;
+  /** 上游流内报错（OpenAI 生态惯例线格式 `data: {"error":{...}}`，网关/上游中断时下发） */
+  error?: unknown;
 }
 
 /** tool call 累积器（stream 模式按 index 累积 args 字符串） */
@@ -426,6 +428,7 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
     const accumulators = new Map<number, ToolCallAccumulator>();
     let finishReason: LLMStopReason | undefined;
     let usage: LLMUsage | undefined;
+    let sawDone = false;
 
     try {
       while (true) {
@@ -445,6 +448,7 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
           if (data === null) continue; // 注释行 / 心跳行 / 非 data 行
 
           if (data === '[DONE]') {
+            sawDone = true;
             // emit 最终 chunk（含累积的 toolCalls + finishReason + usage）
             yield finalizeStreamChunk(accumulators, finishReason, usage);
             return;
@@ -456,6 +460,16 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
           } catch {
             const excerpt = data.slice(0, 500);
             throw new LLMProviderError(`Invalid SSE chunk: ${excerpt}`, {
+              status: response.status,
+              body: excerpt,
+            });
+          }
+
+          // 上游以 chunk 报错（OpenAI 生态惯例 `data: {"error":{...}}`）→ 原样抛出。
+          // 静默忽略会让截断轮次在流结束的 finalize 里冒充完整响应
+          if (chunk.error !== undefined && chunk.error !== null) {
+            const excerpt = JSON.stringify(chunk.error).slice(0, 500);
+            throw new LLMProviderError(`Upstream SSE error: ${excerpt}`, {
               status: response.status,
               body: excerpt,
             });
@@ -486,7 +500,16 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
         }
       }
 
-      // 流自然结束（无 [DONE]）,emit 最终 chunk
+      // 流自然结束但既无 [DONE] 也无 finish_reason → 截断流（上游/网关中途掐断），
+      // 必须报错而非 finalize——部分累积的 tool_calls/内容冒充完整响应会静默污染
+      // agent 历史。仅缺 [DONE] 但有 finish_reason 视为省略哨兵的完整流（部分
+      // OpenAI 兼容上游不发 [DONE]），保持兼容
+      if (!sawDone && !finishReason) {
+        throw new LLMProviderError(
+          'SSE stream ended without [DONE] sentinel and without finish_reason (truncated upstream stream)',
+          { status: response.status },
+        );
+      }
       yield finalizeStreamChunk(accumulators, finishReason, usage);
     } catch (err) {
       // body 读取阶段的超时/取消归入既有分类（而非裸 TimeoutError 冒泡）；

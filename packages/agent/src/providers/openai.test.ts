@@ -953,6 +953,61 @@ describe('createOpenAIProvider', () => {
         }
       }).rejects.toThrowError(/Invalid SSE chunk/i);
     });
+
+    it('上游以 error chunk 报错 → 抛 LLMProviderError 并携带上游错误文本', async () => {
+      // OpenAI 生态惯例:网关/上游中断时以 `data: {"error":{...}}` 报错(部分内容已在途)
+      fetchMock.mockResolvedValue(
+        sseResponse([
+          sseData({ choices: [{ delta: { content: 'partial' } }] }),
+          sseData({
+            error: {
+              message: 'upstream stream interrupted: idle over 120s',
+              type: 'upstream_error',
+            },
+          }),
+        ]),
+      );
+
+      const provider = createOpenAIProvider(baseConfig);
+      await expect(async () => {
+        for await (const _ of provider.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+          // 不应该到这里
+        }
+      }).rejects.toThrowError(/upstream stream interrupted: idle over 120s/);
+    });
+
+    it('流自然结束无 [DONE] 无 finish_reason(截断流)→ 抛 LLMProviderError 而非静默 finalize', async () => {
+      // 上游/网关中途掐断:流正常关闭,但事件流不完整
+      fetchMock.mockResolvedValue(
+        sseResponse([sseData({ choices: [{ delta: { content: 'partial' } }] })]),
+      );
+
+      const provider = createOpenAIProvider(baseConfig);
+      await expect(async () => {
+        for await (const _ of provider.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+          // 不应该到这里
+        }
+      }).rejects.toThrowError(/truncated upstream stream/);
+    });
+
+    it('流自然结束无 [DONE] 但有 finish_reason → 正常 finalize(兼容省略哨兵的上游)', async () => {
+      fetchMock.mockResolvedValue(
+        sseResponse([
+          sseData({ choices: [{ delta: { content: 'done' }, finish_reason: 'stop' }] }),
+        ]),
+      );
+
+      const provider = createOpenAIProvider(baseConfig);
+      const chunks = [];
+      for await (const chunk of provider.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+        chunks.push(chunk);
+      }
+
+      // 正常 emit 增量与终止 chunk(仅缺 [DONE] 哨兵不影响解析)
+      expect(chunks.map((c) => c.deltaContent ?? '').join('')).toBe('done');
+      const finalChunk = chunks[chunks.length - 1];
+      expect(finalChunk.finishReason).toBe('stop');
+    });
   });
 
   describe('重试 / 超时 / 取消', () => {
