@@ -116,6 +116,14 @@ afterAll(async () => {
 });
 
 describe('HTTP Server E2E', () => {
+  it('ctx.resourcesDir 指向 <rootDir>/<dist>/resources（真实 HTTP 链路挂载）', async () => {
+    const res = await fetchFromServer('/api/resources-info');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // setupServer 的 dist 为临时 schema 目录（绝对路径），resources 目录随之定位
+    expect(body).toEqual({ data: { resourcesDir: path.resolve(schemaDist, 'resources') } });
+  });
+
   it('GET /auth/login 返回 200', async () => {
     const res = await fetchFromServer('/api/auth/login');
     expect(res.status).toBe(200);

@@ -4,6 +4,9 @@ import fg from 'fast-glob';
 import { buildAliasPlugins } from './aliasPlugin';
 import { APP_DIR } from '../utils/prodPaths';
 
+/** 全量编译的统一 ignore 规则：测试文件、声明文件、resources 运行时静态文件（原样复制不编译） */
+const SOURCE_IGNORE = ['**/*.test.ts', '**/*.e2e.test.ts', '**/*.d.ts', `${APP_DIR}/resources/**`];
+
 /**
  * 编译结果
  */
@@ -60,7 +63,7 @@ export async function compileSourceFiles(
       cwd: rootDir,
       onlyFiles: true,
       absolute: true,
-      ignore: ['**/*.test.ts', '**/*.e2e.test.ts', '**/*.d.ts'],
+      ignore: SOURCE_IGNORE,
     }));
 
   if (entryPoints.length === 0) {
@@ -123,6 +126,6 @@ export async function collectSourceFiles(rootDir: string): Promise<string[]> {
     cwd: rootDir,
     onlyFiles: true,
     absolute: true,
-    ignore: ['**/*.test.ts', '**/*.e2e.test.ts', '**/*.d.ts'],
+    ignore: SOURCE_IGNORE,
   });
 }

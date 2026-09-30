@@ -85,6 +85,24 @@ describe('createAppBase', () => {
     await app.close();
   });
 
+  it('app.dist / app.resourcesDir 指向产物目录与 <dist>/resources', async () => {
+    writeHandler();
+    await compileArtifacts('dist');
+    const { app } = await createAppBase(options());
+    expect(app.dist).toBe('dist');
+    expect(app.resourcesDir).toBe(join(tempDir, 'dist', 'resources'));
+    await app.close();
+  });
+
+  it('options.dist 覆盖时 app.resourcesDir 随之定位（dev .faapi 场景）', async () => {
+    writeHandler();
+    await compileArtifacts('.faapi');
+    const { app } = await createAppBase({ rootDir: tempDir, dist: '.faapi' });
+    expect(app.dist).toBe('.faapi');
+    expect(app.resourcesDir).toBe(join(tempDir, '.faapi', 'resources'));
+    await app.close();
+  });
+
   it('缺失 faapi-routes.js 抛错', async () => {
     await expect(createAppBase(options())).rejects.toThrow(/faapi-routes\.js 不存在/);
   });

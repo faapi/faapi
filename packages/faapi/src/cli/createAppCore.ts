@@ -31,6 +31,7 @@ import {
 } from './manifestLoader';
 import { getCurrentApp, registerDefaultShutdownHandlers, setCurrentApp } from './appSingleton';
 import { performInject, type InjectOptions, type InjectResponse } from './injectMock';
+import { resolveResourcesDir } from './copyResources';
 
 // ─── 公开导出（门面 re-export，公开 API 路径不变）────────────────────
 export type { InjectOptions, InjectResponse } from './injectMock';
@@ -93,6 +94,21 @@ export interface AppBase {
   wsRoutes: WsRouteManifest;
   /** 项目根目录 */
   rootDir: string;
+  /**
+   * 产物输出目录（相对 rootDir，如 '.faapi' 或 'dist'）
+   *
+   * 与 createAppBase 内部解析一致：`options.dist ?? FAAPI_DIST ?? 'dist'`。
+   * 业务方定位任意产物文件时与 rootDir 配合使用。
+   */
+  dist: string;
+  /**
+   * 运行时资源根目录绝对路径（<rootDir>/<dist>/resources）
+   *
+   * `src/resources/` 经 dev/build 复制进产物后的位置，业务方
+   * `path.join(app.resourcesDir, 'prompts/foo.md')` 后自行读取。
+   * 源码无 `src/resources/` 目录时路径仍指向约定位置（读文件由业务方容错）。
+   */
+  resourcesDir: string;
   /** 任务队列客户端（入队/查询；app 实例级，close 时随队列停机） */
   tasks: TaskClient;
   /** 启动 HTTP server，打印路由表，执行 onReady 钩子 */
@@ -210,6 +226,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
 }> {
   const rootDir = options?.rootDir ?? process.cwd();
   const dist = options?.dist ?? process.env.FAAPI_DIST ?? DEFAULT_DIST;
+  const resourcesDir = resolveResourcesDir(rootDir, dist);
 
   // 校验产物存在性
   const routesPath = path.resolve(rootDir, dist, ROUTES_FILE);
@@ -329,6 +346,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     routes: sorted,
     wsRoutes,
     rootDir,
+    dist,
+    resourcesDir,
     tasks: taskQueue,
 
     async listen(listenPort?: number): Promise<Server> {
@@ -347,6 +366,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
             server,
             registries,
             tasks: taskQueue,
+            resourcesDir,
           });
           console.log('- onBoot hook executed');
         } catch (err) {
@@ -392,6 +412,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
               server,
               registries,
               tasks: taskQueue,
+              resourcesDir,
             });
             console.log('- onReady hook executed');
           }
@@ -430,6 +451,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           server,
           registries,
           tasks: taskQueue,
+          resourcesDir,
         });
       }
 

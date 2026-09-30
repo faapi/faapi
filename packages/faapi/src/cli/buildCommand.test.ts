@@ -64,6 +64,44 @@ describe('buildCommand', () => {
     expect(existsSync(join(tempDir, OUT, 'faapi-routes.js'))).toBe(true);
   }, 20000);
 
+  it('build 复制 src/resources → dist/resources（原样镜像，不编译）', async () => {
+    writeFile('src/api/hello/handler.ts', `export function GET() { return 1; }\n`);
+    writeFile(
+      'tsconfig.json',
+      `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
+    );
+    writeFile('src/resources/config/app.json', '{"mode":"prod"}');
+    writeFile('src/resources/prompts/系统提示.md', '# 你好');
+    // resources 里的 .ts 原样复制，不编译为 .js 产物
+    writeFile('src/resources/data/notes.ts', `export const note = 'static data';\n`);
+
+    await buildCommand({ rootDir: tempDir });
+
+    expect(readFileSync(join(tempDir, OUT, 'resources/config/app.json'), 'utf-8')).toBe(
+      '{"mode":"prod"}',
+    );
+    expect(readFileSync(join(tempDir, OUT, 'resources/prompts/系统提示.md'), 'utf-8')).toBe(
+      '# 你好',
+    );
+    // .ts 按静态文件原样复制（内容一致），且不产出编译后的 .js
+    expect(readFileSync(join(tempDir, OUT, 'resources/data/notes.ts'), 'utf-8')).toBe(
+      `export const note = 'static data';\n`,
+    );
+    expect(existsSync(join(tempDir, OUT, 'resources/data/notes.js'))).toBe(false);
+  }, 20000);
+
+  it('build 无 src/resources 目录时不产生 dist/resources', async () => {
+    writeFile('src/api/hello/handler.ts', `export function GET() { return 1; }\n`);
+    writeFile(
+      'tsconfig.json',
+      `{ "compilerOptions": { "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler" } }\n`,
+    );
+
+    await buildCommand({ rootDir: tempDir });
+
+    expect(existsSync(join(tempDir, OUT, 'resources'))).toBe(false);
+  }, 20000);
+
   it('完整构建：逐文件编译 + 产物生成 + 配置合并', async () => {
     // 共享 utils（验证不 bundle inline，作为独立产物存在）
     writeFile(

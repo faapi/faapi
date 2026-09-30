@@ -5,6 +5,7 @@ import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
 import type { DevApp } from './createDevApp';
 import { createRebuildScheduler } from './rebuildScheduler';
+import { copyResourceFile, removeResourceFile, isResourceSourcePath } from './copyResources';
 
 export interface WatchOptions {
   /** 项目根目录 */
@@ -122,6 +123,9 @@ export function startWatcher(options: WatchOptions): void {
       if (!stats) return false;
       // 目录不忽略（chokidar 需要递归进入子目录）
       if (stats.isDirectory()) return false;
+      // src/resources 下的文件放行任意扩展名（运行时静态文件，事件走增量复制，
+      // 见 handleFileEvent 的 resources 分流；非 .ts 资源文件此前会被这里误忽略）
+      if (isResourceSourcePath(rootDir, path.resolve(rootDir, filePath))) return false;
       // 只监听 .ts/.js 文件（.js 用于 faapi.config.js）
       return !filePath.endsWith('.ts') && !filePath.endsWith('.js');
     },
@@ -135,6 +139,8 @@ export function startWatcher(options: WatchOptions): void {
 
   /**
    * 文件事件分流：
+   * - src/resources 下的文件：单文件增量复制到产物（不进编译调度器——resources
+   *   是原样复制的静态文件，不编译、不触发 reload，见 copyResources.md）
    * - config / tsconfig：只 schedule（compileConfig mtime 短路，无变化跳过）
    * - test/d.ts：完全跳过（build/dev 全量编译都不含它们，喂给增量编译会让
    *   测试文件的语法错误打断整轮重建）
@@ -142,6 +148,15 @@ export function startWatcher(options: WatchOptions): void {
    */
   function handleFileEvent(file: string): void {
     const abs = path.resolve(rootDir, file);
+    if (isResourceSourcePath(rootDir, abs)) {
+      void copyResourceFile(rootDir, devDist, abs).catch((err) => {
+        console.error(
+          '- Error copying resource:',
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+      return;
+    }
     if (scheduleOnly.has(abs)) {
       scheduler.schedule();
       return;
@@ -152,9 +167,20 @@ export function startWatcher(options: WatchOptions): void {
     scheduler.addFiles([abs]);
   }
   watcher.on('unlink', (file) => {
+    const abs = path.resolve(rootDir, file);
+    // resources 文件删除：增量移除产物文件，不进编译调度器（路由结构无变化）
+    if (isResourceSourcePath(rootDir, abs)) {
+      void removeResourceFile(rootDir, devDist, abs).catch((err) => {
+        console.error(
+          '- Error removing resource:',
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+      return;
+    }
     // 文件删除：从待编译集合剔除（change 入队后删除的文件不再进编译批次），
     // 并触发重生成产物 + reloadRoutes（路由结构变化）
-    scheduler.removeFiles([path.resolve(rootDir, file)]);
+    scheduler.removeFiles([abs]);
     scheduler.schedule();
   });
   watcher.on('error', (err) => {

@@ -12,6 +12,7 @@ import { generateTaskArtifacts } from './generateTaskArtifacts';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { compileBuildRoutes } from './compileBuildRoutes';
+import { copyResources } from './copyResources';
 import { ROUTE_PATTERNS } from '../utils/prodPaths';
 import { compileConfig, compileProjectModules } from './compileConfig';
 import { loadConfig } from '../config/loadConfig';
@@ -56,8 +57,8 @@ export interface BuildOptions {
  * 3. 扫描路由（从 <dist> 产物，import .js 拿方法名）
  * 4. 生成 schema 模块（AST 从源码 .ts）
  * 5. 生成路由清单
- * 6. 生成启动入口 <dist>/main.js（import createProdApp + loadEnv + listen）
- *
+ * 6. 复制 src/resources 运行时静态文件
+ * 7. 生成启动入口 <dist>/main.js（import createProdApp + loadEnv + listen） *
  * **统一编译模式**：build 与 dev 都采用 `bundle: false` 逐文件编译，差异仅由 `dist` 驱动，
  * 不存在 `if (isDev)` 控制流分支。逐文件编译保证每个源文件对应唯一一份产物，
  * config 和 routes 共享同一运行时对象（`instanceof` 跨边界生效）。
@@ -106,7 +107,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   console.log(`- Output: ${outdir}`);
 
   // 1. 编译 TypeScript（逐文件编译，与 dev 一致）
-  console.log('\n[1/8] Compiling TypeScript (bundle: false)...');
+  console.log('\n[1/9] Compiling TypeScript (bundle: false)...');
   const result = await compileBuildRoutes({
     rootDir,
     dist: outdir,
@@ -126,7 +127,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   //     插件引用的 src 内模块已由步骤 1 全量编译，无需重复。
   const localPluginSources = extractLocalPluginSources(_config?.plugins, rootDir);
   if (localPluginSources.length > 0) {
-    console.log('\n[2.5/8] Compiling local plugins...');
+    console.log('\n[2.5/9] Compiling local plugins...');
     const outside = localPluginSources.filter((p) => {
       const rel = path.relative(rootDir, p).replace(/\\/g, '/');
       return !rel.startsWith('src/');
@@ -138,7 +139,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   }
 
   // 3. 扫描路由（扫描源码 .ts 文件列表，但 import 产物 .js 拿方法名）
-  console.log('\n[3/8] Scanning routes...');
+  console.log('\n[3/9] Scanning routes...');
   const { routes, wsRoutes } = await scanRoutes(rootDir, ROUTE_PATTERNS, outdir);
   const sorted = sortRoutes(routes);
   console.log(`  Found ${sorted.length} routes, ${wsRoutes.length} WS routes`);
@@ -147,12 +148,12 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   reportRouteConflicts(sorted);
 
   // 4. 生成 schema 文件（含 WS 路由的约定 interface：WSQuery/WSParams）
-  console.log('\n[4/8] Generating schema...');
+  console.log('\n[4/9] Generating schema...');
   await generateSchemaFiles(sorted, rootDir, outdir, wsRoutes);
   console.log(`  Schema: zod.js files under ${path.resolve(rootDir, outdir)}`);
 
   // 5. 生成路由清单（prd 启动时直接读取，不再 scanRoutes）
-  console.log('\n[5/8] Generating routes manifest...');
+  console.log('\n[5/9] Generating routes manifest...');
   const routesPath = path.resolve(rootDir, outdir, 'faapi-routes.js');
   const serialized = serializeRoutes(sorted, wsRoutes, rootDir, outdir);
   await writeRoutesModule(serialized, routesPath);
@@ -161,7 +162,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   // 6. 生成 tool 清单 + schema（scanTools 读源码 + 正则提取函数名，generateToolArtifacts 做 AST 增强）
   //    与路由对称——生成 faapi-tools.js（tool 清单）+ 每个 tool handler 的 zod.js
   //    无 tool 文件时 scanTools 返回空列表，generateToolArtifacts 写入空清单
-  console.log('\n[6/8] Generating tool manifest and schema...');
+  console.log('\n[6/9] Generating tool manifest and schema...');
   const tools = await scanTools(rootDir, TOOL_PATTERNS);
   const toolMeta = await generateToolArtifacts(tools, rootDir, outdir);
   console.log(`  Found ${toolMeta.length} tool(s)`);
@@ -170,7 +171,7 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   // 7. 生成 agent 清单（scanAgents 读源码 + 正则检测 config/run，generateAgentArtifacts 做 AST 增强）
   //    agent 不生成 zod.js（无输入参数，config 块字段在 AST 阶段已提取为字面量）
   //    无 agent 文件时 scanAgents 返回空列表，generateAgentArtifacts 写入空清单
-  console.log('\n[7/8] Generating agent manifest...');
+  console.log('\n[7/9] Generating agent manifest...');
   const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS);
   const agentMeta = await generateAgentArtifacts(agents, rootDir, outdir);
   console.log(`  Found ${agentMeta.length} agent(s)`);
@@ -178,17 +179,25 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
 
   // 7.5 生成任务清单 + Payload schema（任务源码已由步骤 1 全量编译到 <dist>/tasks/）
   //    与其他清单同构：无任务文件时写入空清单，运行时任务队列空转
-  console.log('\n[7.5/8] Generating task manifest and schema...');
+  console.log('\n[7.5/9] Generating task manifest and schema...');
   const tasks = await scanTasks(rootDir, TASK_PATTERNS);
   const taskMeta = await generateTaskArtifacts(tasks, rootDir, outdir);
   console.log(`  Found ${taskMeta.length} task(s)`);
   console.log(`  Task manifest: ${path.resolve(rootDir, outdir, 'faapi-tasks.js')}`);
 
-  // 8. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
+  // 8. 复制运行时资源（src/resources → <dist>/resources，原样镜像；无该目录时跳过）
+  //    emptyOutDir 已清空 dist，此处复制天然无 stale
+  console.log('\n[8/9] Copying resources...');
+  const resourcesCopied = await copyResources(rootDir, outdir);
+  if (resourcesCopied) {
+    console.log(`  Copied src/resources → ${path.resolve(rootDir, outdir, 'resources')}`);
+  }
+
+  // 9. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
   //    内部 import @faapi/faapi 的 createProdApp + loadEnv + listen
   //    运行时 `node <dist>/main` 直接启动：loadEnv 加载 .env → createProdApp 水合产物 → listen
   //    --dist 选项写入 main.js（非默认 dist 时），端口由运行时 PORT 环境变量决定
-  console.log('\n[8/8] Generating entry file...');
+  console.log('\n[9/9] Generating entry file...');
   const mainPath = path.resolve(rootDir, outdir, 'main.js');
   // 非默认 dist 时写入 createProdApp 参数，让 prod 启动时能定位到产物目录
   // JSON.stringify 生成合法 JS 字符串字面量：Windows 反斜杠路径（.\build 的 \b 是退格转义）

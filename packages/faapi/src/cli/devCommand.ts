@@ -17,6 +17,7 @@ import { loadEnv } from './loadEnv';
 import { startWatcher } from './watcher';
 import { createDevApp } from './createDevApp';
 import { setDevOnDemandEnabled, setDevDist } from './compileOnDemand';
+import { copyResources } from './copyResources';
 import { ROUTE_PATTERNS } from '../utils/prodPaths';
 
 /** dev 模式产物目录（固定为 .faapi，不可修改） */
@@ -102,6 +103,12 @@ export async function devCommand(options?: DevCommandOptions): Promise<void> {
   //     编译依赖闭包），zod.js 与 build 一致全量生成（统一产物驱动）
   console.log('- Generating task artifacts...');
   await generateTaskArtifactsForDev(rootDir, devDist);
+
+  // 6.6 镜像复制 src/resources → .faapi/resources（运行时静态文件，watcher 增量同步）
+  console.log('- Copying resources...');
+  const copied = await copyResources(rootDir, devDist);
+  if (copied)
+    console.log(`  Copied src/resources → ${path.resolve(rootDir, devDist, 'resources')}`);
 
   // 7. 启动 dev 应用（createDevApp + listen，含 reloadRoutes/reloadTools/reloadAgents 热替换能力）
   console.log('- Starting dev app...');

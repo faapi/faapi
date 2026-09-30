@@ -149,10 +149,11 @@ dev 和 prod 生成完全一致的产物集（`faapi-config.js` + `faapi-routes.
 | `faapi-tools.js`（tool 清单，可选——无 tool 的项目生成空清单） | `.faapi/faapi-tools.js` | `dist/faapi-tools.js` |
 | `zod.js`（schema 模块） | `.faapi/**/zod.js` | `dist/**/zod.js` |
 | `faapi-helpers.js`（coerce 公用函数，仅有 number/boolean 字段时生成） | `.faapi/faapi-helpers.js` | `dist/faapi-helpers.js` |
+| `resources/`（运行时静态文件，`src/resources/` 原样复制——不编译、不被任何扫描器识别；dev watcher 监听变化增量同步，详见 `src/cli/copyResources.md`） | `.faapi/resources/` | `dist/resources/` |
 | `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
 
-- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `generateToolArtifacts` 生成 `faapi-tools.js`（**仅 tool 清单，不预生成 zod.js**），调 `createDevApp()` + `listen()`（含 `reloadRoutes`/`reloadTools` 热替换能力 + toolRegistry 水合），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` / `app.reloadTools()` 热替换路由/tool）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
-- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 编译本地 TS 插件（config.plugins 的 path 声明 → `dist/plugins/`，保留相对结构）+ 生成 `dist/faapi-routes.js` + 生成 `dist/faapi-tools.js`（tool 清单，可选）+ 每个 handler/tool 的 `zod.js` + 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
+- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `generateToolArtifacts` 生成 `faapi-tools.js`（**仅 tool 清单，不预生成 zod.js**），调 `copyResources` 镜像复制 `src/resources/` → `.faapi/resources/`（无该目录时跳过），调 `createDevApp()` + `listen()`（含 `reloadRoutes`/`reloadTools` 热替换能力 + toolRegistry 水合），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` / `app.reloadTools()` 热替换路由/tool；`src/resources/` 下任意扩展名文件走增量复制/删除，不进编译调度器）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
+- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 编译本地 TS 插件（config.plugins 的 path 声明 → `dist/plugins/`，保留相对结构）+ 生成 `dist/faapi-routes.js` + 生成 `dist/faapi-tools.js`（tool 清单，可选）+ 每个 handler/tool 的 `zod.js` + 复制 `src/resources/` → `dist/resources/`（原样镜像，无该目录时跳过）+ 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
 - `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`createProdApp()` 读 `FAAPI_DIST`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单 + 水合 `dist/faapi-tools.js` tool 清单到 `toolRegistry`，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
 
 `FAAPI_DIST` 是路径参数而非模式标志——`createAppBase` 内部无 `if (isDev)` 分支，统一水合 `faapi-routes.js` + `faapi-tools.js`、统一 `loadConfig(dist)` 读配置、统一按需 import `zod.js`。dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes` + `reloadTools`（重新生成 + 重新水合 tool 清单），prod 的 `createProdApp` 直接返回 `createAppBase` 结果。
@@ -661,6 +662,21 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 | `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
 | `tasks` | 任务队列客户端 `TaskClient`（`enqueue(name, payload)` / `list()`），与 `ctx.tasks` / `app.tasks` 指向同一 app 实例队列 | `POST(tasks)` |
 | `log` | 请求级日志器（与 `ctx.log` 同一实例，scope `http`，自动携带 `requestId`/`method`/`path` 字段，详见 5.5.4） | `GET(log)` |
+
+**运行时资源目录（`src/resources/`）**：handler 需要在运行时读项目内静态文件（prompt 模板、JSON 配置、证书等）时，文件放 `src/resources/` 下——dev 启动时镜像复制到 `.faapi/resources/`、build 复制到 `dist/resources/`（原样复制，不编译、不被路由/tool/agent/task 扫描；dev watcher 监听变化单文件增量同步，详见 `src/cli/copyResources.md`）。运行时定位：
+
+```ts
+// src/api/prompt/handler.ts
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+export function GET(ctx) {
+  // ctx.resourcesDir 为 <rootDir>/<dist>/resources 绝对路径（HTTP/WS 请求链路恒有值）
+  return fs.readFile(path.join(ctx.resourcesDir, 'prompts/greeting.md'), 'utf-8');
+}
+```
+
+访问点：HTTP `ctx.resourcesDir` / WS 握手 `ctx.resourcesDir`（同源）、`app.resourcesDir` / `app.dist`（编程式）、lifecycle 钩子参数 `resourcesDir`（onReady 预加载模板等场景）。边界：任务隔离 worker 的 taskCtx 不注入（任务内经 `process.cwd()` + `FAAPI_DIST` 自行定位）；testing 直调 `createTestContext` 默认无该字段，可经 `resourcesDir` 选项显式传入。空目录与目录级删除不处理（按文件级同步）。
 
 输入字段二分口径：**`query` / `params` / `body` 恒为校验转换后的值，`rawQuery` / `rawParams` / `rawBody` 恒为原始值**，在 ctx、目录/全局中间件、handler 注入所有访问点一致（挂载时序详见 `src/server/createServer.md` 的「输入字段口径」）。全局中间件 `await next()` 之前 `ctx.rawParams`/`ctx.rawQuery` 已可用（路由匹配已提前到中间件链之前），`ctx.rawBody`/`ctx.body` 为 undefined（请求体流只能消费一次的物理限制）。
 

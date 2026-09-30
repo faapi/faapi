@@ -116,6 +116,13 @@ export interface TaskConfig {
 export interface LifecycleContext {
   /** 项目根目录 */
   rootDir: string;
+  /**
+   * 运行时资源根目录绝对路径（<rootDir>/<dist>/resources）
+   *
+   * `src/resources/` 经 dev/build 复制进产物后的位置，onReady 中预加载
+   * prompt 模板等静态文件时定位用（`path.join(resourcesDir, 'prompts/foo.md')`）。
+   */
+  resourcesDir: string;
   /** 当前路由清单 */
   routes: import('../router/routeTypes.js').RouteManifest;
   /** 服务器实例（onBoot 钩子触发时已创建但未监听，`listening === false`） */

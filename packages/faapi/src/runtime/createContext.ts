@@ -63,8 +63,17 @@ export function createContext(
   config: Record<string, unknown> = {},
   ip: string = '',
   registries?: FaapiContext['registries'],
+  resourcesDir?: string,
 ): FaapiContext {
-  return createContextFromUrl(request, new URL(request.url), params, config, ip, registries);
+  return createContextFromUrl(
+    request,
+    new URL(request.url),
+    params,
+    config,
+    ip,
+    registries,
+    resourcesDir,
+  );
 }
 
 /**
@@ -81,6 +90,7 @@ export function createContextFromUrl(
   config: Record<string, unknown> = {},
   ip: string = '',
   registries?: FaapiContext['registries'],
+  resourcesDir?: string,
 ): FaapiContext {
   const meta: ResponseMeta = { headers: {}, setCookies: [] };
   const parsedCookies = parseCookies(request.headers.get('cookie') ?? '');
@@ -113,6 +123,9 @@ export function createContextFromUrl(
     ua: request.headers.get('user-agent') ?? '',
     cookies: cookiesObj,
     config,
+    // 运行时资源根目录（HTTP/WS 链路由 createServer/handleWsUpgrade 传入；
+    // testing 直调未传时为 undefined，见 contextTypes.resourcesDir 注释）
+    resourcesDir,
     meta,
 
     setStatus(status: number) {
@@ -268,6 +281,7 @@ export function createTestContext(options: CreateTestContextOptions): FaapiConte
     config = {},
     ip = '',
     registries,
+    resourcesDir,
   } = options;
 
   // 用 URL 解析 + 拼 query，避免手动拼接字符串的转义问题
@@ -289,7 +303,7 @@ export function createTestContext(options: CreateTestContextOptions): FaapiConte
     headers: headers as HeadersInit | undefined,
   });
 
-  return createContext(request, params, config, ip, registries);
+  return createContext(request, params, config, ip, registries, resourcesDir);
 }
 
 /**
@@ -298,6 +312,8 @@ export function createTestContext(options: CreateTestContextOptions): FaapiConte
 export interface CreateTestContextOptions {
   /** app 级注册表（测试 handler 声明 agent/agents 参数时注入用，可选） */
   registries?: FaapiContext['registries'];
+  /** 运行时资源根目录（测试 handler 读 ctx.resourcesDir 时传入，可选） */
+  resourcesDir?: string;
   /** 请求方法，默认 'GET' */
   method?: string;
   /** 请求路径，必填，如 '/api/user'（无需写 host） */

@@ -75,6 +75,10 @@ vi.mock('./generateTaskArtifacts', () => ({
   generateTaskArtifacts: vi.fn(async () => []),
   TASKS_FILE: 'faapi-tasks.js',
 }));
+// mock 资源复制（src/resources → .faapi/resources）
+vi.mock('./copyResources', () => ({
+  copyResources: vi.fn(async () => false),
+}));
 
 const {
   devCommand,
@@ -97,6 +101,7 @@ const { scanAgents } = await import('../agents/scanAgents');
 const { generateAgentArtifacts } = await import('./generateAgentArtifacts');
 const { scanTasks: _scanTasks } = await import('../task/scanTasks');
 const { generateTaskArtifacts: _generateTaskArtifacts } = await import('./generateTaskArtifacts');
+const { copyResources } = await import('./copyResources');
 
 describe('devCommand', () => {
   const originalCwd = process.cwd;
@@ -125,6 +130,8 @@ describe('devCommand', () => {
     vi.mocked(generateToolArtifacts).mockClear();
     vi.mocked(scanAgents).mockClear();
     vi.mocked(generateAgentArtifacts).mockClear();
+    vi.mocked(copyResources).mockClear();
+    vi.mocked(copyResources).mockResolvedValue(false);
     // mock createDevApp 返回带 listen spy 的 app
     vi.mocked(createDevApp).mockResolvedValue({
       listen: vi.fn(async () => {}),
@@ -228,6 +235,21 @@ describe('devCommand', () => {
         app: fakeApp,
         devDist: '.faapi',
       });
+    });
+
+    it('copyResources 传入 rootDir 和 dist=.faapi（启动 dev 应用之前）', async () => {
+      const calls: string[] = [];
+      vi.mocked(copyResources).mockImplementation(async () => {
+        calls.push('copyResources');
+        return false;
+      });
+      vi.mocked(createDevApp).mockImplementation(async () => {
+        calls.push('createDevApp');
+        return { listen: vi.fn(async () => {}) } as any;
+      });
+      await devCommand();
+      expect(copyResources).toHaveBeenCalledWith('/fake/project', '.faapi');
+      expect(calls.indexOf('copyResources')).toBeLessThan(calls.indexOf('createDevApp'));
     });
   });
 

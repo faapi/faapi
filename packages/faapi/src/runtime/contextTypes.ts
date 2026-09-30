@@ -164,6 +164,14 @@ export interface FaapiContext {
   cookies: Record<string, string>;
   /** 配置文件中的自定义业务配置（类型可通过 declare module '@faapi/faapi' 增强 FaapiContextConfig） */
   config: FaapiContextConfig;
+  /**
+   * 运行时资源根目录绝对路径（<rootDir>/<dist>/resources）
+   *
+   * `src/resources/` 经 dev/build 复制进产物后的位置，handler 读静态文件用：
+   * `await fs.readFile(path.join(ctx.resourcesDir, 'prompts/foo.md'))`。
+   * HTTP/WS 请求链路恒有值；testing 直调（createTestContext）未传时为 undefined。
+   */
+  resourcesDir?: string;
 
   /**
    * 设置响应状态码
