@@ -112,8 +112,8 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 
 | 场景 | 行为 |
 |------|------|
-| `systemPrompt` 与 `systemPromptFile` 均未声明(无 config 导出、config 无 return 对象、config 里两个 key 都没有) | 抛 `SchemaExtractionError`——**agent 不能没有提示词**，人设是 agent 的必要组成（二选一） |
-| `systemPrompt` 与 `systemPromptFile` 同时声明 | 抛 `SchemaExtractionError`——两个来源语义冲突（互斥） |
+| `systemPrompt` 与 `systemPromptFile` 均未声明(无 config 导出、config 无 return 对象、config 里两个 key 都没有) | 声明式 agent（`hasRun=false`）抛 `SchemaExtractionError`——**agent 不能没有提示词**，人设是 agent 的必要组成（二选一）；`hasRun=true`（自定义 run 完全接管）**豁免**——config 整体可选，`description` 改从 run 导出的 JSDoc 提取 |
+| `systemPrompt` 与 `systemPromptFile` 同时声明 | 抛 `SchemaExtractionError`——两个来源语义冲突（互斥，含 hasRun=true） |
 | 其他字段(tools/agents/model/maxTurns/inputDescription)未声明 | `undefined`，合法缺省，运行时按默认值处理 |
 | 任意字段声明了但值提取失败(变量引用、含插值模板字符串、拼接混入数字/变量、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
 | config 里声明了未知字段(如拼写错误 `maxTurn`) | 抛 `SchemaExtractionError`——框架不读的字段几乎必然是拼写错误或误解，静默忽略后运行时按默认值跑，与声明意图不符 |
@@ -122,7 +122,9 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 
 理由："声明了却提取不出"是确定的构建错误——静默降级为 `undefined` 后，运行时与"合法地未声明"不可区分(`reactLoop` 对 `undefined` systemPrompt 是正常路径)，agent 人设整体失效且端到端无任何告警。与 schema 类型提取的原则一致(AST 暂不支持的语法直接抛错，不降级)。
 
-`systemPrompt` / `systemPromptFile` 进一步收紧为**二选一必填**：提示词定义 agent 人设与输出格式约定，无提示词的 agent 不是合法的文件型 agent(JSDoc `description` 只是 LLM 可见的用途说明，不构成提示词)。`systemPromptFile` 的值为相对产物 resources 目录的路径字面量，运行时（`@faapi/agent` 的 `buildLoopConfig`）每次 run 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。约束加在文件型 agent 的构建期——DB-driven skill 不经过此链路，`AgentCore.systemPrompt` / `AgentCore.systemPromptFile` 类型保持可选，由业务方 plugin 自治。
+`systemPrompt` / `systemPromptFile` 进一步收紧为**二选一必填**（仅声明式 agent）：提示词定义 agent 人设与输出格式约定，无提示词的声明式 agent 不是合法的文件型 agent(JSDoc `description` 只是 LLM 可见的用途说明，不构成提示词)。`systemPromptFile` 的值为相对产物 resources 目录的路径字面量，运行时（`@faapi/agent` 的 `buildLoopConfig`）每次 run 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。约束加在文件型 agent 的构建期——DB-driven skill 不经过此链路，`AgentCore.systemPrompt` / `AgentCore.systemPromptFile` 类型保持可选，由业务方 plugin 自治。
+
+**`hasRun=true`（自定义 run）豁免**：自定义 run 完全接管执行——config 块整体不被运行时消费（`tools` / `agents` 仅供 asTool 组装 LLM 可见定义），无 config 导出合法（最简 run 型 agent 只导出 `run` 函数），config 缺提示词字段也合法；`description` 从 run 导出的 JSDoc 提取（asTool 派发时主控 LLM 的决策依据）。config 声明了字段时提取与字面量校验照常（互斥校验仍生效）。
 
 `SpreadAssignment`(`...other`)跳过不报错——它不声明任何具名字段，无法静态归属；但 spread 提供不了 `systemPrompt` 时同样触发缺失报错。
 

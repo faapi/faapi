@@ -130,6 +130,8 @@ interface FoundConfig {
  * 数字/混合数组元素等)抛 `SchemaExtractionError`。
  * `systemPrompt` / `systemPromptFile` 二选一必填——无 config 导出、config 无 return
  * 对象、两者皆缺均抛错，提示词是 agent 的必要组成；两者同时声明抛互斥错。
+ * 豁免：`hasRun=true`（自定义 run 完全接管执行）时 config 整体可选——无 config 导出
+ * 合法、config 缺提示词字段也合法（字段不被运行时消费，tools/agents 仅供 asTool）。
  *
  * @param program TypeScript Program
  * @param filePath 源文件**绝对路径**(AST 用，需与 `program.getSourceFile` 一致)
@@ -144,11 +146,23 @@ export function extractAgentMetadata(
   const sourceFile = program.getSourceFile(filePath);
   if (!sourceFile) return null;
 
-  // systemPrompt / systemPromptFile 二选一必填——config 是提示词的唯一载体，无 config
-  // 导出时直接抛错。不存在合法的无提示词文件型 agent（JSDoc description 只是用途
-  // 说明，不构成提示词）。
+  // systemPrompt / systemPromptFile 二选一必填——但仅对声明式 agent（hasRun=false，
+  // 人设喂给默认 reactLoop）。自定义 run 完全接管执行（config 块整体不被运行时
+  // 消费），无 config 导出合法——最简 run 型 agent 只导出 run 函数。
   const configFound = findConfigExport(sourceFile);
   if (!configFound) {
+    if (pathMeta.hasRun) {
+      // description 从 run 导出的 JSDoc 提取——asTool 组装 LLM 可见工具描述时
+      // 是主控 LLM 决定是否派发的唯一依据，run 型 agent 同样需要
+      const runOwner = findRunExportOwner(sourceFile);
+      const jsDoc = runOwner ? getJSDocFromNode(runOwner) : undefined;
+      return {
+        name: pathMeta.name,
+        description: jsDoc ? extractDescription(jsDoc) : undefined,
+        filePath: pathMeta.filePath,
+        hasRun: pathMeta.hasRun,
+      };
+    }
     throw SchemaExtractionError.at(
       sourceFile,
       'config.systemPrompt',
@@ -172,9 +186,10 @@ export function extractAgentMetadata(
   const description = extractDescription(jsDoc);
   const agentNameOverride = extractJSDocTagValue(jsDoc, 'agent');
 
-  // config 块字段提取（extractConfigFields 保证 systemPrompt/systemPromptFile 二选一非空）
+  // config 块字段提取（声明式 agent 由 extractConfigFields 保证 systemPrompt/
+  // systemPromptFile 二选一非空；run 型 agent 免必填）
   const { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription } =
-    extractConfigFields(objectLiteral, sourceFile);
+    extractConfigFields(objectLiteral, sourceFile, !pathMeta.hasRun);
 
   return {
     name: agentNameOverride ?? pathMeta.name,
@@ -189,6 +204,33 @@ export function extractAgentMetadata(
     maxTurns,
     inputDescription,
   };
+}
+
+/**
+ * 查找 `run` 导出的 JSDoc 持有节点（仅 run 型 agent 无 config 时的 description 来源）
+ *
+ * 支持 `export function run(...)` / `export async function run(...)` /
+ * `export const run = async (...) => ...`（VariableStatement）。
+ * 未找到返回 null（description 为 undefined，合法缺省）。
+ */
+function findRunExportOwner(sourceFile: ts.SourceFile): ts.Node | null {
+  let result: ts.Node | null = null;
+  ts.forEachChild(sourceFile, (node) => {
+    if (result) return;
+    if (ts.isFunctionDeclaration(node) && hasExportModifier(node) && node.name?.text === 'run') {
+      result = node;
+      return;
+    }
+    if (ts.isVariableStatement(node) && hasExportModifier(node)) {
+      for (const decl of node.declarationList.declarations) {
+        if (ts.isIdentifier(decl.name) && decl.name.text === 'run') {
+          result = node;
+          return;
+        }
+      }
+    }
+  });
+  return result;
 }
 
 /**
@@ -302,6 +344,7 @@ function getReturnObjectLiteral(
 function extractConfigFields(
   objLit: ts.ObjectLiteralExpression,
   sourceFile: ts.SourceFile,
+  requirePrompt: boolean,
 ): {
   systemPrompt?: string;
   systemPromptFile?: string;
@@ -383,7 +426,9 @@ function extractConfigFields(
     );
   }
 
-  if (systemPrompt === undefined && systemPromptFile === undefined) {
+  // 皆缺仅在声明式 agent（requirePrompt）时报错；run 型 agent 的 config 字段
+  // 不被运行时消费（tools/agents 仅供 asTool 组装 LLM 可见定义），可任意省略
+  if (requirePrompt && systemPrompt === undefined && systemPromptFile === undefined) {
     throw SchemaExtractionError.at(
       objLit,
       'config.systemPrompt',

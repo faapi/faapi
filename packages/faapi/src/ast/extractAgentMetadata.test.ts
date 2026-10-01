@@ -243,13 +243,15 @@ describe('extractAgentMetadata', () => {
   });
 
   describe('systemPrompt 必填 → 缺失抛 SchemaExtractionError', () => {
-    it('无 config 导出（仅 run）→ 抛错', () => {
-      expect(() =>
-        extract(`/** 自定义 */\nexport function run(input) { return 'ok'; }\n`, {
-          ...meta,
-          hasRun: true,
-        }),
-      ).toThrow(SchemaExtractionError);
+    it('无 config 导出（仅 run，hasRun=true）→ 合法（自定义 run 豁免 config）', () => {
+      const result = extract(`/** 自定义 */\nexport function run(input) { return 'ok'; }\n`, {
+        ...meta,
+        hasRun: true,
+      });
+      expect(result).not.toBeNull();
+      expect(result!.hasRun).toBe(true);
+      expect(result!.systemPrompt).toBeUndefined();
+      expect(result!.description).toBe('自定义');
     });
 
     it('config 空对象 → 抛错', () => {
@@ -333,6 +335,47 @@ describe('extractAgentMetadata', () => {
       expect(() =>
         extract(`const p = 'p.md';\nexport const config = { systemPromptFile: p };\n`),
       ).toThrow(SchemaExtractionError);
+    });
+  });
+
+  describe('hasRun=true（自定义 run）→ config 豁免', () => {
+    const runMeta: AgentPathMeta = {
+      name: 'pipeline',
+      filePath: 'src/agents/pipeline/handler.ts',
+      hasRun: true,
+    };
+
+    it('无 config 导出合法——返回仅含 name/filePath/hasRun', () => {
+      const result = extract(`export async function run(args, ctx) { return args; }\n`, runMeta);
+      expect(result).not.toBeNull();
+      expect(result!.name).toBe('pipeline');
+      expect(result!.hasRun).toBe(true);
+      expect(result!.systemPrompt).toBeUndefined();
+      expect(result!.systemPromptFile).toBeUndefined();
+      expect(result!.description).toBeUndefined();
+    });
+
+    it('有 config 但缺提示词字段合法（字段不被运行时消费，asTool 描述仍可用）', () => {
+      const result = extract(
+        `export const config = { model: 'gpt-4', tools: ['a.b'] };\nexport async function run(args) { return args; }\n`,
+        runMeta,
+      );
+      expect(result!.model).toBe('gpt-4');
+      expect(result!.tools).toEqual(['a.b']);
+      expect(result!.systemPrompt).toBeUndefined();
+    });
+
+    it('config 声明 systemPrompt 与 systemPromptFile 仍抛互斥错（声明形式必须正确）', () => {
+      expect(() =>
+        extract(
+          `export const config = { systemPrompt: 'x', systemPromptFile: 'p.md' };\nexport async function run(args) { return args; }\n`,
+          runMeta,
+        ),
+      ).toThrow(/互斥/);
+    });
+
+    it('hasRun=false 无 config 仍抛必填错（行为不变）', () => {
+      expect(() => extract(`export function GET() {}\n`)).toThrow(SchemaExtractionError);
     });
   });
 

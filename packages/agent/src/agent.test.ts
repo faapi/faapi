@@ -24,6 +24,7 @@ import type {
   LLMToolDefinition,
   LLMToolCall,
 } from './provider';
+import type { ReactLoopStreamChunk } from './reactLoop';
 
 // ─── Mock 数据构造器 ─────────────────────────────────
 
@@ -231,6 +232,142 @@ function createDeps(opts: {
 // ─── Agent 类构造 ────────────────────────────────────
 
 describe('Agent', () => {
+  describe('run()/stream() — 顶层自定义 run（hasRun agent）', () => {
+    it('顶层 run() 执行自定义 run：args 为 { input }，ctx 透传，返回值规范化', async () => {
+      const runFn = vi.fn(async (args, ctx) => ({
+        content: `ran:${args.input}`,
+        report: 'extra',
+        ctxRes: ctx?.resourcesDir ?? null,
+      }));
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'should-not-be-called', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'unused' }),
+          agentEntry: agentEntry({ hasRun: true }),
+          ctx: { resourcesDir: '/proj/dist/resources' } as FaapiContext,
+          loadAgentModuleImpl: async () => ({ run: runFn as unknown as AgentModule['run'] }),
+        }),
+      );
+
+      const result = await agent.run('hello', { agent: 'researcher' });
+
+      expect(runFn).toHaveBeenCalledTimes(1);
+      expect(runFn.mock.calls[0]![0]).toEqual({ input: 'hello' });
+      expect((runFn.mock.calls[0]![1] as FaapiContext).resourcesDir).toBe('/proj/dist/resources');
+      expect(completeCalls).not.toHaveBeenCalled();
+      expect(result.content).toBe('ran:hello');
+      expect(result.turns).toBe(1);
+      expect(result.stopReason).toBe('stop');
+      expect(result.messages).toEqual([]);
+    });
+
+    it('run 返回 string → content 直取', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 's' }),
+          agentEntry: agentEntry({ hasRun: true }),
+          loadAgentModuleImpl: async () => ({ run: (async () => 'plain-string') as never }),
+        }),
+      );
+      const result = await agent.run('hi', { agent: 'researcher' });
+      expect(result.content).toBe('plain-string');
+    });
+
+    it('run 返回无 content 对象 → content 序列化整个对象，业务字段透传', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 's' }),
+          agentEntry: agentEntry({ hasRun: true }),
+          loadAgentModuleImpl: async () => ({
+            run: (async () => ({ report: 'r1', score: 9 })) as never,
+          }),
+        }),
+      );
+      const result = await agent.run('hi', { agent: 'researcher' });
+      expect(result.content).toBe(JSON.stringify({ report: 'r1', score: 9 }));
+      expect((result as unknown as { report: string }).report).toBe('r1');
+    });
+
+    it('stream() 对 hasRun agent 回退为整体结果：单 delta + done chunk', async () => {
+      const runFn = vi.fn(async () => ({ content: 'streamed-result' }));
+      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 's' }),
+          agentEntry: agentEntry({ hasRun: true }),
+          loadAgentModuleImpl: async () => ({ run: runFn as unknown as AgentModule['run'] }),
+        }),
+      );
+
+      const chunks: ReactLoopStreamChunk[] = [];
+      for await (const chunk of agent.stream('hi', { agent: 'researcher' })) {
+        chunks.push(chunk);
+      }
+      expect(chunks).toEqual([
+        { deltaContent: 'streamed-result' },
+        { done: { content: 'streamed-result', turns: 1, stopReason: 'stop', usage: undefined } },
+      ]);
+    });
+
+    it('hasRun agent 传 options.messages → 抛 AgentError（run 型不支持历史续跑）', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 's' }),
+          agentEntry: agentEntry({ hasRun: true }),
+          loadAgentModuleImpl: async () => ({ run: (async () => '') as never }),
+        }),
+      );
+      await expect(
+        agent.run('hi', {
+          agent: 'researcher',
+          messages: [{ role: 'user', content: 'prev' }],
+        }),
+      ).rejects.toThrow(AgentError);
+    });
+
+    it('hasRun=false 的 agent 顶层 run() 仍走 reactLoop（行为不变）', async () => {
+      const runFn = vi.fn();
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'from-loop', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 's' }),
+          agentEntry: agentEntry({ hasRun: false }),
+          loadAgentModuleImpl: async () => ({ run: runFn as unknown as AgentModule['run'] }),
+        }),
+      );
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+      expect(runFn).not.toHaveBeenCalled();
+      expect(result.content).toBe('from-loop');
+      expect(completeCalls).toHaveBeenCalledTimes(1);
+    });
+
+    it('元数据声明 hasRun 但模块无 run 导出 → 防御性 AgentError', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 's' }),
+          agentEntry: agentEntry({ hasRun: true }),
+          loadAgentModuleImpl: async () => ({ run: undefined }),
+        }),
+      );
+      await expect(agent.run('hi', { agent: 'researcher' })).rejects.toThrow(AgentError);
+    });
+  });
+
   describe('run() — 基本流程', () => {
     it('组装 config 调 reactLoop,返回最终结果', async () => {
       const { provider, completeCalls } = createMockProvider([

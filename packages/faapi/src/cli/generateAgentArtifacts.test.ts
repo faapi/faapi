@@ -392,7 +392,7 @@ export const config = {
       );
     });
 
-    it('仅 hasRun 的 agent(无 config 块)→ 抛错(systemPrompt 必填)', async () => {
+    it('仅 hasRun 的 agent(无 config 块)→ 合法，JSDoc description 提取进清单', async () => {
       writeAgent(
         'src/agents/writer/handler.ts',
         `/**
@@ -410,7 +410,11 @@ export async function run(ctx) { return 'done'; }
         },
       ];
       const dist = join(tempDir, 'dist');
-      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/systemPrompt/);
+      const manifest = await generateAgentArtifacts(agents, tempDir, dist);
+      expect(manifest).toHaveLength(1);
+      expect(manifest[0]!.hasRun).toBe(true);
+      expect(manifest[0]!.description).toBe('写作助手');
+      expect(manifest[0]!.systemPrompt).toBeUndefined();
     });
 
     it('模板字符串 systemPrompt 端到端写入 faapi-agents.js(多行人设)', async () => {
