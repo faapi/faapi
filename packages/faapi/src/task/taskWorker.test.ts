@@ -71,6 +71,22 @@ describe('runTaskInWorker', () => {
     });
   });
 
+  it('resourcesDir：taskCtx 透传到 worker 内的 run', async () => {
+    const modulePath = writeTaskModule(
+      'res',
+      `export function run(payload, taskCtx) {
+        return { resourcesDir: taskCtx.resourcesDir };
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: { ...baseCtx, resourcesDir: '/project/dist/resources' },
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({ resourcesDir: '/project/dist/resources' });
+  });
+
   it('config 含函数字段：降级为 JSON 快照（丢函数、留数据）', async () => {
     const modulePath = writeTaskModule(
       'config',

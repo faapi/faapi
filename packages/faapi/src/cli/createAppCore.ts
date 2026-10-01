@@ -275,6 +275,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     registry: registries.task,
     rootDir,
     config,
+    resourcesDir,
     registries: createTaskRegistriesView(registries),
     driver: taskDriver,
     onFailed: config?.task?.onFailed,
@@ -326,6 +327,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     config?.plugins,
     {
       rootDir,
+      resourcesDir,
       registries,
       routes: sorted,
       getRoutes: () => sorted,

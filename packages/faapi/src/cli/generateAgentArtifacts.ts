@@ -27,6 +27,8 @@ export interface SerializedAgentRecord {
   hasRun: boolean;
   /** 系统提示词（config 块字面量提取），无/非字面量时省略 */
   systemPrompt?: string;
+  /** 系统提示词文件路径（相对产物 resources 目录，config 块字面量提取），与 systemPrompt 互斥，无时省略 */
+  systemPromptFile?: string;
   /** agent 显式声明可用的 tool 引用列表（config 块字面量提取），无/含非字面量元素时省略 */
   tools?: string[];
   /** 可调用的其他 agent 名列表（config 块字面量提取），无/含非字面量元素时省略 */
@@ -65,6 +67,7 @@ export function serializeAgents(
     description: a.description,
     hasRun: a.hasRun,
     systemPrompt: a.systemPrompt,
+    systemPromptFile: a.systemPromptFile,
     tools: a.tools,
     agents: a.agents,
     model: a.model,
@@ -103,6 +106,7 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
     filePath: a.filePath,
     hasRun: a.hasRun,
     systemPrompt: a.systemPrompt ?? undefined,
+    systemPromptFile: a.systemPromptFile ?? undefined,
     tools: a.tools ?? undefined,
     agents: a.agents ?? undefined,
     model: a.model ?? undefined,

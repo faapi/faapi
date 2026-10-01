@@ -1,13 +1,13 @@
 # extractAgentMetadata
 
-一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、`@agent` 覆盖名、config 块字段(systemPrompt / tools / agents / model / maxTurns / inputDescription)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
+一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、`@agent` 覆盖名、config 块字段(systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
 
 ## 为什么需要
 
 `scanAgents` 只通过正则检测了 `run` 导出是否存在(Vite 风格零 import)，但生成 `faapi-agents.js` 清单还需要两类信息：
 
 1. **JSDoc 描述 + `@agent` 覆盖名**——agent 名对 LLM 可见，描述让 LLM 理解 agent 用途。`@agent` 标签允许覆盖目录推导的默认名。
-2. **config 块字段**——`systemPrompt`(系统提示词)、`tools`(agent 显式声明可用 tool 引用列表)、`agents`(可调用的其他 agent 列表)、`model`(LLM 模型)、`maxTurns`(最大对话轮数)、`inputDescription`(agent-as-tool 派发交接单说明)。这些字段在运行时由 Agent 类/reactLoop 消费。
+2. **config 块字段**——`systemPrompt`(系统提示词,与 `systemPromptFile` 互斥二选一)、`systemPromptFile`(相对产物 resources 目录的提示词文件路径,运行时读文件内容)、`tools`(agent 显式声明可用 tool 引用列表)、`agents`(可调用的其他 agent 列表)、`model`(LLM 模型)、`maxTurns`(最大对话轮数)、`inputDescription`(agent-as-tool 派发交接单说明)。这些字段在运行时由 Agent 类/reactLoop 消费。
 
 这些信息必须用 TypeScript AST 提取(JSDoc 和对象字面量在运行时被擦除)。本模块在 dev/build 启动时对每个 `AgentManifest` 调用一次，把路径推导字段(name/filePath/hasRun)与 AST 提取字段(description/config 块字段)合并为完整的 `AgentMetadata`，供 [generateAgentArtifacts](../cli/generateAgentArtifacts.md) 直接序列化。
 
@@ -15,7 +15,7 @@
 
 `AgentCore` 描述 LLM 可见字段(不含代码加载细节)，`AgentMetadata` 继承 `AgentCore` 额外含 `filePath` / `hasRun`：
 
-- **`AgentCore`** —— `name` / `description` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription`。文件型 agent 与 DB-driven skill 都实现此接口。`agentRegistry.getAgent` 返回此类型。
+- **`AgentCore`** —— `name` / `description` / `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription`。文件型 agent 与 DB-driven skill 都实现此接口。`agentRegistry.getAgent` 返回此类型。
 - **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`(加载 handler.js 用) / `hasRun`(是否导出 `run` 函数)。仅文件型 agent 实现。`agentRegistry.getAgentEntry` 返回此类型。
 
 DB-driven skill 不实现 `AgentMetadata`(无源文件，无需 `loadAgentModule`)，只实现 `AgentCore` 存入 `skillRegistry`。
@@ -95,6 +95,7 @@ export function config() {
 | 字段 | 期望类型 | 提取值 | 示例 |
 |------|---------|--------|------|
 | `systemPrompt` | `StringLiteral` / `NoSubstitutionTemplateLiteral` / 其 `+` 拼接 | `string` | `'You are a researcher'`、`` `You are a researcher` ``、`'You are' + ' a researcher'` |
+| `systemPromptFile` | 同 `systemPrompt`（路径字面量），与 `systemPrompt` 互斥 | `string`（相对产物 resources 目录） | `'prompts/research.md'` |
 | `tools` | `ArrayLiteralExpression` 全元素为字符串字面量 / 无插值模板字符串 / 其 `+` 拼接 | `string[]` | `['weather.getWeather']`、`['weather' + '.getWeather']` |
 | `agents` | `ArrayLiteralExpression` 全元素为字符串字面量 / 无插值模板字符串 / 其 `+` 拼接 | `string[]` | `['coder']` |
 | `model` | `StringLiteral` / `NoSubstitutionTemplateLiteral` / 其 `+` 拼接 | `string` | `'gpt-4'`、`'gpt' + '-4'` |
@@ -111,7 +112,8 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 
 | 场景 | 行为 |
 |------|------|
-| `systemPrompt` 未声明(无 config 导出、config 无 return 对象、config 里没有该 key) | 抛 `SchemaExtractionError`——**agent 不能没有提示词**，人设是 agent 的必要组成 |
+| `systemPrompt` 与 `systemPromptFile` 均未声明(无 config 导出、config 无 return 对象、config 里两个 key 都没有) | 抛 `SchemaExtractionError`——**agent 不能没有提示词**，人设是 agent 的必要组成（二选一） |
+| `systemPrompt` 与 `systemPromptFile` 同时声明 | 抛 `SchemaExtractionError`——两个来源语义冲突（互斥） |
 | 其他字段(tools/agents/model/maxTurns/inputDescription)未声明 | `undefined`，合法缺省，运行时按默认值处理 |
 | 任意字段声明了但值提取失败(变量引用、含插值模板字符串、拼接混入数字/变量、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
 | config 里声明了未知字段(如拼写错误 `maxTurn`) | 抛 `SchemaExtractionError`——框架不读的字段几乎必然是拼写错误或误解，静默忽略后运行时按默认值跑，与声明意图不符 |
@@ -120,7 +122,7 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 
 理由："声明了却提取不出"是确定的构建错误——静默降级为 `undefined` 后，运行时与"合法地未声明"不可区分(`reactLoop` 对 `undefined` systemPrompt 是正常路径)，agent 人设整体失效且端到端无任何告警。与 schema 类型提取的原则一致(AST 暂不支持的语法直接抛错，不降级)。
 
-`systemPrompt` 进一步收紧为**必填**：提示词定义 agent 人设与输出格式约定，无提示词的 agent 不是合法的文件型 agent(JSDoc `description` 只是 LLM 可见的用途说明，不构成提示词)。约束加在文件型 agent 的构建期——DB-driven skill 不经过此链路，`AgentCore.systemPrompt` 类型保持可选，由业务方 plugin 自治。
+`systemPrompt` / `systemPromptFile` 进一步收紧为**二选一必填**：提示词定义 agent 人设与输出格式约定，无提示词的 agent 不是合法的文件型 agent(JSDoc `description` 只是 LLM 可见的用途说明，不构成提示词)。`systemPromptFile` 的值为相对产物 resources 目录的路径字面量，运行时（`@faapi/agent` 的 `buildLoopConfig`）每次 run 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。约束加在文件型 agent 的构建期——DB-driven skill 不经过此链路，`AgentCore.systemPrompt` / `AgentCore.systemPromptFile` 类型保持可选，由业务方 plugin 自治。
 
 `SpreadAssignment`(`...other`)跳过不报错——它不声明任何具名字段，无法静态归属；但 spread 提供不了 `systemPrompt` 时同样触发缺失报错。
 

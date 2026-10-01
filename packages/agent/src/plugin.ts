@@ -112,6 +112,8 @@ const agentPlugin: FaapiPlugin = {
     };
 
     const rootDir = ctx.rootDir;
+    // 产物 resources 目录（agent config 的 systemPromptFile 相对此目录解析）
+    const resourcesDir = ctx.resourcesDir;
     // tool schema 解析器（setup 闭包级缓存——root + sub-agent 共享）
     // 实现与行为约定见 [toolSchemaResolver.md](./toolSchemaResolver.md)
     const resolveToolSchema = createToolSchemaResolver({ rootDir });
@@ -125,6 +127,7 @@ const agentPlugin: FaapiPlugin = {
         providers,
         llms,
         rootDir,
+        resourcesDir,
         config: runtimeConfig,
         // ctx 传递链（authHooks）：捕获请求上下文,tool handler / sub-agent /
         // 鉴权钩子均可读取中间件塞入的身份信息（ctx.user / ctx.workspace 等）

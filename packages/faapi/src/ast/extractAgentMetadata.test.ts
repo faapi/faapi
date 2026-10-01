@@ -300,6 +300,42 @@ describe('extractAgentMetadata', () => {
     });
   });
 
+  describe('systemPromptFile（相对 resources 的提示词文件）', () => {
+    it('提取路径字面量，systemPrompt 为 undefined', () => {
+      const result = extract(
+        `export const config = { systemPromptFile: 'prompts/research.md' };\n`,
+      );
+      expect(result).not.toBeNull();
+      expect(result!.systemPromptFile).toBe('prompts/research.md');
+      expect(result!.systemPrompt).toBeUndefined();
+    });
+
+    it('只声明 systemPromptFile 通过二选一必填校验（无内联 systemPrompt）', () => {
+      const result = extract(
+        `export const config = { systemPromptFile: 'p.md', model: 'gpt-4' };\n`,
+      );
+      expect(result).not.toBeNull();
+      expect(result!.model).toBe('gpt-4');
+    });
+
+    it('模板字符串与 + 拼接同样提取（与 systemPrompt 同源求值）', () => {
+      const result = extract("export const config = { systemPromptFile: 'prompts/' + 'a.md' };\n");
+      expect(result!.systemPromptFile).toBe('prompts/a.md');
+    });
+
+    it('systemPrompt 与 systemPromptFile 同时声明 → 互斥抛错', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', systemPromptFile: 'p.md' };\n`),
+      ).toThrow(/互斥/);
+    });
+
+    it('systemPromptFile 非字面量（变量引用）→ 抛 SchemaExtractionError', () => {
+      expect(() =>
+        extract(`const p = 'p.md';\nexport const config = { systemPromptFile: p };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+  });
+
   describe('config 形式与字段声明不如预期 → 抛 SchemaExtractionError', () => {
     it('config 声明为变量引用（非对象字面量）→ 抛错', () => {
       expect(() =>

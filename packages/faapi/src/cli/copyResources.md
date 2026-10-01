@@ -20,8 +20,9 @@ handler 运行在 Node.js 里，业务方经常需要读项目内的静态文件
 - **镜像语义**：`copyResources` 先删 `<dist>/resources` 再递归复制；`src/resources/` 不存在时跳过（返回 `false`，无该目录的项目零负担，产物中也不产生 resources 目录）。
 - **增量同步是文件级的**：watcher 只处理文件的新增/修改（`copyResourceFile`）与删除（`removeResourceFile`）；空目录与目录级删除（`unlinkDir`）不处理——业务读取以文件为单位，产物里残留空目录无业务影响。
 - **源文件已删除时 `copyResourceFile` 跳过复制**（change 与 unlink 的竞态：文件删除后到达的 change 事件不做无用复制，产物清理由 unlink 事件负责）。
-- **任务隔离 worker 不注入**：taskCtx 无 resourcesDir（快照语义暂不携带路径，第一版边界；任务内可经 `process.cwd()` + `FAAPI_DIST` 约定自行定位）。
+- **任务隔离 worker 已注入**：taskCtx.resourcesDir 两条执行路径均注入（隔离为纯字符串随快照传入）——任务内读资源与组装 agent（`AgentDeps.resourcesDir`）均可定位。
 - **testing 直调**：`createTestContext` 构造的 ctx 默认无 `resourcesDir`（`undefined`），可经选项显式传入。
+- **agent 提示词文件**：agent config 声明 `systemPromptFile`（相对本目录的路径字面量，与 `systemPrompt` 互斥二选一）时，运行时每次 run 从产物 resources 读文件内容作为 system 消息（详见 `@faapi/agent` 的 agent.md「systemPromptFile」）。
 
 ## 相关模块
 

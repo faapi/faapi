@@ -184,6 +184,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           payload: job.payload,
           taskCtx: {
             config: deps.config,
+            resourcesDir: deps.resourcesDir,
             job: { id: job.id, name: job.name, attempt: job.attempt },
           },
           registries: snapshotRegistries(),
@@ -214,6 +215,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         const taskCtx: TaskContext = {
           signal: job.signal,
           config: deps.config,
+          resourcesDir: deps.resourcesDir,
           job: { id: job.id, name: job.name, attempt: job.attempt },
           registries: registriesView,
           log: createLogger(`task:${job.name}`, {

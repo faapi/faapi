@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type {
   AgentCore,
   AgentMetadata,
@@ -279,6 +281,14 @@ export interface AgentDeps {
   llms: Record<string, LlmConfig>;
   /** 项目根目录（Phase 3.5 接线时用于加载器） */
   rootDir: string;
+  /**
+   * 产物 resources 目录绝对路径（`<rootDir>/<dist>/resources`）
+   *
+   * agent config 声明 `systemPromptFile` 时据此读文件（每次 run 读，dev 改
+   * prompt 文件立即生效）。未注入且 agent 声明了 systemPromptFile 时抛
+   * `AgentError`（编程式直调需显式传入，不静默降级）。
+   */
+  resourcesDir?: string;
   /** 全局 agent 配置覆盖 */
   config?: AgentRuntimeConfig;
   /**
@@ -563,9 +573,14 @@ export class Agent {
       declaredTools: this.buildDeclaredTools(agentName),
     };
 
+    // systemPromptFile：每次 run 读文件内容作为 systemPrompt（不走缓存——dev 改
+    // prompt 文件经 watcher 增量复制后立即生效，无需 reload）。deps.resourcesDir
+    // 未注入或文件读取失败均显式抛 AgentError,不静默降级为空提示词
+    const systemPrompt = await this.resolveSystemPrompt(agentName, meta);
+
     return {
       provider,
-      systemPrompt: meta.systemPrompt,
+      systemPrompt,
       model,
       temperature: options?.temperature,
       maxTokens: options?.maxTokens,
@@ -578,6 +593,34 @@ export class Agent {
       executeTool: async (name, args, deltaEmitter) =>
         this.executeTool(name, args, callCtx, deltaEmitter),
     };
+  }
+
+  /**
+   * 解析 systemPrompt：声明 `systemPromptFile` 时读 resources 文件内容，否则用内联值
+   *
+   * 文件路径相对产物 resources 目录（`deps.resourcesDir`）。构建期已保证
+   * systemPrompt 与 systemPromptFile 二选一——此处 file 声明而 resourcesDir
+   * 未注入（编程式直调未传 deps）或读取失败时抛 `AgentError`，不静默降级。
+   */
+  private async resolveSystemPrompt(agentName: string, meta: AgentCore): Promise<string> {
+    if (!meta.systemPromptFile) return meta.systemPrompt as string;
+
+    if (!this.deps.resourcesDir) {
+      throw new AgentError(
+        `Agent "${agentName}" declares systemPromptFile but deps.resourcesDir is not provided — ` +
+          'pass resourcesDir when constructing Agent (the @faapi/agent plugin injects it automatically)',
+      );
+    }
+    const filePath = path.join(this.deps.resourcesDir, meta.systemPromptFile);
+    try {
+      return await fs.readFile(filePath, 'utf-8');
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new AgentError(
+        `Agent "${agentName}" systemPromptFile read failed: ${meta.systemPromptFile} (${reason}) — ` +
+          'the file must exist under the runtime resources dir (src/resources/, copied into the dist by dev/build)',
+      );
+    }
   }
 
   /**

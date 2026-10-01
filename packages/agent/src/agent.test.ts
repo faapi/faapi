@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Agent, AgentError } from './agent';
 import { AgentAbortError } from './provider';
 import type { AgentDeps, AgentRuntimeConfig, ToolSchemaResolution } from './agent';
@@ -30,6 +33,7 @@ function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
     name: opts.name ?? 'researcher',
     description: opts.description,
     systemPrompt: opts.systemPrompt,
+    systemPromptFile: opts.systemPromptFile,
     tools: opts.tools,
     agents: opts.agents,
     model: opts.model,
@@ -177,6 +181,7 @@ function createDeps(opts: {
   subAgentEntries?: AgentMetadata[];
   config?: AgentRuntimeConfig;
   ctx?: FaapiContext;
+  resourcesDir?: string;
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
   loadAgentModuleImpl?: (filePath: string, hasRun: boolean) => Promise<AgentModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
@@ -197,6 +202,7 @@ function createDeps(opts: {
     providers,
     llms,
     rootDir: '/project',
+    resourcesDir: opts.resourcesDir,
     config: opts.config,
     ctx: opts.ctx,
     getAgent: (name) =>
@@ -250,6 +256,76 @@ describe('Agent', () => {
       expect(request.model).toBe('gpt-4o');
       expect(request.tools).toHaveLength(1);
       expect(request.tools[0].function.name).toBe('weather.getWeather');
+    });
+
+    it('systemPromptFile：读 resources 文件内容作为 system 消息', async () => {
+      const resDir = join(
+        tmpdir(),
+        `faapi-agent-spfile-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      mkdirSync(join(resDir, 'prompts'), { recursive: true });
+      writeFileSync(join(resDir, 'prompts', 'review.md'), 'You are a reviewer from file.', 'utf-8');
+
+      try {
+        const { provider, completeCalls } = createMockProvider([
+          llmResponse({ content: 'ok', stopReason: 'stop' }),
+        ]);
+        const agent = new Agent(
+          createDeps({
+            provider,
+            agent: agentMeta({ systemPromptFile: 'prompts/review.md' }),
+            resourcesDir: resDir,
+          }),
+        );
+
+        await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+        const request = completeCalls.mock.calls[0][0];
+        expect(request.messages[0]).toEqual({
+          role: 'system',
+          content: 'You are a reviewer from file.',
+        });
+      } finally {
+        rmSync(resDir, { recursive: true, force: true });
+      }
+    });
+
+    it('systemPromptFile 声明但 deps.resourcesDir 未注入 → 抛 AgentError（不静默降级）', async () => {
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPromptFile: 'prompts/review.md' }),
+        }),
+      );
+
+      await expect(agent.run('hi', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrow(
+        AgentError,
+      );
+    });
+
+    it('systemPromptFile 文件不存在 → 抛 AgentError 且带路径', async () => {
+      const resDir = join(tmpdir(), `faapi-agent-spfile-miss-${Date.now()}`);
+      mkdirSync(resDir, { recursive: true });
+
+      try {
+        const { provider } = createMockProvider([
+          llmResponse({ content: 'ok', stopReason: 'stop' }),
+        ]);
+        const agent = new Agent(
+          createDeps({
+            provider,
+            agent: agentMeta({ systemPromptFile: 'prompts/missing.md' }),
+            resourcesDir: resDir,
+          }),
+        );
+
+        await expect(agent.run('hi', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrow(
+          /prompts\/missing\.md/,
+        );
+      } finally {
+        rmSync(resDir, { recursive: true, force: true });
+      }
     });
 
     it('maxTurns 优先级:agent 元数据 > 全局 config', async () => {

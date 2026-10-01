@@ -38,6 +38,22 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 详见 `src/logger/logger.md`。
 
+## TaskContext.resourcesDir（运行时资源目录）
+
+`TaskContext.resourcesDir?: string` 为产物 resources 目录绝对路径（`<rootDir>/<dist>/resources`，由 `createAppBase` 经 `TaskQueueDeps.resourcesDir` 注入两条执行路径；直接构造队列的测试/嵌入场景可不传）。任务读静态文件（prompt 模板、JSON 配置等）用：
+
+```ts
+// src/tasks/report/task.ts
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+export async function run(payload, taskCtx) {
+  return fs.readFile(path.join(taskCtx.resourcesDir!, 'prompts/report.md'), 'utf-8');
+}
+```
+
+隔离路径为纯字符串随快照 postMessage 传入（可结构化克隆），worker 内挂到 taskCtx。任务内组装 agent 时可把该值传入 `AgentDeps.resourcesDir`（agent config 的 `systemPromptFile` 相对此目录解析）。
+
 ### 任务内组装 Agent（完整 deps）
 
 任务内 new `Agent` 跑 LLM 循环时，deps 从 `registries` 视图 + 包级导出组装；`resolveToolSchema` 用 `@faapi/agent` 公开的 `createToolSchemaResolver` 工厂（不要直连 `loadToolSchema`——它返回 `{ schema, schemaName }` 原始 zod 模块，不满足 `AgentDeps.resolveToolSchema` 契约的 `{ jsonSchema, validate }`）：

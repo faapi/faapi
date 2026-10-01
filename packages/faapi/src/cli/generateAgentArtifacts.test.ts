@@ -93,6 +93,24 @@ describe('generateAgentArtifacts', () => {
       expect(result[0].inputDescription).toBeUndefined();
     });
 
+    it('systemPromptFile 透传序列化，hydrate 往返还原', () => {
+      const meta: AgentMetadata = {
+        name: 'researcher',
+        filePath: 'src/agents/researcher/handler.ts',
+        hasRun: false,
+        systemPromptFile: 'prompts/research.md',
+      };
+      const serialized = serializeAgents([meta], 'dist');
+      expect(serialized[0].systemPromptFile).toBe('prompts/research.md');
+      expect(serialized[0].systemPrompt).toBeUndefined();
+
+      const hydrated = hydrateAgents(
+        JSON.parse(JSON.stringify(serialized)) as SerializedAgentRecord[],
+      );
+      expect(hydrated[0].systemPromptFile).toBe('prompts/research.md');
+      expect(hydrated[0].systemPrompt).toBeUndefined();
+    });
+
     it('dev 模式 dist 为 .faapi', () => {
       const meta: AgentMetadata = {
         name: 'researcher',

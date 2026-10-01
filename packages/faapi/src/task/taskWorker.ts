@@ -43,7 +43,12 @@ export interface TaskWorkerOptions {
   taskModulePath: string;
   payload: unknown;
   /** signal 由执行器构造（abort/terminate 时触发），宿主只传 config 与 job 信息 */
-  taskCtx: { config: unknown; job: { id: string; name: string; attempt: number } };
+  taskCtx: {
+    config: unknown;
+    /** 产物 resources 目录绝对路径（纯字符串可结构化克隆，worker 内挂到 taskCtx） */
+    resourcesDir?: string;
+    job: { id: string; name: string; attempt: number };
+  };
   /** 单次执行超时（毫秒） */
   timeoutMs: number;
   /**
@@ -429,7 +434,11 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
       worker.postMessage({
         type: 'run',
         payload,
-        taskCtx: { config: safeConfig(taskCtx.config), job: taskCtx.job },
+        taskCtx: {
+          config: safeConfig(taskCtx.config),
+          resourcesDir: taskCtx.resourcesDir,
+          job: taskCtx.job,
+        },
         registries: options.registries,
         log: options.log,
       });

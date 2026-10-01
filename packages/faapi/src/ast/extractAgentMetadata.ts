@@ -28,6 +28,16 @@ export interface AgentCore {
   description?: string;
   /** 系统提示词(config 块字面量提取);文件型 agent 必填(构建期校验),DB skill 由业务方自治 */
   systemPrompt?: string;
+  /**
+   * 系统提示词文件路径(config 块字面量提取),相对产物 resources 目录
+   * (`<dist>/resources/`,即 `ctx.resourcesDir`),与 `systemPrompt` 互斥
+   * (都声明构建期抛错,二选一必填)
+   *
+   * 运行时每次 run 读文件内容作为 systemPrompt——dev 改 prompt 文件经 watcher
+   * 增量复制后立即生效,无需 reload;`deps.resourcesDir` 未注入或文件读取失败
+   * 时抛 `AgentError`(不静默降级)
+   */
+  systemPromptFile?: string;
   /** agent 显式声明可用的 tool 引用列表(config 块字面量提取),未声明时为 `undefined`;声明了但含无法静态求值的元素在构建期抛错 */
   tools?: string[];
   /** 可调用的其他 agent 名列表(config 块字面量提取),未声明时为 `undefined`;声明了但含无法静态求值的元素在构建期抛错 */
@@ -118,8 +128,8 @@ interface FoundConfig {
  * config 块字段提取仅接受静态可求值的字符串值——字符串字面量、无插值模板字符串及
  * 其 `+` 拼接同等提取；声明了字段但值提取失败(变量引用/含插值模板字符串/拼接混入
  * 数字/混合数组元素等)抛 `SchemaExtractionError`。
- * `systemPrompt` 必填——无 config 导出、config 无 return 对象、config 缺该 key 均抛错，
- * 提示词是 agent 的必要组成。
+ * `systemPrompt` / `systemPromptFile` 二选一必填——无 config 导出、config 无 return
+ * 对象、两者皆缺均抛错，提示词是 agent 的必要组成；两者同时声明抛互斥错。
  *
  * @param program TypeScript Program
  * @param filePath 源文件**绝对路径**(AST 用，需与 `program.getSourceFile` 一致)
@@ -134,14 +144,15 @@ export function extractAgentMetadata(
   const sourceFile = program.getSourceFile(filePath);
   if (!sourceFile) return null;
 
-  // systemPrompt 必填——config 是提示词的唯一载体，无 config 导出时直接抛错。
-  // 不存在合法的无提示词文件型 agent（JSDoc description 只是用途说明，不构成提示词）。
+  // systemPrompt / systemPromptFile 二选一必填——config 是提示词的唯一载体，无 config
+  // 导出时直接抛错。不存在合法的无提示词文件型 agent（JSDoc description 只是用途
+  // 说明，不构成提示词）。
   const configFound = findConfigExport(sourceFile);
   if (!configFound) {
     throw SchemaExtractionError.at(
       sourceFile,
       'config.systemPrompt',
-      'agent 必填——请在 config 块声明系统提示词（字符串字面量、无插值模板字符串或其 + 拼接）',
+      'agent 必填——请在 config 块声明 systemPrompt（字符串字面量、无插值模板字符串或其 + 拼接）或 systemPromptFile（相对 resources 目录的路径字面量）二选一',
       sourceFile,
     );
   }
@@ -161,11 +172,9 @@ export function extractAgentMetadata(
   const description = extractDescription(jsDoc);
   const agentNameOverride = extractJSDocTagValue(jsDoc, 'agent');
 
-  // config 块字段提取（extractConfigFields 保证 systemPrompt 非空——requireStringValue 失败即抛）
-  const { systemPrompt, tools, agents, model, maxTurns, inputDescription } = extractConfigFields(
-    objectLiteral,
-    sourceFile,
-  );
+  // config 块字段提取（extractConfigFields 保证 systemPrompt/systemPromptFile 二选一非空）
+  const { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription } =
+    extractConfigFields(objectLiteral, sourceFile);
 
   return {
     name: agentNameOverride ?? pathMeta.name,
@@ -173,6 +182,7 @@ export function extractAgentMetadata(
     filePath: pathMeta.filePath,
     hasRun: pathMeta.hasRun,
     systemPrompt,
+    systemPromptFile,
     tools,
     agents,
     model,
@@ -293,7 +303,8 @@ function extractConfigFields(
   objLit: ts.ObjectLiteralExpression,
   sourceFile: ts.SourceFile,
 ): {
-  systemPrompt: string;
+  systemPrompt?: string;
+  systemPromptFile?: string;
   tools?: string[];
   agents?: string[];
   model?: string;
@@ -301,6 +312,7 @@ function extractConfigFields(
   inputDescription?: string;
 } {
   let systemPrompt: string | undefined;
+  let systemPromptFile: string | undefined;
   let tools: string[] | undefined;
   let agents: string[] | undefined;
   let model: string | undefined;
@@ -330,6 +342,9 @@ function extractConfigFields(
       case 'systemPrompt':
         systemPrompt = requireStringValue(prop, 'systemPrompt', sourceFile);
         break;
+      case 'systemPromptFile':
+        systemPromptFile = requireStringValue(prop, 'systemPromptFile', sourceFile);
+        break;
       case 'tools':
         tools = requireStringArrayValue(prop, 'tools', sourceFile);
         break;
@@ -351,22 +366,33 @@ function extractConfigFields(
         throw SchemaExtractionError.at(
           prop,
           `config.${propName}`,
-          '未知 config 字段——仅支持 systemPrompt / tools / agents / model / maxTurns / inputDescription',
+          '未知 config 字段——仅支持 systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription',
           sourceFile,
         );
     }
   }
 
-  if (systemPrompt === undefined) {
+  // systemPrompt 与 systemPromptFile 互斥：两个来源语义冲突,构建期显式报错
+  // (而非运行时静默取其一,与声明意图不符)
+  if (systemPrompt !== undefined && systemPromptFile !== undefined) {
     throw SchemaExtractionError.at(
       objLit,
       'config.systemPrompt',
-      'agent 必填——请在 config 块声明系统提示词（字符串字面量、无插值模板字符串或其 + 拼接）',
+      'systemPrompt 与 systemPromptFile 互斥——内联系统提示词与 resources 文件二选一',
       sourceFile,
     );
   }
 
-  return { systemPrompt, tools, agents, model, maxTurns, inputDescription };
+  if (systemPrompt === undefined && systemPromptFile === undefined) {
+    throw SchemaExtractionError.at(
+      objLit,
+      'config.systemPrompt',
+      'agent 必填——请在 config 块声明 systemPrompt（字符串字面量、无插值模板字符串或其 + 拼接）或 systemPromptFile（相对 resources 目录的路径字面量）二选一',
+      sourceFile,
+    );
+  }
+
+  return { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription };
 }
 
 /**

@@ -676,7 +676,7 @@ export function GET(ctx) {
 }
 ```
 
-访问点：HTTP `ctx.resourcesDir` / WS 握手 `ctx.resourcesDir`（同源）、`app.resourcesDir` / `app.dist`（编程式）、lifecycle 钩子参数 `resourcesDir`（onReady 预加载模板等场景）。边界：任务隔离 worker 的 taskCtx 不注入（任务内经 `process.cwd()` + `FAAPI_DIST` 自行定位）；testing 直调 `createTestContext` 默认无该字段，可经 `resourcesDir` 选项显式传入。空目录与目录级删除不处理（按文件级同步）。
+访问点：HTTP `ctx.resourcesDir` / WS 握手 `ctx.resourcesDir`（同源）、`app.resourcesDir` / `app.dist`（编程式）、lifecycle 钩子参数 `resourcesDir`（onReady 预加载模板等场景）、任务 `taskCtx.resourcesDir`（进程内/隔离 worker 两条路径均注入）、插件 `PluginContext.resourcesDir`（setup 时读资源）。testing 直调 `createTestContext` 默认无该字段，可经 `resourcesDir` 选项显式传入。agent config 支持 `systemPromptFile`（相对本目录的路径字面量，与 `systemPrompt` 互斥二选一）——运行时每次 run 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。空目录与目录级删除不处理（按文件级同步）。
 
 输入字段二分口径：**`query` / `params` / `body` 恒为校验转换后的值，`rawQuery` / `rawParams` / `rawBody` 恒为原始值**，在 ctx、目录/全局中间件、handler 注入所有访问点一致（挂载时序详见 `src/server/createServer.md` 的「输入字段口径」）。全局中间件 `await next()` 之前 `ctx.rawParams`/`ctx.rawQuery` 已可用（路由匹配已提前到中间件链之前），`ctx.rawBody`/`ctx.body` 为 undefined（请求体流只能消费一次的物理限制）。
 

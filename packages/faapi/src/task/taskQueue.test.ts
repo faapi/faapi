@@ -171,7 +171,12 @@ describe('createTaskQueue', () => {
     }));
     const deps = makeDeps({ hello: { run } });
     const fake = makeFakeDriver();
-    const queue = createTaskQueue({ ...deps, driver: fake.driver, config: { db: 1 } });
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      config: { db: 1 },
+      resourcesDir: '/proj/dist/resources',
+    });
     queue.start();
 
     await queue.enqueue('hello', { a: 1 });
@@ -179,10 +184,16 @@ describe('createTaskQueue', () => {
     expect(run).toHaveBeenCalledTimes(1);
     const [payload, taskCtx] = run.mock.calls[0] as unknown as [
       unknown,
-      { signal: AbortSignal; config: unknown; job: { id: string; name: string; attempt: number } },
+      {
+        signal: AbortSignal;
+        config: unknown;
+        resourcesDir?: string;
+        job: { id: string; name: string; attempt: number };
+      },
     ];
     expect(payload).toEqual({ a: 1 });
     expect(taskCtx.config).toEqual({ db: 1 });
+    expect(taskCtx.resourcesDir).toBe('/proj/dist/resources');
     expect(taskCtx.signal).toBeInstanceOf(AbortSignal);
     expect(taskCtx.job).toEqual({ id: 'd-1', name: 'hello', attempt: 1 });
 
@@ -455,6 +466,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      resourcesDir: '/fake/dist/resources',
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({ run }),
@@ -469,11 +481,13 @@ describe('createTaskQueue', () => {
       payload: unknown;
       timeoutMs: number;
       externalSignal: AbortSignal;
+      taskCtx: { resourcesDir?: string };
     };
     expect(call.taskModulePath).toContain('heavy');
     expect(call.timeoutMs).toBe(3000);
     expect(call.payload).toEqual({ a: 1 });
     expect(call.externalSignal).toBeInstanceOf(AbortSignal);
+    expect(call.taskCtx.resourcesDir).toBe('/fake/dist/resources');
     expect(run).not.toHaveBeenCalled();
     expect(queue.list('heavy')[0]).toMatchObject({ status: 'done', result: 'from-worker' });
     await queue.stop();

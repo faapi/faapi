@@ -111,6 +111,20 @@ class Agent {
 仅本次调用生效,sub-agent 递归继承父调用解析出的 provider。详见 [agentHandle.md](./agentHandle.md) 的
 「`options.provider` 外部 provider」章节。
 
+### systemPromptFile（提示词文件）
+
+agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resources 目录的字面量,
+构建期 AST 提取,与 `systemPrompt` 互斥——两者都声明构建期抛错,二选一必填）时,`buildLoopConfig`
+在**每次 run/stream 时读文件内容**作为 system 消息,不走缓存——dev 改 prompt 文件经 watcher
+增量复制进 `.faapi/resources/` 后立即生效,无需 reload。
+
+- 文件定位：`deps.resourcesDir`（`<rootDir>/<dist>/resources` 绝对路径）+ 声明的相对路径。
+  `@faapi/agent` 插件从 `PluginContext.resourcesDir` 自动注入;编程式直调构造 `Agent` 时需显式传入
+- 错误语义：声明了 `systemPromptFile` 而 `deps.resourcesDir` 未注入,或文件读取失败
+  （不存在/权限）→ 抛 `AgentError`（带 agent 名与文件路径）,不静默降级为空提示词
+- 路径基准与 `ctx.resourcesDir` 一致（详见 [copyResources](../../faapi/src/cli/copyResources.md)）,
+  自定义 `run` 里读资源也用 `ctx.resourcesDir`
+
 ### `buildToolDefinitions()` —— tool 列表组装
 
 合并两个来源（按 `name` 去重,先入者保留）：
@@ -183,7 +197,7 @@ const subAgent = new Agent(deps, newDepth);  // deps 共享（providers/llms/访
 const entry = deps.getAgentEntry(subName);
 if (entry?.hasRun) {
   const mod = await deps.loadAgentModule(entry.filePath, entry.hasRun);
-  if (mod.run) return await mod.run(args);  // 自定义 run,无 trace
+  if (mod.run) return await mod.run(args, deps.ctx);  // 自定义 run(第二参收请求 ctx),无 trace
 }
 
 // 默认 reactLoop:继承父调用的 provider,sub 的 model 用其元数据声明（未声明沿用父 model）
@@ -210,7 +224,7 @@ return {
 
 - **`maxAgentDepth`**：默认 3。depth 从 1（根）开始,sub-agent 为 2、3...,超出抛 `AgentRecursionError`
 - **`getAgentEntry` vs `getAgent`**：加载 `handler.js` 必须用 `getAgentEntry`——`getAgent` 返回 `AgentCore`（无 `filePath` / `hasRun`）。两者都仅查文件 registry,不 fallback 到 skillRegistry（skill 与 agent 职责正交不耦合,skill 不参与 sub-agent 递归）。sub-agent 必须是文件型 agent,skill 不被 `agents` 列表自动引用
-- **自定义 run**：sub-agent handler 导出 `run` 时（`entry.hasRun=true`）,调用 `mod.run(args)` 跳过默认 reactLoop——业务方完全控制 sub-agent 逻辑,**无 trace**（业务方自己返回业务结果,不参与 reactLoop 的 tracing 采集）
+- **自定义 run**：sub-agent handler 导出 `run` 时（`entry.hasRun=true`）,调用 `mod.run(args, ctx)`（第二参为完整请求 FaapiContext,含 resourcesDir / registries / user 等）跳过默认 reactLoop——业务方完全控制 sub-agent 逻辑,**无 trace**（业务方自己返回业务结果,不参与 reactLoop 的 tracing 采集）
 - **默认 reactLoop + provider 继承**：sub-agent 无 `run`（未注册或 `hasRun=false`）时,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）附在 `SubAgentToolResult` 的 `trace` 字段返回给 reactLoop,reactLoop 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`usage` / `turns` 字段始终携带（子循环整树口径,reactLoop 上卷进父 run 台账,详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）。`usage` / `turns` 缺省（如 provider 不返回用量）时 reactLoop 跳过对应累加
 - **自定义 run 的入参形状**：`mod.run(args, ctx)` 始终收原始 args 对象。默认入参 schema 下 LLM 传 `{ input: '交接单' }`——自定义 run 的业务方读 `args.input` 取交接单（也兼容读整个 args 的旧写法,宽松模型下形状不变）
 
