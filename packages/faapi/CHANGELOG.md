@@ -1,5 +1,24 @@
 # @faapi/faapi
 
+## 6.24.0
+
+### Minor Changes
+
+- fbbbe3c: agent 全链路支持运行时资源目录，消除 taskCtx 不注入边界：
+
+  - agent config 新增 `systemPromptFile` 字段（相对产物 resources 目录的路径字面量，与 `systemPrompt` 互斥二选一必填）——运行时每次 run 读文件内容作为 system 消息，dev 改 prompt 文件经 watcher 增量复制后立即生效；`PluginContext` 新增 `resourcesDir`（`@faapi/agent` 自动注入 `AgentDeps`，业务插件也可用）
+  - `taskCtx.resourcesDir`：进程内与隔离 worker 两条执行路径均注入产物 resources 目录绝对路径（此前任务侧无资源定位入口）
+  - 修复 agent.md 文档滞后：自定义 `run` 的第二参实为完整请求 `FaapiContext`（`mod.run(args, ctx)`），文档此前写为仅 `args`
+
+- ac31b43: 移除 agent 自定义 `run` 机制——agent 统一为声明式执行（config + 默认 reactLoop）。
+
+  - agent handler.ts 检测到 `export function/const run` 时构建期抛 `SchemaExtractionError`（含迁移指引）：编排场景**注册 tool**（有 schema 校验、trace 采集、鉴权钩子覆盖），多 agent 协作用 config.agents 声明 sub-agent（继承 provider、delta 冒泡、usage 整树上卷）
+  - 删除导出：`loadAgentModule` 函数与 `AgentModule` 类型、`AgentMetadata.hasRun` / `AgentManifest.hasRun` 字段、`AgentDeps.loadAgentModule`
+  - `AgentMetadata.filePath` 保留（声明文件定位与清单可观测性）；`getAgentEntry` 保留
+  - `systemPrompt` / `systemPromptFile` 二选一必填对全部文件型 agent 生效（config 豁免随 run 一并移除）
+
+  > 说明：本变更删除了 `loadAgentModule` / `AgentModule` / `hasRun` 等公开 API，严格语义为 breaking——经维护者确认当前业务项目均未使用自定义 run（agent 统一为声明式，编排场景由 tool 承接），故按 minor 发版。
+
 ## 6.23.0
 
 ### Minor Changes
