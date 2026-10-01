@@ -46,7 +46,7 @@ export function clearAgentRegistry(): void {
 /**
  * 按名查找单个 agent 的 LLM 可见元数据（默认实例）
  *
- * 返回 [AgentCore](../ast/extractAgentMetadata.md)（不含 filePath / hasRun）。
+ * 返回 [AgentCore](../ast/extractAgentMetadata.md)（不含 filePath）。
  * 加载 handler.js 执行 `run` 函数请用 [getAgentEntry](#getAgentEntry)。
  *
  * @param name agent 名（如 `researcher`，含 `@agent` 覆盖值）
@@ -56,7 +56,7 @@ export function getAgent(name: string): AgentCore | undefined {
 }
 
 /**
- * 按名查找单个 agent 的完整元数据（默认实例，含 filePath / hasRun）
+ * 按名查找单个 agent 的完整元数据（默认实例，含 filePath）
  */
 export function getAgentEntry(name: string): AgentMetadata | undefined {
   return defaultRegistries.agent.getAgentEntry(name);

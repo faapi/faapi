@@ -23,7 +23,6 @@ import { fileURLToPath } from 'node:url';
 import {
   createProdApp,
   clearAgentHandleFactory,
-  loadAgentModule,
   loadToolModule,
   loadToolSchema,
 } from '@faapi/faapi';
@@ -168,7 +167,7 @@ describe('multi-agent demo e2e', () => {
    * resolveToolSchema 用 loadToolSchema + z.toJSONSchema + safeParse 实现
    *（与 plugin.ts 同构）。
    *
-   * loadToolModule / loadAgentModule 的 filePath 转为绝对路径——
+   * loadToolModule 的 filePath 转为绝对路径——
    * toolRegistry / agentRegistry 中的 filePath 是产物形式相对路径（如 `dist/tools/weather/handler.js`），
    * vitest 环境下 `importActual` 不解析 bare specifier，需拼接 rootDir 转绝对路径。
    *
@@ -196,7 +195,6 @@ describe('multi-agent demo e2e', () => {
       resolveSubAgents: app.registries.agent.resolveSubAgents,
       loadToolModule: (filePath, functionName) =>
         loadToolModule(toAbs(filePath), functionName, tempDir),
-      loadAgentModule: (filePath, hasRun) => loadAgentModule(toAbs(filePath), hasRun, tempDir),
       // resolveToolSchema：加载 tool 的 zod.js → z.toJSONSchema + safeParse
       resolveToolSchema: async (tool) => {
         const schemaMod = await loadToolSchema(tool, tempDir);
@@ -248,10 +246,6 @@ describe('multi-agent demo e2e', () => {
       expect(writer).toBeDefined();
       expect(writer!.name).toBe('writer');
 
-      const writerEntry = agentRegistry.getAgentEntry('writer');
-      expect(writerEntry).toBeDefined();
-      expect(writerEntry!.hasRun).toBe(true);
-
       // 验证 tool 注册表水合（weather + calculator）
       const weather = toolRegistry.get('weather.getWeather');
       expect(weather).toBeDefined();
@@ -284,13 +278,18 @@ describe('multi-agent demo e2e', () => {
       // mock provider 响应序列：
       // 1. 调 weather.getWeather({ city: '北京' })
       // 2. 调 agent.writer({ topic: 'AI' })
-      // 3. stop 返回最终答案
+      // 3. writer 子循环直答（声明式 agent 走 reactLoop）
+      // 4. stop 返回最终答案
       const { provider, completeRequests } = createMockProvider([
         llmResponse({
           toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
         }),
         llmResponse({
           toolCalls: [toolCall('c2', 'agent.writer', { topic: 'AI' })],
+        }),
+        llmResponse({
+          content: '关于「AI」的草稿：这是一份由 writer agent 生成的示例报告。',
+          stopReason: 'stop',
         }),
         llmResponse({ content: '研究完成：北京 22 度晴，writer 生成了报告', stopReason: 'stop' }),
       ]);
@@ -306,7 +305,7 @@ describe('multi-agent demo e2e', () => {
 
       // 验证最终结果
       expect(result.content).toBe('研究完成：北京 22 度晴，writer 生成了报告');
-      expect(result.turns).toBe(3);
+      expect(result.turns).toBe(4);
       expect(result.stopReason).toBe('stop');
 
       // 验证第1轮 LLM 收到 systemPrompt + tools
@@ -325,9 +324,9 @@ describe('multi-agent demo e2e', () => {
       expect(weatherResultMsg?.content).toContain('北京');
       expect(weatherResultMsg?.content).toContain('22');
 
-      // 验证第3轮 LLM 收到 writer sub-agent 结果（自定义 run 返回）
-      const thirdRequest = completeRequests[2];
-      const writerResultMsg = thirdRequest.messages.filter((m) => m.role === 'tool');
+      // 验证第4轮 LLM 收到 writer sub-agent 结果（子循环直答）
+      const fourthRequest = completeRequests[3];
+      const writerResultMsg = fourthRequest.messages.filter((m) => m.role === 'tool');
       const writerResult = writerResultMsg.find((m) => m.content.includes('草稿'));
       expect(writerResult?.content).toContain('AI');
 
@@ -338,13 +337,17 @@ describe('multi-agent demo e2e', () => {
       await compileArtifacts();
       const app = await createProdApp({ rootDir: tempDir });
 
-      // mock provider 响应序列（同上）
+      // mock provider 响应序列（同上：writer 子循环直答后父收尾）
       const { provider } = createMockProvider([
         llmResponse({
           toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
         }),
         llmResponse({
           toolCalls: [toolCall('c2', 'agent.writer', { topic: 'AI' })],
+        }),
+        llmResponse({
+          content: '关于「AI」的草稿：这是一份由 writer agent 生成的示例报告。',
+          stopReason: 'stop',
         }),
         llmResponse({ content: 'inject 模式完成', stopReason: 'stop' }),
       ]);
@@ -366,7 +369,7 @@ describe('multi-agent demo e2e', () => {
       expect(res.body).toEqual({
         data: {
           content: 'inject 模式完成',
-          turns: 3,
+          turns: 4,
           stopReason: 'stop',
         },
       });

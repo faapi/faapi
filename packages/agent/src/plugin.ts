@@ -25,7 +25,7 @@
  * 1. 遍历 `config.agent.llms`（可选）→ 每项调 `createProvider` → `Map<providerKey, LLMProvider>`
  * 2. 读 `config.agent.maxTurns` / `maxAgentDepth`
  * 3. 从 `@faapi/faapi` import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools /
- *    resolveSubAgents / loadAgentModule / loadToolModule）,tool schema 解析用
+ *    resolveSubAgents / loadToolModule）,tool schema 解析用
  *    [createToolSchemaResolver](./toolSchemaResolver.md)（setup 闭包级缓存）
  * 4. `registerAgentHandleFactory` 注册工厂——每次请求时构造 [Agent](./agent.md) 实例注入到
  *    handler 的 `agent` 参数
@@ -40,7 +40,6 @@
  */
 
 import {
-  loadAgentModule,
   loadToolModule,
   type FaapiPlugin,
   type PluginContext,
@@ -133,7 +132,7 @@ const agentPlugin: FaapiPlugin = {
         // 鉴权钩子均可读取中间件塞入的身份信息（ctx.user / ctx.workspace 等）
         ctx,
         // 注册表访问器——app 实例（PluginContext.registries），非全局单例
-        // getAgent 返回 AgentCore(LLM-facing);getAgentEntry 返回 AgentMetadata(含 filePath/hasRun,供加载 handler.js)
+        // getAgent 返回 AgentCore(LLM-facing);getAgentEntry 返回 AgentMetadata(含 filePath,声明文件定位)
         getAgent: registries.agent.getAgent,
         getAgentEntry: registries.agent.getAgentEntry,
         getTool: registries.tool.get,
@@ -141,7 +140,6 @@ const agentPlugin: FaapiPlugin = {
         resolveSubAgents: registries.agent.resolveSubAgents,
         // 加载器包装：注入 rootDir 用于 dev 按需编译模式
         loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, rootDir),
-        loadAgentModule: (filePath, hasRun) => loadAgentModule(filePath, hasRun, rootDir),
         // tool schema 解析（zod.js → JSON Schema + safeParse 校验）
         resolveToolSchema,
       });

@@ -15,16 +15,14 @@ import { atomicWriteFile } from '../utils/atomicWrite';
  * `undefined` 字段（description / systemPrompt / tools / agents / model / maxTurns / inputDescription）
  * 在 JSON.stringify 时自动省略，水合时通过 `??` 兜底为 undefined。
  *
- * > `hasConfig` 字段已移除——它原本用于控制 `loadAgentModule` 是否提取 `config` 对象,
- * > 但 `AgentModule.config` 已废弃(`executeSubAgent` 拿到后从不读取),属于死链路。
+ * > `hasConfig` / `hasRun` 字段已移除——自定义 run 机制已整体移除，agent 统一为
+ * > 声明式执行（config + 默认 reactLoop）。
  */
 export interface SerializedAgentRecord {
   /** agent 名（`@agent` 覆盖值 或 目录推导值） */
   name: string;
   /** JSDoc 描述（对 LLM 可见），无则省略 */
   description?: string;
-  /** 是否导出 run 函数（从 manifest 透传） */
-  hasRun: boolean;
   /** 系统提示词（config 块字面量提取），无/非字面量时省略 */
   systemPrompt?: string;
   /** 系统提示词文件路径（相对产物 resources 目录，config 块字面量提取），与 systemPrompt 互斥，无时省略 */
@@ -39,7 +37,7 @@ export interface SerializedAgentRecord {
   maxTurns?: number;
   /** agent-as-tool 派发交接单说明（config 块字面量提取），无/非字面量时省略 */
   inputDescription?: string;
-  /** 产物形式路径（如 `dist/agents/researcher/handler.js`），供运行时 import agent.js */
+  /** 产物形式路径（如 `dist/agents/researcher/handler.js`），声明文件定位与可观测性用 */
   filePath: string;
 }
 
@@ -52,7 +50,7 @@ const AGENTS_FILE = 'faapi-agents.js';
  * 序列化 agent 清单为可写入 JS 模块的结构
  *
  * - `filePath` 转为产物形式（打平 `src/` 前缀 + dist 前缀 + `.js`）
- * - 其他字段（name/description/hasRun/systemPrompt/tools/agents/model/maxTurns/inputDescription）直接透传
+ * - 其他字段（name/description/systemPrompt/tools/agents/model/maxTurns/inputDescription）直接透传
  * - `undefined` 字段在 JSON.stringify 时自动省略
  *
  * @param agents AST 增强后的 AgentMetadata[]（由 generateAgentArtifacts 内部从 AgentManifest 增强）
@@ -65,7 +63,6 @@ export function serializeAgents(
   return agents.map((a) => ({
     name: a.name,
     description: a.description,
-    hasRun: a.hasRun,
     systemPrompt: a.systemPrompt,
     systemPromptFile: a.systemPromptFile,
     tools: a.tools,
@@ -104,7 +101,6 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
     name: a.name,
     description: a.description ?? undefined,
     filePath: a.filePath,
-    hasRun: a.hasRun,
     systemPrompt: a.systemPrompt ?? undefined,
     systemPromptFile: a.systemPromptFile ?? undefined,
     tools: a.tools ?? undefined,
@@ -188,7 +184,6 @@ export async function generateAgentArtifacts(
     const result = extractAgentMetadata(program, absPath, {
       name: manifest.name,
       filePath: manifest.filePath,
-      hasRun: manifest.hasRun,
     });
     // 正常构建链路不该发生（createPrograms 按同一批 filePath 建 Program）——
     // 静默跳过会让 agent 从清单里无声消失

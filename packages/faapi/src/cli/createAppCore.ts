@@ -165,7 +165,7 @@ function logStartupSummary(
   routes: RouteManifest,
   wsRoutes: WsRouteManifest,
   tools: { name: string; filePath: string }[],
-  agents: { name: string; filePath: string; hasRun: boolean }[],
+  agents: { name: string; filePath: string }[],
   taskMetas: { name: string; filePath: string; cron?: string }[],
   p: number,
 ): void {
@@ -190,8 +190,7 @@ function logStartupSummary(
   if (agents.length > 0) {
     console.log(`- Loaded ${agents.length} agent(s):`);
     for (const agent of agents) {
-      const exports = agent.hasRun ? 'run' : '-';
-      console.log(`  ${agent.name} [${exports}]  ${agent.filePath}`);
+      console.log(`  ${agent.name}  ${agent.filePath}`);
     }
   }
   if (taskMetas.length > 0) {

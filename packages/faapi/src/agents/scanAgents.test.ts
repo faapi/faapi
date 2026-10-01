@@ -34,89 +34,25 @@ describe('scanAgents', () => {
       expect(agents[0]).toMatchObject({
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasRun: false,
       });
     } finally {
       cleanup();
     }
   });
 
-  it('检测 run 导出（export function run）', async () => {
+  it('无 config（空声明文件）——扫描层不校验内容（AST 阶段负责）', async () => {
     const { dir, write, cleanup } = setupTmp();
-    write('src/agents/researcher/handler.ts', 'export function run(input) { return "result"; }\n');
-    try {
-      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasRun).toBe(true);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('检测 run 导出（export async function run）', async () => {
-    const { dir, write, cleanup } = setupTmp();
-    write(
-      'src/agents/researcher/handler.ts',
-      'export async function run(input) { return "result"; }\n',
-    );
-    try {
-      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasRun).toBe(true);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('检测 run 导出（export const run = 箭头函数）', async () => {
-    const { dir, write, cleanup } = setupTmp();
-    write('src/agents/researcher/handler.ts', 'export const run = (input) => "result";\n');
-    try {
-      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasRun).toBe(true);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('检测 run 导出（export const run = async 箭头函数）', async () => {
-    const { dir, write, cleanup } = setupTmp();
-    write('src/agents/researcher/handler.ts', 'export const run = async (input) => "result";\n');
-    try {
-      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasRun).toBe(true);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('同时导出 config 和 run', async () => {
-    const { dir, write, cleanup } = setupTmp();
-    write(
-      'src/agents/researcher/handler.ts',
-      'export const config = { systemPrompt: "x" };\n' +
-        'export async function run(input) { return "result"; }\n',
-    );
+    write('src/agents/empty/handler.ts', '// no config\n');
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
       expect(agents).toHaveLength(1);
-      expect(agents[0]!.hasRun).toBe(true);
+      expect(agents[0]!.name).toBe('empty');
     } finally {
       cleanup();
     }
   });
 
-  it('既无 config 也无 run（空 agent——tool 容器）', async () => {
-    const { dir, write, cleanup } = setupTmp();
-    write('src/agents/empty/handler.ts', '// no config, no run\n');
-    try {
-      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents).toHaveLength(1);
-      expect(agents[0]!.hasRun).toBe(false);
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('不匹配非 config/run 的相似名（configuration / runtime）', async () => {
+  it('扫描层不读源码内容（相似名无影响）', async () => {
     const { dir, write, cleanup } = setupTmp();
     write(
       'src/agents/researcher/handler.ts',
@@ -126,7 +62,7 @@ describe('scanAgents', () => {
     );
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
-      expect(agents[0]!.hasRun).toBe(false);
+      expect(agents).toHaveLength(1);
     } finally {
       cleanup();
     }
@@ -135,18 +71,15 @@ describe('scanAgents', () => {
   it('扫描多个 agent', async () => {
     const { dir, write, cleanup } = setupTmp();
     write('src/agents/researcher/handler.ts', 'export const config = {};\n');
-    write('src/agents/coder/handler.ts', 'export function run() { return "ok"; }\n');
-    write(
-      'src/agents/writer/handler.ts',
-      'export const config = {};\nexport function run() { return "ok"; }\n',
-    );
+    write('src/agents/coder/handler.ts', 'export const config = {};\n');
+    write('src/agents/writer/handler.ts', 'export const config = {};\n');
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
       expect(agents).toHaveLength(3);
       const byName = new Map(agents.map((a) => [a.name, a]));
-      expect(byName.get('researcher')?.hasRun).toBe(false);
-      expect(byName.get('coder')?.hasRun).toBe(true);
-      expect(byName.get('writer')?.hasRun).toBe(true);
+      expect(byName.has('researcher')).toBe(true);
+      expect(byName.has('coder')).toBe(true);
+      expect(byName.has('writer')).toBe(true);
     } finally {
       cleanup();
     }
@@ -238,16 +171,12 @@ describe('scanAgents', () => {
 
   it('AgentManifest 类型完整：所有字段存在', async () => {
     const { dir, write, cleanup } = setupTmp();
-    write(
-      'src/agents/researcher/handler.ts',
-      'export const config = {};\nexport function run() { return "ok"; }\n',
-    );
+    write('src/agents/researcher/handler.ts', 'export const config = {};\n');
     try {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
       const agent: AgentManifest = agents[0]!;
       expect(agent).toHaveProperty('name');
       expect(agent).toHaveProperty('filePath');
-      expect(agent).toHaveProperty('hasRun');
     } finally {
       cleanup();
     }

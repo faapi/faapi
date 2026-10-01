@@ -69,7 +69,7 @@ export interface AgentRegistry {
   hydrate(agents: AgentMetadata[]): void;
   /** LLM 可见元数据（AgentCore） */
   getAgent(name: string): AgentCore | undefined;
-  /** 完整元数据（含 filePath / hasRun，供加载 handler.js 执行 run） */
+  /** 完整元数据（含 filePath，声明文件定位） */
   getAgentEntry(name: string): AgentMetadata | undefined;
   /** 所有已注册 agent 的 LLM 可见元数据（副本） */
   listAgents(): AgentCore[];

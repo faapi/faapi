@@ -325,14 +325,12 @@ describe('injectParams', () => {
       name: 'researcher',
       description: '研究助手',
       filePath: 'dist/agents/researcher/handler.js',
-      hasRun: false,
       systemPrompt: 'You are a researcher',
     };
     const writer: AgentMetadata = {
       name: 'writer',
       description: '写作助手',
       filePath: 'dist/agents/writer/handler.js',
-      hasRun: true,
     };
 
     it('agents 参数注入所有已注册 agent 元数据列表', async () => {

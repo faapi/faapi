@@ -12,7 +12,6 @@ import type {
   LlmConfig,
   ToolMetadata,
   ToolModule,
-  AgentModule,
 } from '@faapi/faapi';
 import type {
   LLMProvider,
@@ -24,11 +23,10 @@ import type {
   LLMToolDefinition,
   LLMToolCall,
 } from './provider';
-import type { ReactLoopStreamChunk } from './reactLoop';
 
 // ─── Mock 数据构造器 ─────────────────────────────────
 
-/** 构造 AgentCore（LLM 可见字段,不含 filePath/hasRun/hasConfig） */
+/** 构造 AgentCore（LLM 可见字段,不含 filePath） */
 function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
   return {
     name: opts.name ?? 'researcher',
@@ -43,12 +41,11 @@ function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
   };
 }
 
-/** 构造 AgentMetadata（AgentCore + filePath/hasRun,无 hasConfig,供 getAgentEntry mock） */
+/** 构造 AgentMetadata（AgentCore + filePath,供 getAgentEntry mock） */
 function agentEntry(opts: Partial<AgentMetadata> = {}): AgentMetadata {
   return {
     name: opts.name ?? 'researcher',
     filePath: opts.filePath ?? 'dist/agents/researcher/handler.js',
-    hasRun: opts.hasRun ?? false,
     description: opts.description,
     systemPrompt: opts.systemPrompt,
     tools: opts.tools,
@@ -184,7 +181,6 @@ function createDeps(opts: {
   ctx?: FaapiContext;
   resourcesDir?: string;
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
-  loadAgentModuleImpl?: (filePath: string, hasRun: boolean) => Promise<AgentModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
 }): AgentDeps {
@@ -219,10 +215,6 @@ function createDeps(opts: {
       opts.loadToolModuleImpl
         ? opts.loadToolModuleImpl(filePath, functionName)
         : Promise.reject(new Error(`loadToolModule not mocked for ${filePath}`)),
-    loadAgentModule: async (filePath, hasRun) =>
-      opts.loadAgentModuleImpl
-        ? opts.loadAgentModuleImpl(filePath, hasRun)
-        : Promise.reject(new Error(`loadAgentModule not mocked for ${filePath}`)),
     resolveToolSchema: opts.resolveToolSchemaImpl
       ? (tool) => opts.resolveToolSchemaImpl!(tool)
       : undefined,
@@ -232,142 +224,6 @@ function createDeps(opts: {
 // ─── Agent 类构造 ────────────────────────────────────
 
 describe('Agent', () => {
-  describe('run()/stream() — 顶层自定义 run（hasRun agent）', () => {
-    it('顶层 run() 执行自定义 run：args 为 { input }，ctx 透传，返回值规范化', async () => {
-      const runFn = vi.fn(async (args, ctx) => ({
-        content: `ran:${args.input}`,
-        report: 'extra',
-        ctxRes: ctx?.resourcesDir ?? null,
-      }));
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'should-not-be-called', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'unused' }),
-          agentEntry: agentEntry({ hasRun: true }),
-          ctx: { resourcesDir: '/proj/dist/resources' } as FaapiContext,
-          loadAgentModuleImpl: async () => ({ run: runFn as unknown as AgentModule['run'] }),
-        }),
-      );
-
-      const result = await agent.run('hello', { agent: 'researcher' });
-
-      expect(runFn).toHaveBeenCalledTimes(1);
-      expect(runFn.mock.calls[0]![0]).toEqual({ input: 'hello' });
-      expect((runFn.mock.calls[0]![1] as FaapiContext).resourcesDir).toBe('/proj/dist/resources');
-      expect(completeCalls).not.toHaveBeenCalled();
-      expect(result.content).toBe('ran:hello');
-      expect(result.turns).toBe(1);
-      expect(result.stopReason).toBe('stop');
-      expect(result.messages).toEqual([]);
-    });
-
-    it('run 返回 string → content 直取', async () => {
-      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 's' }),
-          agentEntry: agentEntry({ hasRun: true }),
-          loadAgentModuleImpl: async () => ({ run: (async () => 'plain-string') as never }),
-        }),
-      );
-      const result = await agent.run('hi', { agent: 'researcher' });
-      expect(result.content).toBe('plain-string');
-    });
-
-    it('run 返回无 content 对象 → content 序列化整个对象，业务字段透传', async () => {
-      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 's' }),
-          agentEntry: agentEntry({ hasRun: true }),
-          loadAgentModuleImpl: async () => ({
-            run: (async () => ({ report: 'r1', score: 9 })) as never,
-          }),
-        }),
-      );
-      const result = await agent.run('hi', { agent: 'researcher' });
-      expect(result.content).toBe(JSON.stringify({ report: 'r1', score: 9 }));
-      expect((result as unknown as { report: string }).report).toBe('r1');
-    });
-
-    it('stream() 对 hasRun agent 回退为整体结果：单 delta + done chunk', async () => {
-      const runFn = vi.fn(async () => ({ content: 'streamed-result' }));
-      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 's' }),
-          agentEntry: agentEntry({ hasRun: true }),
-          loadAgentModuleImpl: async () => ({ run: runFn as unknown as AgentModule['run'] }),
-        }),
-      );
-
-      const chunks: ReactLoopStreamChunk[] = [];
-      for await (const chunk of agent.stream('hi', { agent: 'researcher' })) {
-        chunks.push(chunk);
-      }
-      expect(chunks).toEqual([
-        { deltaContent: 'streamed-result' },
-        { done: { content: 'streamed-result', turns: 1, stopReason: 'stop', usage: undefined } },
-      ]);
-    });
-
-    it('hasRun agent 传 options.messages → 抛 AgentError（run 型不支持历史续跑）', async () => {
-      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 's' }),
-          agentEntry: agentEntry({ hasRun: true }),
-          loadAgentModuleImpl: async () => ({ run: (async () => '') as never }),
-        }),
-      );
-      await expect(
-        agent.run('hi', {
-          agent: 'researcher',
-          messages: [{ role: 'user', content: 'prev' }],
-        }),
-      ).rejects.toThrow(AgentError);
-    });
-
-    it('hasRun=false 的 agent 顶层 run() 仍走 reactLoop（行为不变）', async () => {
-      const runFn = vi.fn();
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'from-loop', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 's' }),
-          agentEntry: agentEntry({ hasRun: false }),
-          loadAgentModuleImpl: async () => ({ run: runFn as unknown as AgentModule['run'] }),
-        }),
-      );
-      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
-      expect(runFn).not.toHaveBeenCalled();
-      expect(result.content).toBe('from-loop');
-      expect(completeCalls).toHaveBeenCalledTimes(1);
-    });
-
-    it('元数据声明 hasRun 但模块无 run 导出 → 防御性 AgentError', async () => {
-      const { provider } = createMockProvider([llmResponse({ content: 'x', stopReason: 'stop' })]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 's' }),
-          agentEntry: agentEntry({ hasRun: true }),
-          loadAgentModuleImpl: async () => ({ run: undefined }),
-        }),
-      );
-      await expect(agent.run('hi', { agent: 'researcher' })).rejects.toThrow(AgentError);
-    });
-  });
-
   describe('run() — 基本流程', () => {
     it('组装 config 调 reactLoop,返回最终结果', async () => {
       const { provider, completeCalls } = createMockProvider([
@@ -1055,37 +911,6 @@ describe('Agent', () => {
       expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
     });
 
-    it('自定义 run 的 sub-agent：结果照常回传,无结构化增量不冒泡', async () => {
-      const { provider } = createMockStreamProvider([
-        [
-          {
-            toolCalls: [toolCall('c1', 'agent.writer', { input: '查' })],
-            finishReason: 'tool_calls',
-          },
-        ],
-        [{ deltaContent: 'final', finishReason: 'stop' }],
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer' })],
-          subAgentEntries: [
-            agentEntry({ name: 'writer', hasRun: true, filePath: 'dist/agents/writer/handler.js' }),
-          ],
-          loadAgentModuleImpl: async () => ({ run: async () => '自定义结果' }),
-        }),
-      );
-
-      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
-
-      // 自定义 run 无结构化增量 → 零 subagentDelta chunk（不冒泡）
-      expect(chunks.filter((c) => c.subagentDelta)).toEqual([]);
-      // 结果照常回传父循环作为 tool 结果,父流程不受影响
-      expect(chunks.find((c) => c.toolResult)!.toolResult!.result).toBe('自定义结果');
-      expect(chunks.at(-1)!.done).toMatchObject({ content: 'final', stopReason: 'stop' });
-    });
-
     it('非流式 run() 不冒泡（结果一次性返回,行为不变）', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
@@ -1111,57 +936,7 @@ describe('Agent', () => {
   });
 
   describe('executeTool — sub-agent 递归', () => {
-    it('sub-agent 有 hasRun 时调自定义 run,结果回传父 LLM', async () => {
-      // 父 provider:第一轮请求 agent.writer → 收 sub 结果 → 最终答案
-      const { provider: parentProvider, completeCalls: parentCalls } = createMockProvider([
-        llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', { topic: 'AI' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({ content: 'final', stopReason: 'stop' }),
-      ]);
-
-      // getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath/hasRun）
-      const writerCore = agentMeta({ name: 'writer' });
-      const writerEntryMeta = agentEntry({
-        name: 'writer',
-        filePath: 'dist/agents/writer/handler.js',
-        hasRun: true,
-      });
-      const researcherMeta = agentMeta({ name: 'researcher', agents: ['writer'] });
-
-      const agent = new Agent(
-        createDeps({
-          provider: parentProvider,
-          agent: researcherMeta,
-          subAgents: [writerCore],
-          subAgentEntries: [writerEntryMeta],
-          loadAgentModuleImpl: async (filePath, _hasRun) => {
-            if (filePath.includes('writer')) {
-              return {
-                run: (async (args: unknown) => `drafted: ${JSON.stringify(args)}`) as (
-                  ...args: unknown[]
-                ) => unknown,
-              };
-            }
-            throw new Error(`unexpected loadAgentModule for ${filePath}`);
-          },
-        }),
-      );
-
-      const result = await agent.run('write about AI', {
-        agent: 'researcher',
-        model: 'gpt-4o',
-      });
-      expect(result.content).toBe('final');
-
-      // 验证第二轮请求把 sub-agent 结果回传 LLM
-      const secondRequest = parentCalls.mock.calls[1][0];
-      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
-      expect(toolMsg!.content).toMatch(/drafted/);
-    });
-
-    it('sub-agent 无 hasRun 时走默认 reactLoop,非单字段 input 形状 stringify 兜底', async () => {
+    it('sub-agent 走默认 reactLoop,非单字段 input 形状 stringify 兜底', async () => {
       // 父 provider 需与子不同——DI 复用父 provider 会冲突
       // 解决:deps.provider 是父的;子 agent 构造时复用同 deps.provider
       // 为隔离,让父 provider 的 mock 序列中预留子 agent 的调用
@@ -1177,9 +952,8 @@ describe('Agent', () => {
         llmResponse({ content: 'parent-final', stopReason: 'stop' }),
       ]);
 
-      // getAgentEntry 返回 hasRun: false → 跳过自定义 run,走默认 reactLoop
       const writerCore = agentMeta({ name: 'writer' });
-      const writerEntryMeta = agentEntry({ name: 'writer', hasRun: false });
+      const writerEntryMeta = agentEntry({ name: 'writer' });
       const researcherMeta = agentMeta({ name: 'researcher', agents: ['writer'] });
 
       const agent = new Agent(
@@ -1188,7 +962,6 @@ describe('Agent', () => {
           agent: researcherMeta,
           subAgents: [writerCore],
           subAgentEntries: [writerEntryMeta],
-          loadAgentModuleImpl: async () => ({ run: undefined }),
         }),
       );
 
@@ -1223,8 +996,7 @@ describe('Agent', () => {
           provider: parentProvider,
           agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer' })],
-          subAgentEntries: [agentEntry({ name: 'writer', hasRun: false })],
-          loadAgentModuleImpl: async () => ({ run: undefined }),
+          subAgentEntries: [agentEntry({ name: 'writer' })],
         }),
       );
 
@@ -1236,36 +1008,6 @@ describe('Agent', () => {
       expect(childRequest.messages.find((m: LLMMessage) => m.role === 'user')!.content).toBe(
         '写一篇关于 AI 的短文',
       );
-    });
-
-    it('自定义 run 始终收原始 args 对象（含 input 字段）', async () => {
-      const { provider: parentProvider } = createMockProvider([
-        llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', { input: '交接单内容' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({ content: 'final', stopReason: 'stop' }),
-      ]);
-
-      let receivedArgs: unknown;
-      const agent = new Agent(
-        createDeps({
-          provider: parentProvider,
-          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer' })],
-          subAgentEntries: [agentEntry({ name: 'writer', hasRun: true })],
-          loadAgentModuleImpl: async () => ({
-            run: (async (args: unknown) => {
-              receivedArgs = args;
-              return 'drafted';
-            }) as (...args: unknown[]) => unknown,
-          }),
-        }),
-      );
-
-      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-      expect(result.content).toBe('final');
-      expect(receivedArgs).toEqual({ input: '交接单内容' });
     });
   });
 
@@ -1287,7 +1029,6 @@ describe('Agent', () => {
           agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
           subAgents: [writerMeta],
           config: { maxAgentDepth: 1 }, // 根 depth=1, 子 depth=2 > 1 抛错
-          loadAgentModuleImpl: async () => ({ run: undefined }),
         }),
       );
 
@@ -1318,7 +1059,6 @@ describe('Agent', () => {
           agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer' })],
           config: { maxAgentDepth: 3 }, // 根1 → 子2,未超限
-          loadAgentModuleImpl: async () => ({ run: undefined }),
         }),
       );
 
@@ -2278,9 +2018,6 @@ describe('Agent', () => {
           loadToolModule: async () => {
             throw new Error('loadToolModule not mocked');
           },
-          loadAgentModule: async () => {
-            throw new Error('loadAgentModule not mocked');
-          },
         };
       }
 
@@ -2431,8 +2168,7 @@ describe('Agent', () => {
       expect(handler).toHaveBeenCalledWith({ city: '北京', workspaceId: 'ws-1' }, ctx);
     });
 
-    it('beforeToolCall 对 sub-agent 递归（agent.x）同样拦截,拒绝时 mod.run 不执行', async () => {
-      const subRun = vi.fn(async () => 'sub result');
+    it('beforeToolCall 对 sub-agent 递归（agent.x）同样拦截,拒绝时子循环不执行', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           toolCalls: [toolCall('c1', 'agent.analyst', { q: 'x' })],
@@ -2444,15 +2180,8 @@ describe('Agent', () => {
         createDeps({
           provider,
           agent: agentMeta({ agents: ['analyst'] }),
-          subAgents: [agentMeta({ name: 'analyst' })],
-          subAgentEntries: [
-            {
-              ...agentMeta({ name: 'analyst' }),
-              filePath: 'dist/agents/analyst/handler.js',
-              hasRun: true,
-            } as AgentMetadata,
-          ],
-          loadAgentModuleImpl: async () => ({ run: subRun }) as unknown as AgentModule,
+          subAgents: [agentMeta({ name: 'analyst', systemPrompt: 'sub' })],
+          subAgentEntries: [agentEntry({ name: 'analyst' })],
           config: {
             beforeToolCall: (name) =>
               name.startsWith('agent.') ? { error: 'sub-agent not allowed' } : undefined,
@@ -2462,41 +2191,11 @@ describe('Agent', () => {
       );
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-      expect(subRun).not.toHaveBeenCalled();
+      // 拒绝后 sub-agent 的 LLM 循环不启动（provider 只收到父循环第一轮请求）
+      expect(completeCalls).toHaveBeenCalledTimes(2);
       const secondRequest = completeCalls.mock.calls[1][0];
       const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
       expect(JSON.stringify(toolMsg?.content)).toContain('sub-agent not allowed');
-    });
-
-    it('ctx 传递: sub-agent 自定义 run 收到 ctx 第二参数', async () => {
-      const subRun = vi.fn(async () => 'sub result');
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({
-          toolCalls: [toolCall('c1', 'agent.analyst', { q: 'x' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({ content: 'done', stopReason: 'stop' }),
-      ]);
-      void completeCalls;
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ agents: ['analyst'] }),
-          subAgents: [agentMeta({ name: 'analyst' })],
-          subAgentEntries: [
-            {
-              ...agentMeta({ name: 'analyst' }),
-              filePath: 'dist/agents/analyst/handler.js',
-              hasRun: true,
-            } as AgentMetadata,
-          ],
-          loadAgentModuleImpl: async () => ({ run: subRun }) as unknown as AgentModule,
-          ctx,
-        }),
-      );
-
-      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-      expect(subRun).toHaveBeenCalledWith({ q: 'x' }, ctx);
     });
 
     it('afterToolCall 成功后调用（name, args, result, ctx),拒绝时不调用', async () => {
@@ -2780,7 +2479,6 @@ describe('Agent — usage / turns 整树上卷', () => {
     provider: LLMProvider,
     agents: Record<string, AgentCore>,
     entries: Record<string, AgentMetadata> = {},
-    overrides: Partial<Pick<AgentDeps, 'loadAgentModule'>> = {},
   ): AgentDeps {
     return {
       providers: new Map([['openai', provider]]),
@@ -2795,11 +2493,6 @@ describe('Agent — usage / turns 整树上卷', () => {
       loadToolModule: async () => {
         throw new Error('loadToolModule not mocked');
       },
-      loadAgentModule:
-        overrides.loadAgentModule ??
-        (async () => {
-          throw new Error('loadAgentModule not mocked');
-        }),
     };
   }
 
@@ -2847,43 +2540,6 @@ describe('Agent — usage / turns 整树上卷', () => {
     expect(result.usage).toEqual({ prompt_tokens: 138, completion_tokens: 95, total_tokens: 233 });
     // 整树 turns = 2 + 2 + 1
     expect(result.turns).toBe(5);
-  });
-
-  it('自定义 run 的 sub-agent 计 0：父 usage/turns 只含主循环口径', async () => {
-    const { provider } = createMockProvider([
-      llmResponse({
-        toolCalls: [toolCall('c1', 'agent.writer', { input: '交接单' })],
-        stopReason: 'tool_calls',
-        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-      }),
-      llmResponse({
-        content: 'final',
-        stopReason: 'stop',
-        usage: { prompt_tokens: 20, completion_tokens: 30, total_tokens: 50 },
-      }),
-    ]);
-
-    const agent = new Agent(
-      createTreeDeps(
-        provider,
-        {
-          researcher: agentMeta({ name: 'researcher', agents: ['writer'], model: 'gpt-4o' }),
-          writer: agentMeta({ name: 'writer' }),
-        },
-        { writer: agentEntry({ name: 'writer', hasRun: true }) },
-        {
-          loadAgentModule: async () => ({
-            run: (async () => 'custom-run-result') as (...args: unknown[]) => unknown,
-          }),
-        },
-      ),
-    );
-
-    const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-    expect(result.content).toBe('final');
-    // 自定义 run 无结构化 usage 可卷——只含主循环 2 轮
-    expect(result.usage).toEqual({ prompt_tokens: 30, completion_tokens: 35, total_tokens: 65 });
-    expect(result.turns).toBe(2);
   });
 
   it('tracing 开启：subagent_call 事件仍嵌套，父 trace.usage/turns 整树', async () => {

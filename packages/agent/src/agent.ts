@@ -3,7 +3,6 @@ import path from 'node:path';
 import type {
   AgentCore,
   AgentMetadata,
-  AgentModule,
   AgentToolDescriptor,
   FaapiContext,
   LlmConfig,
@@ -12,13 +11,7 @@ import type {
 } from '@faapi/faapi';
 import type { AgentRunOptions } from './agentHandle';
 import { createProvider } from './provider';
-import type {
-  LLMMessage,
-  LLMProvider,
-  LLMStopReason,
-  LLMToolDefinition,
-  LLMUsage,
-} from './provider';
+import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
   reactLoop,
   reactLoopStream,
@@ -307,7 +300,7 @@ export interface AgentDeps {
   ctx?: FaapiContext;
   /** 查 agent LLM 可见元数据（对应 agentRegistry.getAgent,返回 AgentCore） */
   getAgent: (name: string) => AgentCore | undefined;
-  /** 查 agent 完整元数据（对应 agentRegistry.getAgentEntry,返回 AgentMetadata 含 filePath/hasRun） */
+  /** 查 agent 完整元数据（对应 agentRegistry.getAgentEntry,返回 AgentMetadata 含 filePath） */
   getAgentEntry: (name: string) => AgentMetadata | undefined;
   /** 查 tool 元数据（对应 toolRegistry.getTool） */
   getTool: (name: string) => ToolMetadata | undefined;
@@ -317,8 +310,6 @@ export interface AgentDeps {
   resolveSubAgents: (name: string) => AgentCore[];
   /** 动态 import tool handler（对应 loadToolModule） */
   loadToolModule: (filePath: string, functionName: string) => Promise<ToolModule>;
-  /** 动态 import agent handler（对应 loadAgentModule,仅 hasRun 参数,无 hasConfig） */
-  loadAgentModule: (filePath: string, hasRun: boolean) => Promise<AgentModule>;
   /** tool input 的 schema 解析（Phase 3.5 实现，可选） */
   resolveToolSchema?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
 }
@@ -334,47 +325,6 @@ export class AgentError extends Error {
     super(message);
     this.name = 'AgentError';
   }
-}
-
-/**
- * 把自定义 run 的返回值规范化为 ReactLoopResult（顶层 run()/stream() 类型不变）
- *
- * - string → content 直取
- * - object → spread 透传（业务自带 usage/reasoning 等字段自然携带）+ 补缺省：
- *   content 缺失时序列化整个对象（保证 ReactLoopResult.content 恒为 string），
- *   messages/turns/stopReason 补中性缺省
- * - undefined/null → 空 content（等价 handler 无返回值）
- * - 其他原始值 → String()
- */
-function normalizeRunResult(result: unknown): ReactLoopResult {
-  if (typeof result === 'string') {
-    return { content: result, messages: [], turns: 1, stopReason: 'stop' };
-  }
-  if (result && typeof result === 'object') {
-    const o = result as Record<string, unknown>;
-    let content: string;
-    if (typeof o.content === 'string') {
-      content = o.content;
-    } else {
-      try {
-        content = JSON.stringify(o);
-      } catch {
-        content = String(o);
-      }
-    }
-    return {
-      ...o,
-      content,
-      messages: Array.isArray(o.messages) ? (o.messages as LLMMessage[]) : [],
-      turns: typeof o.turns === 'number' ? o.turns : 1,
-      stopReason: typeof o.stopReason === 'string' ? (o.stopReason as LLMStopReason) : 'stop',
-      usage: o.usage as LLMUsage | undefined,
-    } as ReactLoopResult;
-  }
-  if (result === undefined || result === null) {
-    return { content: '', messages: [], turns: 1, stopReason: 'stop' };
-  }
-  return { content: String(result), messages: [], turns: 1, stopReason: 'stop' };
 }
 
 /**
@@ -462,11 +412,6 @@ export class Agent {
    * @throws {Error} provider.complete 抛错时立即传播
    */
   async run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult> {
-    // 顶层同样执行自定义 run（此前仅 sub-agent 派发路径生效，顶层静默走 reactLoop
-    // 是 run"不可用"的主因）：hasRun=true 时走业务 run，null 回默认循环
-    const custom = await this.tryExecuteCustomRun(input, options);
-    if (custom) return custom;
-
     const config = await this.buildLoopConfig(input, options);
     const result = await reactLoop(input, config);
     // reactLoop 不知 agent 名,在此填充顶层 trace.agentName（sub-agent 调本方法时也走此路径）
@@ -492,22 +437,6 @@ export class Agent {
    * @throws {Error} provider.stream 抛错时立即传播
    */
   async *stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk> {
-    // 与 run() 同一检测：自定义 run 无逐 token 可观测性（run 内是普通代码），
-    // 整体结果以单 delta + done chunk 收尾（消费端接口不变）
-    const custom = await this.tryExecuteCustomRun(input, options);
-    if (custom) {
-      yield { deltaContent: custom.content };
-      yield {
-        done: {
-          content: custom.content,
-          turns: custom.turns,
-          stopReason: custom.stopReason,
-          usage: custom.usage,
-        },
-      };
-      return;
-    }
-
     const config = await this.buildLoopConfig(input, options);
     yield* reactLoopStream(input, config);
   }
@@ -689,50 +618,6 @@ export class Agent {
           'the file must exist under the runtime resources dir (src/resources/, copied into the dist by dev/build)',
       );
     }
-  }
-
-  /**
-   * 顶层自定义 run 检测：目标 agent 声明 `run` 导出（hasRun=true）时执行之
-   *
-   * 与 executeSubAgent 的自定义 run 分支同语义，补齐顶层 `run()` / `stream()` 入口
-   * （此前顶层永远走 reactLoop，run 仅在被 sub-agent 派发时生效）。返回 null 表示
-   * 目标走默认循环（hasRun=false / 未指定 agent / 未注册——后两者交回
-   * buildLoopConfig 用统一文案报错）。
-   *
-   * 入参形状与 sub-agent 默认入参 schema 一致（单字段 `{ input }`）——run 业务方
-   * 读 `args.input`，顶层直调与被派发两个入口同一份代码。messages 历史续跑对
-   * run 型 agent 显式抛错（run 自持状态，框架无法替它续跑）。
-   */
-  private async tryExecuteCustomRun(
-    input: string | undefined,
-    options?: AgentRunOptions,
-  ): Promise<ReactLoopResult | null> {
-    const agentName = options?.agent;
-    if (!agentName) return null;
-    const entry = this.deps.getAgentEntry(agentName);
-    if (!entry || !entry.hasRun) return null;
-
-    if (options?.messages?.length) {
-      throw new AgentError(
-        `Agent "${agentName}" declares a custom run() — options.messages resume is not supported ` +
-          '(custom run owns its own state; pass the needed history inside the run call itself)',
-      );
-    }
-    if (!input) {
-      throw new AgentError(
-        'agent.run/stream requires non-empty input (custom-run agent has no options.messages resume)',
-      );
-    }
-
-    const mod = await this.deps.loadAgentModule(entry.filePath, true);
-    if (typeof mod.run !== 'function') {
-      // hasRun 由 scanAgents 正则检测，此分支是防御（源码与清单不一致的显式失败）
-      throw new AgentError(
-        `Agent "${agentName}" metadata declares run but module has no run export (${entry.filePath})`,
-      );
-    }
-    const result = await mod.run({ input }, this.deps.ctx);
-    return normalizeRunResult(result);
   }
 
   /**
@@ -1019,17 +904,9 @@ export class Agent {
    * reactLoop 据此发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原
    * 完整调用树）。详见 reactLoop.md「usage 与 turns 的整树口径」。
    *
-   * **自定义 run 无 trace、无用量上卷**：业务方导出 `run` 函数时直接返回业务结果,
-   * 无法采集 sub-agent 内部明细——需 trace / 用量统计时让 sub-agent 走默认 reactLoop
-   * （不导出 `run`）。
-   *
-   * 自定义 run 接收原始 args 对象；默认 reactLoop 的 user 消息：args 恰为单字段
-   * `{ input: <string> }`（与显式入参 schema 形状一致）时直传字符串,其余形状
-   * stringify 兜底（见 `extractSubAgentUserInput`）。
-   *
-   * 加载 handler.js 用 `getAgentEntry`(返回 AgentMetadata,含 filePath/hasRun),
-   * 而非 `getAgent`(返回 AgentCore,无代码加载细节)。DB skill 无文件,
-   * `getAgentEntry` 返回 `undefined`,走默认 reactLoop。
+   * sub-agent 统一走默认 reactLoop（自定义 run 已移除,agent 声明式执行）。
+   * user 消息：args 恰为单字段 `{ input: <string> }`（与显式入参 schema 形状一致）
+   * 时直传字符串,其余形状 stringify 兜底（见 `extractSubAgentUserInput`）。
    */
   private async executeSubAgent(
     subName: string,
@@ -1045,18 +922,6 @@ export class Agent {
 
     // 构造子 agent（复用父 deps——providers/llms/访问器共享,无 per-agent 名绑定）
     const subAgent = new Agent(this.deps, newDepth);
-
-    // 自定义 run：sub-agent handler 导出 run 函数时走自定义逻辑（无 trace）
-    // 用 getAgentEntry 拿 AgentMetadata(含 filePath/hasRun),DB skill 无文件走默认 reactLoop
-    const entry = this.deps.getAgentEntry(subName);
-    if (entry?.hasRun) {
-      const mod = await this.deps.loadAgentModule(entry.filePath, entry.hasRun);
-      if (mod.run) {
-        const result = await mod.run(args, this.deps.ctx);
-        this.deps.config?.afterToolCall?.(`agent.${subName}`, args, result, this.deps.ctx);
-        return result;
-      }
-    }
 
     // 继承父调用的 provider；sub 元数据声明 model 时优先用自身的,
     // 未声明时沿用父 model。单字段 { input } 直传字符串（与显式入参 schema 形状一致）,

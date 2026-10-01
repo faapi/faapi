@@ -85,11 +85,10 @@ export { createTaskQueue } from './task/taskQueue';
 export { loadTaskDriver } from './task/loadTaskDriver';
 export { createCronScheduler, type CronScheduler } from './task/cronScheduler';
 export { scanTasks, TASK_PATTERNS } from './task/scanTasks';
-export type { AgentModule } from './loader/loadAgentModule';
 export type { ToolModule } from './loader/loadToolModule';
 export type { ToolSchemaModule } from './loader/loadToolSchema';
 // 注册表访问器（单例模块,createAppBase 水合后可直接 import 调用）
-// getAgent 返回 AgentCore(LLM 可见字段);getAgentEntry 返回 AgentMetadata(含 filePath/hasRun,供加载 handler.js)
+// getAgent 返回 AgentCore(LLM 可见字段);getAgentEntry 返回 AgentMetadata(含 filePath,声明文件定位)
 export {
   getAgent,
   getAgentEntry,
@@ -109,7 +108,6 @@ export {
   listSkills,
 } from './injection/skillRegistry';
 // 动态加载器（dev 按需编译模式需 rootDir,prod 模式直接 import 产物）
-export { loadAgentModule } from './loader/loadAgentModule';
 export { loadToolModule } from './loader/loadToolModule';
 export { loadToolSchema, getToolSchemaPath } from './loader/loadToolSchema';
 

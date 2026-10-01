@@ -277,14 +277,13 @@ describe('runTaskInWorker', () => {
         name: 'log-analyzer',
         description: 'analyzer',
         filePath: 'dist/agents/log-analyzer/handler.js',
-        hasRun: false,
         systemPrompt: 'p',
         tools: ['parse', 'missing-tool'],
         agents: ['helper', 'missing-sub'],
         model: 'gpt-4o',
         maxTurns: 5,
       },
-      { name: 'helper', filePath: 'dist/agents/helper/handler.js', hasRun: true },
+      { name: 'helper', filePath: 'dist/agents/helper/handler.js' },
     ];
     agentRegistry.hydrate(metas);
     toolRegistry.hydrate([
@@ -506,14 +505,13 @@ describe('runTaskInWorker', () => {
             name: 'log-analyzer',
             description: 'analyzer',
             filePath: 'dist/agents/log-analyzer/handler.js',
-            hasRun: false,
             systemPrompt: 'p',
             tools: ['parse'],
             agents: ['helper'],
             model: 'gpt-4o',
             maxTurns: 5,
           },
-          { name: 'helper', filePath: 'dist/agents/helper/handler.js', hasRun: true },
+          { name: 'helper', filePath: 'dist/agents/helper/handler.js' },
         ],
         tools: [{ name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' }],
         skills: [{ name: 'db-skill', systemPrompt: 's' }],
@@ -522,12 +520,11 @@ describe('runTaskInWorker', () => {
     })) as Record<string, unknown>;
 
     expect(result.agent).toMatchObject({ name: 'log-analyzer', systemPrompt: 'p' });
-    // getAgentEntry 返回完整元数据（含 filePath/hasRun，供 worker 内 import agent 产物跑 run）
+    // getAgentEntry 返回完整元数据（含 filePath，任务内查询元数据用）
     expect(result.entry).toEqual({
       name: 'log-analyzer',
       description: 'analyzer',
       filePath: 'dist/agents/log-analyzer/handler.js',
-      hasRun: false,
       systemPrompt: 'p',
       tools: ['parse'],
       agents: ['helper'],
@@ -566,11 +563,10 @@ describe('runTaskInWorker', () => {
           {
             name: 'log-analyzer',
             filePath: 'dist/agents/log-analyzer/handler.js',
-            hasRun: false,
             tools: ['parse', 'missing-tool'],
             agents: ['helper', 'missing-sub'],
           },
-          { name: 'helper', filePath: 'dist/agents/helper/handler.js', hasRun: true },
+          { name: 'helper', filePath: 'dist/agents/helper/handler.js' },
         ],
         tools: [{ name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' }],
         skills: [],
@@ -586,7 +582,6 @@ describe('runTaskInWorker', () => {
       metadata: {
         name: 'log-analyzer',
         filePath: 'dist/agents/log-analyzer/handler.js',
-        hasRun: false,
         tools: ['parse', 'missing-tool'],
         agents: ['helper', 'missing-sub'],
       },

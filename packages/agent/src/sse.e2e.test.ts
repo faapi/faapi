@@ -82,9 +82,6 @@ describe('HTTP SSE thinking 透传（e2e）', () => {
       loadToolModule: async () => {
         throw new Error('not used in this fixture');
       },
-      loadAgentModule: async () => {
-        throw new Error('not used in this fixture');
-      },
     } as unknown as AgentDeps;
     registerAgentHandleFactory(() => new Agent(deps));
 

@@ -810,7 +810,7 @@ describe('createTaskQueue', () => {
   it('进程内执行注入注册表只读视图：run 的 taskCtx.registries 可查已水合元数据', async () => {
     const appRegistries = createAppRegistries();
     appRegistries.agent.hydrate([
-      { name: 'log-analyzer', filePath: 'dist/agents/log-analyzer/handler.js', hasRun: false },
+      { name: 'log-analyzer', filePath: 'dist/agents/log-analyzer/handler.js' },
     ]);
     appRegistries.tool.hydrate([
       { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
@@ -855,7 +855,6 @@ describe('createTaskQueue', () => {
         name: 'log-analyzer',
         description: 'analyzer',
         filePath: 'dist/agents/log-analyzer/handler.js',
-        hasRun: false,
         systemPrompt: 'p',
       },
     ]);
@@ -883,18 +882,17 @@ describe('createTaskQueue', () => {
 
     const call = runIsolated.mock.calls[0]![0] as {
       registries: {
-        agents: Array<{ name: string; filePath?: string; hasRun?: boolean; systemPrompt?: string }>;
+        agents: Array<{ name: string; filePath?: string; systemPrompt?: string }>;
         tools: Array<{ name: string }>;
         skills: Array<{ name: string }>;
       };
     };
-    // agents 为完整元数据快照（含 filePath/hasRun，非仅 LLM 可见字段）
+    // agents 为完整元数据快照（含 filePath，非仅 LLM 可见字段）
     expect(call.registries.agents).toEqual([
       {
         name: 'log-analyzer',
         description: 'analyzer',
         filePath: 'dist/agents/log-analyzer/handler.js',
-        hasRun: false,
         systemPrompt: 'p',
       },
     ]);

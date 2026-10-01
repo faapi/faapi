@@ -29,7 +29,6 @@ describe('extractAgentMetadata', () => {
   const meta: AgentPathMeta = {
     name: 'researcher',
     filePath: 'src/agents/researcher/handler.ts',
-    hasRun: false,
   };
 
   /** 写源码 + 提取 */
@@ -76,10 +75,9 @@ describe('extractAgentMetadata', () => {
       expect(result!.description).toBeUndefined();
     });
 
-    it('config 和 run 都无 JSDoc 时 description 为 undefined', () => {
+    it('无 JSDoc 时 description 为 undefined', () => {
       const result = extract(
-        `export const config = { systemPrompt: 'x' };\nexport function run() { return 'ok'; }\n`,
-        { ...meta, hasRun: true },
+        `export const config = { systemPrompt: 'x' };\nexport function helper() { return 'ok'; }\n`,
       );
       expect(result).not.toBeNull();
       expect(result!.description).toBeUndefined();
@@ -243,15 +241,10 @@ describe('extractAgentMetadata', () => {
   });
 
   describe('systemPrompt 必填 → 缺失抛 SchemaExtractionError', () => {
-    it('无 config 导出（仅 run，hasRun=true）→ 合法（自定义 run 豁免 config）', () => {
-      const result = extract(`/** 自定义 */\nexport function run(input) { return 'ok'; }\n`, {
-        ...meta,
-        hasRun: true,
-      });
-      expect(result).not.toBeNull();
-      expect(result!.hasRun).toBe(true);
-      expect(result!.systemPrompt).toBeUndefined();
-      expect(result!.description).toBe('自定义');
+    it('无 config 导出 → 抛必填错', () => {
+      expect(() =>
+        extract(`/** 自定义 */\nexport function helper(input) { return 'ok'; }\n`),
+      ).toThrow(SchemaExtractionError);
     });
 
     it('config 空对象 → 抛错', () => {
@@ -338,44 +331,31 @@ describe('extractAgentMetadata', () => {
     });
   });
 
-  describe('hasRun=true（自定义 run）→ config 豁免', () => {
-    const runMeta: AgentPathMeta = {
-      name: 'pipeline',
-      filePath: 'src/agents/pipeline/handler.ts',
-      hasRun: true,
-    };
-
-    it('无 config 导出合法——返回仅含 name/filePath/hasRun', () => {
-      const result = extract(`export async function run(args, ctx) { return args; }\n`, runMeta);
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('pipeline');
-      expect(result!.hasRun).toBe(true);
-      expect(result!.systemPrompt).toBeUndefined();
-      expect(result!.systemPromptFile).toBeUndefined();
-      expect(result!.description).toBeUndefined();
-    });
-
-    it('有 config 但缺提示词字段合法（字段不被运行时消费，asTool 描述仍可用）', () => {
-      const result = extract(
-        `export const config = { model: 'gpt-4', tools: ['a.b'] };\nexport async function run(args) { return args; }\n`,
-        runMeta,
+  describe('run 导出检测 → 迁移报错（自定义 run 已移除）', () => {
+    it('export async function run → 抛 SchemaExtractionError 含迁移指引', () => {
+      expect(() => extract(`export async function run(args, ctx) { return args; }\n`)).toThrow(
+        /run 已移除/,
       );
-      expect(result!.model).toBe('gpt-4');
-      expect(result!.tools).toEqual(['a.b']);
-      expect(result!.systemPrompt).toBeUndefined();
     });
 
-    it('config 声明 systemPrompt 与 systemPromptFile 仍抛互斥错（声明形式必须正确）', () => {
+    it('export const run 箭头函数同样报错', () => {
+      expect(() => extract(`export const run = async (args) => args;\n`)).toThrow(/run 已移除/);
+    });
+
+    it('config + run 同时声明 → 仍报 run 迁移错（run 优先检测）', () => {
       expect(() =>
         extract(
-          `export const config = { systemPrompt: 'x', systemPromptFile: 'p.md' };\nexport async function run(args) { return args; }\n`,
-          runMeta,
+          `export const config = { systemPrompt: 'x' };\nexport async function run(args) { return args; }\n`,
         ),
-      ).toThrow(/互斥/);
+      ).toThrow(/run 已移除/);
     });
 
-    it('hasRun=false 无 config 仍抛必填错（行为不变）', () => {
-      expect(() => extract(`export function GET() {}\n`)).toThrow(SchemaExtractionError);
+    it('非导出的局部 run 函数不误伤', () => {
+      const result = extract(
+        `function run(input) { return input; }\nexport const config = { systemPrompt: 'x' };\n`,
+      );
+      expect(result).not.toBeNull();
+      expect(result!.systemPrompt).toBe('x');
     });
   });
 
@@ -569,14 +549,12 @@ describe('extractAgentMetadata', () => {
   });
 
   describe('透传字段', () => {
-    it('filePath / hasRun 从 pathMeta 透传', () => {
+    it('filePath 从 pathMeta 透传', () => {
       const result = extract(`export const config = { systemPrompt: 'x' };\n`, {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasRun: false,
       });
       expect(result!.filePath).toBe('src/agents/researcher/handler.ts');
-      expect(result!.hasRun).toBe(false);
     });
   });
 

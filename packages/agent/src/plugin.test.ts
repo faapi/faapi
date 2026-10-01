@@ -5,14 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // ─── Mock @faapi/faapi ───────────────────────────────
-// 只 mock 无状态加载器（loadAgentModule / loadToolModule / loadToolSchema）。
+// 只 mock 无状态加载器（loadToolModule / loadToolSchema）。
 // 注册表不再走全局单例——插件读写 ctx.registries（app 实例，测试用
 // createAppRegistries() 构造真实实例并直接种数据）
 vi.mock('@faapi/faapi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@faapi/faapi')>();
   return {
     ...actual,
-    loadAgentModule: vi.fn(),
     loadToolModule: vi.fn(),
     loadToolSchema: vi.fn(),
   };
@@ -59,7 +58,7 @@ import {
 
 // ─── 测试数据 ───────────────────────────────────────
 
-// getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath/hasRun）
+// getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath）
 const testAgentCore: AgentCore = {
   name: 'researcher',
   description: '研究 agent',
@@ -69,7 +68,6 @@ const testAgentCore: AgentCore = {
 const testAgentEntry: AgentMetadata = {
   ...testAgentCore,
   filePath: 'dist/agents/researcher/handler.js',
-  hasRun: false,
 };
 
 const fullAgentConfig: AgentConfig = {

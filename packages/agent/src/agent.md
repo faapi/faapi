@@ -11,7 +11,6 @@
   - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
   - `agent.` 前缀 → 递归构造 sub-agent 调用（含 `maxAgentDepth` 防护 + 传递 `enableTracing`）
 - **递归防护**——`maxAgentDepth` 限制 agent 调用 agent 的深度,防止无限递归
-- **自定义 run**——agent handler 导出 `run` 函数时,sub-agent 调用走自定义逻辑而非默认 reactLoop
 - **tracing 接线**——`run` 返回后填充 `result.trace.agentName`（reactLoop 不知 agent 名）；sub-agent 调用时传递 `enableTracing` 并把 sub-trace 附在 [SubAgentToolResult](./reactLoop.md) 上,让 reactLoop 发出 `subagent_call` 事件
 - **usage / turns 冒泡**——sub-agent 走默认 reactLoop 时,把子循环整树的 `usage` / `turns` 包装进 `SubAgentToolResult` 返回,reactLoop 累加进父 run 台账（详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）
 
@@ -48,12 +47,11 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | 访问器 | 对应核心模块 | 说明 |
 | --- | --- | --- |
 | `getAgent(name)` | [agentRegistry.getAgent](../../faapi/src/injection/agentRegistry.md) | 查 agent `AgentCore`（LLM 可见字段：`name` / `description` / `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription`）。仅查文件 registry,**不 fallback 到 skillRegistry**——skill 与 agent 职责正交不耦合 |
-| `getAgentEntry(name)` | [agentRegistry.getAgentEntry](../../faapi/src/injection/agentRegistry.md) | 查 agent `AgentMetadata`（继承 `AgentCore` + `filePath` / `hasRun`）。仅查文件 registry,加载 `handler.js` 用 |
+| `getAgentEntry(name)` | [agentRegistry.getAgentEntry](../../faapi/src/injection/agentRegistry.md) | 查 agent `AgentMetadata`（继承 `AgentCore` + `filePath`）。仅查文件 registry |
 | `getTool(name)` | [toolRegistry.getTool](../../faapi/src/injection/toolRegistry.md) | 查 tool 元数据（filePath / functionName / inputTypeName） |
 | `resolveAgentTools(name)` | [agentRegistry.resolveAgentTools](../../faapi/src/injection/agentRegistry.md) | agent 显式声明的 tools 引用（仅查文件 registry） |
 | `resolveSubAgents(name)` | [agentRegistry.resolveSubAgents](../../faapi/src/injection/agentRegistry.md) | agent 可调用 sub-agent 列表（`AgentCore[]`,仅查文件 registry,skill 不参与 sub-agent 递归） |
 | `loadToolModule(...)` | [loadToolModule](../../faapi/src/loader/loadToolModule.md) | 动态 import tool handler |
-| `loadAgentModule(...)` | [loadAgentModule](../../faapi/src/loader/loadAgentModule.md) | 动态 import agent handler（签名 `(filePath, hasRun)`，仅取可选 `run` 函数） |
 | `resolveToolSchema?(tool)` | Phase 3.5 实现 | tool input 的 JSON Schema + 校验函数（基于 `zod.js` + `z.toJSONSchema`） |
 
 ### `Agent` 类方法
@@ -193,13 +191,6 @@ if (newDepth > maxDepth) throw new AgentRecursionError(maxDepth, newDepth);
 
 const subAgent = new Agent(deps, newDepth);  // deps 共享（providers/llms/访问器）
 
-// 用 getAgentEntry 拿 AgentMetadata（含 filePath/hasRun）
-const entry = deps.getAgentEntry(subName);
-if (entry?.hasRun) {
-  const mod = await deps.loadAgentModule(entry.filePath, entry.hasRun);
-  if (mod.run) return await mod.run(args, deps.ctx);  // 自定义 run(第二参收请求 ctx),无 trace
-}
-
 // 默认 reactLoop:继承父调用的 provider,sub 的 model 用其元数据声明（未声明沿用父 model）
 const subMeta = deps.getAgent(subName);
 const result = await subAgent.run(
@@ -216,47 +207,15 @@ const result = await subAgent.run(
 return {
   __subAgent: true,
   result: result.content,
-  usage: result.usage,   // 子循环整树用量(逐层上卷,自定义 run 缺省计 0)
+  usage: result.usage,   // 子循环整树用量(逐层上卷)
   turns: result.turns,   // 子循环整树轮数
   ...(enableTracing && result.trace ? { trace: result.trace } : {}),
 };
 ```
 
 - **`maxAgentDepth`**：默认 3。depth 从 1（根）开始,sub-agent 为 2、3...,超出抛 `AgentRecursionError`
-- **`getAgentEntry` vs `getAgent`**：加载 `handler.js` 必须用 `getAgentEntry`——`getAgent` 返回 `AgentCore`（无 `filePath` / `hasRun`）。两者都仅查文件 registry,不 fallback 到 skillRegistry（skill 与 agent 职责正交不耦合,skill 不参与 sub-agent 递归）。sub-agent 必须是文件型 agent,skill 不被 `agents` 列表自动引用
-- **自定义 run**：sub-agent handler 导出 `run` 时（`entry.hasRun=true`）,调用 `mod.run(args, ctx)`（第二参为完整请求 FaapiContext,含 resourcesDir / registries / user 等）跳过默认 reactLoop——业务方完全控制 sub-agent 逻辑,**无 trace**（业务方自己返回业务结果,不参与 reactLoop 的 tracing 采集）
-- **默认 reactLoop + provider 继承**：sub-agent 无 `run`（未注册或 `hasRun=false`）时,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）附在 `SubAgentToolResult` 的 `trace` 字段返回给 reactLoop,reactLoop 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`usage` / `turns` 字段始终携带（子循环整树口径,reactLoop 上卷进父 run 台账,详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）。`usage` / `turns` 缺省（如 provider 不返回用量）时 reactLoop 跳过对应累加
-- **自定义 run 的入参形状**：`mod.run(args, ctx)` 始终收原始 args 对象。默认入参 schema 下 LLM 传 `{ input: '交接单' }`——自定义 run 的业务方读 `args.input` 取交接单（也兼容读整个 args 的旧写法,宽松模型下形状不变）
-
-### 顶层自定义 run（run 型 agent）
-
-`Agent.run()` / `stream()` 开头经 `tryExecuteCustomRun` 检测：`getAgentEntry(options.agent).hasRun === true` 时**顶层同样执行自定义 run**（此前仅 sub-agent 派发路径生效,顶层静默走 reactLoop）。返回 null（未指定 agent / 未注册 / `hasRun=false`）则回默认循环——声明式 agent 行为零变化。
-
-- **入参形状统一**：顶层调 `mod.run({ input }, ctx)`——与 sub-agent 默认入参 schema（单字段 `{ input }`）一致,run 业务方读 `args.input`,顶层直调与被派发两个入口同一份代码
-- **返回值规范化**（顶层 `Promise<ReactLoopResult>` 类型不变）：string → `content` 直取;object → spread 透传（业务自带 `usage` / `reasoning` 等字段自然携带）+ 补缺省——`content` 缺失时序列化整个对象（`ReactLoopResult.content` 恒为 string）,`messages` 缺 `[]`、`turns` 缺 1、`stopReason` 缺 `'stop'`;undefined/null → 空 content;其他原始值 → `String()`
-- **stream 回退**：run 无逐 token 可观测性（run 内是普通代码）,整体结果以单 `{ deltaContent }` + `{ done }` chunk 收尾,消费端接口不变
-- **messages 历史续跑不支持**：hasRun agent 传 `options.messages` 显式抛 `AgentError`（run 自持状态,框架无法替它续跑）
-- **构建期 config 豁免**：`hasRun=true` 时 config 块整体可选——最简 run 型 agent 只导出 `run` 函数;无 config 导出时 `description` 从 **run 导出的 JSDoc** 提取（asTool 组装 LLM 可见工具描述的依据）。有 config 时字段仍提取（`tools` / `agents` 供 asTool 使用）但不被 run 消费
-- **边界（设计使然,文档化不消除）**：run 内部无 trace / 无鉴权钩子覆盖（`beforeToolCall` / `filterTools` 管不到 run 自己发起的 LLM 与工具调用）;入参无结构化 schema（agent-as-tool 保持单字段 `input` 约定,校验由 run 自理）;DB skill 不支持 run
-
-run 型 agent 最简形态（无需 config,prompt 从 resources 读）：
-
-```ts
-// src/agents/pipeline/handler.ts
-/**
- * 报告生成 agent —— 多步 pipeline：读模板 → 检索 → 生成
- */
-import fs from 'node:fs/promises';
-import path from 'node:path';
-
-export async function run(args, ctx) {
-  const template = await fs.readFile(
-    path.join(ctx.resourcesDir, 'prompts/report.md'), 'utf-8',
-  );
-  // ... 自行编排（多步 LLM / sub-agent / 纯代码）
-  return { content: '...' };
-}
-```
+- **`getAgentEntry` vs `getAgent`**：`getAgentEntry` 返回 `AgentMetadata`（含 `filePath`）,`getAgent` 返回 `AgentCore`。两者都仅查文件 registry,不 fallback 到 skillRegistry（skill 与 agent 职责正交不耦合,skill 不参与 sub-agent 递归）。sub-agent 必须是文件型 agent,skill 不被 `agents` 列表自动引用
+- **默认 reactLoop + provider 继承**：sub-agent 统一走默认循环,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）附在 `SubAgentToolResult` 的 `trace` 字段返回给 reactLoop,reactLoop 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`usage` / `turns` 字段始终携带（子循环整树口径,reactLoop 上卷进父 run 台账,详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）。`usage` / `turns` 缺省（如 provider 不返回用量）时 reactLoop 跳过对应累加
 
 ### Tracing
 
@@ -358,5 +317,5 @@ asTool(name: string): AgentToolDescriptor | undefined {
 - [provider](./provider.md) —— Phase 3.2,Agent 构造时持有 `providers` Map（由 plugin 从 `config.agent.llms` 遍历调 `createProvider` 创建）
 - faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) —— `AgentDeps` 访问器的真实实现来源（Phase 3.5 接线）
 - faapi 核心 [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— tool 元数据查询
-- faapi 核心 [loadAgentModule](../../faapi/src/loader/loadAgentModule.md) / [loadToolModule](../../faapi/src/loader/loadToolModule.md) —— 动态加载 handler
+- faapi 核心 [loadToolModule](../../faapi/src/loader/loadToolModule.md) —— 动态加载 tool handler
 - faapi 核心 [extractAgentMetadata](../../faapi/src/ast/extractAgentMetadata.md) / [extractToolMetadata](../../faapi/src/ast/extractToolMetadata.md) —— 元数据类型定义

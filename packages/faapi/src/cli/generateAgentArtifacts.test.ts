@@ -49,7 +49,6 @@ describe('generateAgentArtifacts', () => {
         name: 'researcher',
         description: '研究助手',
         filePath: 'src/agents/researcher/handler.ts',
-        hasRun: false,
         systemPrompt: 'You are a researcher',
         tools: ['web-search.search'],
         agents: ['writer'],
@@ -62,7 +61,6 @@ describe('generateAgentArtifacts', () => {
       expect(result[0]).toEqual({
         name: 'researcher',
         description: '研究助手',
-        hasRun: false,
         systemPrompt: 'You are a researcher',
         tools: ['web-search.search'],
         agents: ['writer'],
@@ -77,12 +75,10 @@ describe('generateAgentArtifacts', () => {
       const meta: AgentMetadata = {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasRun: true,
         // description / systemPrompt / tools / agents / model / maxTurns / inputDescription 均为 undefined
       };
       const result = serializeAgents([meta], 'dist');
       expect(result[0].name).toBe('researcher');
-      expect(result[0].hasRun).toBe(true);
       expect(result[0].filePath).toBe('dist/agents/researcher/handler.js');
       expect(result[0].description).toBeUndefined();
       expect(result[0].systemPrompt).toBeUndefined();
@@ -97,7 +93,6 @@ describe('generateAgentArtifacts', () => {
       const meta: AgentMetadata = {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasRun: false,
         systemPromptFile: 'prompts/research.md',
       };
       const serialized = serializeAgents([meta], 'dist');
@@ -115,7 +110,6 @@ describe('generateAgentArtifacts', () => {
       const meta: AgentMetadata = {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasRun: false,
       };
       const result = serializeAgents([meta], '.faapi');
       expect(result[0].filePath).toBe('.faapi/agents/researcher/handler.js');
@@ -125,7 +119,6 @@ describe('generateAgentArtifacts', () => {
       const meta: AgentMetadata = {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        hasRun: false,
       };
       const result = serializeAgents([meta]);
       expect(result[0].filePath).toBe('dist/agents/researcher/handler.js');
@@ -137,14 +130,12 @@ describe('generateAgentArtifacts', () => {
           name: 'researcher',
           description: '研究助手',
           filePath: 'src/agents/researcher/handler.ts',
-          hasRun: false,
           model: 'gpt-4',
         },
         {
           name: 'writer',
           description: '写作助手',
           filePath: 'src/agents/writer/handler.ts',
-          hasRun: true,
           maxTurns: 5,
         },
       ];
@@ -164,7 +155,6 @@ describe('generateAgentArtifacts', () => {
         {
           name: 'researcher',
           description: '研究助手',
-          hasRun: false,
           systemPrompt: 'You are a researcher',
           tools: ['web-search.search'],
           agents: ['writer'],
@@ -180,7 +170,6 @@ describe('generateAgentArtifacts', () => {
         name: 'researcher',
         description: '研究助手',
         filePath: 'dist/agents/researcher/handler.js',
-        hasRun: false,
         systemPrompt: 'You are a researcher',
         tools: ['web-search.search'],
         agents: ['writer'],
@@ -195,14 +184,12 @@ describe('generateAgentArtifacts', () => {
       const serialized = [
         {
           name: 'researcher',
-          hasRun: true,
           filePath: 'dist/agents/researcher/handler.js',
           // description / systemPrompt / tools / agents / model / maxTurns / inputDescription 缺失
         },
       ] as unknown as SerializedAgentRecord[];
       const hydrated = hydrateAgents(serialized);
       expect(hydrated[0].name).toBe('researcher');
-      expect(hydrated[0].hasRun).toBe(true);
       expect(hydrated[0].description).toBeUndefined();
       expect(hydrated[0].systemPrompt).toBeUndefined();
       expect(hydrated[0].tools).toBeUndefined();
@@ -218,7 +205,6 @@ describe('generateAgentArtifacts', () => {
           name: 'researcher',
           description: '研究助手',
           filePath: 'src/agents/researcher/handler.ts',
-          hasRun: false,
           systemPrompt: 'prompt',
           model: 'gpt-4',
           inputDescription: '研究任务交接单',
@@ -226,7 +212,6 @@ describe('generateAgentArtifacts', () => {
         {
           name: 'writer',
           filePath: 'src/agents/writer/handler.ts',
-          hasRun: true,
         },
       ];
       const serialized = serializeAgents(original, 'dist');
@@ -253,7 +238,6 @@ describe('generateAgentArtifacts', () => {
         {
           name: 'researcher',
           description: '研究助手',
-          hasRun: false,
           systemPrompt: 'You are a researcher',
           model: 'gpt-4',
           maxTurns: 10,
@@ -324,12 +308,10 @@ export const config = {
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasRun: false,
         },
         {
           name: 'writer',
           filePath: 'src/agents/writer/handler.ts',
-          hasRun: false,
         },
       ];
       const dist = join(tempDir, 'dist');
@@ -339,7 +321,6 @@ export const config = {
       expect(metadata).toHaveLength(2);
       expect(metadata[0].name).toBe('researcher');
       expect(metadata[0].description).toBe('研究助手');
-      expect(metadata[0].hasRun).toBe(false);
       expect(metadata[0].systemPrompt).toBe('You are a researcher');
       expect(metadata[0].tools).toEqual(['web-search.search']);
       expect(metadata[0].agents).toEqual(['writer']);
@@ -365,7 +346,7 @@ export const config = {
         `export const config = { systemPrompt: 'x', agents: ['ghost'] };\n`,
       );
       const agents: AgentManifest[] = [
-        { name: 'researcher', filePath: 'src/agents/researcher/handler.ts', hasRun: false },
+        { name: 'researcher', filePath: 'src/agents/researcher/handler.ts' },
       ];
       const dist = join(tempDir, 'dist');
       await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(
@@ -383,8 +364,8 @@ export const config = {
         `/** @agent dup */\nexport const config = { systemPrompt: 'y' };\n`,
       );
       const agents: AgentManifest[] = [
-        { name: 'researcher', filePath: 'src/agents/researcher/handler.ts', hasRun: false },
-        { name: 'writer', filePath: 'src/agents/writer/handler.ts', hasRun: false },
+        { name: 'researcher', filePath: 'src/agents/researcher/handler.ts' },
+        { name: 'writer', filePath: 'src/agents/writer/handler.ts' },
       ];
       const dist = join(tempDir, 'dist');
       await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(
@@ -392,7 +373,7 @@ export const config = {
       );
     });
 
-    it('仅 hasRun 的 agent(无 config 块)→ 合法，JSDoc description 提取进清单', async () => {
+    it('run 导出 → 迁移报错（自定义 run 已移除）', async () => {
       writeAgent(
         'src/agents/writer/handler.ts',
         `/**
@@ -406,15 +387,10 @@ export async function run(ctx) { return 'done'; }
         {
           name: 'writer',
           filePath: 'src/agents/writer/handler.ts',
-          hasRun: true,
         },
       ];
       const dist = join(tempDir, 'dist');
-      const manifest = await generateAgentArtifacts(agents, tempDir, dist);
-      expect(manifest).toHaveLength(1);
-      expect(manifest[0]!.hasRun).toBe(true);
-      expect(manifest[0]!.description).toBe('写作助手');
-      expect(manifest[0]!.systemPrompt).toBeUndefined();
+      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/run 已移除/);
     });
 
     it('模板字符串 systemPrompt 端到端写入 faapi-agents.js(多行人设)', async () => {
@@ -425,7 +401,7 @@ export async function run(ctx) { return 'done'; }
         'export const config = {\n  systemPrompt: `You are a log analyzer.\nBe careful.`,\n  maxTurns: 3,\n};\n',
       );
       const agents: AgentManifest[] = [
-        { name: 'log-analyzer', filePath: 'src/agents/log-analyzer/handler.ts', hasRun: true },
+        { name: 'log-analyzer', filePath: 'src/agents/log-analyzer/handler.ts' },
       ];
       const dist = join(tempDir, 'dist');
       const metadata = await generateAgentArtifacts(agents, tempDir, dist);
@@ -448,7 +424,7 @@ export async function run(ctx) { return 'done'; }
 `,
       );
       const agents: AgentManifest[] = [
-        { name: 'outliner', filePath: 'src/agents/outliner/handler.ts', hasRun: false },
+        { name: 'outliner', filePath: 'src/agents/outliner/handler.ts' },
       ];
       const dist = join(tempDir, 'dist');
       const metadata = await generateAgentArtifacts(agents, tempDir, dist);
@@ -479,7 +455,6 @@ export async function run(ctx) { return 'done'; }
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasRun: false,
         },
       ];
       const dist = join(tempDir, 'dist');
@@ -512,7 +487,6 @@ export const config = { systemPrompt: 'prompt', model: 'gpt-4' };
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasRun: false,
         },
       ];
       // dist 用相对路径(避免 toProdFilePath 拼出绝对路径)
@@ -539,7 +513,7 @@ export const config = { systemPrompt: 'prompt', model: 'gpt-4' };
       expect(hydrated[0].systemPrompt).toBe('prompt');
     });
 
-    it('多个 agent 混合生成(config + run 各一)', async () => {
+    it('多个 agent 混合生成（多 agent 端到端写盘）', async () => {
       writeAgent(
         'src/agents/researcher/handler.ts',
         `/** 研究助手 */
@@ -550,7 +524,6 @@ export const config = { systemPrompt: 'x', model: 'gpt-4' };
         'src/agents/writer/handler.ts',
         `/** 写作助手 */
 export const config = { systemPrompt: 'write well' };
-export async function run(ctx) { return 'done'; }
 `,
       );
 
@@ -558,12 +531,10 @@ export async function run(ctx) { return 'done'; }
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasRun: false,
         },
         {
           name: 'writer',
           filePath: 'src/agents/writer/handler.ts',
-          hasRun: true,
         },
       ];
       const dist = join(tempDir, 'dist');
@@ -581,7 +552,7 @@ export async function run(ctx) { return 'done'; }
       expect(metadata[0].name).toBe('researcher');
       expect(metadata[0].model).toBe('gpt-4');
       expect(metadata[1].name).toBe('writer');
-      expect(metadata[1].hasRun).toBe(true);
+      expect(metadata[1].systemPrompt).toBe('write well');
       expect(metadata[1].systemPrompt).toBe('write well');
       expect(metadata[1].model).toBeUndefined();
     });
@@ -597,7 +568,6 @@ export async function run(ctx) { return 'done'; }
         {
           name: 'researcher',
           filePath: 'src/agents/researcher/handler.ts',
-          hasRun: false,
         },
       ];
       const dist = join(tempDir, '.faapi');
@@ -623,7 +593,6 @@ export const config = { systemPrompt: 'x' };
         {
           name: 'researcher', // 目录推导名
           filePath: 'src/agents/researcher/handler.ts',
-          hasRun: false,
         },
       ];
       const dist = join(tempDir, 'dist');

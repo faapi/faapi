@@ -41,7 +41,6 @@ describe('agentRegistry', () => {
     name: 'researcher',
     description: '研究助手',
     filePath: 'dist/agents/researcher/handler.js',
-    hasRun: false,
     systemPrompt: 'You are a researcher',
     tools: ['web-search.search'],
     agents: ['writer'],
@@ -53,7 +52,6 @@ describe('agentRegistry', () => {
     name: 'writer',
     description: '写作助手',
     filePath: 'dist/agents/writer/handler.js',
-    hasRun: true,
   };
 
   const sharedWeather: ToolMetadata = {
@@ -114,7 +112,6 @@ describe('agentRegistry', () => {
       expect(agent!.name).toBe('researcher');
       expect(agent!.description).toBe('研究助手');
       expect(agent!.filePath).toBe('dist/agents/researcher/handler.js');
-      expect(agent!.hasRun).toBe(false);
       expect(agent!.systemPrompt).toBe('You are a researcher');
       expect(agent!.tools).toEqual(['web-search.search']);
       expect(agent!.agents).toEqual(['writer']);
@@ -131,11 +128,10 @@ describe('agentRegistry', () => {
       expect(getAgent('any-agent')).toBeUndefined();
     });
 
-    it('查找仅 hasRun 的 agent', () => {
+    it('按名查找 agent', () => {
       hydrateAgentRegistry([writer]);
       const agent = getAgentEntry('writer');
       expect(agent).toBeDefined();
-      expect(agent!.hasRun).toBe(true);
       expect(agent!.systemPrompt).toBeUndefined();
     });
   });
@@ -202,7 +198,6 @@ describe('agentRegistry', () => {
       const noDesc: AgentMetadata = {
         name: 'plain',
         filePath: 'dist/agents/plain/handler.js',
-        hasRun: true,
       };
       hydrateAgentRegistry([noDesc]);
       const tool = asTool('plain');
@@ -232,7 +227,6 @@ describe('agentRegistry', () => {
       const writerWithTools: AgentMetadata = {
         name: 'writer',
         filePath: 'dist/agents/writer/handler.js',
-        hasRun: false,
         tools: ['web-search.search'],
       };
       hydrateAgentRegistry([writerWithTools, researcher]);
@@ -247,7 +241,6 @@ describe('agentRegistry', () => {
       const agent: AgentMetadata = {
         name: 'researcher',
         filePath: 'dist/agents/researcher/handler.js',
-        hasRun: false,
         tools: ['nonexistent.tool', 'weather.getWeather'],
       };
       hydrateAgentRegistry([agent]);
@@ -293,7 +286,6 @@ describe('agentRegistry', () => {
       const agent: AgentMetadata = {
         name: 'writer',
         filePath: 'dist/agents/writer/handler.js',
-        hasRun: false,
         tools: ['web-search.search'],
       };
       hydrateAgentRegistry([agent]);
@@ -329,7 +321,6 @@ describe('agentRegistry', () => {
       const agent: AgentMetadata = {
         name: 'orchestrator',
         filePath: 'dist/agents/orchestrator/handler.js',
-        hasRun: false,
         agents: ['writer', 'nonexistent'],
       };
       hydrateAgentRegistry([agent, writer]);
@@ -358,12 +349,10 @@ describe('agentRegistry', () => {
       const reviewer: AgentMetadata = {
         name: 'reviewer',
         filePath: 'dist/agents/reviewer/handler.js',
-        hasRun: true,
       };
       const orchestrator: AgentMetadata = {
         name: 'orchestrator',
         filePath: 'dist/agents/orchestrator/handler.js',
-        hasRun: false,
         agents: ['researcher', 'writer', 'reviewer'],
       };
       hydrateAgentRegistry([orchestrator, researcher, writer, reviewer]);
@@ -419,7 +408,6 @@ describe('agentRegistry', () => {
       const orchestrator: AgentMetadata = {
         name: 'orchestrator',
         filePath: 'dist/agents/orchestrator/handler.js',
-        hasRun: false,
         agents: ['writer', 'translator'],
       };
       hydrateAgentRegistry([orchestrator, writer]);

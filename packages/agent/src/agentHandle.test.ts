@@ -67,7 +67,7 @@ function defaultLlms(): Record<string, LlmConfig> {
  * @param opts.llms 可选,覆盖默认 llms 配置
  */
 function mockDeps(opts?: { provider?: LLMProvider; llms?: Record<string, LlmConfig> }): AgentDeps {
-  // getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath/hasRun）
+  // getAgent 返回 AgentCore（LLM-facing 字段）;getAgentEntry 返回 AgentMetadata（含 filePath）
   const agentCore: AgentCore = {
     name: 'researcher',
     description: '研究 agent',
@@ -76,7 +76,6 @@ function mockDeps(opts?: { provider?: LLMProvider; llms?: Record<string, LlmConf
   const agentEntryMeta: AgentMetadata = {
     ...agentCore,
     filePath: 'dist/agents/researcher/handler.js',
-    hasRun: false,
   };
   const llms = opts?.llms ?? defaultLlms();
   const providers = new Map<string, LLMProvider>([['openai', opts?.provider ?? mockProvider()]]);
@@ -90,7 +89,6 @@ function mockDeps(opts?: { provider?: LLMProvider; llms?: Record<string, LlmConf
     resolveAgentTools: () => [] as ToolMetadata[],
     resolveSubAgents: () => [] as AgentCore[],
     loadToolModule: async () => ({ handler: async () => 'ok', functionName: 'fn' }),
-    loadAgentModule: async () => ({ run: undefined }),
   };
 }
 

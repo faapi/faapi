@@ -98,7 +98,7 @@ LLM 一轮可返回多个 tool_call，非流式路径**并行执行**（`Promise
 export interface SubAgentToolResult {
   __subAgent: true;      // 标记字段
   result: unknown;       // 子代理最终 content（剥壳后回传 LLM）
-  usage?: LLMUsage;      // 子循环整树用量（缺省 = 无可卷，如自定义 run）
+  usage?: LLMUsage;      // 子循环整树用量（缺省 = provider 未返回用量）
   turns?: number;        // 子循环整树轮数
   trace?: AgentTrace;    // enableTracing=true 时携带（发 subagent_call 事件）
 }
@@ -106,7 +106,6 @@ export interface SubAgentToolResult {
 
 **边界与不变式**：
 
-- **自定义 run 的 sub-agent 计 0**：handler 导出 `run` 函数的 sub-agent 不走默认 reactLoop，无结构化 usage 可卷——`executeSubAgent` 直接返回业务结果（不包装），其 token 不进入父 run 台账。需要用量统计的 sub-agent 应走默认 reactLoop
 - **循环控制不受影响**：`maxTurns` 循环计数与 trace 事件的 `turn` 序号始终是**主循环口径**——子代理轮数不挤占父循环的 `maxTurns` 预算，`llm_call.turn` / `tool_call.turn` / `subagent_call.turn` 序号保持 1..N 连续
 - **trace 顶层同口径**：`AgentTrace.turns` / `usage` 与 `ReactLoopResult` 同值（整树）；各层 sub-trace 自带各自的整树用量，业务方可还原逐层明细
 - **兼容**：reactLoop 同时识别旧 `TracingToolResult`（`{ __trace: true, result, trace }`，无用量字段，仅触发 `subagent_call` 事件、不上卷用量）——业务方直接调 `reactLoop` 自定义 `executeTool` 的存量代码不受影响；新代码用 `SubAgentToolResult`

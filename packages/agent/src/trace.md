@@ -102,7 +102,7 @@ reactLoop 在收到返回值时检查 `__subAgent` / `__trace` 字段：
 - 命中但无 `trace`（旧结构必有 `trace`,新结构 tracing 关闭时无）→ 发出 `tool_call` 事件
 - 未命中 → 发出 `tool_call` 事件
 
-用量上卷语义（`usage` / `turns` 整树口径、自定义 run 计 0、循环控制不受影响）详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」。
+用量上卷语义（`usage` / `turns` 整树口径、循环控制不受影响）详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」。
 
 ### Agent.executeSubAgent 传递 enableTracing
 

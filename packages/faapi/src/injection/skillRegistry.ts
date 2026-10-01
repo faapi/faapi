@@ -25,7 +25,7 @@ import type { AgentCore } from '../ast/extractAgentMetadata';
  * ## 存储 AgentCore 而非 AgentMetadata
  *
  * skillRegistry 存储 [AgentCore](../ast/extractAgentMetadata.md) 而非完整
- * `AgentMetadata`——DB skill 无源文件,无需 `filePath` / `hasRun` / `hasConfig`
+ * `AgentMetadata`——DB skill 无源文件,无需 `filePath`
  * 等代码加载占位字段。业务方从 DB 字段直接映射到 `AgentCore` 的 LLM 可见字段
  * (name / description / systemPrompt / tools / agents / model / maxTurns)即可。
  *

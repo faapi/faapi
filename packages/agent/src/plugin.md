@@ -9,7 +9,7 @@ faapi 核心与 `@faapi/agent` 解耦——核心只提供 [agentHandle 工厂�
 - **读配置**——从 `faapi.config.ts` 的 `agent` 块读取 LLM 配置、全局参数（无默认 agent / 默认 provider——调用时显式指定）
 - **创建 provider**——调 [createProvider](./provider.md) 构造 LLM provider 实例（单例）
 - **注册工厂**——调 `registerAgentHandleFactory` 注册工厂函数,工厂在每次请求时构造 [Agent](./agent.md) 实例
-- **注入访问器**——从 `@faapi/faapi` import 注册表/加载器访问器（`getAgent` / `getTool` / `resolveAgentTools` / `resolveSubAgents` / `loadAgentModule` / `loadToolModule`）,构造 `AgentDeps` 注入到 Agent
+- **注入访问器**——从 `@faapi/faapi` import 注册表/加载器访问器（`getAgent` / `getTool` / `resolveAgentTools` / `resolveSubAgents` / `loadToolModule`）,构造 `AgentDeps` 注入到 Agent
 
 插件把这些「接线」逻辑集中在一处,Agent 类保持纯运行时逻辑。
 
@@ -91,8 +91,6 @@ registerAgentHandleFactory(() => {
     resolveSubAgents,
     loadToolModule: (filePath, functionName) =>
       loadToolModule(filePath, functionName, rootDir),  // 包装注入 rootDir
-    loadAgentModule: (filePath, hasRun) =>
-      loadAgentModule(filePath, hasRun, rootDir),  // 包装注入 rootDir
     resolveToolSchema,           // setup 内创建的偏函数（工厂内复用）
   });
 });
@@ -104,7 +102,7 @@ registerAgentHandleFactory(() => {
 
 ### 加载器 rootDir 包装
 
-[loadToolModule](../../faapi/src/loader/loadToolModule.md) / [loadAgentModule](../../faapi/src/loader/loadAgentModule.md) 的第三个参数 `rootDir` 用于 dev 按需编译模式（Vite 风格）——确保产物存在再 import,避免污染 Vite SSR 内部状态。
+[loadToolModule](../../faapi/src/loader/loadToolModule.md) 的第三个参数 `rootDir` 用于 dev 按需编译模式（Vite 风格）——确保产物存在再 import,避免污染 Vite SSR 内部状态。
 
 `AgentDeps.loadToolModule` 签名不含 `rootDir`（Agent 类不需要知道编译细节）,因此在 plugin 中包装注入：
 
@@ -140,4 +138,4 @@ const resolveToolSchema = createToolSchemaResolver({ rootDir }); // setup 内创
 - [provider](./provider.md) —— LLM provider 抽象 + createProvider 工厂
 - faapi 核心 [agentHandle 工厂](../../faapi/src/injection/agentHandle.md) —— registerAgentHandleFactory / getAgentHandle
 - faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) / [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— 注册表访问器
-- faapi 核心 [loadAgentModule](../../faapi/src/loader/loadAgentModule.md) / [loadToolModule](../../faapi/src/loader/loadToolModule.md) —— 动态加载器
+- faapi 核心 [loadToolModule](../../faapi/src/loader/loadToolModule.md) —— 动态加载器

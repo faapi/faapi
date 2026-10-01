@@ -45,7 +45,7 @@ skill 与 agent 是补充关系而非覆盖关系——业务方在 plugin 内�
 
 ### 存储 AgentCore 而非 AgentMetadata
 
-skillRegistry 内部存储 `AgentCore` 而非完整 `AgentMetadata`——DB skill 无源文件，无需 `filePath` / `hasRun` 等代码加载占位字段。业务方从 DB 字段直接映射到 `AgentCore` 的 LLM 可见字段：
+skillRegistry 内部存储 `AgentCore` 而非完整 `AgentMetadata`——DB skill 无源文件，无需 `filePath` 等占位字段。业务方从 DB 字段直接映射到 `AgentCore` 的 LLM 可见字段：
 
 | DB 字段（业务方自定义） | `AgentCore` 字段 |
 | --- | --- |
@@ -57,7 +57,7 @@ skillRegistry 内部存储 `AgentCore` 而非完整 `AgentMetadata`——DB skil
 | `model` | `model?` |
 | `max_turns` | `maxTurns?` |
 
-无需像旧设计那样填 `filePath: ''` / `hasConfig: false` / `hasRun: false` 占位——这些字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）。
+无需像旧设计那样填 `filePath: ''` 占位——该字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）。
 
 DB skill 不支持自定义 `run` 函数（多步 prompt 串联）——需要 `run` 的仍走文件型 agent。
 

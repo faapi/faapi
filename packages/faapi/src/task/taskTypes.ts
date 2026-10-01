@@ -104,7 +104,7 @@ export interface TaskJob {
  * `TaskRegistriesView` 生成快照，worker wrapper 内重建只读视图。
  */
 export interface TaskRegistriesSnapshot {
-  /** agent 完整元数据（含 filePath/hasRun，非仅 LLM 可见字段） */
+  /** agent 完整元数据（含 filePath，非仅 LLM 可见字段） */
   agents: AgentMetadata[];
   tools: ToolMetadata[];
   skills: AgentCore[];
@@ -132,7 +132,7 @@ export interface TaskContext {
    *
    * 进程内执行为活引用；隔离执行为派发时刻的快照视图（worker 内重建）——
    * 执行中途的 reload/DB skill 变更不影响当次执行。
-   * 任务内组装 agent 用 `registries.agent.getAgentEntry(name)`（含 filePath/hasRun）。
+   * 任务内组装 agent 用 `registries.agent.getAgentEntry(name)`（含 filePath）。
    */
   registries: TaskRegistriesView;
   /**

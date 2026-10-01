@@ -109,7 +109,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
 
   /**
    * 注册表纯数据快照（隔离路径 postMessage 用）——agent 取完整元数据
-   * （getAgentEntry 含 filePath/hasRun，非仅 LLM 可见字段），派发时刻生成
+   * （getAgentEntry 含 filePath，非仅 LLM 可见字段），派发时刻生成
    */
   function snapshotRegistries(): TaskRegistriesSnapshot {
     return {

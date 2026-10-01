@@ -625,9 +625,9 @@ agent 与 skill 物理隔离，职责正交不耦合：
 
 物理隔离的必要性：
 
-- **职责正交不耦合**——**agent 负责核心流程**（含 `run` 函数的多步 prompt 串联、文件型入口、sub-agent 递归）；**skill 用于拓展**（运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用）。两者不构成覆盖关系
+- **职责正交不耦合**——**agent 负责核心流程**（声明式 LLM 循环、文件型入口、sub-agent 递归；编排场景注册 tool）；**skill 用于拓展**（运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用）。两者不构成覆盖关系
 
-**run 型 agent（自定义 run）**：handler 导出 `run` 即完全接管执行——顶层 `agent.run()`/`stream()` 与 sub-agent 派发（asTool / agents 列表）**两个入口都执行自定义 run**，入参统一为 `{ input }`（第二参为完整请求 `FaapiContext`，含 `ctx.resourcesDir`）；构建期 config 豁免（最简 run 型 agent 只导出 run 函数，`description` 从 run 导出的 JSDoc 提取供 asTool 使用），声明式 agent（无 run）行为不变（config 必填 + 默认 reactLoop）。返回值顶层规范化为 `ReactLoopResult`（string/object/undefined 三态补缺省），sub-agent 路径原始值直接作 tool result。边界：run 内无 trace/鉴权钩子/流式 delta（普通代码框架不可观测）、入参无结构化 schema。详见 `packages/agent/src/agent.md` 的「顶层自定义 run」。
+**agent 统一为声明式执行（自定义 run 已移除）**：agent = config 声明（systemPrompt / systemPromptFile / tools / agents / model / maxTurns）+ 默认 reactLoop。检测到 handler 导出 `run` 时构建期抛迁移错误。原 run 的两个场景由更强能力承接——**LLM 可调用的编排代码注册 tool**（有 schema 校验、trace 采集、鉴权钩子覆盖，全链路可观测），**多 agent 协作用 config.agents 声明 sub-agent**（继承 provider、delta 冒泡、usage 整树上卷）。
 - **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 清单来自编译期产物，reload 时整体重新生成，**dev 模式 watcher 每次改文件都触发 reload**，业务方 DB skill 若混在同一 registry 会被清空，需要业务方手动重新塞，不可接受
 - **DB skill 是运行时增量**——业务方监听 DB change stream 单条增删改，与"整体替换"语义天然冲突
 
@@ -637,8 +637,8 @@ agent 与 skill 物理隔离，职责正交不耦合：
 
 DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetadata` 接口）：
 - 只填 LLM 可见字段：`name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?` / `inputDescription?`（agent-as-tool 派发交接单说明，未声明时 sub-agent 工具 schema 的 input description 用框架默认文案）
-- 无需 `filePath` / `hasRun` / `hasConfig` 占位——这些字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）
-- DB skill 不支持自定义 `run` 函数（多步 prompt 串联）——需要 `run` 的仍走文件型 agent
+- 无需 `filePath` 占位——该字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）
+- DB skill 不支持自定义 `run` 函数——自定义 run 机制已整体移除（文件型 agent 同样声明式执行）
 
 详见 `src/injection/skillRegistry.md`。
 
@@ -778,7 +778,7 @@ it('GET 返回分页数据', async () => {
 
 - **任务定义（文件约定）**：`src/tasks/<name>/task.ts`，导出 `task` 元信息对象（`concurrency` / `retries` / `timeoutMs` / `graceMs` / `cron`，均可选；`graceMs` 为取消宽限期毫秒数，仅声明 `timeoutMs` 的隔离任务生效，默认 5s）+ `run(payload, taskCtx)`；`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`）
 - **超时取消真终止（worker 隔离执行）**：任务声明 `task.timeoutMs` 后在独立 worker 线程执行，超时两段式取消——先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀，判定超时即执行真正终止（Node 主线程无法强杀协程，进程内"不再等待"式超时是假取消）。任务记录新增 `cancelled` 状态：被框架终止（超时终止/停机取消）记 `cancelled`，与 run 自身失败的 `failed` 分流。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、`taskCtx.config` 为可克隆纯数据快照。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。详见 `packages/faapi/src/task/taskWorker.md`
-- **任务侧注册表只读视图（TaskContext.registries）**：两条执行路径均注入 `taskCtx.registries`（agent/tool/skill 元数据的只读查询视图，不含 hydrate/clear 写接口），任务内组装/调用 agent 不再依赖 `getApp()`——注册表为 app 实例级，全局访问器读的是 app 启动从不水合的默认实例，`getApp()` 在隔离 worker 内也不可用（globalThis 独立），任务侧曾没有任何注册表访问路径。进程内传活引用（`createTaskRegistriesView`）；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath/hasRun 完整元数据 + tools + skills）postMessage 传入、worker 内重建视图——**快照语义**：视图反映派发时刻的注册表，执行中途 reload/DB skill 变更不影响当次执行。详见 `packages/faapi/src/task/taskTypes.md`
+- **任务侧注册表只读视图（TaskContext.registries）**：两条执行路径均注入 `taskCtx.registries`（agent/tool/skill 元数据的只读查询视图，不含 hydrate/clear 写接口），任务内组装/调用 agent 不再依赖 `getApp()`——注册表为 app 实例级，全局访问器读的是 app 启动从不水合的默认实例，`getApp()` 在隔离 worker 内也不可用（globalThis 独立），任务侧曾没有任何注册表访问路径。进程内传活引用（`createTaskRegistriesView`）；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath 完整元数据 + tools + skills）postMessage 传入、worker 内重建视图——**快照语义**：视图反映派发时刻的注册表，执行中途 reload/DB skill 变更不影响当次执行。详见 `packages/faapi/src/task/taskTypes.md`
 - **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle 钩子的 `{ tasks }` 全部指向同一 app 实例 TaskClient；cron（croner）到点自动入队空 payload，复用同一队列与执行模型
 - **幂等投递（dedupId）**：`enqueue` 可选幂等键——同键任务在队列系统保留期内不重复入队（重复投递返回已存在任务 id）。pgboss 映射 send 自定义 id（要求 UUID，驱动内 SHA-1 确定性映射）；bullmq 映射 jobId。**cron 投递自动携带 `cron:<任务名>:<计划触发时刻>` 键**——多 worker 实例同窗只入队一份（依赖实例时钟同步），解决多实例 cron 重复投递
 - **失败钩子**：`config.task.onFailed({ task, jobId, attempt, willRetry, cancelled, error })`——每次执行失败/取消后触发（含将重试的失败），用于告警/死信上报等副作用；自身抛错被忽略

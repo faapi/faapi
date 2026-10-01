@@ -61,7 +61,7 @@ export async function run(payload, taskCtx) {
 ```ts
 // src/tasks/log-analysis/task.ts
 import { Agent, createToolSchemaResolver } from '@faapi/agent';
-import { loadToolModule, loadAgentModule } from '@faapi/faapi';
+import { loadToolModule } from '@faapi/faapi';
 
 // 模块级创建一次（rootDir 缺省 process.cwd()，faapi 服务进程 cwd 即项目根）
 const resolveToolSchema = createToolSchemaResolver();
@@ -77,7 +77,6 @@ export async function run(payload, taskCtx) {
     resolveAgentTools: taskCtx.registries.agent.resolveAgentTools,
     resolveSubAgents: taskCtx.registries.agent.resolveSubAgents,
     loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, process.cwd()),
-    loadAgentModule: (filePath, hasRun) => loadAgentModule(filePath, hasRun, process.cwd()),
     resolveToolSchema,               // zod.js → JSON Schema + safeParse 校验（带 mtime 缓存）
   });
   return agent.run(payload.input, { agent: 'log-analyzer', provider });

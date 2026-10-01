@@ -10,13 +10,13 @@ import { SchemaExtractionError } from './resolveTypeNode';
 /**
  * Agent 的 LLM 可见核心字段
  *
- * 描述"agent 是什么"——LLM 真正需要消费的字段,**不含**代码本体加载细节
- * (filePath / hasRun)。文件型 agent 与 DB-driven skill 都实现此接口。
+ * 描述"agent 是什么"——LLM 真正需要消费的字段,**不含**声明文件定位信息
+ * (filePath)。文件型 agent 与 DB-driven skill 都实现此接口。
  *
  * - 文件型 agent:由 [AgentMetadata](./extractAgentMetadata.md) 继承扩展,
- *   额外含 `filePath` / `hasRun`(代码本体加载用)
+ *   额外含 `filePath`(声明文件定位用)
  * - DB-driven skill:业务方 plugin 从 DB 字段映射到本接口即可,无需填占位值
- *   (skill 无源文件,不走 `loadAgentModule`,自然不读 filePath / hasRun)
+ *   (skill 无源文件,自然不读 filePath)
  *
  * `@faapi/agent` 子包的 `Agent` 类、`agentRegistry` 查询入口、`asTool` 包装
  * 都消费 `AgentCore`,实现"agent 与 skill 走同一运行时链路"。
@@ -60,12 +60,13 @@ export interface AgentCore {
 /**
  * Agent 完整元数据(文件型 agent)
  *
- * 继承 [AgentCore](./extractAgentMetadata.md) 的 LLM 字段,额外扩展**代码本体加载细节**:
- * - `filePath` — `loadAgentModule` 加载 `handler.js` 产物提取 `run` 函数用
- * - `hasRun` — 是否导出 `run` 函数(`Agent.executeSubAgent` 据此决定走自定义 run
- *   还是默认 reactLoop)
+ * 继承 [AgentCore](./extractAgentMetadata.md) 的 LLM 字段,额外扩展声明文件定位:
+ * - `filePath` — 声明文件源码相对路径(启动日志 / 清单可观测性用)
  *
- * DB-driven skill 不实现此接口(无源文件,无需加载),只实现 `AgentCore`。
+ * agent 统一为声明式执行(config + 默认 reactLoop)——自定义 `run` 导出已移除,
+ * 检测到 run 导出在提取阶段抛迁移错误(编排场景注册 tool)。
+ *
+ * DB-driven skill 不实现此接口(无源文件),只实现 `AgentCore`。
  *
  * 由 [extractAgentMetadata](./extractAgentMetadata.md) 产出,合并路径推导字段
  * (来自 [scanAgents](../agents/scanAgents.md) 的 `AgentManifest`)与 AST 提取字段
@@ -73,15 +74,13 @@ export interface AgentCore {
  *
  * 字段来源：
  * - `name` — `@agent` JSDoc 覆盖值,或 `pathMeta.name`(目录推导)
- * - `filePath` / `hasRun` — 由 `pathMeta` 透传
+ * - `filePath` — 由 `pathMeta` 透传
  * - `description` — JSDoc 注释块自由文本(对 LLM 可见)
- * - `systemPrompt` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription` — config 块字面量提取
+ * - `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription` — config 块字面量提取
  */
 export interface AgentMetadata extends AgentCore {
-  /** 源码相对路径(从 `pathMeta` 透传),`loadAgentModule` 据此加载 `handler.js` 提取 `run` */
+  /** 源码相对路径(从 `pathMeta` 透传)——声明文件定位与清单可观测性用 */
   filePath: string;
-  /** 是否导出 `run` 函数(从 `pathMeta` 透传),`Agent.executeSubAgent` 据此选择自定义 run / 默认 reactLoop */
-  hasRun: boolean;
 }
 
 /**
@@ -95,8 +94,6 @@ export interface AgentPathMeta {
   name: string;
   /** 源码相对路径(如 `src/agents/researcher/handler.ts`) */
   filePath: string;
-  /** 是否导出 `run` 函数(scanAgents 正则检测) */
-  hasRun: boolean;
 }
 
 /** config 导出查找结果：JSDoc 持有节点 + 对象字面量(可能为 null) */
@@ -113,9 +110,9 @@ interface FoundConfig {
  * 提取内容：
  * 1. **JSDoc 描述** — config 导出的 JSDoc 自由文本
  * 2. **`@agent` 覆盖名** — JSDoc 中 `@agent` 标签后的文本，覆盖目录推导的 `name`
- * 3. **config 块字段** — systemPrompt / tools / agents / model / maxTurns / inputDescription
+ * 3. **config 块字段** — systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription
  *
- * 不提取(由 `pathMeta` 透传)：`filePath` / `hasRun`
+ * 不提取(由 `pathMeta` 透传)：`filePath`
  *
  * config 查找支持两种导出形式，与 [scanAgents](../agents/scanAgents.md) 的 `CONFIG_EXPORT_RE` 正则同构：
  * - `export const config = { ... }` — 对象字面量(最常见)
@@ -130,8 +127,9 @@ interface FoundConfig {
  * 数字/混合数组元素等)抛 `SchemaExtractionError`。
  * `systemPrompt` / `systemPromptFile` 二选一必填——无 config 导出、config 无 return
  * 对象、两者皆缺均抛错，提示词是 agent 的必要组成；两者同时声明抛互斥错。
- * 豁免：`hasRun=true`（自定义 run 完全接管执行）时 config 整体可选——无 config 导出
- * 合法、config 缺提示词字段也合法（字段不被运行时消费，tools/agents 仅供 asTool）。
+ *
+ * **自定义 `run` 导出已移除**——agent 统一为声明式执行（config + 默认 reactLoop），
+ * 检测到 run 导出抛迁移错误（编排场景注册 tool / 多 agent 协作用 config.agents）。
  *
  * @param program TypeScript Program
  * @param filePath 源文件**绝对路径**(AST 用，需与 `program.getSourceFile` 一致)
@@ -146,23 +144,25 @@ export function extractAgentMetadata(
   const sourceFile = program.getSourceFile(filePath);
   if (!sourceFile) return null;
 
-  // systemPrompt / systemPromptFile 二选一必填——但仅对声明式 agent（hasRun=false，
-  // 人设喂给默认 reactLoop）。自定义 run 完全接管执行（config 块整体不被运行时
-  // 消费），无 config 导出合法——最简 run 型 agent 只导出 run 函数。
+  // 自定义 run 已移除——检测到 run 导出显式报迁移错误（不静默忽略：静默后 run
+  // 变成无人消费的死代码，与声明意图不符）
+  const runOwner = findRunExportOwner(sourceFile);
+  if (runOwner) {
+    throw SchemaExtractionError.at(
+      runOwner,
+      'run',
+      'agent 自定义 run 已移除——agent 统一为声明式执行（config + 默认 reactLoop）。' +
+        '编排场景请注册 tool（src/tools/ 下导出函数，有 schema/trace/鉴权钩子），' +
+        '多 agent 协作用 config.agents 声明 sub-agent',
+      sourceFile,
+    );
+  }
+
+  // systemPrompt / systemPromptFile 二选一必填——config 是提示词的唯一载体，无 config
+  // 导出时直接抛错。不存在合法的无提示词文件型 agent（JSDoc description 只是用途
+  // 说明，不构成提示词）。
   const configFound = findConfigExport(sourceFile);
   if (!configFound) {
-    if (pathMeta.hasRun) {
-      // description 从 run 导出的 JSDoc 提取——asTool 组装 LLM 可见工具描述时
-      // 是主控 LLM 决定是否派发的唯一依据，run 型 agent 同样需要
-      const runOwner = findRunExportOwner(sourceFile);
-      const jsDoc = runOwner ? getJSDocFromNode(runOwner) : undefined;
-      return {
-        name: pathMeta.name,
-        description: jsDoc ? extractDescription(jsDoc) : undefined,
-        filePath: pathMeta.filePath,
-        hasRun: pathMeta.hasRun,
-      };
-    }
     throw SchemaExtractionError.at(
       sourceFile,
       'config.systemPrompt',
@@ -186,16 +186,14 @@ export function extractAgentMetadata(
   const description = extractDescription(jsDoc);
   const agentNameOverride = extractJSDocTagValue(jsDoc, 'agent');
 
-  // config 块字段提取（声明式 agent 由 extractConfigFields 保证 systemPrompt/
-  // systemPromptFile 二选一非空；run 型 agent 免必填）
+  // config 块字段提取（extractConfigFields 保证 systemPrompt/systemPromptFile 二选一非空）
   const { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription } =
-    extractConfigFields(objectLiteral, sourceFile, !pathMeta.hasRun);
+    extractConfigFields(objectLiteral, sourceFile);
 
   return {
     name: agentNameOverride ?? pathMeta.name,
     description,
     filePath: pathMeta.filePath,
-    hasRun: pathMeta.hasRun,
     systemPrompt,
     systemPromptFile,
     tools,
@@ -207,11 +205,11 @@ export function extractAgentMetadata(
 }
 
 /**
- * 查找 `run` 导出的 JSDoc 持有节点（仅 run 型 agent 无 config 时的 description 来源）
+ * 查找 `run` 导出节点（自定义 run 已移除——检测到即抛迁移错误）
  *
  * 支持 `export function run(...)` / `export async function run(...)` /
- * `export const run = async (...) => ...`（VariableStatement）。
- * 未找到返回 null（description 为 undefined，合法缺省）。
+ * `export const run = ...`（VariableStatement）。
+ * 未找到返回 null（声明式 agent，正常路径）。
  */
 function findRunExportOwner(sourceFile: ts.SourceFile): ts.Node | null {
   let result: ts.Node | null = null;
@@ -344,7 +342,6 @@ function getReturnObjectLiteral(
 function extractConfigFields(
   objLit: ts.ObjectLiteralExpression,
   sourceFile: ts.SourceFile,
-  requirePrompt: boolean,
 ): {
   systemPrompt?: string;
   systemPromptFile?: string;
@@ -426,9 +423,8 @@ function extractConfigFields(
     );
   }
 
-  // 皆缺仅在声明式 agent（requirePrompt）时报错；run 型 agent 的 config 字段
-  // 不被运行时消费（tools/agents 仅供 asTool 组装 LLM 可见定义），可任意省略
-  if (requirePrompt && systemPrompt === undefined && systemPromptFile === undefined) {
+  // 皆缺报错：提示词是 agent 的必要组成（systemPrompt 与 systemPromptFile 二选一）
+  if (systemPrompt === undefined && systemPromptFile === undefined) {
     throw SchemaExtractionError.at(
       objLit,
       'config.systemPrompt',
