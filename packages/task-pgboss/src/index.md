@@ -1,6 +1,6 @@
 # createPgBossDriver（pg-boss 驱动）
 
-一句话概括：把 faapi 任务子系统的 `TaskDriver` 接口映射到 pg-boss v12 API（send/work/offWork/stop，peer 要求 `^12`），并在投递前确保队列存在。
+一句话概括：把 faapi 任务子系统的 `TaskDriver` 接口映射到 pg-boss v12 API（send/work/offWork/stop/findJobs，peer 要求 `^12`），并在投递前确保队列存在。
 
 ## 为什么需要
 

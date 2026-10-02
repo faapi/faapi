@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { TaskDriver, TaskDriverProcess } from '@faapi/faapi';
+import type { TaskDriver, TaskDriverProcess, TaskDriverRecord } from '@faapi/faapi';
 import { PgBoss } from 'pg-boss';
 import type { ConstructorOptions, SendOptions } from 'pg-boss';
 
@@ -48,6 +48,9 @@ export type PgBossDriverOptions = ConstructorOptions & {
  * - `stop` → `offWork` + `boss.stop({ close: true, graceful: true, timeout })` 整体与
  *   deadline 竞速；deadline 到点 abort 在跑任务的 signal
  * - 重试 → pg-boss 侧执行（retryLimit + retryBackoff 指数退避）
+ * - `list` → `boss.findJobs(name)`（v12）：六态精确映射（created→pending、retry→retry、
+ *   active→running、completed→done、failed→failed、cancelled→cancelled）；不传 name
+ *   遍历本进程已 ensureQueue 的任务名；createdAt 降序截断 limit
  */
 /**
  * dedupId → 确定性 UUID：pg-boss 的 send 自定义 id 要求 UUID 格式（SQL 侧 cast），
@@ -321,7 +324,62 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
       // pg-boss v10 语义：resume 恢复 cancelled 任务；failed 任务无原生重试 API
       await b.resume(name, id);
     },
-    // list 未实现：pg-boss v10 无批量列出 jobs 的公开 API（getJobById/getQueueSize 只能单查/计数），
-    // 不硬造内部 SQL 依赖——语义层 listQueued 显式抛错，管理走 pg-boss 自身 API/SQL
+
+    async list(opts) {
+      const b = await ensureBoss();
+      // findJobs 按队列名查（无全局列出）：不传 name 遍历本进程已 ensureQueue 的
+      // 任务名（与 BullMQ 驱动遍历已建 Queue 实例同语义）；FindJobsOptions 无
+      // state/limit 过滤，映射后自行过滤 + 降序截断
+      const targets = opts?.name ? [opts.name] : [...ensuredQueues];
+      // pg-boss 六态 → faapi 六态精确映射（BullMQ 的 delayed 无法区分重试等待，
+      // 只能归 pending；pg-boss 的 retry 态可精确区分）
+      const stateMap: Record<string, TaskDriverRecord['status']> = {
+        created: 'pending',
+        retry: 'retry',
+        active: 'running',
+        completed: 'done',
+        failed: 'failed',
+        cancelled: 'cancelled',
+      };
+      const wanted = opts?.state ? [opts.state] : undefined;
+      const records: TaskDriverRecord[] = [];
+      for (const target of targets) {
+        const jobs = await b.findJobs(target);
+        for (const job of jobs) {
+          const status = stateMap[job.state];
+          if (!status) continue;
+          if (wanted && !wanted.includes(status)) continue;
+          // fail 的 data 存 output jsonb：{ name, message } 或 { value }（startWorker
+          // 结算形态）；错误摘要优先取 message/value——提取不到（空对象/缺失）时
+          // 不放 error 字段，其余形态 String 化保底
+          const output: unknown = (job as { output?: unknown }).output;
+          let error: string | undefined;
+          if (status === 'failed' && output !== undefined && output !== null) {
+            if (typeof output === 'object') {
+              const extracted =
+                (output as { message?: unknown; value?: unknown }).message ??
+                (output as { message?: unknown; value?: unknown }).value;
+              error = extracted === undefined ? undefined : String(extracted);
+            } else {
+              error = String(output);
+            }
+          }
+          records.push({
+            id: job.id,
+            name: job.name,
+            payload: job.data,
+            status,
+            // retryCount 从 0 起（首次执行为 0）→ faapi attempts 从 1 起
+            attempts: job.retryCount + 1,
+            // 驱动 complete() 不携带执行结果（语义层自记），done 记录无 result
+            createdAt: job.createdOn.getTime(),
+            // startAfter 恒有值（send 未传时默认 now）——计划执行时间即本字段语义
+            runAt: job.startAfter.getTime(),
+            ...(error !== undefined ? { error } : {}),
+          });
+        }
+      }
+      return records.sort((a, b2) => b2.createdAt - a.createdAt).slice(0, opts?.limit ?? 50);
+    },
   };
 }

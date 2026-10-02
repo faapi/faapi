@@ -16,6 +16,7 @@ const h = vi.hoisted(() => {
     cancel: ReturnType<typeof vi.fn>;
     resume: ReturnType<typeof vi.fn>;
     createQueue: ReturnType<typeof vi.fn>;
+    findJobs: ReturnType<typeof vi.fn>;
     complete: ReturnType<typeof vi.fn>;
     fail: ReturnType<typeof vi.fn>;
     on: ReturnType<typeof vi.fn>;
@@ -94,6 +95,7 @@ vi.mock('pg-boss', () => {
     cancel = vi.fn(async (_name: string, _id: string) => {});
     resume = vi.fn(async (_name: string, _id: string) => {});
     createQueue = vi.fn(async (_name: string) => {});
+    findJobs = vi.fn(async (_name: string) => [] as unknown[]);
     complete = vi.fn(async (_name: string, _id: string) => {});
     fail = vi.fn(async (_name: string, _id: string, _reason?: unknown) => {});
     on = vi.fn((_event: string, _listener: (...args: unknown[]) => void) => {});
@@ -360,9 +362,9 @@ describe('createPgBossDriver', () => {
     expect(boss.resume).toHaveBeenCalledWith('mail', 'j1');
   });
 
-  it('list 未实现——批量列出（v12 findJobs）留作后续实现（能力缺口显式）', async () => {
+  it('list 已实现（v12 findJobs）——TaskClient.listQueued 的驱动侧查询可用', async () => {
     const driver = createPgBossDriver();
-    expect(driver.list).toBeUndefined();
+    expect(typeof driver.list).toBe('function');
   });
 
   it('stop 后 cancel/retry 显式拒绝（驱动连接已关闭）', async () => {
@@ -506,5 +508,115 @@ describe('createPgBossDriver', () => {
     expect(fakeBosses()).toHaveLength(2);
     expect(fakeBosses()[1]!.start).toHaveBeenCalledTimes(1);
     expect(fakeBosses()[1]!.send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('list（v12 findJobs 批量列出）', () => {
+  /** 构造 JobWithMetadata 形态的测试记录（只含驱动映射用到的字段） */
+  const mkJob = (over: {
+    id: string;
+    state: string;
+    retryCount?: number;
+    createdOn?: Date;
+    startAfter?: Date;
+    output?: unknown;
+  }) =>
+    ({
+      id: over.id,
+      name: 'mail',
+      data: { to: 'a@b.c' },
+      retryCount: over.retryCount ?? 0,
+      state: over.state,
+      createdOn: over.createdOn ?? new Date(1700000000000),
+      startAfter: over.startAfter ?? new Date(1700000000000),
+      output: over.output ?? {},
+    }) as never;
+
+  it('六态精确映射：created→pending、retry→retry、active→running、completed→done、failed→failed、cancelled→cancelled', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    const boss = fakeBosses()[0]!;
+    boss.findJobs.mockResolvedValue([
+      mkJob({ id: 'j1', state: 'created' }),
+      mkJob({ id: 'j2', state: 'retry' }),
+      mkJob({ id: 'j3', state: 'active' }),
+      mkJob({ id: 'j4', state: 'completed' }),
+      mkJob({ id: 'j5', state: 'failed' }),
+      mkJob({ id: 'j6', state: 'cancelled' }),
+    ]);
+    const records = await driver.list!();
+    expect(Object.fromEntries(records.map((r) => [r.id, r.status]))).toEqual({
+      j1: 'pending',
+      j2: 'retry',
+      j3: 'running',
+      j4: 'done',
+      j5: 'failed',
+      j6: 'cancelled',
+    });
+  });
+
+  it('state 过滤：只返回映射后匹配的记录；payload/attempts/时间戳映射', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    const boss = fakeBosses()[0]!;
+    boss.findJobs.mockResolvedValue([
+      mkJob({ id: 'j1', state: 'active', retryCount: 2 }),
+      mkJob({
+        id: 'j2',
+        state: 'failed',
+        retryCount: 3,
+        output: { name: 'Error', message: 'boom' },
+      }),
+    ]);
+    const running = await driver.list!({ state: 'running' });
+    expect(running).toHaveLength(1);
+    expect(running[0]).toMatchObject({
+      id: 'j1',
+      name: 'mail',
+      payload: { to: 'a@b.c' },
+      status: 'running',
+      attempts: 3,
+      createdAt: 1700000000000,
+      runAt: 1700000000000,
+    });
+    // retryCount 从 0 起（首次执行为 0）→ faapi attempts 从 1 起
+    const failed = await driver.list!({ state: 'failed' });
+    expect(failed[0]!.attempts).toBe(4);
+  });
+
+  it('failed 记录 error 从 output 提取（{message} 与 {value} 两形态）；done 记录无 result', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    const boss = fakeBosses()[0]!;
+    boss.findJobs.mockResolvedValue([
+      mkJob({ id: 'j1', state: 'failed', output: { name: 'Error', message: 'boom' } }),
+      mkJob({ id: 'j2', state: 'failed', output: { value: 'sync throw' } }),
+      mkJob({ id: 'j3', state: 'failed', output: 'raw string' }),
+      mkJob({ id: 'j4', state: 'failed' }),
+    ]);
+    const records = await driver.list!({ state: 'failed' });
+    expect(records.map((r) => r.error)).toEqual(['boom', 'sync throw', 'raw string', undefined]);
+    boss.findJobs.mockResolvedValue([mkJob({ id: 'j5', state: 'completed', output: { x: 1 } })]);
+    const done = await driver.list!({ state: 'done' });
+    expect(done[0]!.result).toBeUndefined();
+  });
+
+  it('不传 name 遍历本进程已建队列；指定 name 只查该队列', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', {});
+    await driver.enqueue('digest', {});
+    const boss = fakeBosses()[0]!;
+    const late = mkJob({ id: 'late', state: 'created', createdOn: new Date(1700000001000) });
+    const early = mkJob({ id: 'early', state: 'created', createdOn: new Date(1699999999000) });
+    boss.findJobs.mockImplementation(async (name: string) => (name === 'mail' ? [late] : [early]));
+    const all = await driver.list!();
+    expect(boss.findJobs.mock.calls.map((c) => c[0]).sort()).toEqual(['digest', 'mail']);
+    // createdAt 降序
+    expect(all.map((r) => r.id)).toEqual(['late', 'early']);
+    boss.findJobs.mockClear();
+    boss.findJobs.mockResolvedValue([]);
+    await driver.list!({ name: 'digest' });
+    expect(boss.findJobs.mock.calls).toHaveLength(1);
+    expect(boss.findJobs.mock.calls[0]![0]).toBe('digest');
   });
 });
