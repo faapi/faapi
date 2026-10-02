@@ -7,7 +7,7 @@ faapi 任务子系统的 **pg-boss 驱动**（PostgreSQL 持久化队列）。
 ## 安装
 
 ```bash
-pnpm add @faapi/task-pgboss pgboss
+pnpm add @faapi/task-pgboss pg-boss
 ```
 
 ## 使用
