@@ -54,14 +54,14 @@ export async function run(payload, taskCtx) {
 
 ## 行为约定
 
-- 执行：每次 dispatch 新建一个 worker（data URL wrapper 动态 import 任务产物模块）；worker 模块图独立——天然加载最新产物，dev 热替换后无需 cache-bust
+- 执行：每次 dispatch 新建一个 worker（真实入口文件 [workerEntry](./workerEntry.ts)：moduleUrl/resourcesDir 经 workerData 传入，任务模块在首次 run 消息时动态 import）；worker 模块图独立——天然加载最新产物，dev 热替换后无需 cache-bust
 - 取消（两段式）：超时（`timeoutMs`）或外部信号（驱动停机 abort）触发——先向 worker 发 abort 信号（任务监听 `taskCtx.signal` 可优雅退出），宽限期（task meta `graceMs`，默认 `KILL_GRACE_MS` 即 5s）内未退出则 `worker.terminate()` 硬杀；宿主侧 Promise 以超时错误 reject。**宽限期判定即终局**：宿主 Promise 的失败在宽限期到点即返回，不因任务在宽限内自行完成而改变
 - 预取消快速失败：`externalSignal` 在派发时已 aborted（驱动停机竞态）不创建 worker，直接以 `TaskCancelledError` 失败——不白白承担线程冷启动
 - 超时判定即终局：宽限期内 worker 迟到的完成/错误一律忽略，不翻案
 - 结果传导：worker 内 run 的返回值经 postMessage 结构化回传（必须可克隆，不可克隆视为执行错误）；`taskCtx.progress(value)` 的值经 `{ type: 'progress' }` 消息回传宿主 `onProgress` 回调（语义层记入 `TaskJob.progress`）。**错误以 `{ name, message, stack, props }` 序列化回传**（`props` 为 Error 自定义可枚举属性，如业务错误类的 `code`/`statusCode`），宿主侧重建为 `Error` 并回填 name/stack/props——错误信息不再只剩 message。**class 身份不跨线程**：重建对象是 `Error` 实例而非原 Error 子类，`instanceof ValidationError` 等判断在宿主侧不成立，跨线程判错请用 `err.name` / `err.code`；`props` 含不可克隆值时丢弃 `props`、保底 name/message（已记入 `fallback.md`）。worker 顶层异常（如模块 import 失败）经 `error` 事件回传，消息反序列化失败经 `messageerror` 事件按执行错误处理，均由语义层记 `failed` 并交驱动重试。**所有取消路径（超时终止/外部取消/宽限内结束）reject `TaskCancelledError`**——语义层据此把任务记录记为 `cancelled`（区别于 run 自身失败的 `failed`）
 - `taskCtx.config` 为可克隆快照：structuredClone 优先，失败退化 JSON round-trip（丢函数字段），再失败传 `undefined`——任务收到的配置是纯数据
-- `taskCtx.resourcesDir` 为产物 resources 目录绝对路径（纯字符串，随快照 postMessage 传入，worker 内挂到 taskCtx；进程内路径同值）——任务读 `src/resources/` 静态文件用。**wrapper 求值期即播种全局读取根（`globalThis[Symbol.for('faapi.resources.dir')]`，与 `utils/readResource.ts` 的 symbol key 字面量需一致）**：快照值内嵌 wrapper 源码、任务模块改用动态 import——ESM 静态 import 提升求值，只有动态 import 能保证任务模块顶层代码（top-level await 调用 readResource）执行前读取根已就位。免传参 `readResource` 与 agent `systemPromptFile` 在 worker 内自动可用；wrapper 是 data URL 模块无法 import 主包，故内联写入
-- `taskCtx.registries` 为注册表只读视图：宿主从 app 注册表生成 `TaskRegistriesSnapshot` 纯数据快照（agents 含 `filePath` 完整元数据 + tools + skills）随 postMessage 传入，wrapper 内重建视图——注册表对象含函数闭包不可跨线程，元数据本身可克隆。**快照语义**：视图反映派发时刻的注册表（每次 dispatch 重新生成），执行中途的 reload/DB skill 变更不影响当次执行；`taskCtx.registries.agent.getAgentEntry(name)` 拿到的 `filePath` 为产物路径（元数据查询用）。**视图语义与宿主一致**：worker 内重建的查询方法与宿主 `createTaskRegistriesView` 的运行时行为对齐（同一份注册表数据下两边输出逐字段一致），由对照测试锚定（`taskWorker.test.ts`），宿主侧语义变更会同步暴露漂移
+- `taskCtx.resourcesDir` 为产物 resources 目录绝对路径（纯字符串，随快照 postMessage 传入，worker 内挂到 taskCtx；进程内路径同值）——任务读 `src/resources/` 静态文件用。**读取根在入口 bootstrap 播种（`globalThis[Symbol.for('faapi.resources.dir')]`，与 `utils/readResource.ts` 的 symbol key 字面量需一致）**：入口自身的语句先于对任务模块的动态 import 执行，"播种先于任务模块求值"由结构保证（任务模块顶层 top-level await 调用 readResource 必然读到已绑定的读取根）；读取根经 globalThis 而非模块状态承载——入口 bundle 与 index bundle 是两份代码副本，globalThis 是唯一跨副本共享面。免传参 `readResource` 与 agent `systemPromptFile` 在 worker 内自动可用
+- `taskCtx.registries` 为注册表只读视图：宿主从 app 注册表生成 `TaskRegistriesSnapshot` 纯数据快照（agents 含 `filePath` 完整元数据 + tools + skills）随 postMessage 传入，worker 入口内重建视图——注册表对象含函数闭包不可跨线程，元数据本身可克隆。**快照语义**：视图反映派发时刻的注册表（每次 dispatch 重新生成），执行中途的 reload/DB skill 变更不影响当次执行；`taskCtx.registries.agent.getAgentEntry(name)` 拿到的 `filePath` 为产物路径（元数据查询用）。**视图语义与宿主一致**：worker 内重建的查询方法（workerEntry 的 `buildRegistriesView`，真实模块可直接单测）与宿主 `createTaskRegistriesView` 的运行时行为对齐（同一份注册表数据下两边输出逐字段一致），由对照测试锚定（`taskWorker.test.ts`），宿主侧语义变更会同步暴露漂移
 - 返回值必须可结构化克隆（纯数据）；不可克隆视为执行错误
 
 ## 边界取舍（文档必须显眼）

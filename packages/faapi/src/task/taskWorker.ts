@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { TaskRegistriesSnapshot } from './taskTypes';
+import type { WorkerEntryData } from './workerEntry';
 import type { LogEntry, LogLevel } from '../logger/loggerTypes';
 
 /**
@@ -15,9 +17,28 @@ import type { LogEntry, LogLevel } from '../logger/loggerTypes';
  * KILL_GRACE_MS 5s）。超时判定即终局——宽限期内 worker
  * 迟到的完成/错误一律按超时失败返回，不翻案。
  *
- * 每次 dispatch 新建 worker：worker 模块图独立，天然加载最新任务产物
- * （dev 热替换后无需 cache-bust）；代价是每次执行的冷启动开销（仅声明超时的任务承担）。
+ * 每次 dispatch 新建 worker（入口为 [workerEntry](./workerEntry.ts)：moduleUrl/
+ * resourcesDir 经 workerData 传入，读取根播种先于任务模块求值由结构保证）——
+ * worker 模块图独立，天然加载最新任务产物（dev 热替换后无需 cache-bust）；代价
+ * 是每次执行的冷启动开销（仅声明超时的任务承担）。
  */
+
+/**
+ * 解析 worker 入口文件 URL（模块级缓存）
+ *
+ * - dist 产物：入口与宿主同目录（tsup 多入口，`dist/workerEntry.js`）
+ * - src 源码直跑（vitest）：回退同目录 `.ts`——workerEntry 自包含（值导入仅
+ *   node:worker_threads），Node 原生类型剥离可直载，无扩展名解析问题
+ */
+let workerEntryUrl: URL | undefined;
+function resolveWorkerEntryUrl(): URL {
+  if (workerEntryUrl) return workerEntryUrl;
+  const js = new URL('./workerEntry.js', import.meta.url);
+  workerEntryUrl = existsSync(fileURLToPath(js))
+    ? js
+    : new URL('./workerEntry.ts', import.meta.url);
+  return workerEntryUrl;
+}
 
 /** abort 宽限期默认值：发出优雅取消信号后等待任务自行退出的最长时间（task meta `graceMs` 可按任务覆盖） */
 const KILL_GRACE_MS = 5_000;
@@ -45,7 +66,11 @@ export interface TaskWorkerOptions {
   /** signal 由执行器构造（abort/terminate 时触发），宿主只传 config 与 job 信息 */
   taskCtx: {
     config: unknown;
-    /** 产物 resources 目录绝对路径（纯字符串可结构化克隆，worker 内挂到 taskCtx） */
+    /**
+     * 产物 resources 目录绝对路径（纯字符串可结构化克隆）——两处用途：经
+     * workerData 传给入口在任务模块求值前播种全局读取根 + 挂到 worker 内的
+     * taskCtx（业务方了解/拼接资源位置）
+     */
     resourcesDir?: string;
     job: { id: string; name: string; attempt: number };
   };
@@ -105,192 +130,6 @@ function safeConfig(config: unknown): unknown {
   }
 }
 
-/**
- * worker 内重建注册表只读视图的内联源码（语义与 agentRegistry/toolRegistry/skillRegistry
- * 的查询方法一致：不存在的 tool/agent 名静默跳过、resolveAgentTools 按解析后 name 去重）
- *
- * 注册表对象含函数闭包不可跨线程——快照为纯数据，视图必须在 worker 内重建；
- * wrapper 是 data URL 模块无法 import 主包，故内联实现（测试断言两边语义一致）。
- */
-const BUILD_VIEW_SOURCE = `
-function buildRegistriesView(snapshot) {
-  var agents = new Map(((snapshot && snapshot.agents) || []).map(function (a) { return [a.name, a]; }));
-  var tools = new Map(((snapshot && snapshot.tools) || []).map(function (t) { return [t.name, t]; }));
-  var skills = new Map(((snapshot && snapshot.skills) || []).map(function (s) { return [s.name, s]; }));
-  return {
-    agent: {
-      getAgent: function (name) { return agents.get(name); },
-      getAgentEntry: function (name) { return agents.get(name); },
-      listAgents: function () { return Array.from(agents.values()); },
-      asTool: function (name) {
-        var agent = agents.get(name);
-        if (!agent) return undefined;
-        return {
-          kind: 'agent',
-          name: 'agent.' + agent.name,
-          agentName: agent.name,
-          description: agent.description,
-          metadata: agent,
-        };
-      },
-      resolveAgentTools: function (name) {
-        var agent = agents.get(name);
-        var result = new Map();
-        if (agent && agent.tools) {
-          agent.tools.forEach(function (toolName) {
-            var resolved = tools.get(toolName);
-            if (resolved) result.set(resolved.name, resolved);
-          });
-        }
-        return Array.from(result.values());
-      },
-      resolveSubAgents: function (name) {
-        var agent = agents.get(name);
-        var result = [];
-        if (agent && agent.agents) {
-          agent.agents.forEach(function (subName) {
-            var sub = agents.get(subName);
-            if (sub) result.push(sub);
-          });
-        }
-        return result;
-      },
-    },
-    tool: {
-      get: function (name) { return tools.get(name); },
-      list: function () { return Array.from(tools.values()); },
-    },
-    skill: {
-      get: function (name) { return skills.get(name); },
-      list: function () { return Array.from(skills.values()); },
-    },
-  };
-}
-`;
-
-/**
- * worker 内错误序列化（错误保真）：Error 按 `{ name, message, stack, props }` 回传——
- * `props` 收集自定义可枚举属性（业务错误类的 code/statusCode 等），宿主侧重建时回填；
- * 非 Error 值按 String(err) 归一。结构化克隆只保 message（name/自定义属性丢失、
- * stack 重新生成），不序列化就无法跨线程保真。
- */
-const SERIALIZE_ERROR_SOURCE = `
-function serializeError(err) {
-  if (err instanceof Error) {
-    var props = {};
-    var keys = Object.keys(err);
-    for (var i = 0; i < keys.length; i++) {
-      props[keys[i]] = err[keys[i]];
-    }
-    return { name: err.name, message: err.message, stack: err.stack, props: props };
-  }
-  return { name: 'Error', message: String(err), stack: undefined, props: {} };
-}
-`;
-
-/**
- * worker 内任务日志器（内联源码）：级别预过滤（level 为 undefined 时不过滤——
- * 宿主文件管道默认全量）+ scope/fields 组装，条目作为纯数据
- * 经 `{ type: 'log' }` 消息回传宿主、由宿主统一 sink 输出——wrapper 是 data URL 模块
- * 无法 import 主包，故内联实现（语义与主包 createLogger 对齐：child scope `:` 合并、
- * 调用处 fields 覆盖构造字段；格式化在宿主侧，不跨线程复制格式代码）。
- *
- * fields 含不可克隆值时丢弃 fields、保底 level/message/scope（降级已记入 fallback.md）
- * ——日志永不中断任务执行，与 progress 的"不可克隆按执行错误处理"不同。
- */
-const BUILD_LOGGER_SOURCE = `
-var LOG_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
-function createTaskLogger(level, scope, fields) {
-  function make(suffix) {
-    function write(lvl, message, callFields) {
-      if (level !== undefined && LOG_RANK[lvl] < LOG_RANK[level]) return;
-      var entry = { level: lvl, message: message, time: new Date().toISOString() };
-      var fullScope = suffix === undefined ? scope : scope === undefined ? suffix : scope + ':' + suffix;
-      if (fullScope !== undefined) entry.scope = fullScope;
-      if (fields !== undefined || callFields !== undefined) {
-        entry.fields = Object.assign({}, fields, callFields);
-      }
-      try {
-        parentPort.postMessage({ type: 'log', entry: entry });
-      } catch (_) {
-        entry.fields = { warning: 'log fields not cloneable across worker boundary, dropped' };
-        parentPort.postMessage({ type: 'log', entry: entry });
-      }
-    }
-    return {
-      debug: function (m, f) { write('debug', m, f); },
-      info: function (m, f) { write('info', m, f); },
-      warn: function (m, f) { write('warn', m, f); },
-      error: function (m, f) { write('error', m, f); },
-      child: function (cs) { return make(suffix === undefined ? cs : suffix + ':' + cs); },
-    };
-  }
-  return make(undefined);
-}
-`;
-
-/** worker 内执行的 wrapper 源码（data URL，ESM）——播种读取根后动态 import 任务产物并桥接 run */
-function buildWrapperSource(moduleUrl: string, resourcesDir?: string): string {
-  // 播种全局 readResource 读取根：wrapper 是 data URL 模块无法 import 主包，经
-  // globalThis 写入（symbol key 与 utils/readResource 的 'faapi.resources.dir' 一致，
-  // 两处字面量需同步）。必须在任务模块求值之前——任务模块顶层代码（top-level
-  // await）可能已调用 readResource，而 ESM 静态 import 提升求值，故任务模块走
-  // 动态 import 保证顺序。与 taskCtx.resourcesDir 同源同值
-  const seed = resourcesDir
-    ? `globalThis[Symbol.for('faapi.resources.dir')] = ${JSON.stringify(resourcesDir)};`
-    : '// 无 resourcesDir（直接构造队列的测试/嵌入场景）：不播种，readResource 未绑定即显式抛错';
-  return `
-import { parentPort } from 'node:worker_threads';
-
-${seed}
-
-const mod = await import('${moduleUrl}');
-
-${BUILD_VIEW_SOURCE}
-
-${SERIALIZE_ERROR_SOURCE}
-
-${BUILD_LOGGER_SOURCE}
-
-const run = mod.run;
-if (typeof run !== 'function') {
-  parentPort.postMessage({
-    type: 'error',
-    error: { name: 'Error', message: 'Task module has no run export', stack: undefined, props: {} },
-  });
-} else {
-  let controller = null;
-  parentPort.on('message', async (msg) => {
-    if (msg?.type === 'abort') {
-      controller?.abort(new Error(msg.reason));
-      return;
-    }
-    if (msg?.type !== 'run') return;
-    controller = new AbortController();
-    const { payload, taskCtx } = msg;
-    try {
-      const registries = buildRegistriesView(msg.registries);
-      const progress = (value) => parentPort.postMessage({ type: 'progress', value });
-      const taskLog = msg.log ? createTaskLogger(msg.log.level, msg.log.scope, msg.log.fields) : undefined;
-      const result = await run(payload, { ...taskCtx, signal: controller.signal, registries, progress, log: taskLog });
-      parentPort.postMessage({ type: 'done', result });
-    } catch (err) {
-      const serialized = serializeError(err);
-      try {
-        parentPort.postMessage({ type: 'error', error: serialized });
-      } catch (_) {
-        // props 含不可克隆值（函数等）时丢弃 props，保底 name/message/stack
-        parentPort.postMessage({
-          type: 'error',
-          error: { name: serialized.name, message: serialized.message, stack: serialized.stack, props: {} },
-        });
-      }
-    }
-  });
-}
-`;
-}
-
 /** worker 错误回传负载（serializeError 的结构化克隆产物） */
 interface WorkerErrorPayload {
   name?: string;
@@ -329,14 +168,13 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
   }
 
   const moduleUrl = pathToFileURL(taskModulePath).href;
-  const wrapperUrl = new URL(
-    `data:text/javascript,${encodeURIComponent(buildWrapperSource(moduleUrl, taskCtx.resourcesDir))}`,
-  );
 
   return new Promise<unknown>((resolve, reject) => {
     let worker: Worker;
     try {
-      worker = new Worker(wrapperUrl);
+      worker = new Worker(resolveWorkerEntryUrl(), {
+        workerData: { moduleUrl, resourcesDir: taskCtx.resourcesDir } satisfies WorkerEntryData,
+      });
     } catch (err) {
       reject(err);
       return;
