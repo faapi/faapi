@@ -167,8 +167,9 @@ export interface FaapiContext {
   /**
    * 运行时资源根目录绝对路径（<rootDir>/<dist>/resources）
    *
-   * `src/resources/` 经 dev/build 复制进产物后的位置，handler 读静态文件用：
-   * `await fs.readFile(path.join(ctx.resourcesDir, 'prompts/foo.md'))`。
+   * `src/resources/` 经 dev/build 复制进产物后的位置。数据字段——读取统一走
+   * 免传参的 `readResource('prompts/foo.md')`（app 启动时绑定，见
+   * src/utils/readResource.md），本字段供业务方了解/拼接资源位置。
    * HTTP/WS 请求链路恒有值；testing 直调（createTestContext）未传时为 undefined。
    */
   resourcesDir?: string;

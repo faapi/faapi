@@ -4,6 +4,7 @@ import { createSseWriter, type SseOptions, type SseWriter } from './sse';
 import { wrapOkResult, formatFailResponse, jsonOk } from '../response/responseFormatter';
 import { createLogger } from '../logger/logger';
 import { queryToObject } from '../utils/queryToObject';
+import { setActiveResourcesDir } from '../utils/readResource';
 
 /**
  * 解析请求 ID：请求头 `x-request-id` 第一段（逗号分隔取首段，网关透传场景跨服务
@@ -303,6 +304,13 @@ export function createTestContext(options: CreateTestContextOptions): FaapiConte
     headers: headers as HeadersInit | undefined,
   });
 
+  // 绑定全局 readResource 读取根（免传参 readResource 依赖进程级绑定）：测试
+  // handler 调 readResource('x.md') 时按此绑定解析。单 app 进程内后调覆盖先调，
+  // 与真实 app 启动绑定语义一致
+  if (resourcesDir) {
+    setActiveResourcesDir(resourcesDir);
+  }
+
   return createContext(request, params, config, ip, registries, resourcesDir);
 }
 
@@ -312,7 +320,12 @@ export function createTestContext(options: CreateTestContextOptions): FaapiConte
 export interface CreateTestContextOptions {
   /** app 级注册表（测试 handler 声明 agent/agents 参数时注入用，可选） */
   registries?: FaapiContext['registries'];
-  /** 运行时资源根目录（测试 handler 读 ctx.resourcesDir 时传入，可选） */
+  /**
+   * 运行时资源根目录（可选）
+   *
+   * 传入时同时做两件事：绑定全局 readResource 读取根（handler 直调
+   * `readResource('x.md')` 依赖）+ 挂到 ctx.resourcesDir 数据字段
+   */
   resourcesDir?: string;
   /** 请求方法，默认 'GET' */
   method?: string;

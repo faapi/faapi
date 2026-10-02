@@ -40,19 +40,18 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 ## TaskContext.resourcesDir（运行时资源目录）
 
-`TaskContext.resourcesDir?: string` 为产物 resources 目录绝对路径（`<rootDir>/<dist>/resources`，由 `createAppBase` 经 `TaskQueueDeps.resourcesDir` 注入两条执行路径；直接构造队列的测试/嵌入场景可不传）。任务读静态文件（prompt 模板、JSON 配置等）用：
+`TaskContext.resourcesDir?: string` 为产物 resources 目录绝对路径（`<rootDir>/<dist>/resources`，由 `createAppBase` 经 `TaskQueueDeps.resourcesDir` 注入两条执行路径；直接构造队列的测试/嵌入场景可不传）。任务读静态文件统一走主包免传参 `readResource`（相对路径 + 只能读 resources 内文件，详见 [readResource.md](../utils/readResource.md)）：
 
 ```ts
 // src/tasks/report/task.ts
-import fs from 'node:fs/promises';
-import path from 'node:path';
+import { readResource } from '@faapi/faapi';
 
-export async function run(payload, taskCtx) {
-  return fs.readFile(path.join(taskCtx.resourcesDir!, 'prompts/report.md'), 'utf-8');
+export async function run() {
+  return readResource('prompts/report.md', 'utf-8');
 }
 ```
 
-隔离路径为纯字符串随快照 postMessage 传入（可结构化克隆），worker 内挂到 taskCtx。任务内组装 agent 时可把该值传入 `AgentDeps.resourcesDir`（agent config 的 `systemPromptFile` 相对此目录解析）。
+隔离路径为纯字符串随快照 postMessage 传入（可结构化克隆）：进程内经 app 启动时的全局绑定即可读；隔离 worker 中 wrapper 在 run 派发前把快照值播种到全局读取根——所以 worker 内 `readResource` 与 agent `systemPromptFile` 都自动可用，无需手工传目录。`taskCtx.resourcesDir` 保留为数据字段（业务方了解/拼接资源位置用）。
 
 ### 任务内组装 Agent（完整 deps）
 

@@ -111,8 +111,6 @@ const agentPlugin: FaapiPlugin = {
     };
 
     const rootDir = ctx.rootDir;
-    // 产物 resources 目录（agent config 的 systemPromptFile 相对此目录解析）
-    const resourcesDir = ctx.resourcesDir;
     // tool schema 解析器（setup 闭包级缓存——root + sub-agent 共享）
     // 实现与行为约定见 [toolSchemaResolver.md](./toolSchemaResolver.md)
     const resolveToolSchema = createToolSchemaResolver({ rootDir });
@@ -121,12 +119,12 @@ const agentPlugin: FaapiPlugin = {
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生
     // 方案 A：注册到 **app 实例**的 agentHandle store（ctx.registries），
     // 多 app 同进程互不覆盖；deps 读同套实例注册表（createAppBase 已水合）
+    // systemPromptFile 读取走主包免传参 readResource（读取根 app 启动时已绑定）
     ctx.registries.agentHandle.register((ctx) => {
       return new Agent({
         providers,
         llms,
         rootDir,
-        resourcesDir,
         config: runtimeConfig,
         // ctx 传递链（authHooks）：捕获请求上下文,tool handler / sub-agent /
         // 鉴权钩子均可读取中间件塞入的身份信息（ctx.user / ctx.workspace 等）

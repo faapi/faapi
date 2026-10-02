@@ -25,8 +25,8 @@ const APP_INSTANCE_KEY = Symbol.for('faapi.app.instance');
 /**
  * 读取当前 app 单例（从 globalThis 取，跨模块实例共享）
  *
- * 注意：单例仅指向"最近一次创建且未关闭的 app"。测试场景下创建多个临时 app 时，
- * 单例会被覆盖，但 close 时只有当单例仍指向当前 app 才置 null，避免被后续 app 误清。
+ * faapi 单进程单 app（多 app 同进程不支持）——`createAppBase` 入口检测到存活
+ * app 即抛错，本单例恒指向「当前 app」；close 按指向清理是防御性守卫。
  */
 export function getCurrentApp(): AppBase | null {
   return (globalThis as Record<symbol, AppBase | undefined>)[APP_INSTANCE_KEY] ?? null;

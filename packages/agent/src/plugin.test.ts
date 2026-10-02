@@ -82,6 +82,8 @@ const fullAgentConfig: AgentConfig = {
 function makeCtx(agentConfig?: AgentConfig): PluginContext {
   const ctx: PluginContext = {
     rootDir: '/project',
+    // PluginContext 必填数据字段（业务插件可用）；agent 侧不再消费——
+    // systemPromptFile 走主包免传参 readResource（app 启动时已绑定读取根）
     resourcesDir: '/project/dist/resources',
     registries: createAppRegistries(),
     routes: [],
@@ -140,12 +142,6 @@ describe('@faapi/agent plugin', () => {
       expect(typeof handle.run).toBe('function');
       expect(typeof handle.stream).toBe('function');
       expect(typeof handle.asTool).toBe('function');
-    });
-
-    it('工厂构造 Agent 时注入 ctx.resourcesDir（systemPromptFile 解析基准）', () => {
-      const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
-      const handle = factory!(makeReqCtx()) as unknown as { deps: { resourcesDir?: string } };
-      expect(handle.deps.resourcesDir).toBe('/project/dist/resources');
     });
 
     it('工厂返回的 Agent 支持显式指定 agent 名（asTool）', () => {

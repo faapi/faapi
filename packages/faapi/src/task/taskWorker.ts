@@ -257,6 +257,12 @@ if (typeof run !== 'function') {
     if (msg?.type !== 'run') return;
     controller = new AbortController();
     const { payload, taskCtx } = msg;
+    // 播种全局 readResource 读取根：wrapper 是 data URL 模块无法 import 主包，
+    // 经 globalThis 写入（symbol key 与 utils/readResource 的
+    // 'faapi.resources.dir' 一致，两处字面量需同步）
+    if (taskCtx && taskCtx.resourcesDir) {
+      globalThis[Symbol.for('faapi.resources.dir')] = taskCtx.resourcesDir;
+    }
     try {
       const registries = buildRegistriesView(msg.registries);
       const progress = (value) => parentPort.postMessage({ type: 'progress', value });

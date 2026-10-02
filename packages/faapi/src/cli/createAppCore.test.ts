@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import http from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createAppBase, getApp, type CreateAppOptions } from './createAppCore';
+import { readResource } from '../utils/readResource';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
 import { scanRoutes } from '../router/scanRoutes';
@@ -150,7 +152,7 @@ describe('createAppBase', () => {
     expect(ctx.registries.tool.get('weather.getWeather')).toBeUndefined();
   });
 
-  it('多 app 隔离：各自持有独立注册表实例，close 互不影响', async () => {
+  it('单 app 强制：存活 app 时第二次创建抛错，close 后可重建（全新注册表实例）', async () => {
     writeHandler();
     const sharedToolPath = join(tempDir, 'src/tools/weather/handler.ts');
     mkdirSync(join(sharedToolPath, '..'), { recursive: true });
@@ -163,20 +165,24 @@ describe('createAppBase', () => {
     const tools = await scanTools(tempDir, TOOL_PATTERNS);
     await generateToolArtifacts(tools, tempDir, 'dist');
 
-    // 同进程两个 app：各自持有独立的注册表实例（方案 A 实例化）
     const { app: app1 } = await createAppBase(options());
-    const { app: app2 } = await createAppBase(options());
     expect(app1.registries.tool.list()).toHaveLength(1);
-    expect(app2.registries.tool.list()).toHaveLength(1);
-    // 实例互不相同
-    expect(app1.registries.tool).not.toBe(app2.registries.tool);
+    // 绑定生命周期：存活期间 readResource 已绑定（resources 目录不存在 → ENOENT，
+    // 而非"未绑定"错误）
+    await expect(readResource('x.md', 'utf-8')).rejects.toThrow(/ENOENT/);
 
-    // app1 close：只清自己的实例，app2 的注册表不受影响
+    // 存活 app 期间第二次创建显式抛错（多 app 同进程不支持）
+    await expect(createAppBase(options())).rejects.toThrow(/single app per process/);
+
+    // close 后解绑读取根，可重建——新 app 拿到全新的注册表实例（重新水合）
     await app1.close();
     expect(app1.registries.tool.list()).toHaveLength(0);
+    await expect(readResource('x.md', 'utf-8')).rejects.toThrow(/no active app/);
+
+    const { app: app2 } = await createAppBase(options());
+    expect(app2.registries.tool).not.toBe(app1.registries.tool);
     expect(app2.registries.tool.list()).toHaveLength(1);
     expect(app2.registries.tool.get('weather.getWeather')).toBeDefined();
-
     await app2.close();
     expect(app2.registries.tool.list()).toHaveLength(0);
   });
@@ -419,7 +425,7 @@ describe('getApp', () => {
     expect(() => getApp()).toThrow(/No app instance/);
   });
 
-  it('多次 createAppBase 覆盖单例', async () => {
+  it('单 app 强制：close 后单例清空，重建得到新单例', async () => {
     const filePath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
     mkdirSync(join(filePath, '..'), { recursive: true });
     writeFileSync(filePath, `export function GET() { return { ok: true }; }\n`, 'utf-8');
@@ -428,16 +434,17 @@ describe('getApp', () => {
     const { app: app1 } = await createAppBase(options());
     expect(getApp()).toBe(app1);
 
+    // 存活期间第二次创建抛错（多 app 同进程不支持）
+    await expect(createAppBase(options())).rejects.toThrow(/single app per process/);
+
+    await app1.close();
+    expect(() => getApp()).toThrow(/No app instance/);
+
+    // close 后可重建，单例指向新 app
     const { app: app2 } = await createAppBase(options());
     expect(getApp()).toBe(app2);
     expect(getApp()).not.toBe(app1);
-
-    // close app2 只清自己（currentApp === app2）
     await app2.close();
-    expect(() => getApp()).toThrow(/No app instance/);
-
-    // app1 仍可正常 close（虽然单例已 null，不会误清）
-    await app1.close();
   });
 
   it('单例通过 globalThis + Symbol.for 跨模块实例共享', async () => {
@@ -526,16 +533,21 @@ describe('app.inject after listen', () => {
     await compileArtifacts('dist');
 
     const port = 13777 + Math.floor(Math.random() * 1000);
-    const { app: first } = await createAppBase({ rootDir: tempDir, port });
-    await first.listen();
+    // 用原生 http server 占住端口（单 app 强制下不能用第二个 faapi app 制造冲突）
+    const blocker = http.createServer();
+    await new Promise<void>((resolve) => blocker.listen(port, () => resolve()));
 
     try {
-      const { app: second } = await createAppBase({ rootDir: tempDir, port });
-      await expect(second.listen()).rejects.toThrow(
-        new RegExp(`port ${port}.*already in use`, 'is'),
-      );
+      const { app } = await createAppBase({ rootDir: tempDir, port });
+      try {
+        await expect(app.listen()).rejects.toThrow(
+          new RegExp(`port ${port}.*already in use`, 'is'),
+        );
+      } finally {
+        await app.close();
+      }
     } finally {
-      await first.close();
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
   });
 
@@ -559,12 +571,14 @@ describe('app.inject after listen', () => {
     await new Promise((r) => setTimeout(r, 50)); // 确保请求已到达服务端
     const closing = app.close();
 
-    // 在途请求正常拿到响应（drain 生效，未被强制断开）
-    const res = await inFlight;
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ data: { slow: true } });
-
-    await closing;
+    try {
+      // 在途请求正常拿到响应（drain 生效，未被强制断开）
+      const res = await inFlight;
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: { slow: true } });
+    } finally {
+      await closing;
+    }
     expect(app.server).toBeNull();
   });
 });
@@ -905,12 +919,17 @@ export default {
 
     const port = 20000 + Math.floor(Math.random() * 10000);
     const { app } = await createAppBase({ rootDir: tempDir, port });
-    // listen() 以 onBoot 的原始错误 reject
-    await expect(app.listen()).rejects.toThrow('DB_HOST is required');
-    // 端口未暴露：连接被拒（ECONNREFUSED）
-    await expect(fetch(`http://localhost:${port}/api/hello`)).rejects.toThrow();
-    // listen 失败，app.server 未绑定
-    expect(app.server).toBeNull();
+    try {
+      // listen() 以 onBoot 的原始错误 reject
+      await expect(app.listen()).rejects.toThrow('DB_HOST is required');
+      // 端口未暴露：连接被拒（ECONNREFUSED）
+      await expect(fetch(`http://localhost:${port}/api/hello`)).rejects.toThrow();
+      // listen 失败，app.server 未绑定
+      expect(app.server).toBeNull();
+    } finally {
+      // listen 失败的 app 仍需 close（单 app 强制下遗留存活 app 会卡住后续创建）
+      await app.close();
+    }
   });
 });
 

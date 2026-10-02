@@ -576,7 +576,7 @@ handler `throw err`                       → formatErrorResponse      → 走 f
 
 `ctx.requestId`：请求头 `x-request-id` 第一段优先（网关透传场景跨服务串联），否则 `crypto.randomUUID()` 生成；请求日志中间件的结构化条目同样附带该字段，业务日志与请求日志可经 requestId 关联。
 
-日志调用永不抛错（fields 序列化失败降级提示文本）；日志全局配置为进程级资源（多 app 同进程后启动覆盖先启动）。详见 `packages/faapi/src/logger/logger.md`。
+日志调用永不抛错（fields 序列化失败降级提示文本）；日志全局配置为进程级资源（faapi 单进程单 app，启动时应用一次）。详见 `packages/faapi/src/logger/logger.md`。
 
 ### 5.6 设计决策
 
@@ -631,7 +631,7 @@ agent 与 skill 物理隔离，职责正交不耦合：
 - **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 清单来自编译期产物，reload 时整体重新生成，**dev 模式 watcher 每次改文件都触发 reload**，业务方 DB skill 若混在同一 registry 会被清空，需要业务方手动重新塞，不可接受
 - **DB skill 是运行时增量**——业务方监听 DB change stream 单条增删改，与"整体替换"语义天然冲突
 
-**注册表实例化（多 app 隔离）**：三张注册表 + agent handle 工厂为 **app 实例级状态**——`createAppBase` 为每个 app 创建独立实例（`AppRegistries`），水合、请求链路（`FaapiContext.registries`）、插件（`PluginContext.registries`）、lifecycle 钩子（`LifecycleContext.registries`）均读写 app 自己的实例，`app.close()` 随实例销毁。多 app 同进程互不串台。四个模块保留的全局函数（`getTool` / `listAgents` / `hydrateSkillRegistry` 等）是**默认实例**的便捷访问器（编程式直调 / 测试用），与 app 实例相互独立——经全局函数水合的数据不会进入任何 app 的请求链路。
+**注册表实例化（app 实例级状态）**：三张注册表 + agent handle 工厂为 **app 实例级状态**——`createAppBase` 创建独立实例（`AppRegistries`），水合、请求链路（`FaapiContext.registries`）、插件（`PluginContext.registries`）、lifecycle 钩子（`LifecycleContext.registries`）均读写 app 自己的实例，`app.close()` 随实例销毁。**faapi 单进程单 app（多 app 同进程不支持）**——`createAppBase` 检测到进程内已有存活 app 时显式抛错，先 `close()` 才能再建（单例语义、全局日志、`readResource` 绑定等进程级资源都以唯一 app 为前提）。四个模块保留的全局函数（`getTool` / `listAgents` / `hydrateSkillRegistry` 等）是**默认实例**的便捷访问器（编程式直调 / 测试用），与 app 实例相互独立——经全局函数水合的数据不会进入任何 app 的请求链路。
 
 **agentRegistry 的查询函数不 fallback 到 skillRegistry**——`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 只查文件 registry。skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归（skill 不再被 agent 的 `agents` 列表自动引用）。skillRegistry 仅供业务方 plugin 内部使用，需要让 handler 看到 skill 时业务方自行通过注入器或中间件机制注入。
 
@@ -669,16 +669,16 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 
 ```ts
 // src/api/prompt/handler.ts
-import fs from 'node:fs/promises';
-import path from 'node:path';
+import { readResource } from '@faapi/faapi';
 
-export function GET(ctx) {
-  // ctx.resourcesDir 为 <rootDir>/<dist>/resources 绝对路径（HTTP/WS 请求链路恒有值）
-  return fs.readFile(path.join(ctx.resourcesDir, 'prompts/greeting.md'), 'utf-8');
+export async function GET() {
+  // readResource 按相对路径安全读取当前 app 的资源：越出 resources 目录（绝对路径 /
+  // .. 穿越 / 符号链接逃逸）显式抛错；encoding 省略时返回 Buffer
+  return readResource('prompts/greeting.md', 'utf-8');
 }
 ```
 
-访问点：HTTP `ctx.resourcesDir` / WS 握手 `ctx.resourcesDir`（同源）、`app.resourcesDir` / `app.dist`（编程式）、lifecycle 钩子参数 `resourcesDir`（onReady 预加载模板等场景）、任务 `taskCtx.resourcesDir`（进程内/隔离 worker 两条路径均注入）、插件 `PluginContext.resourcesDir`（setup 时读资源）。testing 直调 `createTestContext` 默认无该字段，可经 `resourcesDir` 选项显式传入。agent config 支持 `systemPromptFile`（相对本目录的路径字面量，与 `systemPrompt` 互斥二选一）——运行时每次 run 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。空目录与目录级删除不处理（按文件级同步）。
+**安全读取入口**：主包导出的 `readResource(relativePath, encoding?)` 是唯一读取入口——参数为相对路径，只能读 resources 内的文件，绝对路径 / `..` 穿越 / 符号链接逃逸均抛错（详见 `src/utils/readResource.md`）。读取根在 `createAppBase` 启动时绑定（进程级 globalThis，单 app 强制保证唯一）、隔离任务 worker 由 wrapper 从快照播种（`taskCtx.resourcesDir` 两条执行路径均注入）、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定。数据访问点（业务方了解/拼接资源位置，读取统一走 readResource）：`app.resourcesDir` / `app.dist`（编程式）、lifecycle 钩子参数 `resourcesDir`（onReady 预加载模板等场景）、插件 `PluginContext.resourcesDir`（业务插件数据字段）。agent config 支持 `systemPromptFile`（相对本目录的路径字面量，与 `systemPrompt` 互斥二选一）——运行时每次 run 经免传参 `readResource` 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。空目录与目录级删除不处理（按文件级同步）。
 
 输入字段二分口径：**`query` / `params` / `body` 恒为校验转换后的值，`rawQuery` / `rawParams` / `rawBody` 恒为原始值**，在 ctx、目录/全局中间件、handler 注入所有访问点一致（挂载时序详见 `src/server/createServer.md` 的「输入字段口径」）。全局中间件 `await next()` 之前 `ctx.rawParams`/`ctx.rawQuery` 已可用（路由匹配已提前到中间件链之前），`ctx.rawBody`/`ctx.body` 为 undefined（请求体流只能消费一次的物理限制）。
 
@@ -821,7 +821,7 @@ async function Page() {
 ```
 
 **关键点**：
-- `getApp()` 未初始化时抛错（强约束）；`createAppBase` 末尾设置单例，`close()` 时清 null
+- `getApp()` 未初始化时抛错（强约束）；`createAppBase` 末尾设置单例，`close()` 时清 null。**单进程单 app（多 app 同进程不支持）**：`createAppBase` 检测到存活 app 即抛错，先 `close()` 才能再建
 - `app.inject()` 走完整请求链路（CORS / helmet / logger / 全局中间件 / 路由匹配 / schema 校验 / 目录中间件 / handler），`listen()` 前后均可调用
 - 返回 `{ status, headers, body }`——`body` 已 JSON.parse，序列化契约与真实 HTTP 响应完全相同（Date → 毫秒时间戳、BigInt → 字符串、Map/Set → 数组等），不存在第二种同进程形态；业务方按 wire 类型消费或在消费点还原
 - 需手动透传请求头（cookie / authorization 等）从 `next/headers` 到 `inject` 的 `headers` 参数

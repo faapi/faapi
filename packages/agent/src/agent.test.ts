@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Agent, AgentError } from './agent';
 import { AgentAbortError } from './provider';
+import { setActiveResourcesDir } from '@faapi/faapi/src/utils/readResource';
 import type { AgentDeps, AgentRuntimeConfig, ToolSchemaResolution } from './agent';
 import type {
   AgentCore,
@@ -179,7 +180,6 @@ function createDeps(opts: {
   subAgentEntries?: AgentMetadata[];
   config?: AgentRuntimeConfig;
   ctx?: FaapiContext;
-  resourcesDir?: string;
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
@@ -199,7 +199,6 @@ function createDeps(opts: {
     providers,
     llms,
     rootDir: '/project',
-    resourcesDir: opts.resourcesDir,
     config: opts.config,
     ctx: opts.ctx,
     getAgent: (name) =>
@@ -251,7 +250,7 @@ describe('Agent', () => {
       expect(request.tools[0].function.name).toBe('weather.getWeather');
     });
 
-    it('systemPromptFile：读 resources 文件内容作为 system 消息', async () => {
+    it('systemPromptFile：经免传参 readResource 读 resources 文件内容作为 system 消息', async () => {
       const resDir = join(
         tmpdir(),
         `faapi-agent-spfile-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -260,6 +259,9 @@ describe('Agent', () => {
       writeFileSync(join(resDir, 'prompts', 'review.md'), 'You are a reviewer from file.', 'utf-8');
 
       try {
+        // 免传参 readResource 依赖进程级读取根绑定（app 启动绑定 / worker 播种）；
+        // 测试直绑（createTestContext resourcesDir 选项同款机制）
+        setActiveResourcesDir(resDir);
         const { provider, completeCalls } = createMockProvider([
           llmResponse({ content: 'ok', stopReason: 'stop' }),
         ]);
@@ -267,7 +269,6 @@ describe('Agent', () => {
           createDeps({
             provider,
             agent: agentMeta({ systemPromptFile: 'prompts/review.md' }),
-            resourcesDir: resDir,
           }),
         );
 
@@ -279,11 +280,13 @@ describe('Agent', () => {
           content: 'You are a reviewer from file.',
         });
       } finally {
+        setActiveResourcesDir(null);
         rmSync(resDir, { recursive: true, force: true });
       }
     });
 
-    it('systemPromptFile 声明但 deps.resourcesDir 未注入 → 抛 AgentError（不静默降级）', async () => {
+    it('systemPromptFile 声明但读取根未绑定（无 app）→ 抛 AgentError（不静默降级）', async () => {
+      setActiveResourcesDir(null);
       const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
       const agent = new Agent(
         createDeps({
@@ -302,6 +305,7 @@ describe('Agent', () => {
       mkdirSync(resDir, { recursive: true });
 
       try {
+        setActiveResourcesDir(resDir);
         const { provider } = createMockProvider([
           llmResponse({ content: 'ok', stopReason: 'stop' }),
         ]);
@@ -309,7 +313,6 @@ describe('Agent', () => {
           createDeps({
             provider,
             agent: agentMeta({ systemPromptFile: 'prompts/missing.md' }),
-            resourcesDir: resDir,
           }),
         );
 
@@ -317,6 +320,7 @@ describe('Agent', () => {
           /prompts\/missing\.md/,
         );
       } finally {
+        setActiveResourcesDir(null);
         rmSync(resDir, { recursive: true, force: true });
       }
     });

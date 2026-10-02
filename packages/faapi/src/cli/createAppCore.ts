@@ -32,6 +32,7 @@ import {
 import { getCurrentApp, registerDefaultShutdownHandlers, setCurrentApp } from './appSingleton';
 import { performInject, type InjectOptions, type InjectResponse } from './injectMock';
 import { resolveResourcesDir } from './copyResources';
+import { setActiveResourcesDir } from '../utils/readResource';
 
 // ─── 公开导出（门面 re-export，公开 API 路径不变）────────────────────
 export type { InjectOptions, InjectResponse } from './injectMock';
@@ -223,9 +224,23 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   app: AppBase;
   ctx: AppContext;
 }> {
+  // 单 app 强制：进程内已有存活 app 时显式抛错（多 app 同进程不支持——上下文绑定、
+  // 单例语义、日志等进程级资源都以唯一 app 为前提）。先 close 再建，或用子进程隔离
+  if (getCurrentApp()) {
+    throw new Error(
+      '[faapi] createApp: an app is already alive in this process — faapi supports a single app per process. ' +
+        'Close it first (`await app.close()`) or run the second app in a separate process.',
+    );
+  }
+
   const rootDir = options?.rootDir ?? process.cwd();
   const dist = options?.dist ?? process.env.FAAPI_DIST ?? DEFAULT_DIST;
   const resourcesDir = resolveResourcesDir(rootDir, dist);
+
+  // 绑定全局 readResource 读取根（免传参 readResource 依赖）：插件 setup、lifecycle
+  // 钩子、任务、handler 全部经此绑定解析资源路径。启动中途失败时绑定残留无害——
+  // 重试 createAppBase 会重新绑定
+  setActiveResourcesDir(resourcesDir);
 
   // 校验产物存在性
   const routesPath = path.resolve(rootDir, dist, ROUTES_FILE);
@@ -238,7 +253,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   // 加载配置（统一读 <dist>/faapi-config.js）
   const config = await loadConfig(rootDir, dist);
 
-  // 全局日志配置（进程级资源，多 app 同进程时后启动覆盖先启动；LOG_LEVEL env 在此解析，
+  // 全局日志配置（进程级资源，启动时应用；LOG_LEVEL env 在此解析，
   // 非法值启动期报错）——之后所有 createLogger / ctx.log / taskCtx.log 走统一管道
   configureLogging(config?.log);
 
@@ -456,14 +471,16 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
         });
       }
 
-      // 注册表（方案 A 实例化）：清理的是 app 自己的实例——多 app 同进程
-      // 天然隔离，无需所有权守卫；全局默认实例不被 app 生命周期触碰
+      // 注册表（方案 A 实例化）：清理的是 app 自己的实例，随 app 生命周期销毁；
+      // 全局默认实例不被 app 生命周期触碰
       registries.tool.clear();
       registries.agent.clear();
       registries.skill.clear();
       registries.task.clear();
       registries.agentHandle.clear();
       registries.taskHandle.clear();
+      // 解绑全局 readResource 读取根（onClose 已执行完，业务清理阶段仍可读资源）
+      setActiveResourcesDir(null);
 
       // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）
       if (!server.listening) {
@@ -510,7 +527,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     },
   };
 
-  // 设置单例（覆盖之前的实例；测试场景下多次创建会覆盖，close 时只清自己）
+  // 设置单例（单 app 强制保证此处无存活 app，close 时只清自己）
   // 通过 globalThis 存储，确保 Next.js Turbopack dev server runtime 加载的模块实例也能读到
   setCurrentApp(app);
 

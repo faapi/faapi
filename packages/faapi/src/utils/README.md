@@ -15,6 +15,7 @@
 | [importWithCacheBust.ts](./importWithCacheBust.ts) | ESM cache bust 加载（dev 热替换用） |
 | [readTsconfig.ts](./readTsconfig.ts) | 读取 tsconfig paths 别名配置 |
 | [resolveAlias.ts](./resolveAlias.ts) | 别名 specifier → 候选绝对路径解析（编译期重写用） |
+| [readResource.ts](./readResource.ts) | 运行时资源安全读取唯一入口（相对路径免传参，app 启动绑定读取根；越界/符号链接逃逸抛错） |
 
 ## parseMultipart 返回结构
 

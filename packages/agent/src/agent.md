@@ -116,12 +116,13 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
 在**每次 run/stream 时读文件内容**作为 system 消息,不走缓存——dev 改 prompt 文件经 watcher
 增量复制进 `.faapi/resources/` 后立即生效,无需 reload。
 
-- 文件定位：`deps.resourcesDir`（`<rootDir>/<dist>/resources` 绝对路径）+ 声明的相对路径。
-  `@faapi/agent` 插件从 `PluginContext.resourcesDir` 自动注入;编程式直调构造 `Agent` 时需显式传入
-- 错误语义：声明了 `systemPromptFile` 而 `deps.resourcesDir` 未注入,或文件读取失败
-  （不存在/权限）→ 抛 `AgentError`（带 agent 名与文件路径）,不静默降级为空提示词
-- 路径基准与 `ctx.resourcesDir` 一致（详见 [copyResources](../../faapi/src/cli/copyResources.md)）,
-  自定义 `run` 里读资源也用 `ctx.resourcesDir`
+- 文件定位：主包免传参 `readResource(meta.systemPromptFile, 'utf-8')`——相对产物 resources
+  目录（`<rootDir>/<dist>/resources`）解析，越界（绝对路径 / `..` 穿越 / 符号链接逃逸）
+  防护内建。读取根在 app 启动时由 `createAppBase` 绑定、隔离任务 worker 由 wrapper 从
+  快照播种（见主包 [readResource.md](../../faapi/src/utils/readResource.md)），调用方无需传目录
+- 错误语义：读取失败（读取根未绑定 / 文件不存在 / 越界）→ 抛 `AgentError`
+  （带 agent 名与文件路径），不静默降级为空提示词
+- 路径基准与 `ctx.resourcesDir` 数据字段一致（详见 [copyResources](../../faapi/src/cli/copyResources.md)）
 
 ### `buildToolDefinitions()` —— tool 列表组装
 
