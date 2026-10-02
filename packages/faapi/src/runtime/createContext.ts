@@ -64,17 +64,8 @@ export function createContext(
   config: Record<string, unknown> = {},
   ip: string = '',
   registries?: FaapiContext['registries'],
-  resourcesDir?: string,
 ): FaapiContext {
-  return createContextFromUrl(
-    request,
-    new URL(request.url),
-    params,
-    config,
-    ip,
-    registries,
-    resourcesDir,
-  );
+  return createContextFromUrl(request, new URL(request.url), params, config, ip, registries);
 }
 
 /**
@@ -91,7 +82,6 @@ export function createContextFromUrl(
   config: Record<string, unknown> = {},
   ip: string = '',
   registries?: FaapiContext['registries'],
-  resourcesDir?: string,
 ): FaapiContext {
   const meta: ResponseMeta = { headers: {}, setCookies: [] };
   const parsedCookies = parseCookies(request.headers.get('cookie') ?? '');
@@ -124,9 +114,6 @@ export function createContextFromUrl(
     ua: request.headers.get('user-agent') ?? '',
     cookies: cookiesObj,
     config,
-    // 运行时资源根目录（HTTP/WS 链路由 createServer/handleWsUpgrade 传入；
-    // testing 直调未传时为 undefined，见 contextTypes.resourcesDir 注释）
-    resourcesDir,
     meta,
 
     setStatus(status: number) {
@@ -306,12 +293,13 @@ export function createTestContext(options: CreateTestContextOptions): FaapiConte
 
   // 绑定全局 readResource 读取根（免传参 readResource 依赖进程级绑定）：测试
   // handler 调 readResource('x.md') 时按此绑定解析。测试内多次构造后调覆盖先调；
-  // 真实 app 的绑定/解绑由 createAppBase / app.close() 接线
+  // 真实 app 的绑定/解绑由 createAppBase / app.close() 接线。仅绑定——ctx 上
+  // 无 resourcesDir 数据字段（已删除，读取统一走 readResource）
   if (resourcesDir) {
     setActiveResourcesDir(resourcesDir);
   }
 
-  return createContext(request, params, config, ip, registries, resourcesDir);
+  return createContext(request, params, config, ip, registries);
 }
 
 /**
@@ -324,7 +312,7 @@ export interface CreateTestContextOptions {
    * 运行时资源根目录（可选）
    *
    * 传入时同时做两件事：绑定全局 readResource 读取根（handler 直调
-   * `readResource('x.md')` 依赖）+ 挂到 ctx.resourcesDir 数据字段
+   * `readResource('x.md')` 依赖）；ctx 上无 resourcesDir 数据字段（已删除）
    */
   resourcesDir?: string;
   /** 请求方法，默认 'GET' */

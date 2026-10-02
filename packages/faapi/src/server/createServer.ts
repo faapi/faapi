@@ -37,7 +37,6 @@ import type { InjectorMap } from '../middleware/injectorTypes';
 import { attachWebSocket } from './handleWsUpgrade';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 import { getRuntimeSchemaPath } from '../cli/generateSchemaFiles';
-import { resolveResourcesDir } from '../cli/copyResources';
 import {
   ensureSchemaGenerated,
   ensureMiddlewaresCompiled,
@@ -268,9 +267,6 @@ export function createServer(options: CreateServerOptions): {
   // 路由可变引用容器（watch 模式热替换时 reloadRoutes 更新 .current/.wsCurrent）
   const routesRef: RoutesRef = { current: routes, wsCurrent: wsRoutes ?? [] };
 
-  // 运行时资源根目录（挂到每个请求的 ctx.resourcesDir，供 handler 读静态文件）
-  const resourcesDir = resolveResourcesDir(rootDir, dist);
-
   // Build middleware chain from config options
   const configMiddlewares: FaapiMiddleware[] = [];
 
@@ -343,7 +339,6 @@ export function createServer(options: CreateServerOptions): {
       trustedProxy,
       registries,
       routesRef.wsCurrent,
-      resourcesDir,
     ).catch((err) => {
       // 兜底留痕：进入这里说明 sendErrorResponse 自身也失败（如响应头已发的二次
       // 响应尝试），恰恰是最需要排查痕迹的极端场景，静默吞掉会让 500 无从定位
@@ -400,7 +395,6 @@ function prepareRequest(
   trustedProxy: boolean,
   registries?: AppRegistries,
   preMatched?: RouteMatch | null,
-  resourcesDir?: string,
 ): {
   request: Request;
   url: URL;
@@ -420,7 +414,6 @@ function prepareRequest(
     config,
     getClientIp(req, trustedProxy),
     registries,
-    resourcesDir,
   );
   const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
   return { request, url, ctx, meta, method, urlPath };
@@ -717,7 +710,6 @@ async function handleRequest(
   trustedProxy: boolean,
   registries?: AppRegistries,
   wsRoutes?: WsRouteManifest,
-  resourcesDir?: string,
 ): Promise<void> {
   // meta/ctx 兜底：请求准备阶段抛错（如 content-length 超限的 413）时尚无 ctx
   let meta: ResponseMeta = { headers: {}, setCookies: [] };
@@ -750,7 +742,6 @@ async function handleRequest(
       trustedProxy,
       registries,
       preMatched,
-      resourcesDir,
     );
     ctx = prepared.ctx;
     meta = prepared.meta;

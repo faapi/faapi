@@ -71,11 +71,11 @@ describe('runTaskInWorker', () => {
     });
   });
 
-  it('resourcesDir：taskCtx 透传到 worker 内的 run', async () => {
+  it('resourcesDir 数据字段不进 worker 内的业务 taskCtx（已删除；读取根播种走独立链路）', async () => {
     const modulePath = writeTaskModule(
       'res',
       `export function run(payload, taskCtx) {
-        return { resourcesDir: taskCtx.resourcesDir };
+        return { hasField: 'resourcesDir' in taskCtx };
       }`,
     );
     const result = await runTaskInWorker({
@@ -84,7 +84,9 @@ describe('runTaskInWorker', () => {
       taskCtx: { ...baseCtx, resourcesDir: '/project/dist/resources' },
       timeoutMs: 5000,
     });
-    expect(result).toEqual({ resourcesDir: '/project/dist/resources' });
+    // taskCtx.resourcesDir（TaskWorkerOptions 内部字段）仅作 workerData 播种数据源，
+    // 不出现在业务 taskCtx 上
+    expect(result).toEqual({ hasField: false });
   });
 
   it('读取根播种先于任务模块求值：模块顶层（readResource 顶层调用前提）即已绑定', async () => {

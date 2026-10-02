@@ -22,7 +22,7 @@ describe('scanRoutes', () => {
     // + search(POST——body 方法次输入 query 声明验证 fixture)
     // + raw(GET) + raw/[id](GET) + raw/echo(POST+PUT——raw 系字段验证 fixture)
     // + sse/stream(GET) + sse/mid-stream-error(GET——SSE 流式时机/流中抛错验证 fixture)
-    // + resources-info(GET——ctx.resourcesDir 验证 fixture)
+    // + resources-info(GET——ctx 无 resourcesDir 字段验证 fixture)
     expect(routes).toHaveLength(33);
     // chat + room/[id] + ws-auth + ws-chain/inner + ws-typed/[id]（声明即校验验证）
     expect(wsRoutes).toHaveLength(5);

@@ -118,14 +118,6 @@ export interface TaskContext {
   signal: AbortSignal;
   /** faapi.config.ts 全量配置（含自定义业务配置） */
   config: unknown;
-  /**
-   * 产物 resources 目录绝对路径（`<rootDir>/<dist>/resources`）
-   *
-   * 任务读静态文件（prompt 模板等）用：`fs.readFile(path.join(taskCtx.resourcesDir, 'x.md'))`。
-   * 进程内与隔离执行两条路径均注入（隔离为纯字符串，可结构化克隆）；
-   * 直接构造 TaskContext 的测试/自定义执行器可不传。
-   */
-  resourcesDir?: string;
   job: { id: string; name: string; attempt: number };
   /**
    * app 注册表只读视图（agent/tool/skill 元数据查询，不含 hydrate/clear 写接口）
@@ -225,8 +217,10 @@ export interface TaskQueueDeps {
   /** faapi.config.ts 全量配置，透传给 run 的 TaskContext.config */
   config?: unknown;
   /**
-   * 产物 resources 目录绝对路径——注入两条执行路径的 TaskContext.resourcesDir；
-   * 缺省不注入（直接构造队列的测试/嵌入场景）
+   * 产物 resources 目录绝对路径——**内部字段**，仅作隔离 worker 读取根播种的
+   * 数据源（经 workerData 传入 workerEntry，不进业务可见的 TaskContext——
+   * 任务读资源统一走免传参 `readResource`）；缺省不播种（直接构造队列的
+   * 测试/嵌入场景，readResource 未绑定即显式抛错）
    */
   resourcesDir?: string;
   /**

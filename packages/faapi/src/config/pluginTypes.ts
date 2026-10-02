@@ -18,14 +18,6 @@ export type UpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer
 export interface PluginContext {
   /** 项目根目录 */
   rootDir: string;
-  /**
-   * 产物 resources 目录绝对路径（`<rootDir>/<dist>/resources`）
-   *
-   * `src/resources/` 经 dev/build 复制进产物后的位置——插件 setup 时读静态
-   * 资源用；`@faapi/agent` 插件据此注入 AgentDeps（agent config 的
-   * systemPromptFile 相对此目录解析）。
-   */
-  resourcesDir: string;
   /** app 级注册表（tool/agent/skill/agentHandle 实例，随 app 生命周期） */
   registries: import('../injection/registries.js').AppRegistries;
   /** 当前路由清单（setup 时的快照，reloadRoutes 后不会更新；需最新路由用 getRoutes()） */

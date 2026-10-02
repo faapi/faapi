@@ -122,7 +122,7 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
   快照播种（见主包 [readResource.md](../../faapi/src/utils/readResource.md)），调用方无需传目录
 - 错误语义：读取失败（读取根未绑定 / 文件不存在 / 越界）→ 抛 `AgentError`
   （带 agent 名与文件路径），不静默降级为空提示词
-- 路径基准与 `ctx.resourcesDir` 数据字段一致（详见 [copyResources](../../faapi/src/cli/copyResources.md)）
+- 路径基准为产物 resources 目录（读取经主包免传参 `readResource`，详见 [copyResources](../../faapi/src/cli/copyResources.md)）
 
 ### `buildToolDefinitions()` —— tool 列表组装
 

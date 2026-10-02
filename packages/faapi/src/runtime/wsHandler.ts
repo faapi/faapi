@@ -65,13 +65,6 @@ export interface WsContext {
   headers: Headers;
   /** 业务配置（来自 faapi.config.ts） */
   config: Record<string, unknown>;
-  /**
-   * 运行时资源根目录绝对路径（<rootDir>/<dist>/resources）
-   *
-   * 与 HTTP FaapiContext 同源（握手 ctx 是 FaapiContext 的结构子集），handler
-   * 的 WS 回调里读静态文件用。testing 直调未传时为 undefined。
-   */
-  resourcesDir?: string;
   /** 中间件塞入的用户信息（鉴权等） */
   user?: unknown;
   /** 允许通过 declare module 扩展 */

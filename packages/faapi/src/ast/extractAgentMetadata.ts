@@ -30,7 +30,7 @@ export interface AgentCore {
   systemPrompt?: string;
   /**
    * 系统提示词文件路径(config 块字面量提取),相对产物 resources 目录
-   * (`<dist>/resources/`,即 `ctx.resourcesDir`),与 `systemPrompt` 互斥
+   * (`<dist>/resources/`,运行时经免传参 `readResource` 读取),与 `systemPrompt` 互斥
    * (都声明构建期抛错,二选一必填)
    *
    * 运行时每次 run 读文件内容作为 systemPrompt——dev 改 prompt 文件经 watcher

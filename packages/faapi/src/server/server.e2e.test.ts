@@ -116,12 +116,11 @@ afterAll(async () => {
 });
 
 describe('HTTP Server E2E', () => {
-  it('ctx.resourcesDir 指向 <rootDir>/<dist>/resources（真实 HTTP 链路挂载）', async () => {
+  it('ctx 上无 resourcesDir 字段（已删除，读取统一走 readResource）', async () => {
     const res = await fetchFromServer('/api/resources-info');
     expect(res.status).toBe(200);
     const body = await res.json();
-    // setupServer 的 dist 为临时 schema 目录（绝对路径），resources 目录随之定位
-    expect(body).toEqual({ data: { resourcesDir: path.resolve(schemaDist, 'resources') } });
+    expect(body).toEqual({ data: { hasResourcesDir: false } });
   });
 
   it('GET /auth/login 返回 200', async () => {

@@ -47,7 +47,6 @@ describe('configTypes', () => {
   it('LifecycleContext 类型可正确构造', () => {
     const ctx: LifecycleContext = {
       rootDir: '/app',
-      resourcesDir: '/app/dist/resources',
       routes: [] as RouteManifest,
       server: {} as Server,
       registries: {} as import('../injection/registries').AppRegistries,
@@ -60,7 +59,6 @@ describe('configTypes', () => {
       },
     };
     expect(ctx.rootDir).toBe('/app');
-    expect(ctx.resourcesDir).toBe('/app/dist/resources');
     expect(ctx.routes).toEqual([]);
   });
 

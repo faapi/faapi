@@ -61,7 +61,7 @@ PluginContext { config.agent, rootDir }
 2. 遍历 agentConfig?.llms ?? {} → 每项调 createProvider → Map<providerKey, LLMProvider>
    （llms 可选——未配置时 providers 为空 Map,进入「外部 provider 模式」,照常注册工厂）
 3. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
-4. registerAgentHandleFactory(() => new Agent({ providers, llms, rootDir, resourcesDir, config, ...accessors }))
+4. registerAgentHandleFactory(() => new Agent({ providers, llms, rootDir, config, ...accessors }))
 ```
 
 无默认 agent / 默认 provider——`agent.run/stream` 每次调用显式传 `options.agent` +
@@ -82,7 +82,6 @@ registerAgentHandleFactory(() => {
     providers,                   // 闭包捕获（setup 时创建,Map<providerKey, LLMProvider>;llms 未配置时为空 Map）
     llms,                        // 闭包捕获（agentConfig.llms ?? {},供 Agent 按名查找 LlmConfig）
     rootDir,                     // 闭包捕获（ctx.rootDir）
-    resourcesDir,                // 闭包捕获（ctx.resourcesDir,agent systemPromptFile 相对此目录解析）
     config: runtimeConfig,      // 闭包捕获（maxTurns / maxAgentDepth）
     getAgent,                    // 从 @faapi/faapi import（单例模块）
     getAgentEntry,               // 从 @faapi/faapi import（用于加载 handler.js 执行 run 函数）

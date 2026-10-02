@@ -10,7 +10,6 @@ import type { PluginContext } from '../config/pluginTypes';
 
 const mockCtx: PluginContext = {
   rootDir: '/tmp/test',
-  resourcesDir: '/tmp/test/dist/resources',
   registries: createAppRegistries(),
   routes: [],
   getRoutes: () => [],

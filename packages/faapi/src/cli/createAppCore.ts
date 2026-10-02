@@ -341,7 +341,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     config?.plugins,
     {
       rootDir,
-      resourcesDir,
       registries,
       routes: sorted,
       getRoutes: () => sorted,
@@ -382,7 +381,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
             server,
             registries,
             tasks: taskQueue,
-            resourcesDir,
           });
           console.log('- onBoot hook executed');
         } catch (err) {
@@ -428,7 +426,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
               server,
               registries,
               tasks: taskQueue,
-              resourcesDir,
             });
             console.log('- onReady hook executed');
           }
@@ -467,7 +464,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           server,
           registries,
           tasks: taskQueue,
-          resourcesDir,
         });
       }
 

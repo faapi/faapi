@@ -44,12 +44,9 @@ describe('业务方测试支持', () => {
       expect(ctx.ip).toBe('1.2.3.4');
     });
 
-    it('resourcesDir：默认 undefined，显式传入时透传（测试读资源的 handler）', () => {
-      const withoutDir = createTestContext({ path: '/' });
-      expect(withoutDir.resourcesDir).toBeUndefined();
-
-      const withDir = createTestContext({ path: '/', resourcesDir: '/proj/dist/resources' });
-      expect(withDir.resourcesDir).toBe('/proj/dist/resources');
+    it('resourcesDir 选项仅绑定读取根，ctx 上无 resourcesDir 字段（已删除）', () => {
+      const ctx = createTestContext({ path: '/', resourcesDir: '/proj/dist/resources' });
+      expect('resourcesDir' in ctx).toBe(false);
     });
 
     it('从 user-agent 头读取 ua', () => {

@@ -38,9 +38,9 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 详见 `src/logger/logger.md`。
 
-## TaskContext.resourcesDir（运行时资源目录）
+## TaskContext.resourcesDir（已删除）
 
-`TaskContext.resourcesDir?: string` 为产物 resources 目录绝对路径（`<rootDir>/<dist>/resources`，由 `createAppBase` 经 `TaskQueueDeps.resourcesDir` 注入两条执行路径；直接构造队列的测试/嵌入场景可不传）。任务读静态文件统一走主包免传参 `readResource`（相对路径 + 只能读 resources 内文件，详见 [readResource.md](../utils/readResource.md)）：
+`TaskContext.resourcesDir` 数据字段已删除——任务读静态文件统一走主包免传参 `readResource`（相对路径 + 只能读 resources 内文件，详见 [readResource.md](../utils/readResource.md)）：
 
 ```ts
 // src/tasks/report/task.ts
@@ -51,7 +51,7 @@ export async function run() {
 }
 ```
 
-隔离路径为纯字符串随快照 postMessage 传入（可结构化克隆）：进程内经 app 启动时的全局绑定即可读；隔离 worker 中 wrapper 在 run 派发前把快照值播种到全局读取根——所以 worker 内 `readResource` 与 agent `systemPromptFile` 都自动可用，无需手工传目录。`taskCtx.resourcesDir` 保留为数据字段（业务方了解/拼接资源位置用）。
+隔离路径为纯字符串随快照 postMessage 传入（可结构化克隆）：进程内经 app 启动时的全局绑定即可读；隔离 worker 中 wrapper 在 run 派发前把快照值播种到全局读取根——所以 worker 内 `readResource` 与 agent `systemPromptFile` 都自动可用，无需手工传目录。`TaskQueueDeps.resourcesDir` 保留为内部字段——仅作隔离 worker 读取根播种的数据源（不进业务可见的 TaskContext）。
 
 ### 任务内组装 Agent（完整 deps）
 

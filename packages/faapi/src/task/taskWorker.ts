@@ -67,9 +67,8 @@ export interface TaskWorkerOptions {
   taskCtx: {
     config: unknown;
     /**
-     * 产物 resources 目录绝对路径（纯字符串可结构化克隆）——两处用途：经
-     * workerData 传给入口在任务模块求值前播种全局读取根 + 挂到 worker 内的
-     * taskCtx（业务方了解/拼接资源位置）
+     * 产物 resources 目录绝对路径（纯字符串可结构化克隆）——经 workerData
+     * 传给入口在任务模块求值前播种全局读取根（内部字段，不进业务 taskCtx）
      */
     resourcesDir?: string;
     job: { id: string; name: string; attempt: number };
@@ -285,7 +284,6 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         payload,
         taskCtx: {
           config: safeConfig(taskCtx.config),
-          resourcesDir: taskCtx.resourcesDir,
           job: taskCtx.job,
         },
         registries: options.registries,

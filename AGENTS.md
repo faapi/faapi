@@ -680,7 +680,7 @@ export async function GET() {
 }
 ```
 
-**安全读取入口**：主包导出的 `readResource(relativePath, encoding?)` 是唯一读取入口——参数为相对路径，只能读 resources 内的文件，绝对路径 / `..` 穿越 / 符号链接逃逸均抛错（详见 `src/utils/readResource.md`）。读取根在 `createAppBase` 启动时绑定（进程级 globalThis，单 app 强制保证唯一）、隔离任务 worker 由 wrapper 从快照播种（`taskCtx.resourcesDir` 两条执行路径均注入）、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定。数据访问点（业务方了解/拼接资源位置，读取统一走 readResource）：`app.resourcesDir` / `app.dist`（编程式）、lifecycle 钩子参数 `resourcesDir`（onReady 预加载模板等场景）、插件 `PluginContext.resourcesDir`（业务插件数据字段）。agent config 支持 `systemPromptFile`（相对本目录的路径字面量，与 `systemPrompt` 互斥二选一）——运行时每次 run 经免传参 `readResource` 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。空目录与目录级删除不处理（按文件级同步）。
+**安全读取入口**：主包导出的 `readResource(relativePath, encoding?)` 是唯一读取入口——参数为相对路径，只能读 resources 内的文件，绝对路径 / `..` 穿越 / 符号链接逃逸均抛错（详见 `src/utils/readResource.md`）。读取根在 `createAppBase` 启动时绑定（进程级 globalThis，单 app 强制保证唯一）、隔离任务 worker 由入口从快照播种（数据源为 `TaskQueueDeps.resourcesDir` 内部字段，不进业务上下文）、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定。**`resourcesDir` 各上下文数据字段已删除**（FaapiContext / WsContext / TaskContext / PluginContext / AppBase / lifecycle 钩子参数）——字段助长 `path.join` + `fs.readFile` 的无防护绕行读法，读取统一走 `readResource`。agent config 支持 `systemPromptFile`（相对本目录的路径字面量，与 `systemPrompt` 互斥二选一）——运行时每次 run 经免传参 `readResource` 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。空目录与目录级删除不处理（按文件级同步）。
 
 输入字段二分口径：**`query` / `params` / `body` 恒为校验转换后的值，`rawQuery` / `rawParams` / `rawBody` 恒为原始值**，在 ctx、目录/全局中间件、handler 注入所有访问点一致（挂载时序详见 `src/server/createServer.md` 的「输入字段口径」）。全局中间件 `await next()` 之前 `ctx.rawParams`/`ctx.rawQuery` 已可用（路由匹配已提前到中间件链之前），`ctx.rawBody`/`ctx.body` 为 undefined（请求体流只能消费一次的物理限制）。
 

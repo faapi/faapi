@@ -19,7 +19,6 @@ import path from 'node:path';
 import type { WsRouteMatch, RoutesRef } from '../router/routeTypes';
 import { matchWsRoute } from '../router/matchRoute';
 import { createContext } from '../runtime/createContext';
-import { resolveResourcesDir } from '../cli/copyResources';
 import { compose, mergeMeta } from '../runtime/invokeHandler';
 import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
@@ -248,9 +247,6 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
     registries,
   } = options;
 
-  // 运行时资源根目录（与 HTTP 链路一致，挂到握手 ctx.resourcesDir）
-  const resourcesDir = resolveResourcesDir(rootDir, dist);
-
   const wss = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', async (req: IncomingMessage, socket: Socket, head: Buffer) => {
@@ -298,14 +294,7 @@ export function attachWebSocket(options: AttachWsOptions): WebSocketServer {
 
     // 构造 Web Request 与 FaapiContext（与 HTTP 请求一致，供中间件使用）
     const request = new Request(fullUrl.toString(), { method: 'GET', headers });
-    const ctx = createContext(
-      request,
-      params,
-      config,
-      getClientIp(req, trustedProxy),
-      registries,
-      resourcesDir,
-    );
+    const ctx = createContext(request, params, config, getClientIp(req, trustedProxy), registries);
     const meta = (ctx as FaapiContext & { meta: ResponseMeta }).meta;
 
     // 标记握手是否已完成协议升级（用于判断 socket 是否可写）

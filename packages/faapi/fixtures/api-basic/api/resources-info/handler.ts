@@ -1,3 +1,3 @@
-export function GET(ctx: { resourcesDir?: string }) {
-  return { resourcesDir: ctx.resourcesDir ?? null };
+export function GET(ctx: Record<string, unknown>) {
+  return { hasResourcesDir: 'resourcesDir' in ctx };
 }

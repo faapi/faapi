@@ -18,12 +18,12 @@
 - **绑定点三处**：`createAppBase` 启动时绑定（插件 setup 前生效）、隔离任务 worker 由真实入口 `workerEntry.ts` 在任务模块求值前播种（入口自包含、值导入仅 node 内置模块，读取根经 globalThis 承载以跨入口/主包两份代码副本共享；symbol key 与本模块一致、契约测试锚定）、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定。
 - **安全边界是"不越出 resources 目录"**：`path.resolve` 后必须仍在 resources 内（拦绝对路径与 `..` 穿越），目标真实路径（realpath）也必须仍在 resources 内（拦符号链接指向目录外）；resources 内部的合法软链不误伤。目标不存在时不做符号链接检查，由 fs 抛自然 ENOENT。
 - **越界与非法入参抛普通 `Error`（`[faapi]` 前缀）**，不是请求校验错误——路径来自业务代码而非客户端输入，传播出 handler 时按服务端错误落 500。
-- **`resourcesDir` 各上下文数据字段保留**（FaapiContext / WsContext / TaskContext / PluginContext / AppBase / lifecycle 钩子参数）——供业务方了解 / 拼接资源位置，读取统一走本函数。
+- **`resourcesDir` 各上下文数据字段已删除**（FaapiContext / WsContext / TaskContext / PluginContext / AppBase / lifecycle 钩子参数）——字段助长 `path.join` + `fs.readFile` 的绕行读法（无越界防护），读取统一走本函数；业务方无感知资源目录路径的用例，需要拼位置的经 `readResource` 读取内容即可。隔离 worker 的读取根播种数据源仍经 `TaskQueueDeps.resourcesDir` 内部传递（不进业务上下文）。
 
 ## 相关模块
 
 - [copyResources](../cli/copyResources.md) — 资源复制管线（dev/build 把 `src/resources/` 镜像进产物），本函数读的是复制后的产物目录
 - [prodPaths](./prodPaths.ts) — 复用 `isInsideDir`（目录包含判定）与 `toRealPath`（realpath 规范化，处理 macOS /tmp 符号链接差异）
 - [appSingleton](../cli/appSingleton.md) — 同款 globalThis + Symbol.for 进程级状态机制；单 app 强制在 createAppBase 入口
-- [createContext](../runtime/createContext.ts) — `createTestContext` 的 `resourcesDir` 选项 → 绑定全局读取根
+- [createContext](../runtime/createContext.ts) — `createTestContext` 的 `resourcesDir` 选项 → 绑定全局读取根（仅绑定，不再挂到 ctx）
 - [taskWorker](../task/taskWorker.md) — 隔离 worker wrapper 内联播种读取根
