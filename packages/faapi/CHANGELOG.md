@@ -1,5 +1,7 @@
 # @faapi/faapi
 
+## 6.26.0
+
 ## 6.25.0
 
 ### Minor Changes

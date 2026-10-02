@@ -1,5 +1,23 @@
 # @faapi/task-pgboss
 
+## 6.26.0
+
+### Minor Changes
+
+- 0889151: task-pgboss 新增 `list` 能力（pg-boss v12 `findJobs`，升级 `^12` 后解锁）：
+
+  - 六态精确映射：created→pending、retry→retry、active→running、completed→done、failed→failed、cancelled→cancelled——pg-boss 可区分重试等待与延迟投递，比 BullMQ 驱动（delayed 无法区分，统一归 pending）更精确；`cancelled` 可查（BullMQ 取消即移除，无此状态）
+  - 不传 `name` 时遍历本进程已 `ensureQueue` 的任务名（与 BullMQ 驱动遍历已建 Queue 实例同语义）；`FindJobsOptions` 无 state/limit 过滤，映射后自行过滤 + `createdAt` 降序截断 `limit`（默认 50）
+  - `attempts` = `retryCount + 1`（与执行路径 attempt 口径一致）；`runAt` 取 `startAfter`（计划执行时间）；驱动 `complete()` 不携带执行结果，done 记录无 `result`；failed 记录 `error` 从 `output` 提取（`{ message }` / `{ value }` 结算形态，提取不到不放字段）
+  - `TaskClient.listQueued` 对 pgboss 驱动随之可用（此前显式抛错）——队列侧记录与本进程记录按 id 合并、本进程观测优先
+
+- e35ad13: 队列驱动升级上游 major：pg-boss `^10` → `^12`、BullMQ `^5` → `^6`：
+
+  - **pg-boss 12**：业务方需安装 `pg-boss@^12`。驱动适配三处上游变化——命名导出（v10 的 `import PgBoss from 'pg-boss'` 改为 `{ PgBoss }`）、`offWork` 签名（v12 为 `offWork(name, { id })`，队列名升为第一参数，驱动 stop/reload 路径同步修正——v10 的 `offWork(workerId)` 传法在 v12 下语义错误）、类型面改顶层导出（`ConstructorOptions`/`SendOptions` 不再经 `PgBoss` 命名空间）
+  - **BullMQ 6**：业务方需安装 `bullmq@^6` 并**显式安装 `ioredis`**（bullmq 6 起 ioredis 由内置依赖移至 peer dependency，bullmq 5 时代无需）——README 安装说明已更新；驱动 API 面（Queue/Worker/getJobs/close）在 v6 类型兼容，无代码改动
+  - **pg-boss 12.28 起放宽 expire 断言**（允许恰好 24h）：驱动的 86399 兜底与主包 `timeoutMs` 23h 上限保持不变——保守值对全部 pg-boss 12 小版本安全，且保持跨驱动统一预算口径；相关注释与文档同步为准确表述
+  - pg-boss v10 时代的"无批量列出 API"能力缺口在上游已补（v12 `findJobs`）：驱动 `list` 实现留作后续，`listQueued` 维持显式抛错不静默降级
+
 ## 6.25.0
 
 ## 6.24.0
