@@ -7,7 +7,10 @@ faapi 任务子系统的 **BullMQ 驱动**（Redis 持久化队列）。
 ## 安装
 
 ```bash
-pnpm add @faapi/task-bullmq bullmq
+pnpm add @faapi/task-bullmq bullmq ioredis
+```
+
+> bullmq 6 起 `ioredis` 由内置依赖移至 peer dependency——需业务方显式安装（bullmq 5 时代无需）。
 ```
 
 ## 使用

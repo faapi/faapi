@@ -27,14 +27,14 @@
   "devDependencies": {
     "@faapi/faapi": "workspace:*",
     "@types/node": "^24.3.0",
-    "pg-boss": "^10.1.5",
+    "pg-boss": "^12.35.1",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "@faapi/faapi": "workspace:^",
-    "pg-boss": "^10.0.0"
+    "pg-boss": "^12.0.0"
   },
   "license": "MIT",
   "repository": {

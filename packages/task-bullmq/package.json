@@ -27,14 +27,14 @@
   "devDependencies": {
     "@faapi/faapi": "workspace:*",
     "@types/node": "^24.3.0",
-    "bullmq": "^5.58.5",
+    "bullmq": "^6.3.11",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "@faapi/faapi": "workspace:^",
-    "bullmq": "^5.0.0"
+    "bullmq": "^6.0.0"
   },
   "license": "MIT",
   "repository": {

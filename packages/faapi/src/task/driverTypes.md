@@ -24,7 +24,7 @@
 ## 可选管理方法（`list` / `cancel` / `retry`）
 
 - 全部可选——驱动按队列系统的真实能力实现，未实现时 `TaskClient` 对应调用显式抛错（不静默降级）
-- `list(opts?)`：查询持久化队列任务，返回 `TaskDriverRecord[]`（status 由子包从队列系统状态映射为 faapi 语义；**pg-boss v10 无批量列出 jobs 的公开 API，task-pgboss 未实现**——下方状态映射仅为约定，无 pgboss 参考实现；bullmq waiting/delayed→pending、active→running、completed→done、failed→failed 已实现。**BullMQ 取消 = `job.remove()`，移除后记录不可查（无 cancelled 状态）**）
+- `list(opts?)`：查询持久化队列任务，返回 `TaskDriverRecord[]`（status 由子包从队列系统状态映射为 faapi 语义；**pg-boss v10 无批量列出 API（v12 已提供 `findJobs`），task-pgboss 的 list 实现留作后续**——下方状态映射仅为约定，无 pgboss 参考实现；bullmq waiting/delayed→pending、active→running、completed→done、failed→failed 已实现。**BullMQ 取消 = `job.remove()`，移除后记录不可查（无 cancelled 状态）**）
 - `cancel(name, id)`：取消队列侧任务——pgboss 映射 `boss.cancel`（保留 cancelled 记录）；bullmq 映射 `job.remove()`（等待/延迟中的不再执行，active 受锁限制由 BullMQ 抛错）。**驱动不校验取消是否真实生效**（pg-boss 对不存在/不可取消的 id 静默 no-op；BullMQ 对不存在的 job 静默 no-op）——语义层记录状态可能与队列实际状态相反，管理操作建议配合 `getJobById`/队列系统自身工具核实
 - `retry(name, id)`：重试失败/取消的任务——pgboss 映射 `boss.resume`（仅 cancelled 任务可恢复）；bullmq 映射 `job.retry()`（仅 failed 可重试，其余状态由 BullMQ 抛错；任务不存在时抛错）
 - 语义层补充：`TaskClient.listQueued` 把驱动记录与本进程执行记录按 id 合并（本进程观测优先——attempts/status/result 更实时）

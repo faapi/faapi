@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { TaskDriver, TaskDriverProcess } from '@faapi/faapi';
-import PgBoss from 'pg-boss';
+import { PgBoss } from 'pg-boss';
+import type { ConstructorOptions, SendOptions } from 'pg-boss';
 
 /**
  * pg-boss 驱动选项
@@ -8,18 +9,19 @@ import PgBoss from 'pg-boss';
  * `defaultExpireSeconds` 之外全部透传给 PgBoss 构造函数（常用：`connectionString`，
  * 其余见 pg-boss 文档 ConstructorOptions）。
  */
-export type PgBossDriverOptions = PgBoss.ConstructorOptions & {
+export type PgBossDriverOptions = ConstructorOptions & {
   /**
    * 未声明 `timeoutMs` 的任务的 expire_in 兜底秒数（默认 24h − 1s）。
    *
    * pg-boss 以 job 的 expire_in 硬限 handler 执行（DDL 默认 15 分钟）：超时判失败
    * 重试，而任务还在后台跑 → 同一任务两份并发执行。声明了 `timeoutMs` 的任务由
    * 驱动按 `timeoutMs + graceMs + 60s` 缓冲给足；未声明的任务用本兜底。
-   * 上界 24h 为排他（pg-boss 10 断言 `expireIn/3600 < 24`）——显式配置 >= 86400
-   * 会被 pg-boss 在 send 参数校验阶段拒绝。
+   * 默认 24h − 1s：pg-boss 12.28 前断言 `expireIn/3600 < 24`（排他），减 1 秒落
+   * 界内（12.28 起放宽到允许恰好 24h，保守值对两者都安全）；显式配置超过 86399
+   * 在 12.28 前的版本会被 send 参数校验阶段拒绝。
    *
-   * 声明侧上界由主包 `scanTasks` 构建期钳制（`MAX_ISOLATED_TIMEOUT_MS` 23h），
-   * 保证 `timeoutMs + graceMs + 缓冲` 的 expire 预算恒落在本断言界内。
+   * 声明侧上界由主包 `scanTasks` 构建期校验（`MAX_ISOLATED_TIMEOUT_MS` 23h），
+   * 保证 `timeoutMs + graceMs + 缓冲` 的 expire 预算恒落在断言界内。
    */
   defaultExpireSeconds?: number;
 };
@@ -62,8 +64,9 @@ function dedupIdToUuid(dedupId: string): string {
   ].join('-');
 }
 
-/** 未声明 timeoutMs 的任务 expire_in 兜底（秒）——pg-boss 10 断言 expireIn/3600 < 24
- * （严格小于），顶到 24h 整会让 send() 在参数校验阶段必抛 AssertionError，减 1 秒落界内 */
+/** 未声明 timeoutMs 的任务 expire_in 兜底（秒）——pg-boss 12.28 前断言 expireIn/3600 < 24
+ * （严格小于），顶到 24h 整会让 send() 在参数校验阶段必抛 AssertionError，减 1 秒落界内
+ * （12.28 起放宽到允许恰好 24h，保守值对两者都安全） */
 const DEFAULT_EXPIRE_SECONDS = 24 * 60 * 60 - 1;
 /** expire_in 在任务执行预算之外的缓冲（秒）——留出调度/网络抖动余量 */
 const EXPIRE_BUFFER_SECONDS = 60;
@@ -155,7 +158,7 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
         ? Math.ceil((opts.timeoutMs + (opts.graceMs ?? DEFAULT_GRACE_MS)) / 1000) +
           EXPIRE_BUFFER_SECONDS
         : (defaultExpireSeconds ?? DEFAULT_EXPIRE_SECONDS);
-      const sendOptions: PgBoss.SendOptions = {
+      const sendOptions: SendOptions = {
         retryLimit: opts?.retries ?? 0,
         retryDelay: 1, // 秒；配合 retryBackoff 指数退避
         retryBackoff: true,
@@ -180,10 +183,10 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
       const b = await ensureBoss();
       await ensureQueue(b, name);
       const process: TaskDriverProcess = workerOpts.process;
-      // 二次注册（reload 场景）先 offWork 旧 worker
+      // 二次注册（reload 场景）先 offWork 旧 worker（v12 签名 offWork(name, { id })）
       const existing = workerIds.get(name);
       if (existing) {
-        await b.offWork(existing);
+        await b.offWork(name, { id: existing });
       }
       const workerId = await b.work<unknown>(
         name,
@@ -268,8 +271,8 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
         // 竞速保证 stop() 有界返回
         await Promise.race([
           (async () => {
-            for (const workerId of workerIds.values()) {
-              await b.offWork(workerId).catch(() => {});
+            for (const [taskName, workerId] of workerIds.entries()) {
+              await b.offWork(taskName, { id: workerId }).catch(() => {});
             }
           })(),
           deadline,
@@ -291,8 +294,8 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
     async stopWorkers() {
       const b = boss;
       if (b) {
-        for (const workerId of workerIds.values()) {
-          await b.offWork(workerId).catch(() => {});
+        for (const [taskName, workerId] of workerIds.entries()) {
+          await b.offWork(taskName, { id: workerId }).catch(() => {});
         }
       }
       workerIds.clear();

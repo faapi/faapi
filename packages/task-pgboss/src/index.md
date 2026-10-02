@@ -1,11 +1,11 @@
 # createPgBossDriver（pg-boss 驱动）
 
-一句话概括：把 faapi 任务子系统的 `TaskDriver` 接口映射到 pg-boss v10 API（send/work/offWork/stop），并在投递前确保队列存在。
+一句话概括：把 faapi 任务子系统的 `TaskDriver` 接口映射到 pg-boss v12 API（send/work/offWork/stop，peer 要求 `^12`），并在投递前确保队列存在。
 
 ## 为什么需要
 
 - 主包任务子系统只面向驱动无关的 `TaskDriver` 接口（driverTypes.md），持久化队列能力由本适配层承载。
-- pg-boss v10 移除了 v9 的隐式建队列：`send()` 的 INSERT SQL `JOIN queue`，对未创建的队列静默返回 null（不报错）；`work()` 只注册进程内轮询器，同样不建队列。驱动若不显式 `createQueue`，空库上首次 `enqueue` 必然拿到 null——驱动把无 dedupId 的 null 当失败抛错，业务接口 500（生产冷启动必现，dev 因本地库早已有队列而难复现）。
+- pg-boss（v10 起移除 v9 的隐式建队列，v12 同）行为：`send()` 的 INSERT SQL `JOIN queue`，对未创建的队列静默返回 null（不报错）；`work()` 只注册进程内轮询器，同样不建队列。驱动若不显式 `createQueue`，空库上首次 `enqueue` 必然拿到 null——驱动把无 dedupId 的 null 当失败抛错，业务接口 500（生产冷启动必现，dev 因本地库早已有队列而难复现）。
 - pg-boss 的 `create_queue` plpgsql 幂等（`ON CONFLICT DO NOTHING`，队列已存在直接返回），驱动在投递前无条件补建队列是安全且便宜的——每个任务名每进程只需一次真实建队列，之后进程内 Set 缓存短路。
 
 ## 使用场景

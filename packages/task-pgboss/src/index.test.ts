@@ -103,7 +103,8 @@ vi.mock('pg-boss', () => {
       handler: (jobs: unknown[]) => Promise<void>;
     }> = [];
   }
-  return { default: FakeBoss };
+  // pg-boss v12 起为命名导出（v10 是 default）——mock 对齐真实模块形态
+  return { PgBoss: FakeBoss };
 });
 
 import { createPgBossDriver } from './index';
@@ -308,7 +309,7 @@ describe('createPgBossDriver', () => {
     await driver.startWorker('a', { concurrency: 1, process: async () => 1 });
     await driver.stop(5000);
     const boss = fakeBosses()[0]!;
-    expect(boss.offWork).toHaveBeenCalledWith('worker-1');
+    expect(boss.offWork).toHaveBeenCalledWith('a', { id: 'worker-1' });
     expect(boss.stop).toHaveBeenCalledWith(
       expect.objectContaining({ close: true, graceful: true }),
     );
@@ -338,7 +339,7 @@ describe('createPgBossDriver', () => {
     await driver.stopWorkers?.();
     const boss = fakeBosses()[0]!;
     expect(boss.stop).not.toHaveBeenCalled();
-    expect(boss.offWork).toHaveBeenCalledWith('worker-1');
+    expect(boss.offWork).toHaveBeenCalledWith('a', { id: 'worker-1' });
     await driver.startWorker('a', { concurrency: 1, process: async () => 1 });
     expect(boss.work).toHaveBeenCalledTimes(2);
   });
@@ -359,7 +360,7 @@ describe('createPgBossDriver', () => {
     expect(boss.resume).toHaveBeenCalledWith('mail', 'j1');
   });
 
-  it('list 未实现——pg-boss v10 无批量列出 jobs 的公开 API（能力缺口显式）', async () => {
+  it('list 未实现——批量列出（v12 findJobs）留作后续实现（能力缺口显式）', async () => {
     const driver = createPgBossDriver();
     expect(driver.list).toBeUndefined();
   });
