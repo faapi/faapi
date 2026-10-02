@@ -89,6 +89,34 @@ export function run() {}
     expect(tasks[0]!.timeoutMs).toBe(60000);
   });
 
+  it('timeoutMs 超过最大值 23h 时扫描期报错（pg-boss expire_in 断言 < 24h）', async () => {
+    writeTask(
+      'src/tasks/too-long/task.ts',
+      `export const task = {
+  timeoutMs: 86_340_000,
+};
+export function run() {}
+`,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /timeoutMs 86340000 exceeds the maximum 82800000ms \(23 hours\)/,
+    );
+  });
+
+  it('timeoutMs 恰为最大值 23h 时通过（expire 预算留有约 1h 余量）', async () => {
+    // meta 走正则字面量提取（同 agent/tool config 的字面量约定），表达式不展开
+    writeTask(
+      'src/tasks/edge-max/task.ts',
+      `export const task = {
+  timeoutMs: 82_800_000,
+};
+export function run() {}
+`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks[0]!.timeoutMs).toBe(82_800_000);
+  });
+
   it('未声明 meta 时字段缺省为 undefined', async () => {
     writeTask('src/tasks/plain/task.ts', `export function run() {}\n`);
     const tasks = await scanTasks(rootDir, TASK_PATTERNS);

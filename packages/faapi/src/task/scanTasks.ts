@@ -44,6 +44,16 @@ function parseNumericLiteral(raw: string): number {
 export const MIN_ISOLATED_TIMEOUT_MS = 60_000;
 
 /**
+ * timeoutMs 最大值（23h）：pg-boss 驱动按 `ceil((timeoutMs + graceMs) / 1000) + 缓冲`
+ * 给任务设 expire_in（执行预算——预算内 pg-boss 不会把在跑任务判失联重投），而
+ * pg-boss 10 断言 expireIn 严格小于 24h；timeoutMs 超过 23h 会撞上该断言（入队抛
+ * AssertionError）。23h 为 expire 预算留出约 1h 余量，任何合理的 graceMs 都安全。
+ * 单任务执行预算超过一天应拆为可恢复的分段流水线（自行落进度、多次入队续跑），
+ * 或改用 bullmq 驱动（Redis 无此上限）。
+ */
+export const MAX_ISOLATED_TIMEOUT_MS = 23 * 60 * 60_000;
+
+/**
  * 从源码相对路径推导任务名
  *
  * `src/tasks/send-email/task.ts` → `'send-email'`
@@ -116,6 +126,15 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
             'Declaring a timeout means this is a long-running task that needs real cancellation — tasks finishing ' +
             'within a minute do not need one: remove timeoutMs to run in-process (implement your own deadline with ' +
             'Promise.race if needed), or raise it.',
+        );
+      }
+      if (value > MAX_ISOLATED_TIMEOUT_MS) {
+        throw new Error(
+          `[faapi] Task "${name}" timeoutMs ${value} exceeds the maximum ${MAX_ISOLATED_TIMEOUT_MS}ms (23 hours). ` +
+            'The pg-boss driver budgets expire_in from timeoutMs (execution budget preventing mid-run re-delivery), ' +
+            'and pg-boss 10 asserts expire_in strictly below 24h — larger timeouts would fail at enqueue time. ' +
+            'Split the work into a resumable pipeline (persist progress, enqueue the next stage), or use the ' +
+            'bullmq driver (Redis has no such cap).',
         );
       }
       manifest.timeoutMs = value;

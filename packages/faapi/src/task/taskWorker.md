@@ -68,7 +68,7 @@ export async function run(payload, taskCtx) {
 
 - **状态隔离**：任务文件的模块级变量每次执行都是新实例——run 内依赖的连接池/缓存需自建，不与进程内共享
 - **硬杀副作用**：terminate 可能把事务/写操作砍在半路，由业务方幂等自担（与队列 at-least-once 语义一致）
-- **冷启动开销**：worker 创建 + 模块加载为每次执行的固定成本，仅声明超时的任务承担；**冷启动计入 `timeoutMs` 计时**（超时从派发起算而非 run 开始）。**`timeoutMs` 最小 60s**（`scanTasks` 在 dev/build 启动期校验，低于阈值直接报错不钳制）：声明超时的语义是"这是需要真取消的长任务"，一分钟内跑完的任务没必要声明——去掉 `timeoutMs` 走进程内执行即可，需要 deadline 的任务在进程内自行用 `Promise.race` 实现
+- **冷启动开销**：worker 创建 + 模块加载为每次执行的固定成本，仅声明超时的任务承担；**冷启动计入 `timeoutMs` 计时**（超时从派发起算而非 run 开始）。**`timeoutMs` 上下限**（`scanTasks` 在 dev/build 启动期校验，越界直接报错不钳制）：**最小 60s**——声明超时的语义是"这是需要真取消的长任务"，一分钟内跑完的任务没必要声明，去掉 `timeoutMs` 走进程内执行即可（需要 deadline 进程内自行 `Promise.race`）；**最大 23h**——pg-boss 驱动按 timeoutMs 给 expire_in 预算而 pg-boss 10 断言 expire_in 严格小于 24h，超限任务会在入队时撞 AssertionError，23h 为预算留约 1h 余量（需要更长执行预算拆可恢复的分段流水线，或改用 bullmq 驱动，Redis 无此上限）
 
 ## 相关模块
 

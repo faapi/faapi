@@ -17,6 +17,9 @@ export type PgBossDriverOptions = PgBoss.ConstructorOptions & {
    * 驱动按 `timeoutMs + graceMs + 60s` 缓冲给足；未声明的任务用本兜底。
    * 上界 24h 为排他（pg-boss 10 断言 `expireIn/3600 < 24`）——显式配置 >= 86400
    * 会被 pg-boss 在 send 参数校验阶段拒绝。
+   *
+   * 声明侧上界由主包 `scanTasks` 构建期钳制（`MAX_ISOLATED_TIMEOUT_MS` 23h），
+   * 保证 `timeoutMs + graceMs + 缓冲` 的 expire 预算恒落在本断言界内。
    */
   defaultExpireSeconds?: number;
 };
