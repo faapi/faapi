@@ -2,7 +2,6 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig([
   // 运行时入口：保持外部依赖
-  // 运行时入口：保持外部依赖
   // workerEntry 是任务隔离 worker 的真实入口文件，必须与 index.js 平铺同目录
   // （taskWorker.ts 按 import.meta.url 同级解析），对象形式入口强制输出到根
   {

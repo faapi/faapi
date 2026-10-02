@@ -75,8 +75,10 @@ dev 模式：`faapi dev` 编译 + 调 `createDevApp()` + watcher（调 `app.relo
 
 ```
 @faapi/faapi           核心包：API 路由、中间件、注入、校验、AST 能力公开导出
+@faapi/agent           agent 运行时：LLM 驱动的声明式 ReAct 循环（provider 抽象 / agent-as-tool / sub-agent 协作 / tracing），peer 依赖主包
 @faapi/mcp             MCP Server SDK：纯手写 MCP 协议（Streamable HTTP transport），不依赖 @modelcontextprotocol/sdk
 @faapi/schema          扩展包：路由 schema 生成 + 通过 MCP 协议暴露给 AI 助手（基于 @faapi/mcp）
+@faapi/next            Next.js 集成：faapi 与 Next.js 单进程单端口（/api/* 走 faapi，其余路径走 Next）
 @faapi/task-pgboss     任务队列驱动：pg-boss（PostgreSQL 持久化队列），实现主包 TaskDriver 接口
 @faapi/task-bullmq     任务队列驱动：BullMQ（Redis 持久化队列），实现主包 TaskDriver 接口
 ```
@@ -899,7 +901,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 
 ### 6.5 新增子包配置清单
 
-新增 `@faapi/<name>` 子包时，按本清单逐项配置，确保与现有三个包一致并通过 Trusted Publisher（OIDC）发布。
+新增 `@faapi/<name>` 子包时，按本清单逐项配置，确保与现有各包一致并通过 Trusted Publisher（OIDC）发布；同时回写 5.2 的包结构清单。
 
 #### 6.5.1 目录结构
 

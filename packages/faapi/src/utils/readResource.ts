@@ -7,8 +7,8 @@ import { isInsideDir, toRealPath } from './prodPaths';
  *
  * 为什么用 globalThis 而非模块级变量（同 appSingleton 的取舍）：
  * ① Next.js Turbopack dev runtime 与主进程是两套 module cache，须跨实例共享；
- * ② 隔离任务的 worker wrapper 是 data URL 模块无法 import 主包，由 wrapper 内联
- * 同名 symbol key 播种（taskWorker.ts，两处字面量需一致，测试断言两边语义一致）。
+ * ② 任务隔离 worker 的入口 bundle（workerEntry.ts）与 index bundle 是两份代码
+ * 副本，由入口内联同名 symbol key 播种（两处字面量需一致，契约测试锚定）。
  * 单 app 强制（createAppBase 检测到存活 app 即抛错）保证绑定唯一且无歧义。
  */
 const ACTIVE_RESOURCES_DIR_KEY = Symbol.for('faapi.resources.dir');
