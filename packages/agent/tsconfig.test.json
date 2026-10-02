@@ -1,7 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "noUncheckedIndexedAccess": false
+    "noUncheckedIndexedAccess": false,
+    "paths": {
+      "@faapi/faapi/src/*": ["../faapi/src/*"]
+    }
   },
   "include": ["src"],
   "exclude": ["src/**/*.e2e.test.ts", "node_modules", "dist", "fixtures"]

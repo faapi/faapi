@@ -978,7 +978,9 @@ packages/<name>/
 }
 ```
 
-含 e2e 测试时加 `"exclude": ["src/**/*.e2e.test.ts"]`，避免 tsc 检查 e2e 深路径导入。
+含 e2e 测试时加 `"exclude": ["src/**/*.e2e.test.ts"]`，避免 tsc 检查 e2e 深路径导入（主包 exports 不含 `./src/*` 子路径，深链 specifier 在 tsc 下解析失败，e2e 靠 exclude 豁免）。
+
+单元测试（不在 exclude 内）需深链导入主包内部模块时（如 `setActiveResourcesDir`），在该包 `tsconfig.test.json` 的 `compilerOptions.paths` 加 `"@faapi/faapi/src/*": ["../faapi/src/*"]` 补 tsc 类型解析——vitest 运行时解析由该包 `vitest.config.ts` 的 alias 负责，两者并存。
 
 #### 6.5.4 `tsup.config.ts`
 
