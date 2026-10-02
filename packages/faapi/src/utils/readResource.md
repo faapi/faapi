@@ -15,7 +15,7 @@
 ## 约定与边界
 
 - **免传参的前提是单 app**：faapi 单进程单 app（`createAppBase` 检测到存活 app 即抛错，多 app 同进程不支持），读取根经 `globalThis`（`Symbol.for('faapi.resources.dir')`）绑定且唯一。未绑定时调用抛 `[faapi] readResource: no active app` 清晰错误。
-- **绑定点三处**：`createAppBase` 启动时绑定（插件 setup 前生效）、隔离任务 worker 由 wrapper 从 `taskCtx.resourcesDir` 快照播种（wrapper 是 data URL 模块无法 import 主包，内联同名 symbol key 写入，两处字面量需一致）、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定。
+- **绑定点三处**：`createAppBase` 启动时绑定（插件 setup 前生效）、隔离任务 worker 由 wrapper 在**任务模块求值前**从快照播种（wrapper 是 data URL 模块无法 import 主包，内联同名 symbol key 写入；任务模块走动态 import 保证顶层代码执行前读取根已就位，两处字面量需一致）、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定。
 - **安全边界是"不越出 resources 目录"**：`path.resolve` 后必须仍在 resources 内（拦绝对路径与 `..` 穿越），目标真实路径（realpath）也必须仍在 resources 内（拦符号链接指向目录外）；resources 内部的合法软链不误伤。目标不存在时不做符号链接检查，由 fs 抛自然 ENOENT。
 - **越界与非法入参抛普通 `Error`（`[faapi]` 前缀）**，不是请求校验错误——路径来自业务代码而非客户端输入，传播出 handler 时按服务端错误落 500。
 - **`resourcesDir` 各上下文数据字段保留**（FaapiContext / WsContext / TaskContext / PluginContext / AppBase / lifecycle 钩子参数）——供业务方了解 / 拼接资源位置，读取统一走本函数。

@@ -229,11 +229,22 @@ function createTaskLogger(level, scope, fields) {
 }
 `;
 
-/** worker 内执行的 wrapper 源码（data URL，ESM）——import 任务产物并桥接 run */
-function buildWrapperSource(moduleUrl: string): string {
+/** worker 内执行的 wrapper 源码（data URL，ESM）——播种读取根后动态 import 任务产物并桥接 run */
+function buildWrapperSource(moduleUrl: string, resourcesDir?: string): string {
+  // 播种全局 readResource 读取根：wrapper 是 data URL 模块无法 import 主包，经
+  // globalThis 写入（symbol key 与 utils/readResource 的 'faapi.resources.dir' 一致，
+  // 两处字面量需同步）。必须在任务模块求值之前——任务模块顶层代码（top-level
+  // await）可能已调用 readResource，而 ESM 静态 import 提升求值，故任务模块走
+  // 动态 import 保证顺序。与 taskCtx.resourcesDir 同源同值
+  const seed = resourcesDir
+    ? `globalThis[Symbol.for('faapi.resources.dir')] = ${JSON.stringify(resourcesDir)};`
+    : '// 无 resourcesDir（直接构造队列的测试/嵌入场景）：不播种，readResource 未绑定即显式抛错';
   return `
 import { parentPort } from 'node:worker_threads';
-import * as mod from '${moduleUrl}';
+
+${seed}
+
+const mod = await import('${moduleUrl}');
 
 ${BUILD_VIEW_SOURCE}
 
@@ -257,12 +268,6 @@ if (typeof run !== 'function') {
     if (msg?.type !== 'run') return;
     controller = new AbortController();
     const { payload, taskCtx } = msg;
-    // 播种全局 readResource 读取根：wrapper 是 data URL 模块无法 import 主包，
-    // 经 globalThis 写入（symbol key 与 utils/readResource 的
-    // 'faapi.resources.dir' 一致，两处字面量需同步）
-    if (taskCtx && taskCtx.resourcesDir) {
-      globalThis[Symbol.for('faapi.resources.dir')] = taskCtx.resourcesDir;
-    }
     try {
       const registries = buildRegistriesView(msg.registries);
       const progress = (value) => parentPort.postMessage({ type: 'progress', value });
@@ -325,7 +330,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
 
   const moduleUrl = pathToFileURL(taskModulePath).href;
   const wrapperUrl = new URL(
-    `data:text/javascript,${encodeURIComponent(buildWrapperSource(moduleUrl))}`,
+    `data:text/javascript,${encodeURIComponent(buildWrapperSource(moduleUrl, taskCtx.resourcesDir))}`,
   );
 
   return new Promise<unknown>((resolve, reject) => {

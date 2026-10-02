@@ -87,6 +87,30 @@ describe('runTaskInWorker', () => {
     expect(result).toEqual({ resourcesDir: '/project/dist/resources' });
   });
 
+  it('读取根播种先于任务模块求值：模块顶层（readResource 顶层调用前提）即已绑定', async () => {
+    // ESM 静态 import 提升求值——wrapper 必须在任务模块顶层代码执行前播种读取根，
+    // 否则任务模块 top-level await 调用 readResource 会得到"未绑定"。模块级 throw
+    // 直接证明顺序：未播种时本用例以 worker error 失败
+    const modulePath = writeTaskModule(
+      'seed-order',
+      `const seeded = globalThis[Symbol.for('faapi.resources.dir')];
+       if (!seeded) throw new Error('resources dir not seeded at module evaluation');
+       export function run() {
+         return { seeded, stillSeeded: globalThis[Symbol.for('faapi.resources.dir')] };
+       }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: { ...baseCtx, resourcesDir: '/project/dist/resources' },
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({
+      seeded: '/project/dist/resources',
+      stillSeeded: '/project/dist/resources',
+    });
+  });
+
   it('config 含函数字段：降级为 JSON 快照（丢函数、留数据）', async () => {
     const modulePath = writeTaskModule(
       'config',
