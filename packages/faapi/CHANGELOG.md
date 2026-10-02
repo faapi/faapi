@@ -1,5 +1,23 @@
 # @faapi/faapi
 
+## 6.25.0
+
+### Minor Changes
+
+- 1e401f8: 单进程单 app（多 app 同进程不支持）+ 运行时资源读取统一为免传参 `readResource`：
+
+  - **单 app 强制**：`createAppBase` 检测到进程内已有存活 app 时显式抛错（提示先 `close()` 或用子进程隔离）——单例语义、全局日志、资源读取根绑定等进程级资源都以唯一 app 为前提。此前同进程多次创建为"覆盖单例"的未定义行为
+  - **`readResource(relativePath, encoding?)`**：参数为相对路径，只能读取 resources 目录内的文件（绝对路径 / `..` 穿越 / 符号链接逃逸显式抛错，resources 内合法软链不误伤）；读取根在 app 启动时绑定、隔离任务 worker 由 wrapper 从快照播种、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定，调用方（HTTP/WS handler、任务、插件、lifecycle）统一用这一个函数
+  - **撤掉同批引入的 `ctx.readResource` sugar**（未随任何版本发布），保持单一读取形态
+  - **agent `systemPromptFile` 读取切换到免传参 `readResource`**，获得越界/符号链接逃逸防护；`AgentDeps.resourcesDir` 字段随之移除（唯一读者消失成死字段）——app 内与隔离 worker 场景读取根自动就位，无需手工注入
+
+  > 留痕说明：多 app 能力此前记录于注册表实例化章节，去掉属行为收敛，按语义为 breaking（major）；经维护者确认业务侧无同进程多 app 使用，按 minor 发版（同 agent 自定义 run 移除先例）。
+
+- 16b0d5e: 任务 `timeoutMs` 新增构建期上限校验（23h），与最小 60s 对称：
+
+  - `src/tasks/<name>/task.ts` 声明 `timeoutMs` 超过 23h（82,800,000ms）时 dev/build 启动期直接报错（`scanTasks` 校验，越界不钳制）——pg-boss 驱动按 timeoutMs 给 expire_in 执行预算（防止任务执行中途被 pg-boss 判失联重投导致双重执行），而 pg-boss 10 断言 expire_in 严格小于 24h，此前声明 ≈24h 的任务会在入队时抛晦涩的 AssertionError；23h 为预算留约 1h 余量
+  - 需要更长执行预算的任务拆为可恢复的分段流水线（自行落进度、多次入队续跑），或改用 `@faapi/task-bullmq` 驱动（Redis 无此上限）
+
 ## 6.24.0
 
 ### Minor Changes
