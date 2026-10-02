@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "croner": "^10.0.1",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.0",
     "fast-glob": "^3.3.3",
     "typescript": "^5.7.0",
     "ws": "^8.21.0"
@@ -43,11 +43,11 @@
   "devDependencies": {
     "@types/node": "^24.3.0",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "4",
+    "@vitest/coverage-v8": "5",
     "cac": "^6.7.14",
     "chokidar": "^4.0.3",
     "tsup": "^8.4.0",
-    "vitest": "^4.1.11",
+    "vitest": "^5.0.3",
     "zod": "^4.4.3"
   },
   "peerDependencies": {

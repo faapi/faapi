@@ -27,10 +27,10 @@
   "devDependencies": {
     "@faapi/faapi": "workspace:*",
     "@types/node": "^24.3.0",
-    "@vitest/coverage-v8": "4",
+    "@vitest/coverage-v8": "5",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
-    "vitest": "^4.1.11",
+    "vitest": "^5.0.3",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
