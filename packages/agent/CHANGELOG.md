@@ -1,5 +1,7 @@
 # @faapi/agent
 
+## 6.29.0
+
 ## 6.28.0
 
 ### Minor Changes
