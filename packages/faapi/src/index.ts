@@ -129,7 +129,7 @@ export { helmet } from './middleware/helmet';
 export { loadConfig } from './config/loadConfig';
 export { loadEnv } from './cli/loadEnv';
 // 运行时资源安全读取（相对路径 + 只能读 resources 内文件，详见 src/utils/readResource.md）
-// HTTP/WS handler 优先用 ctx.readResource；任务/插件/lifecycle 等非请求上下文用本函数
+// HTTP/WS handler、任务、插件、lifecycle 钩子等所有上下文统一用本免传参函数（读取根在 createAppBase 启动时绑定）
 export { readResource } from './utils/readResource';
 
 // 日志器（级别/scope/结构化字段/可插拔 sink，config.log 全局配置，详见 src/logger/logger.md）
