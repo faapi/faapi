@@ -1,5 +1,17 @@
 # @faapi/faapi
 
+## 6.30.0
+
+### Minor Changes
+
+- f3dc957: AgentDeps.ctx 类型放宽为 Partial<FaapiContext>——任务侧窄 ctx 免 cast 直传
+
+  `@faapi/agent` 的 `AgentDeps.ctx` 与 `@faapi/faapi` 的 `AgentConfig` 三个鉴权钩子（`beforeToolCall` / `afterToolCall` / `filterTools`）的 ctx 参数类型从完整 `FaapiContext` 放宽为 `Partial<FaapiContext>`。此前类型要求完整上下文，但运行时框架对 ctx 零读取、纯透传给钩子与 tool handler 第二参数——任务内组装 Agent（无 HTTP 请求）的场景按类型无法构造窄身份对象（如 tool 鉴权硬闸需要的 `{ currentUserId }`），被迫 `as unknown as FaapiContext` 断言。放宽后窄对象免 cast 直传，`declare module` 增强字段随 Partial 保留类型提示；编程式直调不传时钩子照常收到 undefined，HTTP 请求路径传完整 ctx 不受影响。
+
+  迁移说明：钩子实现若给 ctx 参数显式标注 `FaapiContext`，需删除标注（走推断）或改为 `Partial<FaapiContext>`——函数参数逆变下显式全量标注不再兼容钩子类型；未显式标注的实现无需任何改动。
+
+- a39046a: 任务 meta 字面量守卫：`task.ts` 声明了 meta 字段（`concurrency` / `retries` / `timeoutMs` / `graceMs` / `cron`）但值不是可识别字面量（表达式如 `30 * 60_000`、动态值如 `Number(process.env.X)`）时，扫描期 `console.warn` 显式警告后忽略该字段，不再静默丢弃——此前静默丢弃会让声明了 `timeoutMs` 的任务悄悄退化进程内执行（无超时、无隔离真终止）且无任何信号。同时修正文档中的表达式示例（`timeoutMs: 30 * 60_000` → 字面量 `1_800_000`）并明确「meta 值必须是纯字面量」约束（数字字段支持下划线分隔，`cron` 为引号字符串）。
+
 ## 6.29.0
 
 ### Minor Changes
