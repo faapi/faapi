@@ -5,8 +5,9 @@ import { isInsideDir } from '../utils/prodPaths';
 /**
  * 运行时资源目录约定（源码侧，相对 rootDir）
  *
- * 放这里的文件原样复制进产物（不编译、不被任何扫描器识别），运行时经
- * `ctx.resourcesDir` / `app.resourcesDir` 定位读取。详见 copyResources.md。
+ * 放这里的文件原样复制进产物（不编译、不被任何扫描器识别），运行时统一走免传参
+ * `readResource(relativePath, encoding?)` 读取（读取根在 createAppBase 启动时绑定）。
+ * 详见 copyResources.md。
  */
 export const RESOURCES_DIR = 'src/resources';
 

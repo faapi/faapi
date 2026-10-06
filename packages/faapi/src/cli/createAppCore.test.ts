@@ -87,21 +87,21 @@ describe('createAppBase', () => {
     await app.close();
   });
 
-  it('app.dist / app.resourcesDir 指向产物目录与 <dist>/resources', async () => {
+  it('app.dist 指向产物目录，AppBase 无 resourcesDir 字段（已删除，读取统一 readResource）', async () => {
     writeHandler();
     await compileArtifacts('dist');
     const { app } = await createAppBase(options());
     expect(app.dist).toBe('dist');
-    expect(app.resourcesDir).toBe(join(tempDir, 'dist', 'resources'));
+    expect('resourcesDir' in app).toBe(false);
     await app.close();
   });
 
-  it('options.dist 覆盖时 app.resourcesDir 随之定位（dev .faapi 场景）', async () => {
+  it('options.dist 覆盖时 app.dist 随之定位（dev .faapi 场景）', async () => {
     writeHandler();
     await compileArtifacts('.faapi');
     const { app } = await createAppBase({ rootDir: tempDir, dist: '.faapi' });
     expect(app.dist).toBe('.faapi');
-    expect(app.resourcesDir).toBe(join(tempDir, '.faapi', 'resources'));
+    expect('resourcesDir' in app).toBe(false);
     await app.close();
   });
 
