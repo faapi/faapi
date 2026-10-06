@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -149,5 +149,81 @@ export function run() {}
   it('无任务文件返回空数组', async () => {
     const tasks = await scanTasks(rootDir, TASK_PATTERNS);
     expect(tasks).toEqual([]);
+  });
+});
+
+describe('scanTasks meta 字面量守卫', () => {
+  let warnSpy: MockInstance;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+  });
+
+  it('声明了 timeoutMs / concurrency 但值是表达式或动态值（单行对象写法）时逐字段警告且清单不含该字段', async () => {
+    writeTask(
+      'src/tasks/log-analysis/task.ts',
+      `export const task = { timeoutMs: 30 * 60_000, concurrency: maxConcurrency };\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]!.name).toBe('log-analysis');
+    expect('timeoutMs' in tasks[0]!).toBe(false);
+    expect('concurrency' in tasks[0]!).toBe(false);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('log-analysis'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"timeoutMs"'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"concurrency"'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not a numeric literal'));
+  });
+
+  it('行首写动态值（Number(process.env.X)）同样警告且不阻断启动', async () => {
+    writeTask(
+      'src/tasks/dyn/task.ts',
+      `export const task = {\n  timeoutMs: Number(process.env.TASK_TIMEOUT),\n};\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks).toHaveLength(1);
+    expect('timeoutMs' in tasks[0]!).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not a numeric literal'));
+  });
+
+  it('行注释中的示例（// timeoutMs: ...）不误报', async () => {
+    writeTask(
+      'src/tasks/commented/task.ts',
+      `export const task = {};\n// timeoutMs: 10 * 60_000,\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect('timeoutMs' in tasks[0]!).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('cron 值不是字符串字面量时警告（专属文案）', async () => {
+    writeTask(
+      'src/tasks/dyn-cron/task.ts',
+      `const CRON = '0 3 * * *';\nexport const task = { cron: CRON };\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect('cron' in tasks[0]!).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not a string literal'));
+  });
+
+  it('全部字段均为字面量时不产生警告（回归）', async () => {
+    writeTask(
+      'src/tasks/literal/task.ts',
+      `export const task = {\n  cron: '0 3 * * *',\n  concurrency: 2,\n  retries: 3,\n  timeoutMs: 90_000,\n  graceMs: 15_000,\n};\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks[0]).toMatchObject({
+      cron: '0 3 * * *',
+      concurrency: 2,
+      retries: 3,
+      timeoutMs: 90000,
+      graceMs: 15000,
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

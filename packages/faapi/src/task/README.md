@@ -17,7 +17,7 @@ export interface Payload {
 export const task = {
   concurrency: 2,   // 并发数，默认 1
   retries: 3,       // 失败重试次数，默认 0
-  // timeoutMs: 10 * 60_000, // 执行超时（60s ~ 23h，扫描期校验）：超时真终止（隔离线程执行，两段式取消）
+  // timeoutMs: 600_000, // 执行超时（60s ~ 23h，扫描期校验）：超时真终止（隔离线程执行，两段式取消）
   // graceMs: 15_000,        // 取消宽限期（默认 5s）：abort 信号后等待自行退出的时长
   // cron: '0 3 * * *',  // 定时入队（croner 表达式），到点自动 enqueue 空 payload
 } satisfies FaapiTaskMeta;
@@ -55,6 +55,8 @@ export async function run(payload: Payload, taskCtx: TaskContext) {
   return { analyzed: true };
 }
 ```
+
+> **meta 值必须是纯字面量**：任务清单由零 import 扫描生成（读源码正则提取，不做表达式求值）——`concurrency` / `retries` / `timeoutMs` / `graceMs` 必须是数字字面量（支持下划线分隔 `600_000`），`cron` 必须是引号字符串字面量。写表达式（`10 * 60_000`）或动态值（`Number(process.env.X)`）不会被识别：单行对象写法（`{ timeoutMs: ... }`）整字段被忽略并 `console.warn` 警告，行首写法可能被截断成错误值触发上下限报错（详见 `scanTasks.md` 的字面量守卫）。
 
 ## 模块组成
 

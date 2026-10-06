@@ -30,6 +30,58 @@ const RETRIES_RE = new RegExp(`(?:^|\\n)\\s*retries:\\s*${NUM_LITERAL}`);
 const TIMEOUT_MS_RE = new RegExp(`(?:^|\\n)\\s*timeoutMs:\\s*${NUM_LITERAL}`);
 const GRACE_MS_RE = new RegExp(`(?:^|\\n)\\s*graceMs:\\s*${NUM_LITERAL}`);
 
+/** 数字字面量 meta 字段（字面量守卫的宽松检测清单，cron 单列为字符串字面量） */
+const NUMERIC_META_FIELDS = ['concurrency', 'retries', 'timeoutMs', 'graceMs'] as const;
+const STRING_META_FIELDS = ['cron'] as const;
+const ALL_META_FIELDS: readonly string[] = [...NUMERIC_META_FIELDS, ...STRING_META_FIELDS];
+
+/**
+ * meta 字面量守卫：找「声明了但严格字面量正则没提取到」的字段
+ *
+ * 严格正则以行首锚提取值，抓不到单行对象写法（`export const task = { timeoutMs: 30 * 60_000 }`）
+ * 和动态值——识别不了就静默丢弃是静默降级：timeoutMs 丢失会让任务悄悄从隔离执行退化
+ * 进程内（无超时、无真终止）且无任何信号。这里按非注释行内的 `字段名:` 宽松检测声明
+ * （不锚行首），与严格提取结果求差集，差集字段由调用方逐个 console.warn。
+ * 行注释（`// timeoutMs: ...` 示例）跳过不误报；块注释单行内嵌声明会误报——警告不
+ * 阻断，成本仅为一条多余提示，可接受（零 import 扫描不做完整注释解析）。
+ */
+function detectIgnoredMetaFields(source: string, strictHit: Record<string, boolean>): string[] {
+  const declared = new Set<string>();
+  for (const line of source.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('//')) continue;
+    for (const field of ALL_META_FIELDS) {
+      if (new RegExp(`\\b${field}\\s*:`).test(trimmed)) declared.add(field);
+    }
+  }
+  return ALL_META_FIELDS.filter((field) => declared.has(field) && !strictHit[field]);
+}
+
+/** 逐字段输出忽略警告（英文，与扫描期校验报错文案一致） */
+function warnIgnoredMetaFields(name: string, fields: string[]): void {
+  for (const field of fields) {
+    if (STRING_META_FIELDS.includes(field as (typeof STRING_META_FIELDS)[number])) {
+      console.warn(
+        `[faapi] Task "${name}" declares "${field}" but its value is not a string literal — ` +
+          'the declaration was ignored and the task will not be cron-scheduled. ' +
+          'Meta values are extracted from source code without importing it, so only literal ' +
+          `values are recognized: use a quoted literal (cron: '0 3 * * *'), ` +
+          'not an expression or a dynamic value.',
+      );
+    } else {
+      const consequence =
+        field === 'timeoutMs' ? ' and the task will run in-process with no timeout' : '';
+      console.warn(
+        `[faapi] Task "${name}" declares "${field}" but its value is not a numeric literal — ` +
+          `the declaration was ignored${consequence}. ` +
+          'Meta values are extracted from source code without importing it, so only literal ' +
+          'values are recognized (underscores allowed, e.g. 1_800_000); expressions like ' +
+          '30 * 60_000 or dynamic values are not supported.',
+      );
+    }
+  }
+}
+
 /** 数字字面量解析（剥离下划线分隔符——Number() 不接受 `60_000`） */
 function parseNumericLiteral(raw: string): number {
   return Number(raw.replace(/_/g, ''));
@@ -141,6 +193,15 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
       manifest.timeoutMs = value;
     }
     if (graceMs !== undefined) manifest.graceMs = parseNumericLiteral(graceMs);
+
+    const strictHit: Record<string, boolean> = {
+      cron: cron !== undefined,
+      concurrency: concurrency !== undefined,
+      retries: retries !== undefined,
+      timeoutMs: timeoutMs !== undefined,
+      graceMs: graceMs !== undefined,
+    };
+    warnIgnoredMetaFields(name, detectIgnoredMetaFields(source, strictHit));
 
     tasks.push(manifest);
   }
