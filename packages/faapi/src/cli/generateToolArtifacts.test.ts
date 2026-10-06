@@ -53,7 +53,7 @@ describe('generateToolArtifacts', () => {
   describe('serializeTools', () => {
     it('共享 tool filePath 转产物形式(src/tools/... → dist/tools/...)', () => {
       const meta: ToolMetadata = {
-        name: 'weather.getWeather',
+        name: 'weather_getWeather',
         functionName: 'getWeather',
         description: '获取天气',
         inputTypeName: 'WeatherInput',
@@ -62,7 +62,7 @@ describe('generateToolArtifacts', () => {
       const result = serializeTools([meta], 'dist');
       expect(result).toHaveLength(1);
       expect(result[0]).toEqual({
-        name: 'weather.getWeather',
+        name: 'weather_getWeather',
         functionName: 'getWeather',
         description: '获取天气',
         inputTypeName: 'WeatherInput',
@@ -107,14 +107,14 @@ describe('generateToolArtifacts', () => {
     it('多个 tool 同时序列化', () => {
       const metas: ToolMetadata[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           description: '获取天气',
           inputTypeName: 'WeatherInput',
           filePath: 'src/tools/weather/handler.ts',
         },
         {
-          name: 'web-search.search',
+          name: 'web-search_search',
           functionName: 'search',
           description: '网络搜索',
           inputTypeName: 'SearchInput',
@@ -129,8 +129,8 @@ describe('generateToolArtifacts', () => {
       const result = serializeTools(metas, 'dist');
       expect(result).toHaveLength(3);
       expect(result.map((r) => r.name)).toEqual([
-        'weather.getWeather',
-        'web-search.search',
+        'weather_getWeather',
+        'web-search_search',
         'ping',
       ]);
     });
@@ -142,7 +142,7 @@ describe('generateToolArtifacts', () => {
     it('字段一一对应还原', () => {
       const serialized: SerializedToolRecord[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           description: '获取天气',
           inputTypeName: 'WeatherInput',
@@ -152,7 +152,7 @@ describe('generateToolArtifacts', () => {
       const hydrated = hydrateTools(serialized);
       expect(hydrated).toHaveLength(1);
       expect(hydrated[0]).toEqual({
-        name: 'weather.getWeather',
+        name: 'weather_getWeather',
         functionName: 'getWeather',
         description: '获取天气',
         inputTypeName: 'WeatherInput',
@@ -179,7 +179,7 @@ describe('generateToolArtifacts', () => {
     it('serializeTools + hydrateTools 往返一致(filePath 保持产物形式)', () => {
       const original: ToolMetadata[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           description: '获取天气',
           inputTypeName: 'WeatherInput',
@@ -209,7 +209,7 @@ describe('generateToolArtifacts', () => {
       const outputPath = join(tempDir, 'faapi-tools.js');
       const manifest: SerializedToolRecord[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           description: '获取天气',
           inputTypeName: 'WeatherInput',
@@ -221,7 +221,7 @@ describe('generateToolArtifacts', () => {
 
       const content = readFileSync(outputPath, 'utf-8');
       expect(content).toContain('export const tools =');
-      expect(content).toContain('weather.getWeather');
+      expect(content).toContain('weather_getWeather');
       expect(content).toContain('获取天气');
       expect(content).toContain('WeatherInput');
       expect(content).toContain('dist/tools/weather/handler.js');
@@ -442,7 +442,7 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }
 
       const tools: ToolManifest[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           filePath: 'src/tools/weather/handler.ts',
         },
@@ -452,7 +452,7 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }
 
       // 返回值是 AST 增强后的 ToolMetadata
       expect(metadata).toHaveLength(1);
-      expect(metadata[0].name).toBe('weather.getWeather');
+      expect(metadata[0].name).toBe('weather_getWeather');
       expect(metadata[0].description).toBe('获取天气');
       expect(metadata[0].inputTypeName).toBe('WeatherInput');
 
@@ -461,7 +461,7 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }
       expect(existsSync(toolsPath)).toBe(true);
       const toolsContent = readFileSync(toolsPath, 'utf-8');
       expect(toolsContent).toContain('export const tools =');
-      expect(toolsContent).toContain('weather.getWeather');
+      expect(toolsContent).toContain('weather_getWeather');
       expect(toolsContent).toContain('获取天气');
       expect(toolsContent).toContain('WeatherInput');
       expect(toolsContent).toContain('dist/tools/weather/handler.js');
@@ -554,7 +554,7 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }
 
       const tools: ToolManifest[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           filePath: 'src/tools/weather/handler.ts',
         },
@@ -587,7 +587,7 @@ export function getWeather(input: WeatherInput) { return input; }
 
       const tools: ToolManifest[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           filePath: 'src/tools/weather/handler.ts',
         },
@@ -622,7 +622,7 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }
 
       const tools: ToolManifest[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           filePath: 'src/tools/weather/handler.ts',
         },
@@ -637,7 +637,7 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }
         tools: SerializedToolRecord[];
       };
       expect(mod.tools).toHaveLength(1);
-      expect(mod.tools[0].name).toBe('weather.getWeather');
+      expect(mod.tools[0].name).toBe('weather_getWeather');
       expect(mod.tools[0].description).toBe('获取天气');
       expect(mod.tools[0].inputTypeName).toBe('WeatherInput');
       expect(mod.tools[0].filePath).toBe('dist/tools/weather/handler.js');
@@ -645,7 +645,7 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }
       // 用 hydrateTools 还原
       const hydrated = hydrateTools(mod.tools);
       expect(hydrated).toHaveLength(1);
-      expect(hydrated[0].name).toBe('weather.getWeather');
+      expect(hydrated[0].name).toBe('weather_getWeather');
       expect(hydrated[0].description).toBe('获取天气');
       expect(hydrated[0].inputTypeName).toBe('WeatherInput');
     });
@@ -660,7 +660,7 @@ export function getWeather(input: WeatherInput) { return input; }
 
       const tools: ToolManifest[] = [
         {
-          name: 'weather.getWeather',
+          name: 'weather_getWeather',
           functionName: 'getWeather',
           filePath: 'src/tools/weather/handler.ts',
         },

@@ -40,7 +40,7 @@ export function clearToolRegistry(): void {
  *
  * 框架路径（`@faapi/agent` 插件 / 请求注入）从 app 实例查找。
  *
- * @param tool 全名（如 `weather.getWeather`）
+ * @param tool 全名（如 `weather_getWeather`）
  * @returns `ToolMetadata` 或 `undefined`（未注册）
  */
 export function getTool(name: string): ToolMetadata | undefined {

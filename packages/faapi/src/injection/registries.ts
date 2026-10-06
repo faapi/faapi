@@ -25,7 +25,7 @@ import { subAgentToolName } from './subAgentToolName';
 export interface ToolRegistry {
   /** 全量替换（tool 清单来自编译期产物，reload 时整体重新生成） */
   hydrate(tools: ToolMetadata[]): void;
-  /** 按全名查找（如 `weather.getWeather`） */
+  /** 按全名查找（如 `weather_getWeather`） */
   get(name: string): ToolMetadata | undefined;
   /** 所有已注册 tool（副本） */
   list(): ToolMetadata[];

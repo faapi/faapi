@@ -33,7 +33,7 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
 
 ### `beforeToolCall(name, args, ctx)`
 
-`executeTool` 最开头调用（sub-agent 派发分流**之前**）——一个钩子同时覆盖常规 tool（`name = 'weather.getWeather'`）与 sub-agent 递归（`name = 'agent-researcher'`,派发工具名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)），业务方按前缀区分策略（用主包导出的 `SUB_AGENT_TOOL_PREFIX` 判别,不硬编码字符串）。不需要平行的 `beforeAgentCall`。
+`executeTool` 最开头调用（sub-agent 派发分流**之前**）——一个钩子同时覆盖常规 tool（`name = 'weather_getWeather'`）与 sub-agent 递归（`name = 'agent-researcher'`,派发工具名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)），业务方按前缀区分策略（用主包导出的 `SUB_AGENT_TOOL_PREFIX` 判别,不硬编码字符串）。不需要平行的 `beforeAgentCall`。
 
 三种返回：
 

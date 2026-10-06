@@ -138,18 +138,18 @@ describe('createAppBase', () => {
 
     // app 实例的 tool 注册表已水合（方案 A：框架路径读写 app 实例，非全局单例）
     expect(ctx.registries.tool.list()).toHaveLength(2);
-    const weather = ctx.registries.tool.get('weather.getWeather');
+    const weather = ctx.registries.tool.get('weather_getWeather');
     expect(weather).toBeDefined();
     expect(weather!.description).toBe('获取天气');
     expect(weather!.filePath).toBe('dist/tools/weather/handler.js');
-    const search = ctx.registries.tool.get('web-search.search');
+    const search = ctx.registries.tool.get('web-search_search');
     expect(search).toBeDefined();
 
     await app.close();
 
     // close 后 app 自己的注册表实例清空
     expect(ctx.registries.tool.list()).toHaveLength(0);
-    expect(ctx.registries.tool.get('weather.getWeather')).toBeUndefined();
+    expect(ctx.registries.tool.get('weather_getWeather')).toBeUndefined();
   });
 
   it('单 app 强制：存活 app 时第二次创建抛错，close 后可重建（全新注册表实例）', async () => {
@@ -182,7 +182,7 @@ describe('createAppBase', () => {
     const { app: app2 } = await createAppBase(options());
     expect(app2.registries.tool).not.toBe(app1.registries.tool);
     expect(app2.registries.tool.list()).toHaveLength(1);
-    expect(app2.registries.tool.get('weather.getWeather')).toBeDefined();
+    expect(app2.registries.tool.get('weather_getWeather')).toBeDefined();
     await app2.close();
     expect(app2.registries.tool.list()).toHaveLength(0);
   });

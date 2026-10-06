@@ -323,8 +323,8 @@ export function search(input: SearchInput) { return 'result'; }\n`,
 
     // faapi-tools.js 内容包含 tool 清单
     const toolsContent = readFileSync(join(tempDir, OUT, 'faapi-tools.js'), 'utf-8');
-    expect(toolsContent).toContain('weather.getWeather');
-    expect(toolsContent).toContain('web-search.search');
+    expect(toolsContent).toContain('weather_getWeather');
+    expect(toolsContent).toContain('web-search_search');
     expect(toolsContent).toContain('获取天气'); // description
     expect(toolsContent).toContain('WeatherInput'); // inputTypeName
   }, 15000);

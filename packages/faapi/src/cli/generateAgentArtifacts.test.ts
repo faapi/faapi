@@ -50,7 +50,7 @@ describe('generateAgentArtifacts', () => {
         description: '研究助手',
         filePath: 'src/agents/researcher/handler.ts',
         systemPrompt: 'You are a researcher',
-        tools: ['web-search.search'],
+        tools: ['web-search_search'],
         agents: ['writer'],
         model: 'gpt-4',
         maxTurns: 10,
@@ -62,7 +62,7 @@ describe('generateAgentArtifacts', () => {
         name: 'researcher',
         description: '研究助手',
         systemPrompt: 'You are a researcher',
-        tools: ['web-search.search'],
+        tools: ['web-search_search'],
         agents: ['writer'],
         model: 'gpt-4',
         maxTurns: 10,
@@ -156,7 +156,7 @@ describe('generateAgentArtifacts', () => {
           name: 'researcher',
           description: '研究助手',
           systemPrompt: 'You are a researcher',
-          tools: ['web-search.search'],
+          tools: ['web-search_search'],
           agents: ['writer'],
           model: 'gpt-4',
           maxTurns: 10,
@@ -171,7 +171,7 @@ describe('generateAgentArtifacts', () => {
         description: '研究助手',
         filePath: 'dist/agents/researcher/handler.js',
         systemPrompt: 'You are a researcher',
-        tools: ['web-search.search'],
+        tools: ['web-search_search'],
         agents: ['writer'],
         model: 'gpt-4',
         maxTurns: 10,
@@ -291,7 +291,7 @@ describe('generateAgentArtifacts', () => {
  */
 export const config = {
   systemPrompt: 'You are a researcher',
-  tools: ['web-search.search'],
+  tools: ['web-search_search'],
   agents: ['writer'],
   model: 'gpt-4',
   maxTurns: 10,
@@ -322,7 +322,7 @@ export const config = {
       expect(metadata[0].name).toBe('researcher');
       expect(metadata[0].description).toBe('研究助手');
       expect(metadata[0].systemPrompt).toBe('You are a researcher');
-      expect(metadata[0].tools).toEqual(['web-search.search']);
+      expect(metadata[0].tools).toEqual(['web-search_search']);
       expect(metadata[0].agents).toEqual(['writer']);
       expect(metadata[0].model).toBe('gpt-4');
       expect(metadata[0].maxTurns).toBe(10);
@@ -335,7 +335,7 @@ export const config = {
       expect(content).toContain('researcher');
       expect(content).toContain('研究助手');
       expect(content).toContain('You are a researcher');
-      expect(content).toContain('web-search.search');
+      expect(content).toContain('web-search_search');
       expect(content).toContain('gpt-4');
       expect(content).toContain('dist/agents/researcher/handler.js');
     });

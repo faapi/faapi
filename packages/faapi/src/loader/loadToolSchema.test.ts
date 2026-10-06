@@ -45,7 +45,7 @@ describe('loadToolSchema', () => {
     filePath?: string;
   }): ToolMetadata {
     return {
-      name: opts.name ?? 'weather.getWeather',
+      name: opts.name ?? 'weather_getWeather',
       functionName: 'getWeather',
       inputTypeName: opts.inputTypeName,
       filePath: opts.filePath ?? 'dist/tools/weather/handler.js',

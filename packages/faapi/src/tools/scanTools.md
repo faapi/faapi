@@ -73,21 +73,30 @@ const TOOL_EXPORT_RE = new RegExp(
 
 ## tool 命名规则
 
-tool 名 = `子目录.函数名`，子目录作为命名空间前缀，用 `.` 分隔：
+tool 名 = `子目录_函数名`，子目录作为命名空间前缀，目录段之间与命名空间和函数名之间都用 `_` 连接：
 
 | 文件路径 | 函数名 | tool 名 |
 |---------|--------|---------|
-| `src/tools/weather/handler.ts` | `getWeather` | `weather.getWeather` |
+| `src/tools/weather/handler.ts` | `getWeather` | `weather_getWeather` |
 | `src/tools/handler.ts` | `getWeather` | `getWeather` |
+| `src/tools/a/b/handler.ts` | `deep` | `a_b_deep` |
 
 命名空间生成规则：
 
 1. 去掉文件路径前缀 `src/tools/`
 2. 去掉文件名（`handler.ts`）
-3. 剩余路径段（非空时）用 `.` 连接，作为命名空间
-4. tool 名 = 命名空间 + `.` + 函数名；无子目录时纯函数名
+3. 剩余路径段（非空时）用 `_` 连接，作为命名空间
+4. tool 名 = 命名空间 + `_` + 函数名；无子目录时纯函数名
 
-> 此处为 scanTools 的**路径推导默认名**。函数 JSDoc 的 `@tool` 标签可在 AST 增强阶段覆盖最终名（如 `@tool weather` 把 `weather.getWeather` 覆盖为 `weather`），见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「JSDoc 描述 + `@tool` 覆盖名」。
+**字符集校验**（构建期强制，与 [agent 目录段](../agents/scanAgents.md)同规则）：
+
+- 每个目录段必须匹配 `^[a-zA-Z0-9-]+$`——LLM 工具名字符集（`[a-zA-Z0-9_-]`，OpenAI 兼容协议对 `function.name` 的硬约束）再排除 `_`（`_` 被 `/` 规范化独占为嵌套分隔符，段内出现会让嵌套与段内下划线不可区分）
+- 合成的 tool 名整体必须匹配 `^[a-zA-Z0-9_-]+$`——函数名含 `$` 等非法字符（如 `export const $fetch`）时抛错
+- 违例在扫描时显式抛错（含路径与改名 / `@tool` 覆盖指引），不静默净化——非法名字发给强校验上游（DeepSeek / OpenAI 等）整单 400
+
+> 迁移提示：旧版用 `.` 连接（`weather.getWeather` / `a.b.deep`）。新版下 agent config 的 `tools` 声明、authHooks 的名字匹配需同步改为 `_` 形式（`weather_getWeather` / `a_b_deep`）。
+
+> 此处为 scanTools 的**路径推导默认名**。函数 JSDoc 的 `@tool` 标签可在 AST 增强阶段覆盖最终名（如 `@tool weather_current` 把 `weather_getWeather` 覆盖为 `weather_current`；覆盖名须整体满足工具名字符集），见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「JSDoc 描述 + `@tool` 覆盖名」。
 
 ### 重名检测
 

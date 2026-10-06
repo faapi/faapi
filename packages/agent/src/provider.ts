@@ -74,7 +74,7 @@ export interface LLMToolDefinition {
   /** 固定 `'function'`（OpenAI 线格式） */
   type: 'function';
   function: {
-    /** tool 名（如 `weather.getWeather` 或 `agent.researcher`） */
+    /** tool 名（如 `weather_getWeather` 或 `agent-researcher`） */
     name: string;
     /** tool 描述（对 LLM 可见，引导 LLM 选择调用） */
     description?: string;

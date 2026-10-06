@@ -11,7 +11,7 @@
 export const config = {
   systemPrompt: '你是一个研究助手，可以查询天气和进行计算，必要时调用 writer 撰写报告。',
   agents: ['writer'],
-  tools: ['weather.getWeather', 'calculator.calc'],
+  tools: ['weather_getWeather', 'calculator_calc'],
   model: 'gpt-4o',
   maxTurns: 5,
 };

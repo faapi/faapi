@@ -42,7 +42,7 @@ describe('agentRegistry', () => {
     description: '研究助手',
     filePath: 'dist/agents/researcher/handler.js',
     systemPrompt: 'You are a researcher',
-    tools: ['web-search.search'],
+    tools: ['web-search_search'],
     agents: ['writer'],
     model: 'gpt-4',
     maxTurns: 10,
@@ -55,7 +55,7 @@ describe('agentRegistry', () => {
   };
 
   const sharedWeather: ToolMetadata = {
-    name: 'weather.getWeather',
+    name: 'weather_getWeather',
     functionName: 'getWeather',
     filePath: 'dist/tools/weather/handler.js',
     description: '获取天气',
@@ -63,7 +63,7 @@ describe('agentRegistry', () => {
   };
 
   const researcherWebSearch: ToolMetadata = {
-    name: 'web-search.search',
+    name: 'web-search_search',
     functionName: 'search',
     filePath: 'dist/agents/researcher/tools/web-search/handler.js',
     description: '网页搜索',
@@ -113,7 +113,7 @@ describe('agentRegistry', () => {
       expect(agent!.description).toBe('研究助手');
       expect(agent!.filePath).toBe('dist/agents/researcher/handler.js');
       expect(agent!.systemPrompt).toBe('You are a researcher');
-      expect(agent!.tools).toEqual(['web-search.search']);
+      expect(agent!.tools).toEqual(['web-search_search']);
       expect(agent!.agents).toEqual(['writer']);
       expect(agent!.model).toBe('gpt-4');
       expect(agent!.maxTurns).toBe(10);
@@ -231,36 +231,36 @@ describe('agentRegistry', () => {
 
       const tools = resolveAgentTools('researcher');
       expect(tools).toHaveLength(1);
-      expect(tools[0]!.name).toBe('web-search.search');
+      expect(tools[0]!.name).toBe('web-search_search');
     });
 
     it('tools 引用其他 tool', () => {
-      // writer 通过 tools 引用 researcher 的 web-search.search
+      // writer 通过 tools 引用 researcher 的 web-search_search
       const writerWithTools: AgentMetadata = {
         name: 'writer',
         filePath: 'dist/agents/writer/handler.js',
-        tools: ['web-search.search'],
+        tools: ['web-search_search'],
       };
       hydrateAgentRegistry([writerWithTools, researcher]);
       hydrateToolRegistry([sharedWeather, researcherWebSearch]);
 
       const tools = resolveAgentTools('writer');
       expect(tools).toHaveLength(1);
-      expect(tools[0]!.name).toBe('web-search.search');
+      expect(tools[0]!.name).toBe('web-search_search');
     });
 
     it('tools 中未注册的 tool 名静默跳过', () => {
       const agent: AgentMetadata = {
         name: 'researcher',
         filePath: 'dist/agents/researcher/handler.js',
-        tools: ['nonexistent.tool', 'weather.getWeather'],
+        tools: ['nonexistent_tool', 'weather_getWeather'],
       };
       hydrateAgentRegistry([agent]);
       hydrateToolRegistry([sharedWeather]);
 
       const tools = resolveAgentTools('researcher');
       expect(tools).toHaveLength(1);
-      expect(tools[0]!.name).toBe('weather.getWeather');
+      expect(tools[0]!.name).toBe('weather_getWeather');
     });
 
     it('agent 无 tools 时返回空数组', () => {
@@ -298,14 +298,14 @@ describe('agentRegistry', () => {
       const agent: AgentMetadata = {
         name: 'writer',
         filePath: 'dist/agents/writer/handler.js',
-        tools: ['web-search.search'],
+        tools: ['web-search_search'],
       };
       hydrateAgentRegistry([agent]);
       hydrateToolRegistry([sharedWeather, researcherWebSearch]);
 
       const tools = resolveAgentTools('writer');
       expect(tools).toHaveLength(1);
-      expect(tools[0]!.name).toBe('web-search.search');
+      expect(tools[0]!.name).toBe('web-search_search');
     });
   });
 

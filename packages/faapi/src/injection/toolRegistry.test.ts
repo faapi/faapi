@@ -21,7 +21,7 @@ describe('toolRegistry', () => {
   });
 
   const sharedTool: ToolMetadata = {
-    name: 'weather.getWeather',
+    name: 'weather_getWeather',
     functionName: 'getWeather',
     filePath: 'dist/tools/weather/handler.js',
     description: '获取天气',
@@ -29,7 +29,7 @@ describe('toolRegistry', () => {
   };
 
   const agentTool: ToolMetadata = {
-    name: 'web-search.search',
+    name: 'web-search_search',
     functionName: 'search',
     filePath: 'dist/agents/researcher/tools/web-search/handler.js',
     description: '网页搜索',
@@ -47,8 +47,8 @@ describe('toolRegistry', () => {
       hydrateToolRegistry([sharedTool, agentTool]);
 
       expect(listTools()).toHaveLength(2);
-      expect(getTool('weather.getWeather')).toBeDefined();
-      expect(getTool('web-search.search')).toBeDefined();
+      expect(getTool('weather_getWeather')).toBeDefined();
+      expect(getTool('web-search_search')).toBeDefined();
     });
 
     it('全量替换：再次 hydrate 覆盖旧数据', () => {
@@ -57,7 +57,7 @@ describe('toolRegistry', () => {
 
       hydrateToolRegistry([anotherAgentTool]);
       expect(listTools()).toHaveLength(1);
-      expect(getTool('weather.getWeather')).toBeUndefined();
+      expect(getTool('weather_getWeather')).toBeUndefined();
       expect(getTool('summarize')).toBeDefined();
     });
 
@@ -73,9 +73,9 @@ describe('toolRegistry', () => {
   describe('getTool', () => {
     it('按全名查找', () => {
       hydrateToolRegistry([sharedTool]);
-      const tool = getTool('weather.getWeather');
+      const tool = getTool('weather_getWeather');
       expect(tool).toBeDefined();
-      expect(tool!.name).toBe('weather.getWeather');
+      expect(tool!.name).toBe('weather_getWeather');
       expect(tool!.functionName).toBe('getWeather');
       expect(tool!.filePath).toBe('dist/tools/weather/handler.js');
       expect(tool!.description).toBe('获取天气');
@@ -98,8 +98,8 @@ describe('toolRegistry', () => {
       const all = listTools();
       expect(all).toHaveLength(3);
       const names = all.map((t) => t.name);
-      expect(names).toContain('weather.getWeather');
-      expect(names).toContain('web-search.search');
+      expect(names).toContain('weather_getWeather');
+      expect(names).toContain('web-search_search');
       expect(names).toContain('summarize');
     });
 
@@ -120,7 +120,7 @@ describe('toolRegistry', () => {
       hydrateToolRegistry([sharedTool, agentTool]);
       clearToolRegistry();
       expect(listTools()).toEqual([]);
-      expect(getTool('weather.getWeather')).toBeUndefined();
+      expect(getTool('weather_getWeather')).toBeUndefined();
     });
   });
 });

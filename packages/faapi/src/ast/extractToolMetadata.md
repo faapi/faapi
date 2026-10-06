@@ -6,7 +6,7 @@
 
 `scanTools` 只通过正则提取了**函数导出名**(Vite 风格零 import),但生成 `faapi-tools.js` 清单和每个 tool 的 `zod.js` schema 还需要两类信息:
 
-1. **JSDoc 描述 + `@tool` 覆盖名**——tool 名对 LLM 可见,描述让 LLM 理解 tool 用途。`@tool` 标签允许覆盖路径推导的默认名(如把 `weather.getWeather` 改为 `weather.current`)。
+1. **JSDoc 描述 + `@tool` 覆盖名**——tool 名对 LLM 可见,描述让 LLM 理解 tool 用途。`@tool` 标签允许覆盖路径推导的默认名(如把 `weather_getWeather` 改为 `weather_current`;覆盖名须满足工具名字符集,见下文)。
 2. **第一个参数的 interface 名**——用于调用 `extractTypeInfo` 生成 zod schema,实现 tool 输入参数的运行时校验(与路由 body/query 同构)。
 
 这些信息必须用 TypeScript AST 提取(JSDoc 和类型标注在运行时被擦除)。本模块在 dev/build 启动时对每个 `ToolManifest` 调用一次,把路径推导字段(name/filePath/functionName)与 AST 提取字段(description/inputTypeName)合并为完整的 `ToolMetadata`,供 [generateToolArtifacts](../cli/generateToolArtifacts.md) 直接序列化。
@@ -47,12 +47,14 @@ JSDoc 中 `@tool <name>` 标签的值,覆盖路径推导的 `name`:
 
 | JSDoc | 提取的覆盖名 | 最终 `ToolMetadata.name` |
 |-------|------------|------------------------|
-| `/** @tool weather.current */` | `'weather.current'` | `'weather.current'` |
-| `/** @tool {weather.current} */` | `'weather.current'`(去花括号) | `'weather.current'` |
-| `/** 描述 \n * @tool weather.current */` | `'weather.current'` | `'weather.current'` |
+| `/** @tool weather_current */` | `'weather_current'` | `'weather_current'` |
+| `/** @tool {weather_current} */` | `'weather_current'`(去花括号) | `'weather_current'` |
+| `/** 描述 \n * @tool weather_current */` | `'weather_current'` | `'weather_current'` |
 | 无 `@tool` 标签 | `undefined` | 使用 `pathMeta.name`(路径推导值) |
 
 `@tool` 标签值缺省(只有 `@tool` 没有值)时,`ToolMetadata.name` 回退到 `pathMeta.name`(不报错,降级为路径推导值)。
+
+**覆盖名字符集校验**:覆盖值必须整体匹配 `^[a-zA-Z0-9_-]+$`(LLM 工具名字符集——tool 名直接作为 `function.name` 发给 LLM,强校验上游对非法字符整单 400)。违例在 AST 提取阶段抛错,不静默净化。
 
 > **注意**: `@tool` 只覆盖 `ToolMetadata.name`,不影响 `functionName`(源码导出名)和 `filePath`——这两个字段始终是真实路径/源码信息,用于 AST 定位和产物生成。
 

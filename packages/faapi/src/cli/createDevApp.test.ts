@@ -181,12 +181,12 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
     const toolsPath = join(tempDir, '.faapi', 'faapi-tools.js');
     expect(existsSync(toolsPath)).toBe(true);
     const toolsContent = readFileSync(toolsPath, 'utf-8');
-    expect(toolsContent).toContain('weather.getWeather');
+    expect(toolsContent).toContain('weather_getWeather');
     expect(toolsContent).toContain('获取天气');
 
     // app 实例的 tool 注册表已重新水合（reloadTools 调 loadAndHydrateTools）
     expect(app.registries.tool.list()).toHaveLength(1);
-    const tool = app.registries.tool.get('weather.getWeather');
+    const tool = app.registries.tool.get('weather_getWeather');
     expect(tool).toBeDefined();
     expect(tool!.description).toBe('获取天气');
 

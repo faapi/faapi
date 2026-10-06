@@ -240,27 +240,27 @@ describe('multi-agent demo e2e', () => {
       expect(researcher!.name).toBe('researcher');
       expect(researcher!.systemPrompt).toContain('研究助手');
       expect(researcher!.agents).toEqual(['writer']);
-      expect(researcher!.tools).toEqual(['weather.getWeather', 'calculator.calc']);
+      expect(researcher!.tools).toEqual(['weather_getWeather', 'calculator_calc']);
 
       const writer = agentRegistry.getAgent('writer');
       expect(writer).toBeDefined();
       expect(writer!.name).toBe('writer');
 
       // 验证 tool 注册表水合（weather + calculator）
-      const weather = toolRegistry.get('weather.getWeather');
+      const weather = toolRegistry.get('weather_getWeather');
       expect(weather).toBeDefined();
       expect(weather!.functionName).toBe('getWeather');
       expect(weather!.inputTypeName).toBe('WeatherInput');
 
-      const calculator = toolRegistry.get('calculator.calc');
+      const calculator = toolRegistry.get('calculator_calc');
       expect(calculator).toBeDefined();
       expect(calculator!.functionName).toBe('calc');
 
       // 验证 resolveAgentTools（researcher 的可用 tool）
       const researcherTools = agentRegistry.resolveAgentTools('researcher');
       const toolNames = researcherTools.map((t) => t.name);
-      expect(toolNames).toContain('weather.getWeather');
-      expect(toolNames).toContain('calculator.calc');
+      expect(toolNames).toContain('weather_getWeather');
+      expect(toolNames).toContain('calculator_calc');
 
       // 验证 resolveSubAgents（researcher 可调用 writer）
       const subAgents = agentRegistry.resolveSubAgents('researcher');
@@ -276,13 +276,13 @@ describe('multi-agent demo e2e', () => {
       const app = await createProdApp({ rootDir: tempDir });
 
       // mock provider 响应序列：
-      // 1. 调 weather.getWeather({ city: '北京' })
+      // 1. 调 weather_getWeather({ city: '北京' })
       // 2. 调 agent.writer({ topic: 'AI' })
       // 3. writer 子循环直答（声明式 agent 走 reactLoop）
       // 4. stop 返回最终答案
       const { provider, completeRequests } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
+          toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
         }),
         llmResponse({
           toolCalls: [toolCall('c2', 'agent-writer', { topic: 'AI' })],
@@ -314,8 +314,8 @@ describe('multi-agent demo e2e', () => {
       expect(systemMsg?.content).toContain('研究助手');
 
       const toolNames = (firstRequest.tools ?? []).map((t) => t.function.name);
-      expect(toolNames).toContain('weather.getWeather');
-      expect(toolNames).toContain('calculator.calc');
+      expect(toolNames).toContain('weather_getWeather');
+      expect(toolNames).toContain('calculator_calc');
       expect(toolNames).toContain('agent-writer');
 
       // 验证第2轮 LLM 收到 weather tool 结果
@@ -340,7 +340,7 @@ describe('multi-agent demo e2e', () => {
       // mock provider 响应序列（同上：writer 子循环直答后父收尾）
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
+          toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
         }),
         llmResponse({
           toolCalls: [toolCall('c2', 'agent-writer', { topic: 'AI' })],
@@ -382,11 +382,11 @@ describe('multi-agent demo e2e', () => {
       const app = await createProdApp({ rootDir: tempDir });
 
       // mock provider 响应序列：
-      // 1. 调 weather.getWeather，参数不合法（缺少 city）→ validate 失败
+      // 1. 调 weather_getWeather，参数不合法（缺少 city）→ validate 失败
       // 2. 收到 error 后返回最终答案
       const { provider, completeRequests } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'weather.getWeather', {})],
+          toolCalls: [toolCall('c1', 'weather_getWeather', {})],
         }),
         llmResponse({ content: '校验失败已处理', stopReason: 'stop' }),
       ]);

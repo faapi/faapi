@@ -2,6 +2,7 @@ import fg from 'fast-glob';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { ToolManifestList } from './toolTypes';
+import { LLM_TOOL_NAME_PATTERN } from '../injection/subAgentToolName';
 
 /**
  * tool 扫描 patterns（框架约定，非用户可配置项）
@@ -60,31 +61,52 @@ function extractToolExportsFromSource(source: string): Set<string> {
 }
 
 /**
+ * tool 目录段合法字符——与 agent 目录段同规则（[scanAgents](../agents/scanAgents.ts)）：
+ * LLM 工具名字符集（`[a-zA-Z0-9_-]`，OpenAI 兼容协议对 function.name 的硬约束）再排除
+ * `_`——`_` 被 `/` 规范化独占为嵌套分隔符（段内出现会让「嵌套」与「段内下划线」不可
+ * 区分），`.` 等其余字符进入 tool 名后会被强校验上游（DeepSeek / OpenAI 等）整单 400
+ */
+const TOOL_DIR_SEGMENT_PATTERN = /^[a-zA-Z0-9-]+$/;
+
+/**
  * 从相对路径（已剥离前缀）提取命名空间
  *
  * weather/handler.ts → 'weather'
  * handler.ts → ''
- * a/b/handler.ts → 'a.b'
+ * a/b/handler.ts → 'a_b'
+ *
+ * 目录段含非法字符时抛错（含路径与改名指引），不静默净化——非法名字发给强校验
+ * 上游整单 400，且静默改名会掩盖配置错误。
  */
 function extractNamespaceFromRelPath(relPath: string): string {
   const lastSlash = relPath.lastIndexOf('/');
   const dirPath = lastSlash === -1 ? '' : relPath.slice(0, lastSlash);
   if (!dirPath) return '';
-  return dirPath.split('/').join('.');
+  const segments = dirPath.split('/');
+  for (const segment of segments) {
+    if (!TOOL_DIR_SEGMENT_PATTERN.test(segment)) {
+      throw new Error(
+        `Invalid tool directory segment "${segment}" in "tools/${relPath}": ` +
+          `tool directory names allow a-z A-Z 0-9 '-' only ('_' is reserved as the nesting separator, ` +
+          `'.' is not allowed — tool names are sent to LLMs as function.name) — rename the directory`,
+      );
+    }
+  }
+  return segments.join('_');
 }
 
 /**
- * 从文件路径生成 tool 命名空间（子目录，用 . 连接，不含函数名）
+ * 从文件路径生成 tool 命名空间（子目录，用 _ 连接，不含函数名）
  *
  * 命名空间生成规则：
  * 1. 剥离 `tools/` 前缀（找第一个 `tools/`）
  * 2. 剥离文件名（handler.ts）
- * 3. 剩余路径段用 `.` 连接
+ * 3. 剩余路径段用 `_` 连接
  *
  * 例子：
  * - src/tools/weather/handler.ts → 'weather'
  * - src/tools/handler.ts → ''
- * - src/tools/a/b/handler.ts → 'a.b'
+ * - src/tools/a/b/handler.ts → 'a_b'
  */
 function filePathToToolNamespace(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');
@@ -100,10 +122,21 @@ function filePathToToolNamespace(filePath: string): string {
 }
 
 /**
- * 生成 tool 名：命名空间.函数名 或 纯函数名
+ * 生成 tool 名：命名空间_函数名 或 纯函数名
+ *
+ * 合成名整体须满足 LLM 工具名字符集——函数名含 `$` 等非法字符时抛错（改名或用
+ * `@tool` JSDoc 覆盖），不静默净化
  */
 function buildToolName(namespace: string, functionName: string): string {
-  return namespace ? `${namespace}.${functionName}` : functionName;
+  const name = namespace ? `${namespace}_${functionName}` : functionName;
+  if (!LLM_TOOL_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `Tool name "${name}" (function "${functionName}"${namespace ? ` in namespace "${namespace}"` : ''}) ` +
+        `violates the LLM tool name pattern ${LLM_TOOL_NAME_PATTERN} — ` +
+        `rename the function or use a @tool JSDoc override (allowed: a-z A-Z 0-9 '-' '_')`,
+    );
+  }
+  return name;
 }
 
 /**
@@ -118,7 +151,8 @@ function buildToolName(namespace: string, functionName: string): string {
  * 所有 tool 都是共享的——放在 `src/tools` 下任意层级子目录的 handler.ts。
  * agent 通过 config 块的 `tools` 字段显式声明引用哪些 tool。
  *
- * tool 命名规则：子目录.函数名（如 weather.getWeather），无子目录时纯函数名。
+ * tool 命名规则：子目录_函数名（如 weather_getWeather，段间与命名空间-函数名都用 `_`
+ * 连接），无子目录时纯函数名；目录段与合成名走字符集校验（见上方常量与 buildToolName）。
  *
  * 重名检测：同名 tool 抛错。
  *

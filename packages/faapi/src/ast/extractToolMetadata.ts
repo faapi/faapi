@@ -5,6 +5,8 @@ import {
   getJSDocFromNode,
   hasExportModifier,
 } from './jsDocMetadata';
+import { LLM_TOOL_NAME_PATTERN } from '../injection/subAgentToolName';
+import { SchemaExtractionError } from './resolveTypeNode';
 
 /**
  * Tool 的 LLM 可见核心字段
@@ -61,7 +63,7 @@ export interface ToolMetadata extends ToolCore {
  * 透传到 [ToolMetadata](./extractToolMetadata.ts) 输出,与 AST 提取字段合并。
  */
 export interface ToolPathMeta {
-  /** 路径推导的 tool 名(如 `weather.getWeather`) */
+  /** 路径推导的 tool 名(如 `weather_getWeather`) */
   name: string;
   /** 源码相对路径(如 `src/tools/weather/handler.ts`) */
   filePath: string;
@@ -111,6 +113,16 @@ export function extractToolMetadata(
   const jsDoc = getJSDocFromNode(jsDocOwner);
   const description = extractDescription(jsDoc);
   const toolNameOverride = extractJSDocTagValue(jsDoc, 'tool');
+  // 覆盖名直接作为 function.name 发给 LLM，须整体满足工具名字符集（与 @agent 覆盖名
+  // 同规则；路径推导名的校验在 scanTools）。违例在 AST 阶段显式抛错，不静默净化
+  if (toolNameOverride !== undefined && !LLM_TOOL_NAME_PATTERN.test(toolNameOverride)) {
+    throw SchemaExtractionError.at(
+      jsDocOwner,
+      '@tool',
+      `覆盖名 "${toolNameOverride}" 含非法字符——须满足 ${LLM_TOOL_NAME_PATTERN}（tool 名直接作为 LLM function.name，强校验上游对非法字符整单 400）`,
+      sourceFile,
+    );
+  }
   const inputTypeName = getFirstParamTypeName(fn, sourceFile);
 
   return {

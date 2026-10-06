@@ -26,7 +26,7 @@ describe('extractToolMetadata', () => {
 
   /** 共享 tool 的默认 pathMeta */
   const sharedMeta: ToolPathMeta = {
-    name: 'weather.getWeather',
+    name: 'weather_getWeather',
     filePath: 'src/tools/weather/handler.ts',
   };
 
@@ -78,7 +78,7 @@ describe('extractToolMetadata', () => {
     it('JSDoc 只有标签无自由文本时 description 为 undefined', () => {
       writeFileSync(
         tempFile,
-        `/** @tool weather.current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+        `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
@@ -91,35 +91,35 @@ describe('extractToolMetadata', () => {
     it('@tool 标签覆盖 name', () => {
       writeFileSync(
         tempFile,
-        `/** @tool weather.current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+        `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
       expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather.current');
+      expect(result!.name).toBe('weather_current');
     });
 
     it('描述 + @tool 标签同时存在,name 使用 @tool 值', () => {
       writeFileSync(
         tempFile,
-        `/**\n * 获取当前天气\n * @tool weather.current\n */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+        `/**\n * 获取当前天气\n * @tool weather_current\n */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
       expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather.current');
+      expect(result!.name).toBe('weather_current');
       expect(result!.description).toBe('获取当前天气');
     });
 
     it('@tool 标签值带花括号时去括号', () => {
       writeFileSync(
         tempFile,
-        `/** @tool {weather.current} */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+        `/** @tool {weather_current} */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
       expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather.current');
+      expect(result!.name).toBe('weather_current');
     });
 
     it('无 @tool 标签时 name 使用 pathMeta.name', () => {
@@ -130,7 +130,7 @@ describe('extractToolMetadata', () => {
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
       expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather.getWeather');
+      expect(result!.name).toBe('weather_getWeather');
     });
 
     it('@tool 标签无值时 name 回退到 pathMeta.name', () => {
@@ -141,20 +141,42 @@ describe('extractToolMetadata', () => {
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
       expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather.getWeather');
+      expect(result!.name).toBe('weather_getWeather');
       expect(result!.description).toBe('获取天气');
     });
 
     it('@tool 覆盖不影响 functionName(仍是源码导出名)', () => {
       writeFileSync(
         tempFile,
-        `/** @tool weather.current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+        `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
       expect(result).not.toBeNull();
       expect(result!.functionName).toBe('getWeather');
-      expect(result!.name).toBe('weather.current');
+      expect(result!.name).toBe('weather_current');
+    });
+
+    it('@tool 覆盖名含点 → 抛错（覆盖名直接作为 function.name,须满足工具名字符集）', () => {
+      writeFileSync(
+        tempFile,
+        `/** @tool weather.current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractToolMetadata(program, tempFile, 'getWeather', sharedMeta)).toThrow(
+        /weather\.current/,
+      );
+    });
+
+    it('@tool 覆盖名允许工具名字符集内的连字符与下划线', () => {
+      writeFileSync(
+        tempFile,
+        `/** @tool weather_current-v2 */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.name).toBe('weather_current-v2');
     });
   });
 
@@ -297,12 +319,12 @@ describe('extractToolMetadata', () => {
     it('箭头函数 @tool 覆盖生效', () => {
       writeFileSync(
         tempFile,
-        `/** @tool weather.current */\nexport const getWeather = (input: WeatherInput) => "sunny";\n`,
+        `/** @tool weather_current */\nexport const getWeather = (input: WeatherInput) => "sunny";\n`,
       );
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
       expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather.current');
+      expect(result!.name).toBe('weather_current');
     });
   });
 
@@ -312,7 +334,7 @@ describe('extractToolMetadata', () => {
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
       expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather.getWeather');
+      expect(result!.name).toBe('weather_getWeather');
       expect(result!.filePath).toBe('src/tools/weather/handler.ts');
       expect(result!.functionName).toBe('getWeather');
     });

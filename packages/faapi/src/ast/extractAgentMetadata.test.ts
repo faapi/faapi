@@ -168,9 +168,9 @@ describe('extractAgentMetadata', () => {
 
     it('提取 tools（无插值模板字符串元素）', () => {
       const result = extract(
-        'export const config = { systemPrompt: `x`, tools: [`weather.getWeather`, `y`] };\n',
+        'export const config = { systemPrompt: `x`, tools: [`weather_getWeather`, `y`] };\n',
       );
-      expect(result!.tools).toEqual(['weather.getWeather', 'y']);
+      expect(result!.tools).toEqual(['weather_getWeather', 'y']);
     });
 
     it('空数组 tools → 空数组', () => {
@@ -208,9 +208,9 @@ describe('extractAgentMetadata', () => {
 
     it('提取 tools（字符串数组）', () => {
       const result = extract(
-        `export const config = { systemPrompt: 'x', tools: ['weather.getWeather', 'web-search.search'] };\n`,
+        `export const config = { systemPrompt: 'x', tools: ['weather_getWeather', 'web-search_search'] };\n`,
       );
-      expect(result!.tools).toEqual(['weather.getWeather', 'web-search.search']);
+      expect(result!.tools).toEqual(['weather_getWeather', 'web-search_search']);
     });
 
     it('提取 agents（字符串数组）', () => {
@@ -224,14 +224,14 @@ describe('extractAgentMetadata', () => {
       const result = extract(
         `export const config = {
           systemPrompt: 'You are a researcher',
-          tools: ['weather.getWeather'],
+          tools: ['weather_getWeather'],
           agents: ['coder'],
           model: 'gpt-4',
           maxTurns: 15,
         };\n`,
       );
       expect(result!.systemPrompt).toBe('You are a researcher');
-      expect(result!.tools).toEqual(['weather.getWeather']);
+      expect(result!.tools).toEqual(['weather_getWeather']);
       expect(result!.agents).toEqual(['coder']);
       expect(result!.model).toBe('gpt-4');
       expect(result!.maxTurns).toBe(15);
@@ -520,9 +520,9 @@ describe('extractAgentMetadata', () => {
 
     it('tools 数组元素支持字面量拼接', () => {
       const result = extract(
-        `export const config = { systemPrompt: 'x', tools: ['weather' + '.getWeather', 'search'] };\n`,
+        `export const config = { systemPrompt: 'x', tools: ['weather' + '_getWeather', 'search'] };\n`,
       );
-      expect(result!.tools).toEqual(['weather.getWeather', 'search']);
+      expect(result!.tools).toEqual(['weather_getWeather', 'search']);
     });
 
     it('拼接含变量引用 → 抛错', () => {

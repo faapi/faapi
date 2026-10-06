@@ -28,7 +28,7 @@ describe('scanTools', () => {
       const tools = await scanTools(dir, ['src/tools/**/*.ts']);
       expect(tools).toHaveLength(1);
       expect(tools[0]).toMatchObject({
-        name: 'weather.getWeather',
+        name: 'weather_getWeather',
         functionName: 'getWeather',
         filePath: 'src/tools/weather/handler.ts',
       });
@@ -47,7 +47,7 @@ describe('scanTools', () => {
       const tools = await scanTools(dir, ['src/tools/**/*.ts']);
       expect(tools).toHaveLength(2);
       const names = tools.map((t) => t.name).sort();
-      expect(names).toEqual(['math.add', 'math.multiply']);
+      expect(names).toEqual(['math_add', 'math_multiply']);
     } finally {
       cleanup();
     }
@@ -72,7 +72,7 @@ describe('scanTools', () => {
     try {
       const tools = await scanTools(dir, ['src/tools/**/*.ts']);
       expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('data.fetch');
+      expect(tools[0].name).toBe('data_fetch');
     } finally {
       cleanup();
     }
@@ -88,7 +88,7 @@ describe('scanTools', () => {
       const tools = await scanTools(dir, ['src/tools/**/*.ts']);
       expect(tools).toHaveLength(2);
       const names = tools.map((t) => t.name).sort();
-      expect(names).toEqual(['calc.asyncQuery', 'calc.sum']);
+      expect(names).toEqual(['calc_asyncQuery', 'calc_sum']);
     } finally {
       cleanup();
     }
@@ -106,7 +106,7 @@ describe('scanTools', () => {
     try {
       const tools = await scanTools(dir, ['src/tools/**/*.ts']);
       expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('helper.actualTool');
+      expect(tools[0].name).toBe('helper_actualTool');
     } finally {
       cleanup();
     }
@@ -123,7 +123,7 @@ describe('scanTools', () => {
     try {
       const tools = await scanTools(dir, ['src/tools/**/*.ts']);
       expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('weather.getWeather');
+      expect(tools[0].name).toBe('weather_getWeather');
     } finally {
       cleanup();
     }
@@ -131,12 +131,12 @@ describe('scanTools', () => {
 
   it('同作用域(共享池)同名 tool 报错', async () => {
     const { dir, write, cleanup } = setupTmp();
-    // 两个不同根目录的 tools/ 都产生 weather.getWeather
+    // 两个不同根目录的 tools/ 都产生 weather_getWeather
     write('src/tools/weather/handler.ts', 'export function getWeather(input) { return "a"; }');
     write('backup/tools/weather/handler.ts', 'export function getWeather(input) { return "b"; }');
     try {
       await expect(scanTools(dir, ['src/tools/**/*.ts', 'backup/tools/**/*.ts'])).rejects.toThrow(
-        /weather\.getWeather/,
+        /weather_getWeather/,
       );
     } finally {
       cleanup();
@@ -153,13 +153,13 @@ describe('scanTools', () => {
     }
   });
 
-  it('多层子目录命名空间用 . 连接', async () => {
+  it('多层子目录命名空间用 _ 连接', async () => {
     const { dir, write, cleanup } = setupTmp();
     write('src/tools/a/b/handler.ts', 'export function deep(input) { return "ok"; }');
     try {
       const tools = await scanTools(dir, ['src/tools/**/*.ts']);
       expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('a.b.deep');
+      expect(tools[0].name).toBe('a_b_deep');
     } finally {
       cleanup();
     }
@@ -173,7 +173,39 @@ describe('scanTools', () => {
     try {
       const tools = await scanTools(dir, ['src/tools/**/*.ts']);
       expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('weather.getWeather');
+      expect(tools[0].name).toBe('weather_getWeather');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('目录段含 _ → 抛错（_ 保留为嵌套分隔符，段内禁用）', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/tools/my_tools/handler.ts', 'export function parse() { return 1; }');
+    try {
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/my_tools/);
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/nesting separator/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('目录段含点（旧版命名空间分隔符）→ 抛错并提示改名', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/tools/weather.v2/handler.ts', 'export function parse() { return 1; }');
+    try {
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/weather\.v2/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('函数名含 $ → 合成 tool 名违反工具名字符集，抛错并提示 @tool 覆盖', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/tools/handler.ts', 'export const $fetch = (input) => "ok";');
+    try {
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/\$fetch/);
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/@tool/);
     } finally {
       cleanup();
     }
