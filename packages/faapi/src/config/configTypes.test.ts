@@ -8,6 +8,7 @@ import type {
   LlmModelConfig,
 } from './configTypes';
 import type { RouteManifest } from '../router/routeTypes';
+import type { FaapiContext } from '../runtime/contextTypes';
 import type { Server } from 'node:http';
 
 describe('configTypes', () => {
@@ -225,6 +226,18 @@ describe('configTypes', () => {
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultTools');
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultAgent');
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultLlm');
+    });
+
+    it('AgentConfig 鉴权钩子 ctx 参数为 Partial<FaapiContext>（任务侧窄 ctx 免 cast 直传）', () => {
+      expectTypeOf<Parameters<NonNullable<AgentConfig['beforeToolCall']>>[2]>().toEqualTypeOf<
+        Partial<FaapiContext> | undefined
+      >();
+      expectTypeOf<Parameters<NonNullable<AgentConfig['afterToolCall']>>[3]>().toEqualTypeOf<
+        Partial<FaapiContext> | undefined
+      >();
+      expectTypeOf<Parameters<NonNullable<AgentConfig['filterTools']>>[1]>().toEqualTypeOf<
+        Partial<FaapiContext> | undefined
+      >();
     });
 
     it('FaapiConfig.agent 类型校验', () => {

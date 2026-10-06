@@ -345,15 +345,6 @@ export interface AgentConfig {
    */
   enableTracing?: boolean;
   /**
-   * 执行守卫（authHooks，见 @faapi/agent 的 authHooks 文档）
-   *
-   * 每次 tool / sub-agent 执行前调用（`agent.x` 名称为 sub-agent 递归）。
-   * 三种返回：`void` 放行；`{ error }` 拒绝（不执行，error 回传 LLM 调整策略）；
-   * `{ args }` 改写后放行（多租户场景强制注入可信值，不信 LLM 传入的标识参数）。
-   *
-   * 典型用法：中间件解析 `ctx.workspace` 后在此校验/强制改写 `args.workspaceId`。
-   */
-  /**
    * 发送给 LLM 的历史 token 预算（近似估算，未设置 = 不裁剪）
    *
    * 多轮 tool 循环中对话历史只增不减，大 tool 结果会撑爆模型上下文窗口导致
@@ -362,10 +353,23 @@ export interface AgentConfig {
    * reactLoop 文档历史裁剪章节。
    */
   maxHistoryTokens?: number;
+  /**
+   * 执行守卫（authHooks，见 @faapi/agent 的 authHooks 文档）
+   *
+   * 每次 tool / sub-agent 执行前调用（`agent-x` 派发名称为 sub-agent 递归）。
+   * 三种返回：`void` 放行；`{ error }` 拒绝（不执行，error 回传 LLM 调整策略）；
+   * `{ args }` 改写后放行（多租户场景强制注入可信值，不信 LLM 传入的标识参数）。
+   *
+   * ctx 为请求上下文透传（`Partial<FaapiContext>`，框架零读取）：HTTP 请求是完整
+   * ctx，任务内组装 Agent 时业务方显式传窄对象（如鉴权硬闸需要的
+   * `{ currentUserId }`），编程式直调为 undefined。
+   *
+   * 典型用法：中间件解析 `ctx.workspace` 后在此校验/强制改写 `args.workspaceId`。
+   */
   beforeToolCall?: (
     name: string,
     args: Record<string, unknown>,
-    ctx: FaapiContext | undefined,
+    ctx: Partial<FaapiContext> | undefined,
   ) => void | { error: string } | { args: Record<string, unknown> };
   /**
    * 审计钩子（authHooks）：tool / sub-agent 成功返回后调用，返回值忽略。
@@ -375,7 +379,7 @@ export interface AgentConfig {
     name: string,
     args: Record<string, unknown>,
     result: unknown,
-    ctx: FaapiContext | undefined,
+    ctx: Partial<FaapiContext> | undefined,
   ) => void;
   /**
    * 可见性过滤（authHooks）：LLM 可见 tools 清单组装完成后调用，
@@ -390,7 +394,7 @@ export interface AgentConfig {
       type: 'function';
       function: { name: string; description?: string; parameters?: Record<string, unknown> };
     }>,
-    ctx: FaapiContext | undefined,
+    ctx: Partial<FaapiContext> | undefined,
   ) => Array<{
     type: 'function';
     function: { name: string; description?: string; parameters?: Record<string, unknown> };

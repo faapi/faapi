@@ -82,7 +82,8 @@ registerAgentHandleFactory(() => {
     providers,                   // 闭包捕获（setup 时创建,Map<providerKey, LLMProvider>;llms 未配置时为空 Map）
     llms,                        // 闭包捕获（agentConfig.llms ?? {},供 Agent 按名查找 LlmConfig）
     rootDir,                     // 闭包捕获（ctx.rootDir）
-    config: runtimeConfig,      // 闭包捕获（maxTurns / maxAgentDepth）
+    config: runtimeConfig,      // 闭包捕获（maxTurns / maxAgentDepth + authHooks 三钩子）
+    ctx,                         // 工厂入参——捕获请求上下文（authHooks ctx 传递链，完整 FaapiContext）
     getAgent,                    // 从 @faapi/faapi import（单例模块）
     getAgentEntry,               // 从 @faapi/faapi import（用于加载 handler.js 执行 run 函数）
     getTool,

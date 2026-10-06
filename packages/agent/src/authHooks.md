@@ -24,8 +24,13 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
       └─ 工厂捕获 ctx → AgentDeps.ctx       ← @faapi/agent plugin（此前工厂丢弃了 ctx）
           ├─ tool handler: (args, ctx)      ← 第二参数（此前只有 args）
           └─ sub-agent: 同一 ctx 递归传导    ← subDeps 展开 deps，ctx 随行
+
+任务内组装 Agent（无 HTTP 请求）            ← deps.ctx 显式传窄对象
+  └─ new Agent({ ..., ctx: { currentUserId } })
+      └─ 同一透传链：钩子与 tool handler 收到该窄对象（如 tool 硬闸读 ctx.currentUserId）
 ```
 
+- `AgentDeps.ctx` 类型为 `Partial<FaapiContext>`——框架自身零读取、纯透传，完整性由场景决定：HTTP 请求传完整 ctx（插件工厂捕获），任务内组装传窄对象（`declare module` 增强字段免 cast 直传），编程式调用不传。详见 [agent.md](./agent.md)「AgentDeps.ctx」章节
 - 编程式调用（测试 / 自定义启动器直接 `new Agent(deps)`）不传 ctx，钩子收到 `undefined`——诚实反映"没有请求上下文"，业务方在钩子里自行决定拒绝与否
 - sub-agent 递归不换 HTTP 请求，ctx 不变——工作区约束一路生效
 

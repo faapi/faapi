@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,6 +24,14 @@ import type {
   LLMToolDefinition,
   LLMToolCall,
 } from './provider';
+
+// 任务侧鉴权字段增强（declare module 声明合并）——与业务方 src/tasks/** 的用法同构：
+// 窄 ctx 携带增强字段直传 AgentDeps.ctx（Partial<FaapiContext>），免 as 断言
+declare module '@faapi/faapi' {
+  interface FaapiContext {
+    currentUserId?: number;
+  }
+}
 
 // ─── Mock 数据构造器 ─────────────────────────────────
 
@@ -179,7 +187,7 @@ function createDeps(opts: {
   subAgents?: AgentCore[];
   subAgentEntries?: AgentMetadata[];
   config?: AgentRuntimeConfig;
-  ctx?: FaapiContext;
+  ctx?: Partial<FaapiContext>;
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
@@ -2083,12 +2091,67 @@ describe('Agent', () => {
   });
 
   describe('鉴权钩子（authHooks）', () => {
-    const ctx = {
+    // 任务侧窄 ctx（Partial 直传，无 cast）——HTTP 完整 ctx 是其超集，透传语义一致
+    const ctx: Partial<FaapiContext> = {
       method: 'POST',
       path: '/api/agent',
-      user: { id: 1 },
-      workspace: { id: 'ws-1' },
-    } as unknown as FaapiContext;
+      currentUserId: 42,
+    };
+
+    it('类型契约:AgentDeps.ctx 与钩子 ctx 参数均为 Partial<FaapiContext>（任务侧窄对象免 cast）', () => {
+      expectTypeOf<AgentDeps['ctx']>().toEqualTypeOf<Partial<FaapiContext> | undefined>();
+      // 增强字段随 Partial 保留——窄对象携带业务字段直传
+      expectTypeOf<Partial<FaapiContext>>().toMatchTypeOf<{ currentUserId?: number }>();
+      // AgentRuntimeConfig 钩子签名同步放宽（显式标注 FaapiContext 的钩子实现是迁移点）
+      expectTypeOf<
+        Parameters<NonNullable<AgentRuntimeConfig['beforeToolCall']>>[2]
+      >().toEqualTypeOf<Partial<FaapiContext> | undefined>();
+      expectTypeOf<Parameters<NonNullable<AgentRuntimeConfig['afterToolCall']>>[3]>().toEqualTypeOf<
+        Partial<FaapiContext> | undefined
+      >();
+      expectTypeOf<Parameters<NonNullable<AgentRuntimeConfig['filterTools']>>[1]>().toEqualTypeOf<
+        Partial<FaapiContext> | undefined
+      >();
+    });
+
+    it('任务侧窄 ctx 免 cast 直传:硬闸钩子与 handler 读到同一身份字段', async () => {
+      // tool 鉴权硬闸（业务侧形态,fail-closed）——读窄 ctx 的增强字段
+      let seenUserId: number | undefined;
+      const handler = vi.fn(async (_args: unknown, hookCtx?: Partial<FaapiContext>) => {
+        if (hookCtx?.currentUserId === undefined) return { error: 'unauthenticated' };
+        seenUserId = hookCtx.currentUserId;
+        return { ok: true };
+      });
+      const beforeToolCall = vi.fn(
+        (_name: string, _args: Record<string, unknown>, hookCtx?: Partial<FaapiContext>) => {
+          if (hookCtx?.currentUserId === undefined) return { error: 'workspace context required' };
+        },
+      );
+      const { provider } = toolCallProvider();
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async () => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName: 'getWeather',
+          }),
+          config: { beforeToolCall },
+          ctx: { currentUserId: 42 },
+        }),
+      );
+
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+      // 硬闸放行（窄 ctx 携带身份）→ handler 读到身份执行
+      expect(beforeToolCall).toHaveBeenCalledWith(
+        'weather_getWeather',
+        { city: '北京' },
+        { currentUserId: 42 },
+      );
+      expect(seenUserId).toBe(42);
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
 
     function toolCallProvider() {
       return createMockProvider([

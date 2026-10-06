@@ -28,7 +28,7 @@ Agent 类把这些「胶水」逻辑集中在一处,reactLoop 保持纯函数。
 
 | 类型 | 说明 |
 | --- | --- |
-| `AgentDeps` | Agent 运行时依赖（providers Map + llms + rootDir + config + 注册表/加载器访问器 + 可选 schema 解析器；无默认 provider / 默认 agent 名——每次调用显式指定） |
+| `AgentDeps` | Agent 运行时依赖（providers Map + llms + rootDir + config + 请求上下文透传 ctx + 注册表/加载器访问器 + 可选 schema 解析器；无默认 provider / 默认 agent 名——每次调用显式指定） |
 | `AgentRuntimeConfig` | 全局 agent 配置覆盖（maxTurns / maxAgentDepth / enableTracing） |
 | `ToolSchemaResolution` | tool schema 解析结果（jsonSchema 给 LLM + validate 给执行前校验） |
 | `AgentRecursionError` | sub-agent 递归超 `maxAgentDepth` 时抛出 |
@@ -53,6 +53,18 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | `resolveSubAgents(name)` | [agentRegistry.resolveSubAgents](../../faapi/src/injection/agentRegistry.md) | agent 可调用 sub-agent 列表（`AgentCore[]`,仅查文件 registry,skill 不参与 sub-agent 递归） |
 | `loadToolModule(...)` | [loadToolModule](../../faapi/src/loader/loadToolModule.md) | 动态 import tool handler |
 | `resolveToolSchema?(tool)` | Phase 3.5 实现 | tool input 的 JSON Schema + 校验函数（基于 `zod.js` + `z.toJSONSchema`） |
+
+### `AgentDeps.ctx`（请求上下文透传）
+
+`ctx?: Partial<FaapiContext>`——框架自身零读取，纯透传给鉴权钩子（`beforeToolCall` / `afterToolCall` / `filterTools`）与 tool handler 第二参数。类型为 `Partial` 的原因：上下文的完整性由调用方场景决定，框架不读任何字段，不应强迫调用方构造完整 `FaapiContext`（含 `request` / `headers` 等请求绑定字段，任务侧无法构造）：
+
+| 来源 | 传入 | 场景 |
+| --- | --- | --- |
+| HTTP 请求（@faapi/agent 插件工厂） | 完整 `FaapiContext` | 钩子/handler 可读中间件塞入的全部身份信息（`ctx.user` / `ctx.workspace` 等增强字段） |
+| 任务内组装（`src/tasks/**/task.ts`） | 窄对象（如 `{ currentUserId }`，经 `declare module` 增强的字段免 cast 直传） | 任务无 HTTP 请求，只传 tool handler 鉴权硬闸需要的身份字段 |
+| 编程式直调（测试/自定义启动器） | 不传 | 钩子收到 `undefined`，业务方在钩子里自行决定拒绝与否 |
+
+`declare module '@faapi/faapi'` 增强的字段随 `Partial` 保留——钩子/`filterTools` 内 `ctx?.user` 等增强字段的类型提示照常可用。sub-agent 递归复用同一 deps，ctx 随行不变。完整传递链见 [authHooks.md](./authHooks.md)，任务侧组装示例见主包 [taskTypes.md](../../faapi/src/task/taskTypes.md)「任务内组装 Agent」。
 
 ### `Agent` 类方法
 

@@ -77,12 +77,16 @@ export async function run(payload, taskCtx) {
     resolveSubAgents: taskCtx.registries.agent.resolveSubAgents,
     loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, process.cwd()),
     resolveToolSchema,               // zod.js → JSON Schema + safeParse 校验（带 mtime 缓存）
+    // 任务无 HTTP 请求——把鉴权身份塞进窄 ctx（Partial<FaapiContext>），tool handler
+    // 的硬闸（ctx?.currentUserId === undefined 拒绝）与鉴权钩子照常读取。
+    // currentUserId 等自定义字段经 declare module '@faapi/faapi' 增强 FaapiContext 后免 cast 直传
+    ctx: { currentUserId: payload.userId },
   });
   return agent.run(payload.input, { agent: 'log-analyzer', provider });
 }
 ```
 
-工厂行为（缓存、`undefined` 语义）见 `@faapi/agent` 的 [toolSchemaResolver.md](../../../agent/src/toolSchemaResolver.md)；`AgentDeps` 各字段见 [agent.md](../../../agent/src/agent.md)。
+`ctx` 纯透传语义（框架零读取，HTTP 完整 ctx / 任务窄对象 / 编程式 undefined 三种来源）见 `@faapi/agent` 的 [agent.md](../../../agent/src/agent.md)「AgentDeps.ctx」章节；工厂行为（缓存、`undefined` 语义）见 [toolSchemaResolver.md](../../../agent/src/toolSchemaResolver.md)；`AgentDeps` 各字段见 [agent.md](../../../agent/src/agent.md)。
 
 ## 相关模块
 

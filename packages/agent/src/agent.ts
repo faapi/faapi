@@ -203,11 +203,11 @@ export interface AgentRuntimeConfig {
  */
 export type ToolCallGuard = { error: string } | { args: Record<string, unknown> };
 
-/** 执行守卫钩子签名（ctx 为请求上下文,编程式直调可能为 undefined） */
+/** 执行守卫钩子签名（ctx 为请求上下文透传——HTTP 完整 ctx / 任务窄对象 / 编程式 undefined） */
 export type ToolCallGuardHook = (
   name: string,
   args: Record<string, unknown>,
-  ctx: FaapiContext | undefined,
+  ctx: Partial<FaapiContext> | undefined,
 ) => void | ToolCallGuard;
 
 /** 审计钩子签名（仅成功路径调用） */
@@ -215,13 +215,13 @@ export type AfterToolCallHook = (
   name: string,
   args: Record<string, unknown>,
   result: unknown,
-  ctx: FaapiContext | undefined,
+  ctx: Partial<FaapiContext> | undefined,
 ) => void;
 
 /** 可见性过滤钩子签名 */
 export type FilterToolsHook = (
   tools: LLMToolDefinition[],
-  ctx: FaapiContext | undefined,
+  ctx: Partial<FaapiContext> | undefined,
 ) => LLMToolDefinition[];
 
 /**
@@ -285,13 +285,18 @@ export interface AgentDeps {
   /** 全局 agent 配置覆盖 */
   config?: AgentRuntimeConfig;
   /**
-   * 请求上下文（authHooks ctx 传递链,见 [authHooks.md](./authHooks.md)）
+   * 请求上下文透传（authHooks ctx 传递链,见 [authHooks.md](./authHooks.md)）
    *
-   * 由 @faapi/agent 工厂捕获（AgentHandleFactory 签名本就接收 ctx）。
-   * 编程式直调（测试/自定义启动器）不传,钩子收到 undefined。
-   * sub-agent 递归经 subDeps 展开自动传导（同一 HTTP 请求内 ctx 不变）。
+   * 类型为 Partial——框架自身零读取,纯透传给鉴权钩子与 tool handler 第二参数,
+   * 完整性由调用方场景决定：
+   * - HTTP 请求（@faapi/agent 工厂）传完整 ctx（完整可赋给 Partial）
+   * - 任务内组装传窄对象（如鉴权硬闸需要的 `{ currentUserId }`,declare module
+   *   增强字段免 cast 直传,完整 FaapiContext 任务侧无法构造）
+   * - 编程式直调（测试/自定义启动器）不传,钩子收到 undefined
+   *
+   * sub-agent 递归经 subDeps 展开自动传导（同一调用内 ctx 不变）。
    */
-  ctx?: FaapiContext;
+  ctx?: Partial<FaapiContext>;
   /** 查 agent LLM 可见元数据（对应 agentRegistry.getAgent,返回 AgentCore） */
   getAgent: (name: string) => AgentCore | undefined;
   /** 查 agent 完整元数据（对应 agentRegistry.getAgentEntry,返回 AgentMetadata 含 filePath） */
