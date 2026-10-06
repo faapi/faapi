@@ -67,7 +67,7 @@ agent 元数据分两层接口，对应两类使用方（详见 [extractAgentMet
 
 把 agent 包装为 `AgentToolDescriptor`（与 `ToolMetadata` 平行结构），供 LLM 当作 tool 调用。
 
-- `name` 默认 `agent.<agentName>`（前缀避免与常规 tool 冲突，reactLoop 据此识别 sub-agent 递归）
+- `name` 默认 `agent-<agentName>`（由 [subAgentToolName](./subAgentToolName.md) 生成——连字符前缀满足 OpenAI 兼容协议的工具名字符集约束；执行路由不靠名字前缀猜测，由 `@faapi/agent` 的 `Agent` 类按声明集合派发）
 - `description` 透传 `agent.description`
 - `metadata` 持有 `AgentCore` 引用（reactLoop 取 `systemPrompt` / `model` / `maxTurns`）；`filePath` 由 `@faapi/agent` 子包通过 `getAgentEntry` 单独获取
 - 不含 input schema——agent `run` 函数参数为开放式（任意 JSON），无类型约束；Phase 3.x 可扩展

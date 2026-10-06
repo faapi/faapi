@@ -33,7 +33,7 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
 
 ### `beforeToolCall(name, args, ctx)`
 
-`executeTool` 最开头调用（`agent.` 分流**之前**）——一个钩子同时覆盖常规 tool（`name = 'weather.getWeather'`）与 sub-agent 递归（`name = 'agent.researcher'`），业务方按前缀区分策略。不需要平行的 `beforeAgentCall`。
+`executeTool` 最开头调用（sub-agent 派发分流**之前**）——一个钩子同时覆盖常规 tool（`name = 'weather.getWeather'`）与 sub-agent 递归（`name = 'agent-researcher'`,派发工具名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)），业务方按前缀区分策略（用主包导出的 `SUB_AGENT_TOOL_PREFIX` 判别,不硬编码字符串）。不需要平行的 `beforeAgentCall`。
 
 三种返回：
 
@@ -49,7 +49,7 @@ tool / sub-agent **成功返回后**调用（异常路径不调用）——审�
 
 ### `filterTools(tools, ctx)`
 
-`buildToolDefinitions` 组装完 LLM 可见 tools 清单后调用（每次 `run` / `stream` 生效），返回过滤后的数组。含 agent-as-tool（`agent.x` 项）。tools 为 OpenAI chat completions 规范形（`type: 'function'` + `function: { name, description?, parameters? }`），按 `tool.function.name` 过滤。
+`buildToolDefinitions` 组装完 LLM 可见 tools 清单后调用（每次 `run` / `stream` 生效），返回过滤后的数组。含 agent-as-tool（`agent-x` 派发项）。tools 为 OpenAI chat completions 规范形（`type: 'function'` + `function: { name, description?, parameters? }`），按 `tool.function.name` 过滤。
 
 **只影响可见性，不拦执行**：被过滤的 tool 在注册表中仍存在，LLM 幻觉调用时 `executeTool` 照常查到并执行——**看不到 ≠ 调不到**。硬闸必须配 `beforeToolCall`；`filterTools` 的价值是省一轮调用与缩小 LLM 决策面，安全语义由第 3 层保证。
 

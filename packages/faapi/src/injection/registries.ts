@@ -3,6 +3,7 @@ import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { TaskRegistry } from '../task/taskRegistry';
 import { createTaskRegistry } from '../task/taskRegistry';
+import { subAgentToolName } from './subAgentToolName';
 
 /**
  * app 级注册表（方案 A：注册表实例化）
@@ -113,7 +114,7 @@ export function createAgentRegistry(tool: ToolRegistry): AgentRegistry {
       if (!agent) return undefined;
       return {
         kind: 'agent',
-        name: `agent.${agent.name}`,
+        name: subAgentToolName(agent.name),
         agentName: agent.name,
         description: agent.description,
         metadata: agent,

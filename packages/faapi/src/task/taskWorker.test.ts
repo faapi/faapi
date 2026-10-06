@@ -602,7 +602,7 @@ describe('runTaskInWorker', () => {
 
     expect(result.asTool).toEqual({
       kind: 'agent',
-      name: 'agent.log-analyzer',
+      name: 'agent-log-analyzer',
       agentName: 'log-analyzer',
       description: undefined,
       metadata: {

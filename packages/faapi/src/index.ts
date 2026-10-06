@@ -96,6 +96,14 @@ export {
   resolveSubAgents,
 } from './injection/agentRegistry';
 export { getTool } from './injection/toolRegistry';
+// sub-agent 派发工具名（agent-<agentName>）——OpenAI 兼容协议工具名字符集约束下的
+// 唯一生成入口；authHooks（beforeToolCall/filterTools）用 SUB_AGENT_TOOL_PREFIX 判别
+// sub-agent 调用，不硬编码前缀字符串
+export {
+  LLM_TOOL_NAME_PATTERN,
+  SUB_AGENT_TOOL_PREFIX,
+  subAgentToolName,
+} from './injection/subAgentToolName';
 // skill 注册表（运行时 DB-driven skills,业务方 plugin 接入外部源时调）
 // skill 与 agent 物理隔离——agentRegistry 查询函数不 fallback 到 skillRegistry,
 // skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归。

@@ -15,7 +15,7 @@
 
 - [Agent 类](./agent.md) 的 `run()` 调 `reactLoop()` 拿最终结果
 - [Agent 类](./agent.md) 的 `stream()` 调 `reactLoopStream()` 拿流式 chunk（增量 token + tool 事件 + 最终结果）
-- agent-as-tool 递归：`executeTool` 内部识别 `agent.` 前缀的 tool 名，递归调子 agent 的 `reactLoop`（`maxAgentDepth` 防护由 Agent 类在 `executeTool` 内实现）
+- agent-as-tool 递归：`executeTool` 内部按声明集合识别 sub-agent 派发名（`agent-<name>`,命名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)）,递归调子 agent 的 `reactLoop`（`maxAgentDepth` 防护由 Agent 类在 `executeTool` 内实现）
 
 ## 设计
 
@@ -141,7 +141,7 @@ private async executeSubAgent(subName: string, args: Record<string, unknown>) {
 }
 ```
 
-reactLoop 调 `executeTool` 时,`agent.` 前缀的 tool 名触发 `executeSubAgent`——若子 agent 超出深度限制,抛 `AgentRecursionError`,reactLoop catch 后把错误消息回传 LLM。
+reactLoop 调 `executeTool` 时,sub-agent 派发名（`agent-<name>`,按 `Agent` 构建期的「派发名 → agent 名」声明映射识别,不按名字前缀猜测）触发 `executeSubAgent`——若子 agent 超出深度限制,抛 `AgentRecursionError`,reactLoop catch 后把错误消息回传 LLM。
 
 ### 与 provider 的关系
 
@@ -168,11 +168,11 @@ interface ReactLoopStreamChunk {
 
 ### 子代理 delta 冒泡（流式）
 
-子代理（`agent.<name>` tool call）在 `executeSubAgent` 内递归跑自己的循环。流式父循环执行 sub-agent 时，嵌套循环的 `deltaContent` / `deltaReasoning` 经新增的 `subagentDelta` chunk **实时冒泡**到父流——多 agent 协作页面可直播子代理的思考与产出过程：
+子代理（`agent-<name>` 派发 tool call）在 `executeSubAgent` 内递归跑自己的循环。流式父循环执行 sub-agent 时，嵌套循环的 `deltaContent` / `deltaReasoning` 经新增的 `subagentDelta` chunk **实时冒泡**到父流——多 agent 协作页面可直播子代理的思考与产出过程：
 
 ```ts
 interface SubAgentDelta {
-  /** 发起调用的 tool 名（agent.<name>） */
+  /** 发起调用的派发 tool 名（agent-<name>） */
   name: string;
   /** 该子代理循环的递归深度（根循环 = 1,首次嵌套的子代理 = 2,与 maxAgentDepth 口径一致） */
   depth: number;

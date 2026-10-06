@@ -29,6 +29,13 @@ export interface WorkerEntryData {
   resourcesDir?: string;
 }
 
+/**
+ * sub-agent 派发工具名前缀（与 injection/subAgentToolName.ts 的 SUB_AGENT_TOOL_PREFIX
+ * 同步——本文件自包含不可值导入，taskWorker.test.ts 断言完整派发名锚定漂移）。
+ * 快照内的 agent 名来自文件注册表（scanAgents 构建期已校验字符集），直拼即合法。
+ */
+const SUB_AGENT_TOOL_PREFIX = 'agent-';
+
 /** worker 错误回传负载（serializeError 的产物，宿主 reviveError 重建） */
 export interface SerializedWorkerError {
   name: string;
@@ -57,7 +64,7 @@ export function buildRegistriesView(snapshot?: TaskRegistriesSnapshot) {
         if (!agent) return undefined;
         return {
           kind: 'agent' as const,
-          name: `agent.${agent.name}`,
+          name: `${SUB_AGENT_TOOL_PREFIX}${agent.name}`,
           agentName: agent.name,
           description: agent.description,
           metadata: agent,

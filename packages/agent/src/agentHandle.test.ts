@@ -239,7 +239,7 @@ describe('AgentHandle', () => {
       const tool = handle.asTool('researcher');
       expect(tool).toBeDefined();
       expect(tool?.kind).toBe('agent');
-      expect(tool?.name).toBe('agent.researcher');
+      expect(tool?.name).toBe('agent-researcher');
       expect(tool?.agentName).toBe('researcher');
       expect(tool?.description).toBe('研究 agent');
     });

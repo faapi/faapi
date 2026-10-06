@@ -602,7 +602,7 @@ describe('reactLoopStream', () => {
 
     it('executeTool 执行期间 emit 的 delta 实时透出,且在 toolResult 之前', async () => {
       const { provider } = createMockStreamProvider([
-        [{ toolCalls: [toolCall('c1', 'agent.x', {})], finishReason: 'tool_calls' }],
+        [{ toolCalls: [toolCall('c1', 'agent-x', {})], finishReason: 'tool_calls' }],
         [{ deltaContent: 'final', finishReason: 'stop' }],
       ]);
 
@@ -610,10 +610,10 @@ describe('reactLoopStream', () => {
         reactLoopStream('go', {
           provider,
           executeTool: async (_name, _args, emitter) => {
-            emitter?.onSubAgentDelta({ name: 'agent.x', depth: 2, deltaReasoning: 'think' });
+            emitter?.onSubAgentDelta({ name: 'agent-x', depth: 2, deltaReasoning: 'think' });
             await sleep(10);
-            emitter?.onSubAgentDelta({ name: 'agent.x', depth: 2, deltaContent: 'part1' });
-            emitter?.onSubAgentDelta({ name: 'agent.x', depth: 2, deltaContent: 'part2' });
+            emitter?.onSubAgentDelta({ name: 'agent-x', depth: 2, deltaContent: 'part1' });
+            emitter?.onSubAgentDelta({ name: 'agent-x', depth: 2, deltaContent: 'part2' });
             return 'tool-ok';
           },
         }),
@@ -635,15 +635,15 @@ describe('reactLoopStream', () => {
 
       const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
       expect(deltas).toEqual([
-        { name: 'agent.x', depth: 2, deltaReasoning: 'think' },
-        { name: 'agent.x', depth: 2, deltaContent: 'part1' },
-        { name: 'agent.x', depth: 2, deltaContent: 'part2' },
+        { name: 'agent-x', depth: 2, deltaReasoning: 'think' },
+        { name: 'agent-x', depth: 2, deltaContent: 'part1' },
+        { name: 'agent-x', depth: 2, deltaContent: 'part2' },
       ]);
     });
 
     it('executeTool 抛错时已 emit 的 delta 仍透出,toolResult 为错误串', async () => {
       const { provider } = createMockStreamProvider([
-        [{ toolCalls: [toolCall('c1', 'agent.x', {})], finishReason: 'tool_calls' }],
+        [{ toolCalls: [toolCall('c1', 'agent-x', {})], finishReason: 'tool_calls' }],
         [{ deltaContent: 'final', finishReason: 'stop' }],
       ]);
 
@@ -651,7 +651,7 @@ describe('reactLoopStream', () => {
         reactLoopStream('go', {
           provider,
           executeTool: async (_name, _args, emitter) => {
-            emitter?.onSubAgentDelta({ name: 'agent.x', depth: 2, deltaContent: 'before-crash' });
+            emitter?.onSubAgentDelta({ name: 'agent-x', depth: 2, deltaContent: 'before-crash' });
             await sleep(10);
             throw new Error('subagent died');
           },
@@ -659,7 +659,7 @@ describe('reactLoopStream', () => {
       );
 
       const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
-      expect(deltas).toEqual([{ name: 'agent.x', depth: 2, deltaContent: 'before-crash' }]);
+      expect(deltas).toEqual([{ name: 'agent-x', depth: 2, deltaContent: 'before-crash' }]);
       const toolResult = chunks.find((c) => c.toolResult)!;
       expect(toolResult.toolResult!.result).toMatch(/subagent died/);
     });
@@ -1062,7 +1062,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
       const subTrace = makeSubTrace('translator');
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.translator', { input: 'hi' })],
+          toolCalls: [toolCall('c1', 'agent-translator', { input: 'hi' })],
           stopReason: 'tool_calls',
           usage,
         }),
@@ -1203,7 +1203,7 @@ describe('tracing — reactLoop + reactLoopStream', () => {
       const { provider } = createMockStreamProvider([
         [
           {
-            toolCalls: [toolCall('c1', 'agent.translator', { input: 'hi' })],
+            toolCalls: [toolCall('c1', 'agent-translator', { input: 'hi' })],
             finishReason: 'tool_calls',
             usage,
           },
@@ -2028,7 +2028,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
     it('SubAgentToolResult 的 usage/turns 上卷：result.usage = 主循环 + sub，turns 同口径', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          toolCalls: [toolCall('c1', 'agent-writer', {})],
           stopReason: 'tool_calls',
           usage: mainUsage1,
         }),
@@ -2052,7 +2052,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
     it('同轮并行多个 sub-agent：usage/turns 全部累加', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.a', {}), toolCall('c2', 'agent.b', {})],
+          toolCalls: [toolCall('c1', 'agent-a', {}), toolCall('c2', 'agent-b', {})],
           stopReason: 'tool_calls',
           usage: mainUsage1,
         }),
@@ -2062,7 +2062,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
       const result = await reactLoop('hi', {
         provider,
         executeTool: async (name) =>
-          name === 'agent.a'
+          name === 'agent-a'
             ? subResult({ result: 'a', usage: subUsage, turns: 2 })
             : subResult({ result: 'b', usage: subUsage2, turns: 3 }),
       });
@@ -2076,7 +2076,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
     it('usage/turns 缺省的 SubAgentToolResult：跳过累加，不影响主循环口径', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          toolCalls: [toolCall('c1', 'agent-writer', {})],
           stopReason: 'tool_calls',
           usage: mainUsage1,
         }),
@@ -2095,7 +2095,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
     it('子循环轮数不挤占 maxTurns：循环控制保持主循环口径', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          toolCalls: [toolCall('c1', 'agent-writer', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'final', stopReason: 'stop' }),
@@ -2115,7 +2115,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
     it('tracing 开启：SubAgentToolResult 带 trace → subagent_call 事件；trace.turns/usage 整树；事件 turn 主循环序号', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          toolCalls: [toolCall('c1', 'agent-writer', {})],
           stopReason: 'tool_calls',
           usage: mainUsage1,
         }),
@@ -2151,7 +2151,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
     it('旧 TracingToolResult 兼容：subagent_call 事件仍发出，无用量字段不影响 usage', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          toolCalls: [toolCall('c1', 'agent-writer', {})],
           stopReason: 'tool_calls',
           usage: mainUsage1,
         }),
@@ -2186,7 +2186,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
       const { provider } = createMockStreamProvider([
         [
           {
-            toolCalls: [toolCall('c1', 'agent.writer', {})],
+            toolCalls: [toolCall('c1', 'agent-writer', {})],
             finishReason: 'tool_calls',
             usage: mainUsage1,
           },
@@ -2212,7 +2212,7 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
       const { provider } = createMockStreamProvider([
         [
           {
-            toolCalls: [toolCall('c1', 'agent.writer', {})],
+            toolCalls: [toolCall('c1', 'agent-writer', {})],
             finishReason: 'tool_calls',
             usage: mainUsage1,
           },

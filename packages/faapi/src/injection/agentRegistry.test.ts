@@ -173,7 +173,7 @@ describe('agentRegistry', () => {
       const tool = asTool('researcher');
       expect(tool).toBeDefined();
       expect(tool!.kind).toBe('agent');
-      expect(tool!.name).toBe('agent.researcher');
+      expect(tool!.name).toBe('agent-researcher');
       expect(tool!.agentName).toBe('researcher');
       expect(tool!.description).toBe('研究助手');
       expect(tool!.metadata).toBe(researcher);
@@ -205,10 +205,22 @@ describe('agentRegistry', () => {
       expect(tool!.description).toBeUndefined();
     });
 
-    it('name 加 agent. 前缀避免与常规 tool 冲突', () => {
+    it('name 加 agent- 前缀且满足 OpenAI 兼容工具名字符集', () => {
       hydrateAgentRegistry([researcher]);
       const tool = asTool('researcher');
-      expect(tool!.name.startsWith('agent.')).toBe(true);
+      expect(tool!.name).toBe('agent-researcher');
+      expect(tool!.name).toMatch(/^[a-zA-Z0-9_-]+$/);
+    });
+
+    it('嵌套 agent 名（_ 为嵌套分隔符）生成的派发名同样满足字符集', () => {
+      const nested: AgentMetadata = {
+        name: 'easy-writing_wizard',
+        filePath: 'dist/agents/easy-writing/wizard/handler.js',
+      };
+      hydrateAgentRegistry([nested]);
+      const tool = asTool('easy-writing_wizard');
+      expect(tool!.name).toBe('agent-easy-writing_wizard');
+      expect(tool!.name).toMatch(/^[a-zA-Z0-9_-]+$/);
     });
   });
 
@@ -371,7 +383,7 @@ describe('agentRegistry', () => {
       const tool = asTool('researcher')!;
       const _: AgentToolDescriptor = tool;
       expect(_.kind).toBe('agent');
-      expect(_.name).toBe('agent.researcher');
+      expect(_.name).toBe('agent-researcher');
       expect(_.agentName).toBe('researcher');
       expect(_.description).toBe('研究助手');
       expect(_.metadata).toBe(researcher);

@@ -285,7 +285,7 @@ describe('multi-agent demo e2e', () => {
           toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
         }),
         llmResponse({
-          toolCalls: [toolCall('c2', 'agent.writer', { topic: 'AI' })],
+          toolCalls: [toolCall('c2', 'agent-writer', { topic: 'AI' })],
         }),
         llmResponse({
           content: '关于「AI」的草稿：这是一份由 writer agent 生成的示例报告。',
@@ -316,7 +316,7 @@ describe('multi-agent demo e2e', () => {
       const toolNames = (firstRequest.tools ?? []).map((t) => t.function.name);
       expect(toolNames).toContain('weather.getWeather');
       expect(toolNames).toContain('calculator.calc');
-      expect(toolNames).toContain('agent.writer');
+      expect(toolNames).toContain('agent-writer');
 
       // 验证第2轮 LLM 收到 weather tool 结果
       const secondRequest = completeRequests[1];
@@ -343,7 +343,7 @@ describe('multi-agent demo e2e', () => {
           toolCalls: [toolCall('c1', 'weather.getWeather', { city: '北京' })],
         }),
         llmResponse({
-          toolCalls: [toolCall('c2', 'agent.writer', { topic: 'AI' })],
+          toolCalls: [toolCall('c2', 'agent-writer', { topic: 'AI' })],
         }),
         llmResponse({
           content: '关于「AI」的草稿：这是一份由 writer agent 生成的示例报告。',

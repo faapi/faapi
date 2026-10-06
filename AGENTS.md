@@ -451,7 +451,8 @@ export default {
                                                  //   开启时 agent.run()/stream() 返回 result.trace / chunk.traceEvent,
                                                  //   详见 @faapi/agent 的 trace.md
     // 鉴权钩子（authHooks，详见 @faapi/agent 的 authHooks.md）：
-    //   beforeToolCall——所有 tool + sub-agent 执行前的守卫（agent. 前缀为 sub-agent）。
+    //   beforeToolCall——所有 tool + sub-agent 执行前的守卫（agent- 前缀为 sub-agent，
+    //   派发工具名经主包 subAgentToolName 生成，前缀常量 SUB_AGENT_TOOL_PREFIX）。
     //   void 放行 / { error } 拒绝（回传 LLM）/ { args } 改写后放行（强制注入可信值）
     //   afterToolCall——成功执行后审计；filterTools——LLM 可见 tools 清单过滤。
     //   ctx（含中间件塞入的 user/workspace）全链路传递到钩子与 tool handler (args, ctx)
@@ -460,8 +461,10 @@ export default {
       if ('workspaceId' in args) args.workspaceId = ctx.workspace.id;
     },
     filterTools(tools, ctx) {
-      // tools 为 OpenAI 规范形（type: 'function' + function.name），6.0.0 起
-      return tools.filter((t) => t.function.name.startsWith('agent.') || isAllowed(ctx?.workspace, t.function.name));
+      // tools 为 OpenAI 规范形（type: 'function' + function.name），6.0.0 起；
+      // sub-agent 派发工具名为 agent-<agentName>（旧版 agent. 点号前缀已废弃——
+      // 点号违反 OpenAI 兼容协议的工具名字符集，强校验上游整单 400）
+      return tools.filter((t) => t.function.name.startsWith('agent-') || isAllowed(ctx?.workspace, t.function.name));
     },
   },
 

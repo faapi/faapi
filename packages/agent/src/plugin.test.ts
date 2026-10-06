@@ -149,7 +149,7 @@ describe('@faapi/agent plugin', () => {
       const tool = agent.asTool('researcher');
       expect(tool).toBeDefined();
       expect(tool?.agentName).toBe('researcher');
-      expect(tool?.name).toBe('agent.researcher');
+      expect(tool?.name).toBe('agent-researcher');
     });
 
     it('run 不传 options.agent 时抛 AgentError（无默认 agent）', async () => {

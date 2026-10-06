@@ -67,6 +67,8 @@ JSDoc 中 `@agent <name>` 标签的值，覆盖目录推导的 `name`：
 
 与 `@tool` 覆盖名([extractToolMetadata](./extractToolMetadata.md))同构——去花括号、缺省回退。
 
+**覆盖名字符集校验**：覆盖值必须整体匹配 `^[a-zA-Z0-9_-]+$`(LLM 工具名字符集——覆盖名会进入派发工具名 `agent-<name>`,见 [subAgentToolName](../injection/subAgentToolName.md);与目录推导名不同,覆盖名无嵌套语义,`_` 可用)。违例在 AST 提取阶段抛错,不静默净化。
+
 ### config 块字段
 
 从 config 导出的对象字面量提取(无论 `scanAgents` 是否检测到 config 导出,AST 阶段都会查找)。config 块有两种导出形式：

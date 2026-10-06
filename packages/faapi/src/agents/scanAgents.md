@@ -43,18 +43,26 @@ src/
 
 ### agent 名生成规则
 
-agent 名 = `agents/` 之后、`handler.ts` 之前的完整子路径，`/` 规范化为 `.`：
+agent 名 = `agents/` 之后、`handler.ts` 之前的完整子路径，`/` 规范化为 `_`：
 
 | 文件路径 | agent 名 |
 |---------|----------|
 | `src/agents/researcher/handler.ts` | `researcher` |
 | `src/agents/coder/handler.ts` | `coder` |
-| `src/agents/easy-writing/wizard/handler.ts` | `easy-writing.wizard` |
-| `src/agents/a/b/c/handler.ts` | `a.b.c` |
+| `src/agents/easy-writing/wizard/handler.ts` | `easy-writing_wizard` |
+| `src/agents/a/b/c/handler.ts` | `a_b_c` |
+| `src/agents/easy-writing.wizard/handler.ts` | ❌ 段 `easy-writing.wizard` 含点，扫描报错 |
 
-规范化为 `.` 而非保留 `/`，与运行时命名约定一致：`asTool` 生成的工具名本身是 `agent.<agentName>`（见 [registries](../injection/registries.ts)），agent 调用入口 `agent.run(input, { agent })` 与 sub-agent 的 `agents` 列表均按名查表，点号名可读性更好且与既有平铺点号目录（`easy-writing.wizard/`）的调用名完全兼容。
+**目录段字符集校验**（构建期强制）：每个目录段必须匹配 `^[a-zA-Z0-9-]+$`——即 LLM 工具名允许字符集（`[a-zA-Z0-9_-]`）再排除 `_`。`_` 被 `/` 规范化独占为嵌套分隔符（段内出现 `_` 会让「嵌套」与「段内下划线」不可区分），`.` 与其他字符则会让 agent 名进入派发工具名（`agent-<agentName>`，见 [subAgentToolName](../injection/subAgentToolName.md)）后违反 OpenAI 兼容协议 `^[a-zA-Z0-9_-]+$`，被强校验上游（DeepSeek / OpenAI 等）整单 400。违例段在扫描时显式抛错（含路径与改名指引），不做静默净化：
 
-agent 名可被 JSDoc `@agent` 覆盖（由 [extractAgentMetadata](../ast/extractAgentMetadata.md) 在 AST 阶段处理，Phase 1.8）。
+```
+Invalid agent directory segment "easy-writing.wizard" in "src/agents/easy-writing.wizard/handler.ts":
+agent directory names allow a-z A-Z 0-9 '-' only ('_' is reserved as the nesting separator) — rename the directory
+```
+
+> 迁移提示：旧版 `/` 规范化为 `.` 且允许段内任意字符（含平铺点号目录 `easy-writing.wizard/`）。新版下嵌套调用名 `easy-writing.wizard` 改为 `easy-writing_wizard`（`agents` 声明、`agent.run({ agent })`、authHooks 前缀判断同步改），平铺点号目录需改名为连字符（`easy-writing-wizard/`）。
+
+agent 名可被 JSDoc `@agent` 覆盖（由 [extractAgentMetadata](../ast/extractAgentMetadata.md) 在 AST 阶段处理，Phase 1.8）——覆盖值须整体匹配 `^[a-zA-Z0-9_-]+$`（无嵌套语义，`_` 可用），违例在 AST 阶段抛错。
 
 ## 导出检测（正则）
 

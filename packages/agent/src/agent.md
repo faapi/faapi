@@ -8,8 +8,8 @@
 
 - **组装 tool 列表**——从 faapi 核心的 `agentRegistry.resolveAgentTools` + `resolveSubAgents` 合并出 `LLMToolDefinition[]`（OpenAI chat completions 规范形）,每个 tool 的 `function.parameters` 为 JSON Schema
 - **执行 tool**——`reactLoop` 调 `executeTool(name, args, enableTracing)` 时,Agent 路由：
-  - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
-  - `agent.` 前缀 → 递归构造 sub-agent 调用（含 `maxAgentDepth` 防护 + 传递 `enableTracing`）
+  - 常规 tool（声明集合精确命中）→ `loadToolModule` 加载 handler + 可选 input 校验 → 调用
+  - sub-agent 派发名（`agent-<name>`,构建期建立的「派发名 → agent 名」映射命中）→ 递归构造 sub-agent 调用（含 `maxAgentDepth` 防护 + 传递 `enableTracing`）——**不按名字前缀猜测路由**,真工具与派发名互不误伤
 - **递归防护**——`maxAgentDepth` 限制 agent 调用 agent 的深度,防止无限递归
 - **tracing 接线**——`run` 返回后填充 `result.trace.agentName`（reactLoop 不知 agent 名）；sub-agent 调用时传递 `enableTracing` 并把 sub-trace 附在 [SubAgentToolResult](./reactLoop.md) 上,让 reactLoop 发出 `subagent_call` 事件
 - **usage / turns 冒泡**——sub-agent 走默认 reactLoop 时,把子循环整树的 `usage` / `turns` 包装进 `SubAgentToolResult` 返回,reactLoop 累加进父 run 台账（详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）
@@ -19,7 +19,7 @@ Agent 类把这些「胶水」逻辑集中在一处,reactLoop 保持纯函数。
 ## 使用场景
 
 - **Phase 3.5 集成**：faapi 核心 agent 注入器构造 `Agent` 实例（注入真实注册表/加载器访问器），包装为 `AgentHandle`（含可调用 `run` / `stream`）注入到 handler 的 `agent` 参数
-- **sub-agent 递归**：reactLoop 执行 `agent.<name>` tool 时,Agent 构造子 Agent（depth+1）并调其 `run`
+- **sub-agent 递归**：reactLoop 执行 `agent-<name>` 派发 tool 时,Agent 构造子 Agent（depth+1）并调其 `run`
 - **agent-as-tool**：通过 `asTool(name)` 把指定 agent 包装为 `AgentToolDescriptor`,加入 LLM 可见 tool 列表
 
 ## 设计
@@ -67,7 +67,7 @@ class Agent {
 
 - `run(input?, options?)` —— 组装 `ReactLoopConfig`（应用 `options` 覆盖）→ 调 `reactLoop(input, config)` → 填充 `result.trace.agentName = options.agent`（reactLoop 不知 agent 名）
 - `stream(input?, options?)` —— 组装 config（应用 `options` 覆盖）→ 调 `reactLoopStream(input, config)`（流式 chunk 含 `traceEvent`,不含顶层 `AgentTrace`,无需事后填 agentName）
-- `asTool(name)` —— 把指定 agent 包装为 `AgentToolDescriptor`（`kind: 'agent'` / `name: 'agent.<name>'` / `metadata`）;未注册返回 `undefined`
+- `asTool(name)` —— 把指定 agent 包装为 `AgentToolDescriptor`（`kind: 'agent'` / `name: 'agent-<name>'`,经 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 生成 / `metadata`）;未注册返回 `undefined`
 
 `input` 可选（续跑场景不传新输入）：`input` 与 `options.messages` 都为空时抛 `AgentError`；
 `options.messages` 提供时以历史为基础 + system 自动补齐 + 非空 `input` 追加为 user 消息,
@@ -124,12 +124,23 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
   （带 agent 名与文件路径），不静默降级为空提示词
 - 路径基准为产物 resources 目录（读取经主包免传参 `readResource`，详见 [copyResources](../../faapi/src/cli/copyResources.md)）
 
+### sub-agent 派发工具命名（subAgentToolName）
+
+sub-agent 包装为 tool 发给 LLM 时,`function.name` 受 OpenAI 兼容协议硬约束 `^[a-zA-Z0-9_-]+$`（DeepSeek / OpenAI 等强校验上游对非法字符整单 400）。命名规则由主包 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 统一：
+
+- **派发名 = `agent-<agentName>`**——前缀 `agent-`（旧版 `agent.` 点号前缀违反协议,已废弃）
+- agent 名本身须合法：文件型 agent 由 [scanAgents](../../faapi/src/agents/scanAgents.md) 目录段字符集校验保证（段内 `[a-zA-Z0-9-]`,`_` 为嵌套分隔符,如 `easy-writing_wizard`）;`@agent` 覆盖名由 AST 阶段校验
+- **执行路由不按前缀猜测**——`buildLoopConfig` 时建立「派发名 → agent 名」映射（`agentToolNames`）与常规 tool 声明集合（`declaredTools`）两个结构,`executeTool` 按声明来源路由：真工具 `agent-foo`（即使注册表存在、甚至声明了）与 sub-agent `foo` 的派发名 `agent-foo` 不会互相误伤
+- **构建期冲突显式抛 `AgentError`**：某 sub-agent 的派发名与该 agent 声明的常规 tool 名相同（如声明了 tool `agent-writer` 又声明 sub-agent `writer`）→ 抛错要求改名——静默遮蔽会让其中一方不可达
+
+`authHooks` 的 `beforeToolCall` / `afterToolCall` 收到的 sub-agent 名即派发工具名（`agent-<name>`）,业务方用主包导出的 `SUB_AGENT_TOOL_PREFIX` 判别前缀,不硬编码字符串。
+
 ### `buildToolDefinitions()` —— tool 列表组装
 
 合并两个来源（按 `name` 去重,先入者保留）：
 
 1. **agent.tools 引用** —— `resolveAgentTools(agentName)` 返回 agent 显式声明的 `tools` 引用
-2. **sub-agent** —— `resolveSubAgents(agentName)` 每个包装为 `agent.<name>`,入参约定为显式单字段 schema：
+2. **sub-agent** —— `resolveSubAgents(agentName)` 每个经 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 包装为 `agent-<name>`,入参约定为显式单字段 schema：
 
 ```json
 {
@@ -161,12 +172,13 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
 ### `executeTool(name, args, enableTracing)` —— tool 执行路由
 
 ```ts
-if (name.startsWith('agent.')) {
-  return executeSubAgent(name.slice(6), args, enableTracing);  // sub-agent 递归（含 tracing）
+// 按声明来源路由(不按名字前缀猜测)——agentToolNames: 派发名 → sub agent 名
+if (agentToolNames.has(name)) {
+  return executeSubAgent(agentToolNames.get(name)!, args, enableTracing);  // sub-agent 递归(含 tracing)
 }
 const tool = getTool(name);
 if (!tool) throw new Error(`Tool "${name}" not found`);
-// 可选 input 校验（复用 buildToolDefinitions 的 schema 缓存）
+// 可选 input 校验(复用 buildToolDefinitions 的 schema 缓存)
 const schemaRes = await getToolSchema(tool);
 let callArgs = args;
 if (schemaRes) {
@@ -178,7 +190,7 @@ const mod = await loadToolModule(tool.filePath, tool.functionName);
 return await mod.handler(callArgs);
 ```
 
-- **执行白名单（安全边界）**：执行前校验 `name` 是否在当前 agent 的声明集合内（`resolveAgentTools` 的 tool 名 + `resolveSubAgents` 的 `agent.<name>`）。`tools`/`agents` 声明不只是 LLM 可见性过滤——LLM 幻觉或被提示注入时可能请求未声明的任意已注册 tool（如管理类 tool）,未声明一律拒绝,返回 `{ error: 'Tool "x" is not declared by agent "y"' }` 回传 LLM。sub-agent 递归时每个 depth 层按自己的声明集合校验
+- **执行白名单（安全边界）**：`name` 必须落在当前 agent 的声明集合内——常规 tool 集合（`resolveAgentTools` 的 tool 名）或 sub-agent 派发名集合（`resolveSubAgents` 经 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 生成的 `agent-<name>`,映射到真实 agent 名）,两者皆未命中一律拒绝,返回 `{ error: 'Tool "x" is not declared by agent "y"' }` 回传 LLM。`tools`/`agents` 声明不只是 LLM 可见性过滤——LLM 幻觉或被提示注入时可能请求未声明的任意已注册 tool（如管理类 tool）,执行前按声明集合强制校验。sub-agent 递归时每个 depth 层按自己的声明集合校验
 - **常规 tool 校验失败**：不抛错,返回 `{ error }` 对象——reactLoop 把它 stringify 后作为 tool 结果回传 LLM,LLM 可据此修正参数重试（与 [reactLoop](./reactLoop.md) 的「tool 错误回传 LLM」语义一致）
 - **tool 未找到 / 加载失败**：抛错,被 reactLoop catch 后同样回传 LLM
 - **`enableTracing` 参数**：由 [buildLoopConfig](#config-组装流程) 闭包捕获传入,用于 sub-agent 调用时决定是否包装 [TracingToolResult](./trace.md) 携带 sub-trace。常规 tool 不需要 tracing 包装,直接返回结果
@@ -288,6 +300,8 @@ export async function POST(agent: AgentHandle, ctx, body: { input: string }) {
 | --- | --- | --- |
 | agent 未注册 | `AgentError` | `run`/`stream` 抛错（调用方负责捕获） |
 | sub-agent 递归超限 | `AgentRecursionError` | 抛错,被父 reactLoop catch 后回传 LLM |
+| 派发名与声明 tool 名冲突 | `AgentError` | `run`/`stream` 构建期抛错——改名 tool 或 sub-agent（见「sub-agent 派发工具命名」） |
+| agent 名非法（派发名违反工具名字符集） | `Error` | [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 抛错（程序化 hydrate 的 agent 名不经构建期扫描,此处是最后闸门） |
 | tool 未找到 / 加载失败 | `Error` | 抛错,被 reactLoop catch 后回传 LLM |
 | tool input 校验失败 | 返回 `{ error }` | 不抛错,作为 tool 结果回传 LLM 重试 |
 | LLM provider 抛错 | 透传 | reactLoop 不 catch,立即传播 |
@@ -300,7 +314,7 @@ asTool(name: string): AgentToolDescriptor | undefined {
   if (!meta) return undefined;
   return {
     kind: 'agent',
-    name: `agent.${meta.name}`,
+    name: subAgentToolName(meta.name),  // 'agent-<name>',见 subAgentToolName.md
     agentName: meta.name,
     description: meta.description,
     metadata: meta,

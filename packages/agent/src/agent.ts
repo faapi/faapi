@@ -1,4 +1,4 @@
-import { readResource } from '@faapi/faapi';
+import { readResource, subAgentToolName } from '@faapi/faapi';
 import type {
   AgentCore,
   AgentMetadata,
@@ -28,8 +28,9 @@ import type { AgentTraceEvent } from './trace';
  * 把 [reactLoop](./reactLoop.md) 与 faapi 核心的 agent/tool 注册表粘合起来：
  * - **组装 tool 列表**——合并 `resolveAgentTools`（agent 显式声明的 `tools`）+ sub-agent
  * - **执行 tool**——`reactLoop` 调 `executeTool(name, args)` 时，Agent 路由：
- *   - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
- *   - `agent.` 前缀 → 递归构造 sub-agent 调用（含 `maxAgentDepth` 防护）
+ *   - 常规 tool（声明集合精确命中）→ `loadToolModule` 加载 handler + 可选 input 校验 → 调用
+ *   - sub-agent 派发名（`agent-<name>`，构建期建立的「派发名 → agent 名」映射命中）
+ *     → 递归构造 sub-agent 调用（含 `maxAgentDepth` 防护）——不按名字前缀猜测路由
  * - **递归防护**——`maxAgentDepth` 限制 agent 调用 agent 的深度
  * - **自定义 run**——agent handler 导出 `run` 函数时，sub-agent 走自定义逻辑
  *
@@ -237,12 +238,14 @@ interface AgentCallContext {
   provider: LLMProvider;
   model: string | undefined;
   /**
-   * 执行白名单（agent 声明的 tools + sub-agents,`agent.` 前缀）
-   *
-   * run 开始时构建一次——executeTool 每次执行重建 Set 在长循环多 tool 下是
-   * 重复查表 + 分配;filterTools 只影响 LLM 可见性,白名单保持全量声明语义
+   * 声明集合二元结构（run 开始时构建一次）——执行路由按声明来源判定，不按名字
+   * 前缀猜测：`declaredTools` 是 agent 声明的常规 tool 名；`agentToolNames` 是
+   * sub-agent 派发工具名（`agent-<name>`，[subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 生成）
+   * 到真实 agent 名的映射。两集合构建期保证不相交（派发名与声明 tool 名冲突即抛错）
+   * ——真工具与派发名互不误伤（filterTools 只影响 LLM 可见性，声明集合保持全量语义）
    */
   declaredTools: ReadonlySet<string>;
+  agentToolNames: ReadonlyMap<string, string>;
 }
 
 /**
@@ -446,7 +449,7 @@ export class Agent {
     if (!meta) return undefined;
     return {
       kind: 'agent',
-      name: `agent.${meta.name}`,
+      name: subAgentToolName(meta.name),
       agentName: meta.name,
       description: meta.description,
       metadata: meta,
@@ -496,20 +499,35 @@ export class Agent {
    * `AgentError`,不发起 LLM 请求。
    */
   /**
-   * 构建执行白名单：agent 声明的 tools + sub-agents（`agent.` 前缀）
+   * 构建声明集合：agent 声明的常规 tool 名 + sub-agent 派发名映射
    *
    * 每次 run 构建一次存入 callCtx（executeTool 复用）——reload 场景注册表换代后
-   * 新 run 重新构建，声明变化自然生效
+   * 新 run 重新构建，声明变化自然生效。派发名经 subAgentToolName 生成（agent 名
+   * 非法在此抛错）；派发名与声明 tool 名冲突显式抛 AgentError——静默遮蔽会让
+   * 其中一方不可达
+   *
+   * @throws {AgentError} 派发名与声明的常规 tool 名相同（改名 tool 或 sub-agent）
    */
-  private buildDeclaredTools(agentName: string): ReadonlySet<string> {
+  private buildDeclaredTools(agentName: string): {
+    declaredTools: ReadonlySet<string>;
+    agentToolNames: ReadonlyMap<string, string>;
+  } {
     const declared = new Set<string>();
     for (const tool of this.deps.resolveAgentTools(agentName)) {
       declared.add(tool.name);
     }
+    const agentToolNames = new Map<string, string>();
     for (const sub of this.deps.resolveSubAgents(agentName)) {
-      declared.add(`agent.${sub.name}`);
+      const toolName = subAgentToolName(sub.name);
+      if (declared.has(toolName)) {
+        throw new AgentError(
+          `Sub-agent dispatch tool name "${toolName}" collides with declared tool "${toolName}" in agent "${agentName}" — ` +
+            'rename the tool or the sub-agent (one of them would be silently unreachable)',
+        );
+      }
+      agentToolNames.set(toolName, sub.name);
     }
-    return declared;
+    return { declaredTools: declared, agentToolNames };
   }
 
   private async buildLoopConfig(
@@ -538,6 +556,8 @@ export class Agent {
       throw new AgentError(`Agent "${agentName}" is not registered`);
     }
 
+    // 声明集合先于 tool 列表构建——派发名冲突 / agent 名非法在发起 LLM 请求前显式失败
+    const { declaredTools, agentToolNames } = this.buildDeclaredTools(agentName);
     const tools = await this.buildToolDefinitions(agentName);
 
     // 解析 provider + model：options.provider（外部 provider）优先级最高,存在时跳过
@@ -551,14 +571,15 @@ export class Agent {
     // enableTracing 优先级:options > deps.config > 默认 false（opt-in,零开销）
     const enableTracing = options?.enableTracing ?? this.deps.config?.enableTracing ?? false;
 
-    // 本次调用的解析结果——executeTool / executeSubAgent 复用（白名单校验用
-    // declaredTools,sub-agent 递归继承 provider/model）
+    // 本次调用的解析结果——executeTool / executeSubAgent 复用（路由按声明来源判定,
+    // sub-agent 递归继承 provider/model）
     const callCtx: AgentCallContext = {
       agentName,
       enableTracing,
       provider,
       model,
-      declaredTools: this.buildDeclaredTools(agentName),
+      declaredTools,
+      agentToolNames,
     };
 
     // systemPromptFile：每次 run 读文件内容作为 systemPrompt（不走缓存——dev 改
@@ -722,7 +743,7 @@ export class Agent {
    *
    * 合并两个来源（按 `function.name` 去重，先入者保留）：
    * 1. **resolveAgentTools** —— agent 显式声明的 `tools` 引用
-   * 2. **sub-agent** —— `resolveSubAgents` 每个包装为 `agent.<name>`
+   * 2. **sub-agent** —— `resolveSubAgents` 每个经 subAgentToolName 包装为 `agent-<name>`
    *
    * 每个常规 tool 的 `function.parameters`：
    * - `resolveToolSchema` 提供 → 用其 `jsonSchema`
@@ -749,9 +770,10 @@ export class Agent {
       });
     }
 
-    // 2. sub-agent（包装为 agent.<name>）
+    // 2. sub-agent（经 subAgentToolName 包装为 agent-<name>；与声明 tool 名的冲突
+    // 已在 buildDeclaredTools 构建期抛错，此处重名仅剩重复声明折叠）
     for (const subAgent of this.deps.resolveSubAgents(agentName)) {
-      const name = `agent.${subAgent.name}`;
+      const name = subAgentToolName(subAgent.name);
       if (definitions.has(name)) continue;
       definitions.set(name, {
         type: 'function',
@@ -781,11 +803,13 @@ export class Agent {
   /**
    * tool 执行路由（由 reactLoop 调用）
    *
-   * - `agent.` 前缀 → {@link executeSubAgent} 递归（含 usage/turns 上卷 + tracing 包装）
-   * - 常规 tool → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
+   * 按声明来源路由（不按名字前缀猜测）：
+   * - `agentToolNames` 命中 → {@link executeSubAgent} 递归（含 usage/turns 上卷 + tracing 包装）
+   * - `declaredTools` 命中 → `loadToolModule` 加载 handler + 可选 input 校验 → 调用
+   * - 两者皆未命中 → 拒绝（错误回传 LLM）
    *
    * `callCtx` 由 [buildLoopConfig](#buildLoopConfig) 闭包捕获传入——本次调用的有效
-   * agent 名（白名单校验）、enableTracing（sub-agent tracing 包装）与解析出的
+   * agent 名（声明集合）、enableTracing（sub-agent tracing 包装）与解析出的
    * provider/model（sub-agent 递归继承）。常规 tool 不需要 tracing 包装,直接返回结果。
    *
    * **常规 tool 校验失败**：不抛错，返回 `{ error }` 对象——reactLoop stringify 后
@@ -799,7 +823,7 @@ export class Agent {
     callCtx: AgentCallContext,
     deltaEmitter?: SubAgentDeltaEmitter,
   ): Promise<unknown | SubAgentToolResult> {
-    // 执行守卫（authHooks）：在 agent. 分流之前——一个钩子同时覆盖常规 tool
+    // 执行守卫（authHooks）：在 sub-agent 分流之前——一个钩子同时覆盖常规 tool
     // 与 sub-agent 递归。拒绝时不执行目标,守卫的 error 回传 LLM;
     // 改写时以守卫返回的 args 继续（多租户场景强制注入可信值）
     const name = rawName;
@@ -814,16 +838,20 @@ export class Agent {
     // LLM 可见性过滤——LLM 幻觉或被提示注入时可能请求未声明的任意已注册 tool
     // （如管理类 tool）,执行前按声明集合强制校验,未声明一律拒绝（错误回传 LLM,
     // 与参数校验失败语义一致）。sub-agent 递归时每个 depth 层按自己的声明集合校验。
-    if (!callCtx.declaredTools.has(name)) {
+    // 路由按声明来源判定（declaredTools 与 agentToolNames 构建期保证不相交）——
+    // 真工具 `agent-foo` 与 sub-agent `foo` 的派发名 `agent-foo` 互不误伤
+    if (!callCtx.declaredTools.has(name) && !callCtx.agentToolNames.has(name)) {
       return {
         error: `Tool "${name}" is not declared by agent "${callCtx.agentName}" (add it to the agent's tools/agents declaration)`,
       };
     }
 
-    // sub-agent 递归（携带 callCtx,使其能继承 provider/model + 决定是否附带 trace;
-    // deltaEmitter 由流式父循环下发——嵌套循环增量经此冒泡,见 reactLoop.md）
-    if (name.startsWith('agent.')) {
-      return await this.executeSubAgent(name.slice(6), args, callCtx, deltaEmitter);
+    // sub-agent 递归（映射取真实 agent 名;携带 callCtx,使其能继承 provider/model +
+    // 决定是否附带 trace;deltaEmitter 由流式父循环下发——嵌套循环增量经此冒泡,
+    // 见 reactLoop.md）
+    const subName = callCtx.agentToolNames.get(name);
+    if (subName !== undefined) {
+      return await this.executeSubAgent(subName, args, callCtx, deltaEmitter);
     }
 
     // 常规 tool
@@ -906,6 +934,9 @@ export class Agent {
       throw new AgentRecursionError(maxDepth, newDepth);
     }
 
+    // 派发工具名（subagentDelta 冒泡标识 + afterToolCall 审计名,即 LLM 看到的名字）
+    const toolName = subAgentToolName(subName);
+
     // 构造子 agent（复用父 deps——providers/llms/访问器共享,无 per-agent 名绑定）
     const subAgent = new Agent(this.deps, newDepth);
 
@@ -926,7 +957,6 @@ export class Agent {
     // run() 等价的结果,usage/turns 上卷与 trace 结构不回归。详见 reactLoop.md
     // 「子代理 delta 冒泡」章节
     if (deltaEmitter) {
-      const toolName = `agent.${subName}`;
       const startedAt = performance.now();
       const traceEvents: AgentTraceEvent[] | undefined = callCtx.enableTracing ? [] : undefined;
       let done: NonNullable<ReactLoopStreamChunk['done']> | undefined;
@@ -981,7 +1011,7 @@ export class Agent {
     // 统一包装 SubAgentToolResult（无论 tracing 开关）:usage/turns 是子循环整树口径,
     // reactLoop 累加进父循环（父 run 台账 = 全部 llm_call 之和,详见 reactLoop.md）;
     // tracing 开启时附 trace,reactLoop 据此发出 subagent_call 事件
-    this.deps.config?.afterToolCall?.(`agent.${subName}`, args, result.content, this.deps.ctx);
+    this.deps.config?.afterToolCall?.(toolName, args, result.content, this.deps.ctx);
     const wrapped: SubAgentToolResult = {
       __subAgent: true,
       result: result.content,

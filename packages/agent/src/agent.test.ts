@@ -527,7 +527,7 @@ describe('Agent', () => {
     it('未声明的 sub-agent 被白名单拒绝', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.hallucinated', {})],
+          toolCalls: [toolCall('c1', 'agent-hallucinated', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'refused', stopReason: 'stop' }),
@@ -833,7 +833,7 @@ describe('Agent', () => {
       const { provider, streamCalls } = createMockStreamProvider([
         [
           {
-            toolCalls: [toolCall('c1', 'agent.writer', { input: '查' })],
+            toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
             finishReason: 'tool_calls',
           },
         ],
@@ -866,8 +866,8 @@ describe('Agent', () => {
 
       const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
       expect(deltas).toEqual([
-        { name: 'agent.writer', depth: 2, deltaReasoning: '子思考' },
-        { name: 'agent.writer', depth: 2, deltaContent: '子内容' },
+        { name: 'agent-writer', depth: 2, deltaReasoning: '子思考' },
+        { name: 'agent-writer', depth: 2, deltaContent: '子内容' },
       ]);
 
       // done/toolResult 不回归;子循环 usage 上卷（mock 子流无 usage → done.usage undefined）
@@ -880,9 +880,9 @@ describe('Agent', () => {
     it('两层嵌套 depth 递增（子 = 2,孙 = 3）,冒泡顺序即实际执行顺序', async () => {
       const { provider } = createMockStreamProvider([
         // 父轮1:调 agent.a
-        [{ toolCalls: [toolCall('c1', 'agent.a', { input: 'x' })], finishReason: 'tool_calls' }],
+        [{ toolCalls: [toolCall('c1', 'agent-a', { input: 'x' })], finishReason: 'tool_calls' }],
         // a 轮1:调 agent.b
-        [{ toolCalls: [toolCall('d1', 'agent.b', { input: 'y' })], finishReason: 'tool_calls' }],
+        [{ toolCalls: [toolCall('d1', 'agent-b', { input: 'y' })], finishReason: 'tool_calls' }],
         // b 轮:直接回答
         [{ deltaContent: '孙产出', finishReason: 'stop' }],
         // a 轮2:回答
@@ -909,8 +909,8 @@ describe('Agent', () => {
       const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
       // b 先产出（a 在等 b 的 toolResult）,然后 a 产出
       expect(deltas.map((d) => [d.name, d.depth, d.deltaContent])).toEqual([
-        ['agent.b', 3, '孙产出'],
-        ['agent.a', 2, '子产出'],
+        ['agent-b', 3, '孙产出'],
+        ['agent-a', 2, '子产出'],
       ]);
       expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
     });
@@ -918,7 +918,7 @@ describe('Agent', () => {
     it('非流式 run() 不冒泡（结果一次性返回,行为不变）', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', { input: '查' })],
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: '子结果', stopReason: 'stop' }),
@@ -947,7 +947,7 @@ describe('Agent', () => {
       const { provider: parentProvider, completeCalls } = createMockProvider([
         llmResponse({
           // 宽松模型可能不按 schema 传参（多字段/任意 JSON）——stringify 兜底不丢信息
-          toolCalls: [toolCall('c1', 'agent.writer', { topic: 'AI' })],
+          toolCalls: [toolCall('c1', 'agent-writer', { topic: 'AI' })],
           stopReason: 'tool_calls',
         }),
         // 子 agent.run 调 provider.complete 第二次,返回 sub-answer
@@ -986,7 +986,7 @@ describe('Agent', () => {
       const { provider: parentProvider, completeCalls } = createMockProvider([
         llmResponse({
           // 严格 schema 模型按显式入参约定传 { input: '交接单' }
-          toolCalls: [toolCall('c1', 'agent.writer', { input: '写一篇关于 AI 的短文' })],
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '写一篇关于 AI 的短文' })],
           stopReason: 'tool_calls',
         }),
         // 子 agent.run 的 user 消息
@@ -1020,7 +1020,7 @@ describe('Agent', () => {
       // depth=3, maxAgentDepth=3 → 子 agent depth=4 > 3 抛错
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', {})],
+          toolCalls: [toolCall('c1', 'agent-writer', {})],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'recovered from recursion error', stopReason: 'stop' }),
@@ -1048,7 +1048,7 @@ describe('Agent', () => {
     it('depth 未超限时正常递归', async () => {
       const { provider } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.writer', { q: 'x' })],
+          toolCalls: [toolCall('c1', 'agent-writer', { q: 'x' })],
           stopReason: 'tool_calls',
         }),
         // 子 agent.run 调用
@@ -1096,7 +1096,7 @@ describe('Agent', () => {
       const request = completeCalls.mock.calls[0][0];
       const toolNames = (request.tools as LLMToolDefinition[]).map((t) => t.function.name);
       expect(toolNames).toContain('shared.ping');
-      expect(toolNames).toContain('agent.writer');
+      expect(toolNames).toContain('agent-writer');
       // 无 defaultTools,只有 resolveAgentTools + sub-agent
       expect(toolNames).toHaveLength(2);
     });
@@ -1156,7 +1156,7 @@ describe('Agent', () => {
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
-      const writerDef = tools.find((t) => t.function.name === 'agent.writer')!;
+      const writerDef = tools.find((t) => t.function.name === 'agent-writer')!;
       expect(writerDef.function.description).toBe('写作');
       expect(writerDef.function.parameters).toEqual({
         type: 'object',
@@ -1188,7 +1188,7 @@ describe('Agent', () => {
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
-      const writerDef = tools.find((t) => t.function.name === 'agent.writer')!;
+      const writerDef = tools.find((t) => t.function.name === 'agent-writer')!;
       expect(writerDef.function.parameters).toEqual({
         type: 'object',
         properties: {
@@ -1203,7 +1203,7 @@ describe('Agent', () => {
   });
 
   describe('asTool()', () => {
-    it('返回 AgentToolDescriptor,含 agent. 前缀名', () => {
+    it('返回 AgentToolDescriptor,含 agent- 前缀名', () => {
       const { provider } = createMockProvider([]);
       const agent = new Agent(
         createDeps({
@@ -1215,7 +1215,7 @@ describe('Agent', () => {
       const desc = agent.asTool('researcher');
       expect(desc).toBeDefined();
       expect(desc!.kind).toBe('agent');
-      expect(desc!.name).toBe('agent.researcher');
+      expect(desc!.name).toBe('agent-researcher');
       expect(desc!.agentName).toBe('researcher');
       expect(desc!.description).toBe('研究 agent');
       expect(desc!.metadata.name).toBe('researcher');
@@ -1883,7 +1883,7 @@ describe('Agent', () => {
               message: {
                 role: 'assistant',
                 content: '',
-                tool_calls: [toolCall('c1', 'agent.writer', { task: 'write' })],
+                tool_calls: [toolCall('c1', 'agent-writer', { task: 'write' })],
               },
               stopReason: 'tool_calls' as LLMStopReason,
             };
@@ -1943,7 +1943,7 @@ describe('Agent', () => {
               message: {
                 role: 'assistant',
                 content: '',
-                tool_calls: [toolCall('c1', 'agent.writer', { task: 'write' })],
+                tool_calls: [toolCall('c1', 'agent-writer', { task: 'write' })],
               },
               stopReason: 'tool_calls' as LLMStopReason,
             };
@@ -2172,10 +2172,10 @@ describe('Agent', () => {
       expect(handler).toHaveBeenCalledWith({ city: '北京', workspaceId: 'ws-1' }, ctx);
     });
 
-    it('beforeToolCall 对 sub-agent 递归（agent.x）同样拦截,拒绝时子循环不执行', async () => {
+    it('beforeToolCall 对 sub-agent 递归（agent-x）同样拦截,拒绝时子循环不执行', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent.analyst', { q: 'x' })],
+          toolCalls: [toolCall('c1', 'agent-analyst', { q: 'x' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
@@ -2188,7 +2188,7 @@ describe('Agent', () => {
           subAgentEntries: [agentEntry({ name: 'analyst' })],
           config: {
             beforeToolCall: (name) =>
-              name.startsWith('agent.') ? { error: 'sub-agent not allowed' } : undefined,
+              name.startsWith('agent-') ? { error: 'sub-agent not allowed' } : undefined,
           },
           ctx,
         }),
@@ -2272,7 +2272,7 @@ describe('Agent', () => {
       const request = completeCalls.mock.calls[0][0];
       const names = request.tools.map((t: { function: { name: string } }) => t.function.name);
       expect(names).toContain('weather.getWeather');
-      expect(names).toContain('agent.analyst');
+      expect(names).toContain('agent-analyst');
       expect(names).not.toContain('admin.deleteUser');
     });
 
@@ -2504,12 +2504,12 @@ describe('Agent — usage / turns 整树上卷', () => {
     // 调用序列：researcher(tool 轮) → writer(tool 轮) → reviewer(直答) → writer(直答) → researcher(直答)
     const { provider } = createMockProvider([
       llmResponse({
-        toolCalls: [toolCall('c1', 'agent.writer', { input: '写' })],
+        toolCalls: [toolCall('c1', 'agent-writer', { input: '写' })],
         stopReason: 'tool_calls',
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       }),
       llmResponse({
-        toolCalls: [toolCall('c2', 'agent.reviewer', { input: '审' })],
+        toolCalls: [toolCall('c2', 'agent-reviewer', { input: '审' })],
         stopReason: 'tool_calls',
         usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
       }),
@@ -2549,7 +2549,7 @@ describe('Agent — usage / turns 整树上卷', () => {
   it('tracing 开启：subagent_call 事件仍嵌套，父 trace.usage/turns 整树', async () => {
     const { provider } = createMockProvider([
       llmResponse({
-        toolCalls: [toolCall('c1', 'agent.writer', { input: '写' })],
+        toolCalls: [toolCall('c1', 'agent-writer', { input: '写' })],
         stopReason: 'tool_calls',
         usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       }),
@@ -2601,5 +2601,171 @@ describe('Agent — usage / turns 整树上卷', () => {
         total_tokens: 3,
       });
     }
+  });
+});
+
+// ─── sub-agent 派发工具命名与路由（agent- 前缀，见 subAgentToolName.md）───
+
+describe('sub-agent 派发工具命名与路由', () => {
+  it('派发工具名为 agent-<name>，满足 OpenAI 兼容字符集', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'ok', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(
+      createDeps({
+        provider,
+        agent: agentMeta({ model: 'gpt-4o', tools: ['getWeather'], agents: ['writer'] }),
+        tools: [toolMeta({ name: 'getWeather' })],
+        subAgents: [agentMeta({ name: 'writer' })],
+      }),
+    );
+
+    await agent.run('hi', { agent: 'researcher' });
+
+    const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
+    const names = tools.map((t) => t.function.name);
+    expect(names).toContain('agent-writer');
+    expect(names).toContain('getWeather');
+    // 派发名不再含点号——强校验上游（DeepSeek 等）对非法字符整单 400
+    for (const name of names) {
+      expect(name).toMatch(/^[a-zA-Z0-9_-]+$/);
+    }
+  });
+
+  it('LLM 调派发名 agent-writer → 路由到 sub-agent writer（声明映射，非前缀猜测）', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [toolCall('c1', 'agent-writer', { input: '写' })],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: '子产出', stopReason: 'stop' }),
+      llmResponse({ content: '父收尾', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(
+      createDeps({
+        provider,
+        agent: agentMeta({ model: 'gpt-4o', agents: ['writer'] }),
+        subAgents: [agentMeta({ name: 'writer', systemPrompt: '子系统提示词' })],
+        subAgentEntries: [agentEntry({ name: 'writer' })],
+      }),
+    );
+
+    const result = await agent.run('go', { agent: 'researcher' });
+
+    expect(result.content).toBe('父收尾');
+    // 第二次 llm_call 是子循环：system 消息为 sub-agent 的 systemPrompt——证明路由进子代理
+    const subRequest = completeCalls.mock.calls[1][0];
+    expect(subRequest.messages[0]).toEqual({ role: 'system', content: '子系统提示词' });
+  });
+
+  it('嵌套 agent 名（easy-writing_wizard）派发执行', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [toolCall('c1', 'agent-easy-writing_wizard', { input: '写' })],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: '嵌套产出', stopReason: 'stop' }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(
+      createDeps({
+        provider,
+        agent: agentMeta({ model: 'gpt-4o', agents: ['easy-writing_wizard'] }),
+        subAgents: [agentMeta({ name: 'easy-writing_wizard', systemPrompt: '嵌套子' })],
+        subAgentEntries: [agentEntry({ name: 'easy-writing_wizard' })],
+      }),
+    );
+
+    const result = await agent.run('go', { agent: 'researcher' });
+
+    expect(result.content).toBe('done');
+    const subRequest = completeCalls.mock.calls[1][0];
+    expect(subRequest.messages[0]).toEqual({ role: 'system', content: '嵌套子' });
+  });
+
+  it('派发名与声明 tool 名冲突 → 构建期抛 AgentError（静默遮蔽会让一方不可达）', async () => {
+    const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+    const agent = new Agent(
+      createDeps({
+        provider,
+        agent: agentMeta({ model: 'gpt-4o', tools: ['agent-writer'], agents: ['writer'] }),
+        tools: [toolMeta({ name: 'agent-writer' })],
+        subAgents: [agentMeta({ name: 'writer' })],
+      }),
+    );
+
+    await expect(agent.run('go', { agent: 'researcher' })).rejects.toThrow(AgentError);
+    await expect(agent.run('go', { agent: 'researcher' })).rejects.toThrow(/agent-writer/);
+  });
+
+  it('真工具与派发名同名但未声明该 tool → 派发名路由到 sub-agent（不被注册表遮蔽）', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [toolCall('c1', 'agent-writer', { input: '写' })],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: '子产出', stopReason: 'stop' }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(
+      createDeps({
+        provider,
+        agent: agentMeta({ model: 'gpt-4o', agents: ['writer'] }), // 未声明 tools
+        subAgents: [agentMeta({ name: 'writer', systemPrompt: '子系统提示词' })],
+        subAgentEntries: [agentEntry({ name: 'writer' })],
+        // 注册表里存在真工具 agent-writer，但本 agent 未声明它
+        getToolImpl: (name) =>
+          name === 'agent-writer' ? toolMeta({ name: 'agent-writer' }) : undefined,
+      }),
+    );
+
+    const result = await agent.run('go', { agent: 'researcher' });
+
+    expect(result.content).toBe('done');
+    // 第二次 llm_call 是子循环而非真工具——声明来源决定路由
+    const subRequest = completeCalls.mock.calls[1][0];
+    expect(subRequest.messages[0]).toEqual({ role: 'system', content: '子系统提示词' });
+  });
+
+  it('声明真工具 agent-foo（无同名 sub-agent）→ 精确执行真工具（前缀不误路由）', async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [toolCall('c1', 'agent-foo', { q: 'x' })],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(
+      createDeps({
+        provider,
+        agent: agentMeta({ model: 'gpt-4o', tools: ['agent-foo'] }),
+        tools: [toolMeta({ name: 'agent-foo', filePath: 'dist/tools/agent-foo.js' })],
+        loadToolModuleImpl: async () => ({ handler }) as unknown as ToolModule,
+      }),
+    );
+
+    const result = await agent.run('go', { agent: 'researcher' });
+
+    expect(result.content).toBe('done');
+    expect(handler).toHaveBeenCalledWith({ q: 'x' }, undefined);
+    // 只有两轮父循环 llm_call——没有子循环启动
+    expect(completeCalls).toHaveBeenCalledTimes(2);
+  });
+
+  it('程序化注册的 agent 名非法（含点）→ run 抛错，不发起 LLM 请求', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'ok', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent(
+      createDeps({
+        provider,
+        agent: agentMeta({ agents: ['my.agent'] }),
+        subAgents: [agentMeta({ name: 'my.agent' })],
+      }),
+    );
+
+    await expect(agent.run('go', { agent: 'researcher' })).rejects.toThrow(/my\.agent/);
+    expect(completeCalls).not.toHaveBeenCalled();
   });
 });

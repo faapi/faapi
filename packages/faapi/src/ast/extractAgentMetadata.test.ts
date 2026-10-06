@@ -121,6 +121,26 @@ describe('extractAgentMetadata', () => {
       expect(result).not.toBeNull();
       expect(result!.name).toBe('researcher');
     });
+
+    it('@agent 覆盖名含点 → 抛错（覆盖名进入派发工具名,须满足工具名字符集）', () => {
+      expect(() =>
+        extract(`/** @agent my.agent */\nexport const config = { systemPrompt: 'x' };\n`),
+      ).toThrow(/my\.agent/);
+    });
+
+    it('@agent 覆盖名含中文 → 抛错（独立用例——createProgram 按路径缓存,同用例二次写源码不生效）', () => {
+      expect(() =>
+        extract(`/** @agent 写作 */\nexport const config = { systemPrompt: 'x' };\n`),
+      ).toThrow(/写作/);
+    });
+
+    it('@agent 覆盖名允许工具名字符集内的下划线（无嵌套语义,_ 可用）', () => {
+      const result = extract(
+        `/** @agent super_researcher */\nexport const config = { systemPrompt: 'x' };\n`,
+      );
+      expect(result).not.toBeNull();
+      expect(result!.name).toBe('super_researcher');
+    });
   });
 
   describe('config 块字段提取（对象字面量）', () => {

@@ -29,7 +29,7 @@ import {
  * 由 [Agent 类](./agent.md)提供——reactLoop 不关心 tool 如何被找到和执行。
  * Agent 类的 `executeTool` 实现：
  * - 常规 tool → `loadToolModule` 加载 handler 并调用
- * - agent-as-tool（`agent.` 前缀）→ 递归调子 agent 的 reactLoop（`maxAgentDepth` 防护由 Agent 类在 `executeTool` 内实现），
+ * - agent-as-tool（`agent-` 前缀派发名）→ 递归调子 agent 的 reactLoop（`maxAgentDepth` 防护由 Agent 类在 `executeTool` 内实现），
  *   返回 [SubAgentToolResult](#subagenttoolresult)（携带子循环整树 `usage` / `turns` 供父循环上卷）
  *
  * 返回值可以是任意类型——非 string 会被 JSON.stringify 后回传 LLM。
@@ -45,7 +45,7 @@ import {
  * 子代理 = 2）。`deltaContent` / `deltaReasoning` 至少存在其一。
  */
 export interface SubAgentDelta {
-  /** 发起调用的 tool 名（agent.<name>） */
+  /** 发起调用的派发 tool 名（agent-<name>） */
   name: string;
   /** 该子代理循环的递归深度（根 = 1） */
   depth: number;
@@ -416,11 +416,12 @@ function nowMs(): number {
 /**
  * 从 sub-agent tool 名提取 agent 名
  *
- * sub-agent tool 命名约定:`agent.<agentName>`（见 [agentRegistry.asTool](../../faapi/src/injection/agentRegistry.md)）。
- * 非 `agent.` 前缀的原样返回（用于业务方自定义 sub-agent tool 命名）。
+ * sub-agent tool 命名约定:`agent-<agentName>`（见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)）。
+ * agent 名与派发名一一对应（目录段禁用 `_`、覆盖名校验过字符集）,剥前缀即精确还原;
+ * 非该前缀的原样返回（用于业务方自定义 sub-agent tool 命名）。
  */
 function extractSubAgentName(toolName: string): string {
-  const prefix = 'agent.';
+  const prefix = 'agent-';
   if (toolName.startsWith(prefix)) {
     return toolName.slice(prefix.length);
   }

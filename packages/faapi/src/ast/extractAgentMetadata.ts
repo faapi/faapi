@@ -6,6 +6,7 @@ import {
   hasExportModifier,
 } from './jsDocMetadata';
 import { SchemaExtractionError } from './resolveTypeNode';
+import { LLM_TOOL_NAME_PATTERN } from '../injection/subAgentToolName';
 
 /**
  * Agent 的 LLM 可见核心字段
@@ -185,6 +186,17 @@ export function extractAgentMetadata(
   const jsDoc = getJSDocFromNode(configFound.jsDocOwner);
   const description = extractDescription(jsDoc);
   const agentNameOverride = extractJSDocTagValue(jsDoc, 'agent');
+  // 覆盖名会进入派发工具名 agent-<name>（subAgentToolName），须整体满足 LLM 工具名
+  // 字符集——与目录推导名不同，覆盖名无嵌套语义，`_` 可用。违例在 AST 阶段显式抛错，
+  // 不静默净化（运行期 subAgentToolName 是程序化注册的兜底闸门，文件型 agent 在此拦截）
+  if (agentNameOverride !== undefined && !LLM_TOOL_NAME_PATTERN.test(agentNameOverride)) {
+    throw SchemaExtractionError.at(
+      configFound.jsDocOwner,
+      '@agent',
+      `覆盖名 "${agentNameOverride}" 含非法字符——须满足 ${LLM_TOOL_NAME_PATTERN}（覆盖名成为 LLM 工具名 "agent-<覆盖名>"，强校验上游对非法字符整单 400）`,
+      sourceFile,
+    );
+  }
 
   // config 块字段提取（extractConfigFields 保证 systemPrompt/systemPromptFile 二选一非空）
   const { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription } =

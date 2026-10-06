@@ -122,7 +122,7 @@ describe('scanAgents', () => {
     }
   });
 
-  it('默认 pattern 支持多级嵌套目录，名字规范化为点号', async () => {
+  it('默认 pattern 支持多级嵌套目录，名字规范化为下划线', async () => {
     const { dir, write, cleanup } = setupTmp();
     write('src/agents/easy-writing/wizard/handler.ts', 'export const config = {};\n');
     write('src/agents/a/b/c/deep/handler.ts', 'export const config = {};\n');
@@ -130,10 +130,10 @@ describe('scanAgents', () => {
       const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
       expect(agents).toHaveLength(2);
       const byName = new Map(agents.map((a) => [a.name, a]));
-      expect(byName.get('easy-writing.wizard')?.filePath).toBe(
+      expect(byName.get('easy-writing_wizard')?.filePath).toBe(
         'src/agents/easy-writing/wizard/handler.ts',
       );
-      expect(byName.get('a.b.c.deep')?.filePath).toBe('src/agents/a/b/c/deep/handler.ts');
+      expect(byName.get('a_b_c_deep')?.filePath).toBe('src/agents/a/b/c/deep/handler.ts');
     } finally {
       cleanup();
     }
@@ -149,8 +149,8 @@ describe('scanAgents', () => {
       expect(agents).toHaveLength(3);
       const byName = new Map(agents.map((a) => [a.name, a]));
       expect(byName.has('researcher')).toBe(true);
-      expect(byName.has('researcher.sub')).toBe(true);
-      expect(byName.has('other.deep')).toBe(true);
+      expect(byName.has('researcher_sub')).toBe(true);
+      expect(byName.has('other_deep')).toBe(true);
     } finally {
       cleanup();
     }
@@ -163,7 +163,50 @@ describe('scanAgents', () => {
     try {
       await expect(
         scanAgents(dir, ['src/agents/**/handler.ts', 'backup/agents/**/handler.ts']),
-      ).rejects.toThrow(/group\.wizard/);
+      ).rejects.toThrow(/group_wizard/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('目录段含 _ → 抛错（_ 保留为嵌套分隔符，段内禁用）', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/agents/my_agent/handler.ts', 'export const config = {};\n');
+    try {
+      await expect(scanAgents(dir, DEFAULT_AGENT_PATTERNS)).rejects.toThrow(/my_agent/);
+      await expect(scanAgents(dir, DEFAULT_AGENT_PATTERNS)).rejects.toThrow(/nesting separator/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('目录段含点（旧版平铺点号目录）→ 抛错并提示改名', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/agents/easy-writing.wizard/handler.ts', 'export const config = {};\n');
+    try {
+      await expect(scanAgents(dir, DEFAULT_AGENT_PATTERNS)).rejects.toThrow(/easy-writing\.wizard/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('目录段含中文等非工具名字符 → 抛错（派发工具名须满足 OpenAI 兼容字符集）', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/agents/写作/handler.ts', 'export const config = {};\n');
+    try {
+      await expect(scanAgents(dir, DEFAULT_AGENT_PATTERNS)).rejects.toThrow(/写作/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('目录段仅字母数字连字符 → 正常扫描', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/agents/story-reader-2/handler.ts', 'export const config = {};\n');
+    try {
+      const agents = await scanAgents(dir, DEFAULT_AGENT_PATTERNS);
+      expect(agents).toHaveLength(1);
+      expect(agents[0]!.name).toBe('story-reader-2');
     } finally {
       cleanup();
     }
