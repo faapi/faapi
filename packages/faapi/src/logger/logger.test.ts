@@ -74,13 +74,31 @@ describe('logger 默认 console sink', () => {
     expect(lines[0]).toContain('"stack":');
   });
 
-  it('fields 序列化失败（循环引用）不抛错，降级为提示文本', () => {
+  it('fields 序列化走框架统一转换：BigInt/Map/Set/Date/RegExp/NaN 输出可逆原生表示（不抛错不丢数据）', () => {
+    const log = createLogger('conv');
+    log.info('rich', {
+      big: 123n,
+      tags: new Set(['a', 'b']),
+      kv: new Map([['x', 1]]),
+      at: new Date(0),
+      re: /ab+c/gi,
+      nan: Number.NaN,
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('"big":"123"');
+    expect(lines[0]).toContain('"tags":["a","b"]');
+    expect(lines[0]).toContain('"kv":[["x",1]]');
+    expect(lines[0]).toContain('"at":0');
+    expect(lines[0]).toContain('"re":"/ab+c/gi"');
+    expect(lines[0]).toContain('"nan":"NaN"');
+  });
+
+  it('fields 序列化失败（循环引用）抛 TypeError 冒泡——不降级', () => {
     const log = createLogger('biz');
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
-    expect(() => log.info('with cyclic fields', { data: cyclic })).not.toThrow();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('unserializable fields');
+    expect(() => log.info('with cyclic fields', { data: cyclic })).toThrow(TypeError);
+    expect(lines).toHaveLength(0);
   });
 
   it('无 scope 的 logger 输出不含 [scope] 段', () => {
@@ -312,7 +330,10 @@ describe('logger dir 文件模式（egg 风格文件输出）', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-logger-'));
     lines = spyConsole();
   });
-  afterEach(() => {
+  afterEach(async () => {
+    // 先刷盘再关流、最后删目录——流异步 open 在目录被删后会 ENOENT，错误事件
+    // 落到下一用例的 console spy 里形成跨用例噪声（fileSink 流错误留痕语义）
+    await flushLogging();
     vi.restoreAllMocks();
     delete process.env.LOG_LEVEL;
     configureLogging(undefined);
@@ -354,7 +375,9 @@ describe('logger dir 文件模式（egg 风格文件输出）', () => {
     configureLogging({ dir, stdout: false });
     createLogger('app').error('file only');
     expect((await readAppLog())[0]).toMatch(/ ERROR \[app\] file only$/);
-    expect(lines).toHaveLength(0);
+    // console 静默断言排除 fileSink 流错误留痕行（前序用例临时目录删除导致的
+    // 异步 open 失败属基础设施告警通道，与本用例的业务输出通道无关）
+    expect(lines.filter((l) => !l.includes('log file stream'))).toHaveLength(0);
   });
 
   it('splitByLevel: true 时按级别分文件', async () => {

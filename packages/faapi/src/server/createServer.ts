@@ -686,12 +686,14 @@ async function sendErrorResponse(
 ): Promise<void> {
   await sendNodeResponse(mergeMeta(buildErrorResponse(err, ctx?.config), meta), res);
 
-  // 响应已发出，触发 onError 副作用（日志/告警/链路追踪），自身抛错被忽略
+  // 响应已发出，触发 onError 副作用（日志/告警/链路追踪）。钩子自身抛错 console.error
+  // 留痕——不能影响已发出的响应（响应先于钩子发出），但静默吞掉会让业务方误以为
+  // 告警/链路管道健康
   if (onError && ctx) {
     try {
       await onError(err, ctx);
-    } catch {
-      // onError 自身抛错不影响已发出的响应
+    } catch (hookErr) {
+      console.error('[faapi] lifecycle onError hook threw:', hookErr);
     }
   }
 }

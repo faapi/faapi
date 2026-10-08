@@ -210,7 +210,7 @@ describe('runTaskInWorker', () => {
     expect(err.message).toBe('plain string failure');
   });
 
-  it('错误保真：自定义属性含不可克隆值（函数）时丢弃 props、保底 name/message', async () => {
+  it('错误 props 不可克隆：任务显式失败，错误信息含原 name/message 与修复指引（不静默丢属性）', async () => {
     const modulePath = writeTaskModule(
       'bad-props',
       `export function run() {
@@ -231,9 +231,12 @@ describe('runTaskInWorker', () => {
       },
       (e: Error) => e,
     );
-    expect(err.message).toBe('db down');
-    expect(err.name).toBe('DbError');
-    expect((err as Error & { onRetry?: unknown }).onRetry).toBeUndefined();
+    expect(err.message).toContain('props are not cloneable');
+    expect(err.message).toContain('DbError');
+    expect(err.message).toContain('db down');
+    expect(err.message).toContain('plain data');
+    // stack 为 worker 侧原始抛出堆栈
+    expect(err.stack).toContain('bad-props');
   });
 
   it('进度上报：taskCtx.progress 的值经 onProgress 按序回传宿主，不影响结果', async () => {
@@ -735,7 +738,7 @@ describe('runTaskInWorker - taskCtx.log 日志桥', () => {
     expect(entries[0].fields).toEqual({ jobId: 'j1', task: 't', attempt: 99, extra: 1 });
   });
 
-  it('fields 不可克隆：丢弃 fields 保底输出 warning 标记，不中断任务执行', async () => {
+  it('fields 不可克隆：按执行错误处理（任务失败，错误信息含修复指引），不静默丢字段', async () => {
     const modulePath = writeTaskModule(
       'log-uncloneable',
       `export async function run(_payload, taskCtx) {
@@ -744,20 +747,23 @@ describe('runTaskInWorker - taskCtx.log 日志桥', () => {
       }`,
     );
     const entries: any[] = [];
-    const result = await runTaskInWorker({
+    const err: Error = await runTaskInWorker({
       taskModulePath: modulePath,
       payload: {},
       taskCtx: baseCtx,
       timeoutMs: 5000,
       log: { level: 'debug', scope: 'task:t', fields: { jobId: 'j1' } },
       onLog: (e) => entries.push(e),
-    });
-    expect(result).toBe('still-ok');
-    expect(entries).toHaveLength(1);
-    expect(entries[0].message).toBe('with fn');
-    expect(entries[0].fields).toEqual({
-      warning: 'log fields not cloneable across worker boundary, dropped',
-    });
+    }).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: Error) => e,
+    );
+    // 条目不回传（postMessage 失败即抛错），任务显式失败——与 progress 同语义
+    expect(entries).toHaveLength(0);
+    expect(err.message).toContain('log fields are not cloneable');
+    expect(err.message).toContain('plain data');
   });
 
   it('未传 log 配置：taskCtx.log 为 undefined，任务不崩溃', async () => {
@@ -778,26 +784,27 @@ describe('runTaskInWorker - taskCtx.log 日志桥', () => {
 
   // ─── taskCtx.llm 轻量补全通道（隔离路径） ───────────────────
 
-  it('传入 llms：llms 纯数据随 run 消息下发（仓库内 @faapi/agent 不可解析 → taskCtx.llm undefined，不中断执行）', async () => {
+  it('传入 llms 但 worker 内 @faapi/agent 不可解析：任务显式失败（错误含安装指引），不静默旁路', async () => {
     const modulePath = writeTaskModule(
-      'llm-absent',
-      `export function run(_payload, taskCtx) {
-        return {
-          hasLlm: taskCtx.llm !== undefined,
-          llmsRideAlong: true,
-        };
-      }`,
+      'llm-unresolvable',
+      `export function run() { return 'never-reached'; }`,
     );
-    const result = await runTaskInWorker({
+    const err: Error = await runTaskInWorker({
       taskModulePath: modulePath,
       payload: {},
       taskCtx: baseCtx,
       timeoutMs: 5000,
       llms: { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } },
-    });
-    // 仓库内主包不依赖 @faapi/agent（业务方安装后才可解析）——降级路径：
-    // warn 留痕 + taskCtx.llm undefined，任务照常执行（fallback.md 已留痕）
-    expect(result).toEqual({ hasLlm: false, llmsRideAlong: true });
+    }).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: Error) => e,
+    );
+    // 真实 worker 线程不经 vitest 解析，仓库内 @faapi/agent 不可解析——
+    // llms 已配置而环境不能交付属环境错误：任务失败 + 安装指引，不降级为 undefined
+    expect(err.message).toContain('@faapi/agent is not resolvable');
+    expect(err.message).toContain('install @faapi/agent');
   });
 
   it('未传 llms：worker 不尝试加载 @faapi/agent，taskCtx.llm 为 undefined', async () => {
@@ -827,9 +834,22 @@ describe('buildLlmChannel', () => {
     expect(channel).toBe(mockLlmChannel);
   });
 
-  it('llms 未配置：不触发动态 import，返回 undefined', async () => {
+  it('llms 未配置：不触发动态 import，返回 undefined（能力不存在，非降级）', async () => {
     const { buildLlmChannel } = await import('./workerEntry');
     const channel = await buildLlmChannel(undefined);
     expect(channel).toBeUndefined();
+  });
+
+  it('@faapi/agent 不可解析：抛错含安装指引（不返回 undefined）', async () => {
+    vi.resetModules();
+    vi.doMock('@faapi/agent', () => {
+      throw new Error('Cannot find package');
+    });
+    const { buildLlmChannel } = await import('./workerEntry');
+    await expect(
+      buildLlmChannel({ openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } }),
+    ).rejects.toThrow(/@faapi\/agent is not resolvable/);
+    vi.doUnmock('@faapi/agent');
+    vi.resetModules();
   });
 });

@@ -52,52 +52,41 @@ export function setCachedMiddlewares(absPath: string, bundle: LoadedMiddlewareBu
  *
  * 两者都是可选的，但至少要有一个。
  *
- * 加载失败时的语义：
- * - 文件 import 抛错（语法错误 / 路径不存在 / 运行时抛错）→ console.error 输出原始错误,
- *   返回空 bundle,确保服务仍可启动而非崩溃。鉴权等关键中间件失效后业务可由 onError 感知。
- *   开发期 watcher 会因 reloadRoutes 触发重新加载,实现自愈。
+ * 错误口径（不降级）：加载/校验失败显式抛错，不返回空 bundle——空 bundle 让服务
+ * 带病运行（鉴权/CORS 中间件静默失效后请求绕过横切能力直接命中 handler），比
+ * 命中路由显式 500（onError 可感知）更危险。dev 下 watcher 修复后 reloadRoutes 自愈。
  */
 export async function loadMiddlewaresFile(filePath: string): Promise<LoadedMiddlewareBundle> {
-  let module: Record<string, unknown>;
-  try {
-    module = (await importWithCacheBust(filePath)) as Record<string, unknown>;
-  } catch (err) {
-    // 关键可见性：必须打印原始错误,否则业务方完全无感知（鉴权中间件失效等同于裸奔）
-    console.error(
-      `[faapi] Failed to load middlewares from ${filePath}:`,
-      err instanceof Error ? (err.stack ?? err.message) : err,
-    );
-    return { middlewares: [], injectors: {} };
-  }
+  const module = (await importWithCacheBust(filePath)) as Record<string, unknown>;
 
   // 加载中间件数组
   const middlewares = (module.default ?? module.middlewares ?? []) as unknown[];
   if (!Array.isArray(middlewares)) {
-    console.warn(`[faapi] middlewares.ts 应导出数组，已忽略: ${filePath}`);
-    return { middlewares: [], injectors: {} };
+    throw new TypeError(
+      `[faapi] middlewares.ts must export an array (default or named "middlewares"): ${filePath}`,
+    );
   }
 
-  const validMiddlewares = middlewares.filter((m: unknown) => {
+  const validMiddlewares: FaapiMiddleware[] = [];
+  for (const m of middlewares) {
     if (typeof m !== 'function') {
-      console.warn(`[faapi] 无效的中间件项（应为函数），已忽略: ${typeof m}`);
-      return false;
+      throw new TypeError(
+        `[faapi] every middleware must be a function, got ${typeof m}: ${filePath}`,
+      );
     }
-    return true;
-  }) as FaapiMiddleware[];
+    validMiddlewares.push(m as FaapiMiddleware);
+  }
 
   // 加载注入器映射表（可选命名导出）
   const injectors = (module.injectors ?? {}) as InjectorMap;
   if (typeof injectors !== 'object' || injectors === null) {
-    console.warn(`[faapi] injectors 应导出对象，已忽略: ${filePath}`);
-    return { middlewares: validMiddlewares, injectors: {} };
+    throw new TypeError(`[faapi] "injectors" export must be an object: ${filePath}`);
   }
 
-  // 校验注入器：每个值必须是函数
   const validInjectors: InjectorMap = {};
   for (const [name, injector] of Object.entries(injectors)) {
     if (typeof injector !== 'function') {
-      console.warn(`[faapi] 注入器 ${name} 应为函数，已忽略`);
-      continue;
+      throw new TypeError(`[faapi] injector "${name}" must be a function: ${filePath}`);
     }
     validInjectors[name] = injector;
   }
@@ -131,10 +120,17 @@ export async function loadMergedMiddlewares(
       // in-flight 去重：并发首载共享同一 Promise（对照 compileOnDemand 的 mutex 模式）
       let loading = inFlight.get(absMwPath);
       if (!loading) {
-        loading = loadMiddlewaresFile(absMwPath).then((result) => {
-          setCachedMiddlewares(absMwPath, result);
-          return result;
-        });
+        loading = loadMiddlewaresFile(absMwPath).then(
+          (result) => {
+            setCachedMiddlewares(absMwPath, result);
+            return result;
+          },
+          (err) => {
+            // 加载失败不缓存（内存与 in-flight 均不缓存失败结果）——下次请求重试加载
+            inFlight.delete(absMwPath);
+            throw err;
+          },
+        );
         inFlight.set(absMwPath, loading);
       }
       bundle = await loading;

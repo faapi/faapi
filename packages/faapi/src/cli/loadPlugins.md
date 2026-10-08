@@ -25,9 +25,9 @@ plugins: [
 
 ## 加载流程
 
-1. 遍历 declarations，解析为统一格式 { specifier, options, enable }（非法声明进 `failures`，不崩启动）
+1. 遍历 declarations，解析为统一格式 { specifier, options, enable }（非法声明进 `failures`，聚齐后统一抛错）
 2. `enable: false` 跳过（唯一运行时开关——插件不应引入环境变量做冗余控制，详见 [pluginTypes.md](../config/pluginTypes.md#开关约定)）
-3. name 去重（已加载的跳过）
+3. name 去重（重复声明属配置错误，进 `failures`）
 4. `importPluginModule(specifier, rootDir, dist)` 加载：
    - **包名**（非相对/绝对路径）：原样 import，Node 按包解析
    - **本地路径**（`./x`、`../x`、绝对路径）：
@@ -45,17 +45,17 @@ plugins: [
 5. 取 mod.default ?? mod 作为插件对象
 6. 注入 wrapHandler / wrapUpgradeHandler 收集器到 ctx
 7. 调用 plugin.setup(ctx)
-8. 返回收集到的 handlerWrappers / upgradeWrappers + `failures` 清单
+8. 返回收集到的 handlerWrappers / upgradeWrappers（任一失败已在上一长度聚合抛错，无 failures 字段）
 
 **build 端配合**（[buildCommand](./buildCommand.md) 步骤 2.5）：build 时读 config.plugins 的本地路径
 声明，`compileProjectModules` 编译到 `<dist>/plugins/`（保留相对结构），prod 运行时直接加载产物。
 
-## 错误口径（单一语义）
+## 错误口径（失败即启动失败）
 
-任何插件级失败（import 失败、缺 setup、setup 抛错、非法声明）不中断其他插件、
-不崩启动，但会收集进返回值 `failures` 并在加载完成后统一 `console.error` 汇总——
-鉴权/CORS 类插件静默丢失等同裸奔，必须对业务方可见（此前仅单条 `console.warn`，
-易被淹没）。调用方可依据 `failures` 做更严格的启动门禁。
+任何插件级失败（import 失败、缺 setup、setup 抛错、非法声明、重复声明）不中断其他
+插件（全部声明逐一尝试，失败明细聚齐），但聚合后**抛错**——`createAppBase` 启动失败、
+listen 不执行。鉴权/CORS 类插件静默丢失等同裸奔，「console.error 汇总后继续启动」
+仍是带病运行的降级；声明了插件就该可用，业务方修复声明或显式 `enable: false` 移除。
 
 ## 包装器应用
 

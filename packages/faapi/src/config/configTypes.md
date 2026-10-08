@@ -67,7 +67,7 @@ export default {
 - **错误处理**:handler 抛错 → 框架内置 `formatErrorResponse(err)` 兜底 → 仍失败则最简 500 JSON 响应 → 响应发出后触发 `onError` 副作用。业务方如需自定义错误响应,在全局中间件中 try/catch `next()` 即可。
 - `lifecycle.onBoot(ctx)`:**listen 前**触发的启动钩子,在 `server.listen` 调用之前执行(此时 server 已创建但未监听,`server.listening === false`;路由/tool/agent 清单已水合,插件已加载)。适合启动校验(环境变量、下游依赖)、DB 迁移等**失败即不该暴露端口**的逻辑。钩子抛错 → `listen()` 以原始错误 reject,`server.listen` 不会被调用,端口不暴露(与 onReady 的差异:onReady 在 listen 回调内执行,失败时端口已开,存在"接受连接但不服务"的窗口)。
 - `lifecycle.onReady(ctx)`:服务器启动后(listen 回调内)调用,适合初始化数据库连接、缓存预热等。失败时端口已暴露,启动校验请用 onBoot。
-- `lifecycle.onError(error, ctx)`:错误已被处理为响应、响应发出后触发的副作用钩子(参考 Fastify onError 语义)。用于日志/告警/链路追踪,**不修改已生成的响应**。自身抛错被捕获并忽略。
+- `lifecycle.onError(error, ctx)`:错误已被处理为响应、响应发出后触发的副作用钩子(参考 Fastify onError 语义)。用于日志/告警/链路追踪,**不修改已生成的响应**。自身抛错 `console.error` 留痕（不影响已发出的响应，但不静默吞掉）。
 - `extendContext(ctx)`:创建上下文后调用,用户可挂载自定义方法/属性到 ctx;配合 `declare module '@faapi/faapi'` 增强 FaapiContext 类型。
 - `FaapiContextConfig`:空 interface,用户可通过声明合并增强 `ctx.config` 的类型。
 

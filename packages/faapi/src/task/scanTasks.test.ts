@@ -153,42 +153,36 @@ export function run() {}
 });
 
 describe('scanTasks meta 字面量守卫', () => {
-  let warnSpy: MockInstance;
+  let errorSpy: MockInstance;
 
   beforeEach(() => {
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
-    warnSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 
-  it('声明了 timeoutMs / concurrency 但值是表达式或动态值（单行对象写法）时逐字段警告且清单不含该字段', async () => {
+  it('声明了 timeoutMs / concurrency 但值是表达式或动态值（单行对象写法）时构建期抛错（逐字段列后果与指引）', async () => {
     writeTask(
       'src/tasks/log-analysis/task.ts',
       `export const task = { timeoutMs: 30 * 60_000, concurrency: maxConcurrency };\nexport function run() {}\n`,
     );
-    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]!.name).toBe('log-analysis');
-    expect('timeoutMs' in tasks[0]!).toBe(false);
-    expect('concurrency' in tasks[0]!).toBe(false);
-    expect(warnSpy).toHaveBeenCalledTimes(2);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('log-analysis'));
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"timeoutMs"'));
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"concurrency"'));
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not a numeric literal'));
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /declares meta field\(s\) with non-literal values/,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/"timeoutMs"/);
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/"concurrency"/);
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/not a numeric literal/);
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/silently run in-process/);
   });
 
-  it('行首写动态值（Number(process.env.X)）同样警告且不阻断启动', async () => {
+  it('行首写动态值（Number(process.env.X)）同样抛错，不再静默忽略', async () => {
     writeTask(
       'src/tasks/dyn/task.ts',
       `export const task = {\n  timeoutMs: Number(process.env.TASK_TIMEOUT),\n};\nexport function run() {}\n`,
     );
-    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
-    expect(tasks).toHaveLength(1);
-    expect('timeoutMs' in tasks[0]!).toBe(false);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not a numeric literal'));
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/not a numeric literal/);
   });
 
   it('行注释中的示例（// timeoutMs: ...）不误报', async () => {
@@ -198,20 +192,31 @@ describe('scanTasks meta 字面量守卫', () => {
     );
     const tasks = await scanTasks(rootDir, TASK_PATTERNS);
     expect('timeoutMs' in tasks[0]!).toBe(false);
-    expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('cron 值不是字符串字面量时警告（专属文案）', async () => {
+  it('块注释行（* / /* 开头、终止符结尾）内的 meta 形样文本不误报', async () => {
+    writeTask(
+      'src/tasks/block-commented/task.ts',
+      `/**\n * 旧配置示例：timeoutMs: 10 * 60_000\n * cron: '0 3 * * *'\n */\n/* graceMs: 5_000 */\nexport const task = {\n  timeoutMs: 120_000,\n};\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ timeoutMs: 120000 });
+    expect('cron' in tasks[0]!).toBe(false);
+    expect('graceMs' in tasks[0]!).toBe(false);
+  });
+
+  it('cron 值不是字符串字面量时抛错（文案含修复指引与注释提示）', async () => {
     writeTask(
       'src/tasks/dyn-cron/task.ts',
       `const CRON = '0 3 * * *';\nexport const task = { cron: CRON };\nexport function run() {}\n`,
     );
-    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
-    expect('cron' in tasks[0]!).toBe(false);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('not a string literal'));
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/not a string literal/);
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/quoted literal/);
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/block comment/);
   });
 
-  it('全部字段均为字面量时不产生警告（回归）', async () => {
+  it('全部字段均为字面量时正常通过（回归）', async () => {
     writeTask(
       'src/tasks/literal/task.ts',
       `export const task = {\n  cron: '0 3 * * *',\n  concurrency: 2,\n  retries: 3,\n  timeoutMs: 90_000,\n  graceMs: 15_000,\n};\nexport function run() {}\n`,
@@ -224,6 +229,5 @@ describe('scanTasks meta 字面量守卫', () => {
       timeoutMs: 90000,
       graceMs: 15000,
     });
-    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

@@ -25,7 +25,9 @@ import { createFileLogSink, type FileLogSinkHandle } from './fileSink';
  * 状态经 globalThis 承载跨模块实例共享（dev 下 CLI bundle 与主入口是两份模块副本，
  * 模块级变量会导致业务侧 createLogger 看不到 CLI 侧配置的管道）。
  *
- * 日志调用永不抛错：fields 序列化失败降级为提示文本（fallback.md）。
+ * fields 序列化走框架统一出口 stringifyJson（规范外类型转可逆原生表示），循环引用
+ * 等结构错误抛 TypeError 冒泡——不降级（坏 fields 属业务数据缺陷，显式失败；
+ * 序列化能力覆盖见 formatEntry.ts / stringifyJson.md）。
  */
 
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };

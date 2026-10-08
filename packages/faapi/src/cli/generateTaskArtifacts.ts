@@ -99,7 +99,10 @@ interface TaskSchemaSource {
  * 从任务元数据收集 schema 提取所需数据（按文件分组，共享 TS Program）
  *
  * 与 generateToolArtifacts 的 collectToolSchemaSources 对称，但提取的函数固定为 `run`。
- * run 首参无类型名（无 Payload interface）的任务被跳过——运行时同样跳过校验。
+ * **Payload 声明必填**：`run` 首参无可提取类型名（无参 / 无类型标注）或 run 未导出
+ * 的任务在此显式抛错——无声明即跳过校验是静默降级（payload 契约缺失悄悄放行），
+ * 必须在构建期失败；确无入参契约的任务声明 `type Payload = unknown` 显式豁免
+ * （生成恒通过的 z.unknown() schema）。
  */
 function collectTaskSchemaSources(
   tasks: Array<ToolMetadata & { taskName: string }>,
@@ -194,8 +197,10 @@ export async function generateTaskArtifacts(
   rootDir: string,
   dist: string,
 ): Promise<TaskMetadata[]> {
-  // 1. AST 增强：提取 run 首参类型名（Payload schema 用）
+  // 1. AST 增强：提取 run 首参类型名（Payload schema 用）；声明缺失在此显式抛错，
+  //    不跳过（跳过 = 运行时静默放行无契约 payload，属静默降级）
   const metadata: Array<ToolMetadata & { taskName: string }> = [];
+  const declarationErrors: string[] = [];
   if (manifests.length > 0) {
     const programByFile = createPrograms(manifests.map((m) => path.resolve(rootDir, m.filePath)));
     for (const manifest of manifests) {
@@ -204,10 +209,31 @@ export async function generateTaskArtifacts(
         name: manifest.name,
         filePath: manifest.filePath,
       });
-      if (result) {
-        metadata.push({ ...result, taskName: manifest.name });
+      if (!result) {
+        declarationErrors.push(
+          `"${manifest.name}" (${manifest.filePath}): no exported run function found`,
+        );
+        continue;
       }
+      if (!result.inputTypeName) {
+        declarationErrors.push(
+          `"${manifest.name}" (${manifest.filePath}): run's first parameter has no type name — ` +
+            'declare a Payload type (an empty interface for parameterless tasks), ' +
+            'or explicitly opt out of validation with "type Payload = unknown"',
+        );
+        continue;
+      }
+      metadata.push({ ...result, taskName: manifest.name });
     }
+  }
+  if (declarationErrors.length > 0) {
+    throw new Error(
+      `[faapi] ${declarationErrors.length} task(s) missing a Payload type declaration — ` +
+        'payload validation must not be silently skipped:\n  ' +
+        `${declarationErrors.join('\n  ')}\n` +
+        "Every task must declare a payload type on run's first parameter; " +
+        '"type Payload = unknown" generates an always-passing schema (explicit no-validation opt-out).',
+    );
   }
 
   // 2. 序列化 + 写入 faapi-tasks.js（无任务时写空清单，运行时空转）
@@ -215,7 +241,7 @@ export async function generateTaskArtifacts(
   const tasksPath = path.resolve(rootDir, dist, TASKS_FILE);
   await writeTasksModule(serialized, tasksPath);
 
-  // 3. 生成 zod.js（无 Payload 类型的任务跳过）
+  // 3. 生成 zod.js（Payload 声明必填已在上一步守卫）
   if (metadata.length === 0) {
     return hydrateTasks(serialized);
   }

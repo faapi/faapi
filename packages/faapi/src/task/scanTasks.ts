@@ -39,17 +39,20 @@ const ALL_META_FIELDS: readonly string[] = [...NUMERIC_META_FIELDS, ...STRING_ME
  * meta 字面量守卫：找「声明了但严格字面量正则没提取到」的字段
  *
  * 严格正则以行首锚提取值，抓不到单行对象写法（`export const task = { timeoutMs: 30 * 60_000 }`）
- * 和动态值——识别不了就静默丢弃是静默降级：timeoutMs 丢失会让任务悄悄从隔离执行退化
+ * 和动态值——识别不了就忽略是静默降级：timeoutMs 丢失会让任务悄悄从隔离执行退化
  * 进程内（无超时、无真终止）且无任何信号。这里按非注释行内的 `字段名:` 宽松检测声明
- * （不锚行首），与严格提取结果求差集，差集字段由调用方逐个 console.warn。
- * 行注释（`// timeoutMs: ...` 示例）跳过不误报；块注释单行内嵌声明会误报——警告不
- * 阻断，成本仅为一条多余提示，可接受（零 import 扫描不做完整注释解析）。
+ * （不锚行首），与严格提取结果求差集，差集字段由调用方构建期抛错。
+ * 行注释（`// timeoutMs: ...` 示例）与块注释行（`*` / `/*` 开头、块注释终止符结尾）跳过不误报；
+ * 残余误报面为单行块注释内嵌 meta 形样的文本（如一行写完的 `/*` 块注释里含
+ * `cron: '0 3 * * *'`）——报错信息含此提示，改写注释即可解除（零 import 扫描不做
+ * 完整注释解析）。
  */
 function detectIgnoredMetaFields(source: string, strictHit: Record<string, boolean>): string[] {
   const declared = new Set<string>();
   for (const line of source.split('\n')) {
     const trimmed = line.trim();
     if (trimmed.startsWith('//')) continue;
+    if (trimmed.startsWith('*') || trimmed.startsWith('/*') || trimmed.endsWith('*/')) continue;
     for (const field of ALL_META_FIELDS) {
       if (new RegExp(`\\b${field}\\s*:`).test(trimmed)) declared.add(field);
     }
@@ -57,29 +60,36 @@ function detectIgnoredMetaFields(source: string, strictHit: Record<string, boole
   return ALL_META_FIELDS.filter((field) => declared.has(field) && !strictHit[field]);
 }
 
-/** 逐字段输出忽略警告（英文，与扫描期校验报错文案一致） */
-function warnIgnoredMetaFields(name: string, fields: string[]): void {
-  for (const field of fields) {
+/**
+ * 守卫命中即构建期抛错（逐字段列出后果与修复指引，不降级为警告后忽略）
+ */
+function throwIgnoredMetaFields(name: string, fields: string[]): void {
+  if (fields.length === 0) return;
+  const details = fields.map((field) => {
     if (STRING_META_FIELDS.includes(field as (typeof STRING_META_FIELDS)[number])) {
-      console.warn(
-        `[faapi] Task "${name}" declares "${field}" but its value is not a string literal — ` +
-          'the declaration was ignored and the task will not be cron-scheduled. ' +
-          'Meta values are extracted from source code without importing it, so only literal ' +
-          `values are recognized: use a quoted literal (cron: '0 3 * * *'), ` +
-          'not an expression or a dynamic value.',
-      );
-    } else {
-      const consequence =
-        field === 'timeoutMs' ? ' and the task will run in-process with no timeout' : '';
-      console.warn(
-        `[faapi] Task "${name}" declares "${field}" but its value is not a numeric literal — ` +
-          `the declaration was ignored${consequence}. ` +
-          'Meta values are extracted from source code without importing it, so only literal ' +
-          'values are recognized (underscores allowed, e.g. 1_800_000); expressions like ' +
-          '30 * 60_000 or dynamic values are not supported.',
+      return (
+        `"${field}": value is not a string literal — the declaration would be ignored and ` +
+        `the task would not be cron-scheduled. Use a quoted literal (cron: '0 3 * * *'), ` +
+        'not an expression or a dynamic value.'
       );
     }
-  }
+    const consequence =
+      field === 'timeoutMs'
+        ? ' — the declaration would be ignored and the task would silently run in-process with no timeout'
+        : ' — the declaration would be ignored';
+    return (
+      `"${field}": value is not a numeric literal${consequence}. Only literal values are ` +
+      'recognized (underscores allowed, e.g. 1_800_000); expressions like 30 * 60_000 or ' +
+      'dynamic values are not supported.'
+    );
+  });
+  throw new Error(
+    `[faapi] Task "${name}" declares meta field(s) with non-literal values:\n  ` +
+      `${details.join('\n  ')}\n` +
+      'Meta values are extracted from source code without importing it, so only literals are recognized. ' +
+      'If a matched line is inside a block comment (e.g. a single-line /* ... */ comment containing a ' +
+      'meta-like declaration), rewrite the comment so it does not look like a meta declaration.',
+  );
 }
 
 /** 数字字面量解析（剥离下划线分隔符——Number() 不接受 `60_000`） */
@@ -201,7 +211,7 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
       timeoutMs: timeoutMs !== undefined,
       graceMs: graceMs !== undefined,
     };
-    warnIgnoredMetaFields(name, detectIgnoredMetaFields(source, strictHit));
+    throwIgnoredMetaFields(name, detectIgnoredMetaFields(source, strictHit));
 
     tasks.push(manifest);
   }

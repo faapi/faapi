@@ -10,8 +10,9 @@ import type { LogSink } from './loggerTypes';
  * （仅 error，dup 语义——一条 error 两处都有，参考 egg-logger common-error.log）；
  * `splitByLevel: true` 改为按级别四文件（各只含对应级别）。
  *
- * 写入为持久 WriteStream（flags: 'a' 追加）异步缓冲；流错误监听后吞掉——日志
- * 永不影响业务（磁盘满/权限丢失时静默停止写文件，与"日志调用永不抛错"同语义）。
+ * 写入为持久 WriteStream（flags: 'a' 追加）异步缓冲；流错误监听后不能抛（unhandled
+ * 'error' 事件会 terminate 进程），但首次失败 `console.error` 留痕——静默停止写文件
+ * 会让排障者误以为日志管道健康（磁盘满/权限丢失属 OS 物理约束，不属可降级的框架决策）。
  * 目录由 `configureLogging` 启动期经本模块创建，失败抛错 fail fast。
  */
 
@@ -52,8 +53,19 @@ export function createFileLogSink(options: FileLogSinkOptions): FileLogSinkHandl
 
   const openStream = (name: string): void => {
     const stream = fs.createWriteStream(path.join(options.dir, `${name}.log`), { flags: 'a' });
-    // 磁盘满/权限等写入失败：吞掉不崩进程（unhandled 'error' 事件会 terminate 进程）
-    stream.on('error', () => {});
+    // 磁盘满/权限等写入失败：OS 物理约束不能抛（unhandled 'error' 事件会 terminate
+    // 进程，且日志写入失败中断业务违反日志管道边界），但必须留痕——静默停止写文件
+    // 会让排障者误以为日志管道健康。每流首次失败 console.error，后续抑制防刷屏
+    let streamErrorLogged = false;
+    stream.on('error', (err) => {
+      if (streamErrorLogged) return;
+      streamErrorLogged = true;
+      console.error(
+        `[faapi] log file stream "${name}.log" failed — file logging on this stream stopped ` +
+          `(subsequent errors suppressed). Check disk space / permissions for ${options.dir}:`,
+        err,
+      );
+    });
     streams.set(name, stream);
   };
 

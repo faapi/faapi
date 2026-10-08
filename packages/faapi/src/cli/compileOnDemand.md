@@ -109,7 +109,7 @@ async function ensureMiddlewaresCompiled(
 
 调用方：`createServer`（HTTP 首次请求）+ `handleWsUpgrade`（WS 握手），在 `loadMergedMiddlewares` import 产物之前调用。
 
-dev 按需模式下中间件产物在首次请求前不存在——若不先编译，import 即 `ERR_MODULE_NOT_FOUND`。通过 `prodPathToSourcePath` 反推源码路径后走 `ensureCompiled`（含依赖闭包，覆盖 middlewares.ts 引用的共享模块）。编译失败不阻断请求，`console.error` 后交由 `loadMiddlewaresFile` 既有的空 bundle 降级语义处理（鉴权失效由 onError 感知）。prod 模式（按需开关关闭）直接返回——产物由 build 固化。
+dev 按需模式下中间件产物在首次请求前不存在——若不先编译，import 即 `ERR_MODULE_NOT_FOUND`。通过 `prodPathToSourcePath` 反推源码路径后走 `ensureCompiled`（含依赖闭包，覆盖 middlewares.ts 引用的共享模块）。编译失败直接冒泡（请求 500，onError 可感知）——中间件产物缺失/损坏属显式失败场景，不做空 bundle 降级。prod 模式（按需开关关闭）直接返回——产物由 build 固化。
 
 ## zod.js 按需生成
 

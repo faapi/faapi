@@ -16,7 +16,8 @@
 - `serializeTasks(manifests, dist)`：filePath 转 `toProdFilePath` 产物形式，meta 字段透传
 - `writeTasksModule` 写 `<dist>/faapi-tasks.js`：`export const tasks = [...]`（JSON.stringify 嵌入）
 - `hydrateTasks(serialized)`：JSON 还原 TaskMetadata[]
-- zod.js：对每个任务文件的 `run` 函数提取首参类型名（extractToolMetadata，functionName='run'），有类型名则用 tool 同款管线（collectTaskSchemaSources → generateToolSchemaFileSource，coerce=false）写 `<dist>/tasks/<dir>/zod.js`，导出 `${typeName}Schema`；无类型名跳过（运行时同样跳过校验）
+- zod.js：对每个任务文件的 `run` 函数提取首参类型名（extractToolMetadata，functionName='run'），用 tool 同款管线（collectTaskSchemaSources → generateToolSchemaFileSource，coerce=false）写 `<dist>/tasks/<dir>/zod.js`，导出 `${typeName}Schema`
+- **Payload 声明必填（不跳过）**：`run` 首参无可提取的类型名（`run()` 无参 / 参数无类型标注 / 未导出 `run` 函数）→ 构建期抛错，逐个列出任务名与修复指引。确无入参契约的任务显式声明 `type Payload = unknown`——生成恒通过的 `z.unknown()` schema，沿用「显式 unknown = 不校验」既有语义。理由：无声明即跳过校验是静默降级（payload 契约缺失悄悄放行），契约缺失必须在构建期显式失败
 - 无任务文件时仍写空清单（`export const tasks = []`），运行时队列空转
 
 > zod.js 的分组/写入/helpers 生成流程由 `generateZodArtifacts` 共享管线执行（与 routes/tools 同一份）。

@@ -37,7 +37,7 @@ export interface LifecycleHooks {
    *      → 响应发出后 → onError 触发副作用
    *
    * 职责:日志上报、告警、链路追踪等副作用。**不修改、不替换已生成的响应**。
-   * 自身抛错会被捕获并忽略,不影响响应已发送的事实。
+   * 自身抛错会被捕获并 console.error 留痕,不影响响应已发送的事实。
    *
    * 与全局错误中间件的区别:
    * - 全局错误中间件:把 error 翻译成 Response(主入口,决定响应内容)
@@ -105,7 +105,7 @@ export interface TaskConfig {
   /**
    * 任务执行失败/取消钩子——每次 process 抛错后触发（含将重试的失败），
    * `info.willRetry` 按任务 meta.retries 推算、`info.cancelled` 标记框架终止；
-   * 用于告警/死信上报等副作用，自身抛错被忽略
+   * 用于告警/死信上报等副作用，自身抛错 console.error 留痕
    */
   onFailed?: import('../task/taskTypes.js').TaskFailedHandler;
 }

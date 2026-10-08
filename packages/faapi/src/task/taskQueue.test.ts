@@ -74,6 +74,9 @@ function makeFakeDriver(options: { syncDispatch?: boolean } = {}) {
   };
 }
 
+/** 恒通过的透传 schema（z.unknown() 产物形态）——测试任务默认带 Payload 声明 */
+const PASS_THROUGH_SCHEMA = { safeParse: (v: unknown) => ({ success: true, data: v }) };
+
 function makeDeps(modules: Record<string, TaskModule>, schemas: Record<string, unknown> = {}) {
   const registry = createTaskRegistry();
   registry.hydrate(
@@ -88,7 +91,8 @@ function makeDeps(modules: Record<string, TaskModule>, schemas: Record<string, u
   });
   const loadPayloadSchema = vi.fn(async (filePath: string) => {
     const name = filePath.match(/tasks\/([^/]+)\/task\.js/)?.[1] ?? '';
-    return schemas[name];
+    // 缺省透传 schema（构建期 Payload 声明必填后，运行时产物恒有 schema）
+    return schemas[name] ?? PASS_THROUGH_SCHEMA;
   });
   return { registry, rootDir: '/fake', loadTaskModule, loadPayloadSchema };
 }
@@ -122,7 +126,7 @@ describe('createTaskQueue', () => {
       rootDir: '/fake',
       driver: fake.driver,
       loadTaskModule: async () => ({ run: vi.fn() }),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('mail', {});
@@ -147,13 +151,21 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('无 Payload schema 跳过校验，原 payload 入队', async () => {
+  it('Payload schema 缺失（zod.js 无产物）时 enqueue 抛错且不触达驱动——不静默放行', async () => {
     const deps = makeDeps({ plain: { run: vi.fn() } });
     const fake = makeFakeDriver();
-    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      // 模拟产物缺失：构建期已强制 Payload 声明必填，运行时缺 schema 即产物不一致
+      loadPayloadSchema: async () => undefined,
+    });
     queue.start();
-    await queue.enqueue('plain', { anything: true });
-    expect(fake.enqueues[0]?.payload).toEqual({ anything: true });
+    await expect(queue.enqueue('plain', { anything: true })).rejects.toThrow(
+      /no valid payload schema/,
+    );
+    expect(fake.enqueues).toHaveLength(0);
+    expect(queue.list('plain')).toHaveLength(0);
     await queue.stop();
   });
 
@@ -472,7 +484,7 @@ describe('createTaskQueue', () => {
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({ run }),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy', { a: 1 });
@@ -509,7 +521,7 @@ describe('createTaskQueue', () => {
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy');
@@ -538,7 +550,7 @@ describe('createTaskQueue', () => {
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy');
@@ -560,7 +572,7 @@ describe('createTaskQueue', () => {
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy');
@@ -759,7 +771,7 @@ describe('createTaskQueue', () => {
           throw new Error('boom');
         },
       }),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     const { id } = await queue.enqueue('flaky');
@@ -775,7 +787,7 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('onFailed：取消路径触发且 cancelled 为 true；自身抛错被忽略', async () => {
+  it('onFailed：取消路径触发且 cancelled 为 true；自身抛错 console.error 留痕（不影响队列）', async () => {
     const registry = createTaskRegistry();
     registry.hydrate([{ name: 'heavy', filePath: 'd.js', timeoutMs: 100 }]);
     const onFailed = vi.fn(async (_info: unknown) => {
@@ -785,6 +797,7 @@ describe('createTaskQueue', () => {
     const runIsolated = vi.fn(async () => {
       throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
     });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
@@ -792,7 +805,7 @@ describe('createTaskQueue', () => {
       onFailed,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy');
@@ -804,8 +817,14 @@ describe('createTaskQueue', () => {
       willRetry: false,
       cancelled: true,
     });
+    // 钩子自身抛错不再静默：console.error 留痕
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('onFailed hook threw for "heavy"'),
+      expect.any(Error),
+    );
     // 记录已写入，钩子抛错不影响队列
     expect(queue.list('heavy')[0]).toMatchObject({ status: 'cancelled' });
+    errorSpy.mockRestore();
     await queue.stop();
   });
 
@@ -876,7 +895,7 @@ describe('createTaskQueue', () => {
       registries: createTaskRegistriesView(appRegistries),
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy');
@@ -923,7 +942,7 @@ describe('createTaskQueue', () => {
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({ run }),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
 
@@ -1005,7 +1024,7 @@ describe('createTaskQueue', () => {
       llms,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy');
@@ -1025,7 +1044,7 @@ describe('createTaskQueue', () => {
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => undefined,
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy');

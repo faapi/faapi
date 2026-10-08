@@ -133,32 +133,34 @@ const LOG_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 
  * 同一解析来源，业务方安装即可用）。specifier 变量拼接避免主包静态依赖
  * `@faapi/agent`（与 loadTaskDriver 加载驱动子包同策略）。
  *
- * 降级路径（已记入 fallback.md）：`@faapi/agent` 未安装/不可解析时 `console.warn`
- * 留痕并返回 `undefined`——taskCtx.llm 为 undefined，任务自身决定报错或旁路；
- * llms 未配置时不触发加载。
+ * 显式失败口径（不降级）：llms 已配置但 `@faapi/agent` 不可解析（未安装/导出
+ * 缺失）→ 抛错（含安装指引），任务失败——配置声明了能力而环境不能交付属环境
+ * 错误，fail fast；llms 未配置时返回 `undefined`（能力不存在，非降级），任务照常执行。
  */
 export async function buildLlmChannel(
   llms?: Record<string, LlmConfig>,
 ): Promise<LlmComplete | undefined> {
   if (!llms || Object.keys(llms).length === 0) return undefined;
   const specifier = '@faapi/' + 'agent';
+  let mod: {
+    createLightComplete?: (deps: { llms: Record<string, LlmConfig> }) => LlmComplete;
+  };
   try {
-    const mod = (await import(/* @vite-ignore */ specifier)) as {
-      createLightComplete?: (deps: { llms: Record<string, LlmConfig> }) => LlmComplete;
-    };
-    if (typeof mod.createLightComplete !== 'function') {
-      console.warn(
-        '[faapi] @faapi/agent resolved but does not export createLightComplete() — taskCtx.llm unavailable (check package version)',
-      );
-      return undefined;
-    }
-    return mod.createLightComplete({ llms });
-  } catch {
-    console.warn(
-      '[faapi] agent.llms is configured but @faapi/agent is not resolvable in the task worker — install @faapi/agent to enable taskCtx.llm (task execution continues)',
+    mod = (await import(/* @vite-ignore */ specifier)) as typeof mod;
+  } catch (err) {
+    throw new Error(
+      '[faapi] agent.llms is configured but @faapi/agent is not resolvable in the task worker — ' +
+        `install @faapi/agent to enable taskCtx.llm (${err instanceof Error ? err.message : String(err)})`,
+      { cause: err },
     );
-    return undefined;
   }
+  if (typeof mod.createLightComplete !== 'function') {
+    throw new Error(
+      '[faapi] @faapi/agent resolved but does not export createLightComplete() — ' +
+        'taskCtx.llm unavailable (check package version)',
+    );
+  }
+  return mod.createLightComplete({ llms });
 }
 
 /**
@@ -167,9 +169,9 @@ export async function buildLlmChannel(
  * sink 输出（语义与主包 createLogger 对齐：child scope `:` 合并、调用处 fields
  * 覆盖构造字段；格式化在宿主侧，不跨线程复制格式代码）。
  *
- * fields 含不可克隆值时丢弃 fields、保底 level/message/scope（降级已记入
- * fallback.md）——日志永不中断任务执行，与 progress 的"不可克隆按执行错误处理"
- * 不同。
+ * fields 含不可克隆值时按执行错误处理（与 progress 同语义，不降级）——一条日志的
+ * 字段失败终止任务执行：显式失败优于静默丢字段，业务侧将 fields 保持为可克隆
+ * 纯数据即可避免。
  */
 export function createTaskLogger(
   level?: LogLevel,
@@ -188,9 +190,13 @@ export function createTaskLogger(
       }
       try {
         parentPort?.postMessage({ type: 'log', entry });
-      } catch {
-        entry.fields = { warning: 'log fields not cloneable across worker boundary, dropped' };
-        parentPort?.postMessage({ type: 'log', entry });
+      } catch (err) {
+        throw new Error(
+          `task log fields are not cloneable across the worker boundary: ` +
+            `${err instanceof Error ? err.message : String(err)}. ` +
+            'Keep log fields plain data (strings / numbers / plain objects).',
+          { cause: err },
+        );
       }
     };
     return {
@@ -282,13 +288,19 @@ function bootstrap(): void {
           const serialized = serializeError(err);
           try {
             parentPort?.postMessage({ type: 'error', error: serialized });
-          } catch {
-            // props 含不可克隆值（函数等）时丢弃 props，保底 name/message/stack
+          } catch (cloneErr) {
+            // props 含不可克隆值（函数等）：任务显式失败，不静默丢属性——宿主必须
+            // 知道错误的自定义属性无法跨线程传递（错误信息含原 name/message 与修复指引）
             parentPort?.postMessage({
               type: 'error',
               error: {
                 name: serialized.name,
-                message: serialized.message,
+                message:
+                  `task error props are not cloneable (custom enumerable properties of the ` +
+                  `thrown error cannot cross the worker boundary): ${serialized.name}: ` +
+                  `${serialized.message}. Clone failure: ` +
+                  `${cloneErr instanceof Error ? cloneErr.message : String(cloneErr)}. ` +
+                  'Make error props plain data (string codes / numbers), not functions or class instances.',
                 stack: serialized.stack,
                 props: {},
               },

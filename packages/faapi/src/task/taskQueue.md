@@ -15,9 +15,9 @@
 
 - `enqueue(name, payload?, opts?)`：
   - 任务不存在抛错（含可用任务名提示），不触达驱动
-  - 有 Payload schema（任务目录 `zod.js` 导出 `${PayloadTypeName}Schema`）时 safeParse，不合法抛 `ValidationError`（HTTP 语义 422）；无 schema 跳过校验（与 tool 对齐）
+  - Payload schema（任务目录 `zod.js` 导出 `${PayloadTypeName}Schema`）执行 safeParse，不合法抛 `ValidationError`（HTTP 语义 422）；schema 缺失（zod.js 不存在 / 无 `*Schema` 导出 / 非 safeParse 形态）抛错不静默放行——构建期已强制 Payload 声明必填（generateTaskArtifacts.md），运行时缺产物即产物不一致
   - 校验后的 payload + `retries`（任务 meta）+ `delayMs`/`dedupId` 透传给 `driver.enqueue`，返回驱动侧 `{ id }`；`dedupId` 为幂等键（同键不重复入队，重复投递返回已存在任务 id），cron 投递自动携带
-- `onFailed` 钩子（`config.task.onFailed`）：每次 process 抛错后触发（含将重试的失败），`info = { task, jobId, attempt, willRetry, cancelled, error }`——`willRetry` 按任务 meta.retries 推算（attempt <= retries）；用于告警/死信上报等副作用，自身抛错被忽略
+- `onFailed` 钩子（`config.task.onFailed`）：每次 process 抛错后触发（含将重试的失败），`info = { task, jobId, attempt, willRetry, cancelled, error }`——`willRetry` 按任务 meta.retries 推算（attempt <= retries）；用于告警/死信上报等副作用，自身抛错 `console.error` 留痕（不改变已定的失败/重试语义，但不静默）
 - worker 执行（驱动按并发/重试策略调 `process`），按任务 meta 分两条路径，**均注入 `taskCtx.registries`（app 注册表只读视图，任务侧组装 agent 用，见 taskTypes.md）**：
   - **进程内**（默认）：import 任务模块（缓存），调用 `run(payload, { signal, job, config, registries })`——registries 为活引用视图（`createAppBase` 创建队列时传入）
   - **隔离执行**（任务声明 `timeoutMs`，60s ~ 23h——扫描期校验，理由见 taskWorker.md）：走 taskWorker 独立线程执行，超时两段式取消（abort 信号宽限 → terminate 硬杀）——判定超时即执行真正终止，宽限期默认 5s、经 task meta `graceMs` 按任务配置（详见 taskWorker.md）；registries 以纯数据快照传入（worker 内重建视图，派发时刻快照语义）

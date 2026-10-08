@@ -85,14 +85,15 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     deps.loadPayloadSchema ??
     (async (filePath: string) => {
       const zodPath = path.join(path.dirname(filePath), 'zod.js');
-      try {
-        const mod = (await import(zodPath)) as Record<string, unknown>;
-        const schemaKey = Object.keys(mod).find((k) => k.endsWith('Schema'));
-        return schemaKey ? mod[schemaKey] : undefined;
-      } catch {
-        // 无 zod.js（任务未声明 Payload 类型）→ 无校验，与 tool 行为对齐（fallback.md）
-        return undefined;
+      const mod = (await import(zodPath)) as Record<string, unknown>;
+      const schemaKey = Object.keys(mod).find((k) => k.endsWith('Schema'));
+      if (!schemaKey) {
+        throw new Error(
+          `[faapi] Task payload schema artifact has no *Schema export: ${zodPath} — ` +
+            're-run "faapi dev" / "faapi build" to regenerate task artifacts.',
+        );
       }
+      return mod[schemaKey];
     });
 
   function assertKnownTask(name: string): void {
@@ -125,14 +126,16 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   async function validatePayload(name: string, payload: unknown): Promise<unknown> {
     if (!schemaCache.has(name)) {
       const meta = registry.get(name)!;
-      schemaCache.set(
-        name,
-        await loadPayloadSchema(path.resolve(rootDir, meta.filePath)).catch(() => undefined),
-      );
+      // 加载失败（zod.js 缺失/损坏）向上抛错——构建期已强制 Payload 声明必填
+      // （generateTaskArtifacts），运行时缺产物即产物不一致，不静默放行
+      schemaCache.set(name, await loadPayloadSchema(path.resolve(rootDir, meta.filePath)));
     }
     const schema = schemaCache.get(name);
     if (!schema || typeof (schema as { safeParse?: unknown }).safeParse !== 'function') {
-      return payload;
+      throw new Error(
+        `[faapi] Task "${name}" has no valid payload schema (zod.js missing or no *Schema export). ` +
+          'Payload declarations are mandatory: re-run "faapi dev" / "faapi build" to regenerate task artifacts.',
+      );
     }
     const result = (
       schema as {
@@ -243,7 +246,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       record.error = err instanceof Error ? err.message : String(err);
       evictFinishedRecords();
       // onFailed 副作用钩子（告警/死信上报）：willRetry 按 meta.retries 推算，
-      // 自身抛错被忽略——不影响驱动重试决策
+      // 自身抛错 console.error 留痕——不影响驱动重试决策，但不静默吞掉
       if (deps.onFailed) {
         void Promise.resolve()
           .then(() =>
@@ -256,7 +259,9 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               error: record.error!,
             }),
           )
-          .catch(() => {});
+          .catch((hookErr) => {
+            console.error(`[faapi] task onFailed hook threw for "${job.name}":`, hookErr);
+          });
       }
       throw err; // 交给驱动决定重试
     }

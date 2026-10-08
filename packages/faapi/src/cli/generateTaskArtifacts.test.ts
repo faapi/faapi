@@ -55,7 +55,12 @@ describe('serializeTasks / hydrateTasks', () => {
 
 describe('generateTaskArtifacts', () => {
   it('生成 faapi-tasks.js 清单（含产物路径与 meta）', async () => {
-    writeTask('src/tasks/echo/task.ts', `export function run() {}\n`);
+    writeTask(
+      'src/tasks/echo/task.ts',
+      `export interface Payload {}
+export function run(_payload: Payload) {}
+`,
+    );
     const manifests: TaskManifest[] = [
       { name: 'echo', filePath: 'src/tasks/echo/task.ts', retries: 2 },
     ];
@@ -87,14 +92,53 @@ export function run(payload: Payload) {
     expect(source).toContain("from 'zod'");
   });
 
-  it('run 无参数（或参数无类型名）不生成 zod.js', async () => {
-    writeTask('src/tasks/plain/task.ts', `export function run() {}\n`);
-    await generateTaskArtifacts(
-      [{ name: 'plain', filePath: 'src/tasks/plain/task.ts' }],
-      rootDir,
-      dist,
+  it('type Payload = unknown 显式豁免：生成恒通过的 z.unknown() schema', async () => {
+    writeTask(
+      'src/tasks/cron-only/task.ts',
+      `export type Payload = unknown;
+export function run(_payload: Payload) {
+  return 'ok';
+}
+`,
     );
-    expect(fs.existsSync(path.resolve(rootDir, dist, 'tasks/plain/zod.js'))).toBe(false);
+    const manifests: TaskManifest[] = [
+      { name: 'cron-only', filePath: 'src/tasks/cron-only/task.ts' },
+    ];
+    await generateTaskArtifacts(manifests, rootDir, dist);
+    const zodPath = path.resolve(rootDir, dist, 'tasks/cron-only/zod.js');
+    expect(fs.existsSync(zodPath)).toBe(true);
+    const source = fs.readFileSync(zodPath, 'utf8');
+    expect(source).toContain('PayloadSchema');
+    expect(source).toContain('z.unknown()');
+  });
+
+  it('run 首参无类型名：构建期抛错（含任务名与修复指引），不再跳过', async () => {
+    writeTask('src/tasks/plain/task.ts', `export function run() {}\n`);
+    await expect(
+      generateTaskArtifacts(
+        [{ name: 'plain', filePath: 'src/tasks/plain/task.ts' }],
+        rootDir,
+        dist,
+      ),
+    ).rejects.toThrow(/missing a Payload type declaration/);
+    await expect(
+      generateTaskArtifacts(
+        [{ name: 'plain', filePath: 'src/tasks/plain/task.ts' }],
+        rootDir,
+        dist,
+      ),
+    ).rejects.toThrow(/type Payload = unknown/);
+  });
+
+  it('run 未导出：构建期抛错（含任务名），不再静默跳过', async () => {
+    writeTask('src/tasks/no-run/task.ts', `export function helper() { return 1; }\n`);
+    await expect(
+      generateTaskArtifacts(
+        [{ name: 'no-run', filePath: 'src/tasks/no-run/task.ts' }],
+        rootDir,
+        dist,
+      ),
+    ).rejects.toThrow(/no exported run function found/);
   });
 
   it('无任务时写入空清单', async () => {

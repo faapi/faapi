@@ -32,7 +32,7 @@ export default {
 
 - **目录创建**：`configureLogging` 启动期 `mkdirSync(dir, { recursive: true })`，创建失败抛错（fail fast，不静默降级为丢日志）
 - **写入方式**：每文件一个持久 `fs.WriteStream`（`flags: 'a'` 追加），文本行 = 默认 console 格式 + `\n`；异步缓冲（写文件不阻塞请求），进程优雅停机由 Node 退出前 flush，强杀场景尾部可能丢（同 egg-logger 的 stream 行为）
-- **流错误吞掉**：stream `error` 事件监听后忽略（磁盘满/权限等）——日志永不影响业务流程，与"日志调用永不抛错"同语义
+- **流错误留痕**：stream `error` 事件（磁盘满/权限等）不能抛（unhandled `error` 事件会 terminate 进程），但每流首次失败 `console.error` 留痕、后续抑制防刷屏——静默停止写文件会让排障者误以为日志管道健康（OS 物理约束，不属可降级的框架决策）
 - **生命周期**：`configureLogging` 每次调用先 `close()` 上一次的文件流（切配置/多 app 后启动覆盖，fd 不泄漏）；`close` 后不再写入
 - **与 `sink` 互斥**：`config.log.sink` 与 `config.log.dir` 同时配置启动报错——两个输出管道接管方式二选一，需要"自定义格式 + 文件"时在自定义 sink 里自行写文件
 

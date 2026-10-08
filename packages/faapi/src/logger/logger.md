@@ -182,7 +182,7 @@ scope `access` 与业务日志的 `http` 区分，`requestId` 关联两者；文
 - **出口解析**：logger 实例级 `options.sink` 优先（显式接管，不受全局 `log: false` / 出口阈值影响）→ 全局 sink（受 `level`）→ 文件管道（`dir`，受 `level`；`stdout` 非 false 时 console 双写，受 `consoleLevel`）→ 纯 console（受 `consoleLevel`）。`sink` 与 `dir` 互斥，同时配置抛错
 - **`child(scope)`**：scope 以 `:` 合并（`createLogger('http').child('user')` → `http:user`，可多层嵌套），fields 浅合并（child 覆盖同名键）；返回新 Logger，父子互不影响
 - **`configureLogging(undefined)`** 重置为默认（管道不过滤、consoleLevel 默认 info、无文件/自定义 sink）——编程式多 app 切换全局配置用
-- 日志调用**永不抛错**：fields 序列化失败（循环引用等）降级为提示文本输出（已记入 `fallback.md`），不影响业务流程
+- fields 序列化走框架统一出口 `stringifyJson`（Date → 毫秒时间戳、BigInt → 字符串、Map/Set → 数组、NaN/±Infinity → 字符串、RegExp → 字符串——原生 `JSON.stringify` 会抛错或静默丢数据的类型全部正确输出）；**循环引用等结构错误抛 `TypeError` 冒泡，不降级**——「日志调用永不抛错」契约已废除，坏 fields 属业务数据缺陷，与全框架 JSON 序列化契约同口径显式失败（序列化转换表见 `src/utils/stringifyJson.md`）
 
 ## 相关模块
 

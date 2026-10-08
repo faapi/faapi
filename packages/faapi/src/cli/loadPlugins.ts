@@ -12,14 +12,12 @@ type LoadPluginsContext = Omit<
   'wrapHandler' | 'wrapUpgradeHandler'
 >;
 
-/** loadPlugins 返回的包装器收集结果 */
+/** loadPlugins 返回的包装器收集结果（任一插件失败即抛错，无 failures 字段） */
 export interface PluginLoadResult {
   /** 插件注册的 HTTP handler 包装器（按注册顺序） */
   handlerWrappers: Array<(original: RequestHandler) => RequestHandler>;
   /** 插件注册的 WS upgrade handler 包装器（按注册顺序） */
   upgradeWrappers: Array<(original: UpgradeHandler | undefined) => UpgradeHandler>;
-  /** 加载失败的插件（specifier + 原因）——调用方据此汇总报告或 fail-fast */
-  failures: Array<{ specifier: string; reason: string }>;
 }
 
 /**
@@ -31,14 +29,15 @@ export interface PluginLoadResult {
  * 插件可通过 ctx.wrapHandler / ctx.wrapUpgradeHandler 注册包装函数，
  * 本函数收集后返回，由调用方在 listen 之前应用。
  *
- * 错误口径（单一语义，不再静默降级）：
- * - 单个插件加载/setup 失败不中断其他插件，但失败明细收集进 `failures` 并
- *   在加载完成后统一 `console.error` 汇总——鉴权/CORS 类插件静默丢失等同裸奔，
- *   必须对业务方可见
- * - 非法声明（resolveDeclaration 失败）与其他插件错误同口径收集，不崩启动
- * - `path` 声明相对项目根目录解析（`pathToFileURL(path.resolve(rootDir, path))`），
- *   此前直接 import 会相对 faapi 包自身产物解析，几乎必然失败且报错指向
- *   node_modules 深处
+ * 错误口径（单一语义，失败即启动失败）：单个插件加载/setup 失败不中断其他插件
+ * （全部声明逐一尝试，失败明细聚齐），但聚合后**抛错**——鉴权/CORS 类插件静默
+ * 丢失等同裸奔，「console.error 汇总后继续启动」仍是带病运行的降级。声明了插件
+ * 就该可用：任一失败 → createAppBase 启动失败、listen 不执行，业务方修复声明或
+ * 显式 `enable: false` 移除。
+ *
+ * `path` 声明相对项目根目录解析（`pathToFileURL(path.resolve(rootDir, path))`），
+ * 此前直接 import 会相对 faapi 包自身产物解析，几乎必然失败且报错指向
+ * node_modules 深处。
  *
  * 本地 TS 插件（`{ path: './plugins/xxx' }`，`.ts` 源码）的加载路径：
  * - 探测源文件（原样 → `.ts`/`.js` → `/index.ts`/`/index.js`），Node ESM 不做
@@ -55,7 +54,8 @@ export interface PluginLoadResult {
  * @param ctx 插件上下文（不含 wrap 能力，由本函数注入）
  * @param rootDir 项目根目录（`path` 声明解析基准）
  * @param dist 产物目录（dev 为 `.faapi`，prod 为 `dist`——本地 TS 插件按需编译/产物复用基准）
- * @returns 包装器收集结果 + 失败清单
+ * @throws 任一插件失败（import 失败 / 缺 setup / setup 抛错 / 非法声明 / 重复声明）
+ *         时抛聚合错误（逐条明细），调用方（createAppBase）启动失败
  */
 export async function loadPlugins(
   declarations: PluginDeclaration[] | undefined,
@@ -68,7 +68,7 @@ export async function loadPlugins(
   const failures: Array<{ specifier: string; reason: string }> = [];
 
   if (!declarations || declarations.length === 0) {
-    return { handlerWrappers, upgradeWrappers, failures };
+    return { handlerWrappers, upgradeWrappers };
   }
 
   // 注入 wrap 能力到 ctx
@@ -85,7 +85,7 @@ export async function loadPlugins(
   const loaded = new Set<string>();
 
   for (const decl of declarations) {
-    // 非法声明与其他插件错误同口径：收集进 failures，不崩启动
+    // 非法声明与其他插件错误同口径：收集进 failures，聚齐后统一抛错
     let specifier: string;
     let options: unknown;
     let enable: boolean | undefined;
@@ -102,9 +102,9 @@ export async function loadPlugins(
     // enable 检查
     if (enable === false) continue;
 
-    // 去重
+    // 重复声明属配置错误：记入 failures（聚齐后统一抛错），不静默跳过
     if (loaded.has(specifier)) {
-      console.warn(`! Plugin already loaded: ${specifier}, skipping`);
+      failures.push({ specifier, reason: 'duplicate plugin declaration' });
       continue;
     }
     loaded.add(specifier);
@@ -128,15 +128,16 @@ export async function loadPlugins(
     }
   }
 
-  // 失败汇总：单一出口，业务方启动日志一眼可见（鉴权类插件静默丢失不可接受）
+  // 失败即启动失败（不降级）：全部声明已逐一尝试，明细聚齐后抛错——
+  // createAppBase 启动失败、listen 不执行
   if (failures.length > 0) {
-    console.error(
+    throw new Error(
       `[faapi] ${failures.length} plugin(s) failed to load:\n` +
         failures.map((f) => `  - ${f.specifier}: ${f.reason}`).join('\n'),
     );
   }
 
-  return { handlerWrappers, upgradeWrappers, failures };
+  return { handlerWrappers, upgradeWrappers };
 }
 
 /** TS 源文件后缀（需 esbuild 编译才能保证加载） */

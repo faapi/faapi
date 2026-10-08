@@ -209,27 +209,16 @@ describe('createLightComplete', () => {
     expect(completeCalls[1]!.maxRetries).toBe(0);
   });
 
-  // ─── 失败语义（可降级不可静默） ─────────────────────────
+  // ─── 失败语义（恒抛不降级，无降级出口） ─────────────────
 
-  it('传输失败：无 fallback → 原样抛 LLMProviderError', async () => {
+  it('传输失败：原样抛 LLMProviderError', async () => {
     const err = new LLMProviderError('HTTP 502: bad gateway', { status: 502 });
     const { provider } = createMockProvider([err]);
     const llm = channelWith(provider);
     await expect(llm.complete('x')).rejects.toBe(err);
   });
 
-  it('传输失败：声明 fallback → 返回降级值 + console.warn 兜底留痕（无 onFailure 时）', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const err = new LLMProviderError('HTTP 502: bad gateway', { status: 502 });
-    const { provider } = createMockProvider([err]);
-    const llm = channelWith(provider);
-    await expect(llm.complete('x', { fallback: 'uncategorized' })).resolves.toBe('uncategorized');
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0]?.[0])).toContain('502');
-  });
-
   it('传输失败：声明 onFailure → 收到 (err, attempts) 后错误照抛', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const onFailure = vi.fn();
     const err = new LLMProviderError('HTTP 503', { status: 503 });
     err.attempts = 3; // 模拟 provider 重试耗尽回填（openai.test.ts 覆盖回填本身）
@@ -238,18 +227,23 @@ describe('createLightComplete', () => {
     await expect(llm.complete('x', { onFailure })).rejects.toBe(err);
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(onFailure).toHaveBeenCalledWith(err, { attempts: 3 });
-    expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('fallback + onFailure 组合：降级生效，留痕走钩子（不再重复 warn）', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const onFailure = vi.fn();
+  it('onFailure 钩子自身抛错：console.error 留痕后错误照抛（不静默吞掉）', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onFailure = vi.fn(() => {
+      throw new Error('alert pipeline down');
+    });
     const err = new LLMProviderError('HTTP 500', { status: 500 });
     const { provider } = createMockProvider([err]);
     const llm = channelWith(provider);
-    await expect(llm.complete('x', { fallback: '', onFailure })).resolves.toBe('');
+    await expect(llm.complete('x', { onFailure })).rejects.toBe(err);
     expect(onFailure).toHaveBeenCalledTimes(1);
-    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('onFailure hook threw'),
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
   });
 
   it('响应无 attempts 时 onFailure 的 info.attempts = 1', async () => {
@@ -261,7 +255,7 @@ describe('createLightComplete', () => {
     expect(onFailure).toHaveBeenCalledWith(err, { attempts: 1 });
   });
 
-  it('超时错误分型：LLMTimeoutError 可编程区分（instanceof 链），无 fallback 时照抛', async () => {
+  it('超时错误分型：LLMTimeoutError 可编程区分（instanceof 链），恒抛', async () => {
     const err = new LLMTimeoutError('LLM request timed out after 1000ms');
     const { provider } = createMockProvider([err]);
     const llm = channelWith(provider);
@@ -275,15 +269,13 @@ describe('createLightComplete', () => {
     }
   });
 
-  it('用户取消（AgentAbortError）：不走 fallback、不触发 onFailure、不 warn', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('用户取消（AgentAbortError）：不触发 onFailure，原样抛出', async () => {
     const onFailure = vi.fn();
     const err = new AgentAbortError();
     const { provider } = createMockProvider([err]);
     const llm = channelWith(provider);
-    await expect(llm.complete('x', { fallback: 'fb', onFailure })).rejects.toBe(err);
+    await expect(llm.complete('x', { onFailure })).rejects.toBe(err);
     expect(onFailure).not.toHaveBeenCalled();
-    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   // ─── providers 缺省：按 llms 现场构建（worker 重建形态） ─────

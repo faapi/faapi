@@ -1,5 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { loadMiddlewaresFile } from './loadMiddlewares';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import {
+  loadMiddlewaresFile,
+  loadMergedMiddlewares,
+  invalidateMiddlewareCache,
+} from './loadMiddlewares';
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -14,40 +18,20 @@ describe('loadMiddlewaresFile', () => {
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
+    invalidateMiddlewareCache();
   });
 
-  it('文件不存在时返回空 bundle', async () => {
-    const bundle = await loadMiddlewaresFile(join(tempDir, 'middlewares.ts'));
-    expect(bundle.middlewares).toEqual([]);
-    expect(bundle.injectors).toEqual({});
+  it('文件不存在时显式抛错（不降级为空 bundle）', async () => {
+    await expect(loadMiddlewaresFile(join(tempDir, 'does-not-exist.ts'))).rejects.toThrow(
+      /Cannot find|ERR_MODULE_NOT_FOUND|not exist/i,
+    );
   });
 
-  it('加载失败时调用 console.error 输出原始错误（不再静默吞没）', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      const bundle = await loadMiddlewaresFile(join(tempDir, 'does-not-exist.ts'));
-      // 仍返回空 bundle，确保服务不崩溃
-      expect(bundle.middlewares).toEqual([]);
-      expect(bundle.injectors).toEqual({});
-      // 关键可见性：必须打印错误，否则鉴权中间件失效等同于裸奔
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-      const firstArg = errorSpy.mock.calls[0]?.[0];
-      expect(String(firstArg)).toContain('Failed to load middlewares');
-    } finally {
-      errorSpy.mockRestore();
-    }
-  });
-
-  it('运行时抛错的中间件模块也走 console.error 兜底', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      writeFileSync(join(tempDir, 'middlewares.ts'), `throw new Error('middleware init boom');`);
-      const bundle = await loadMiddlewaresFile(join(tempDir, 'middlewares.ts'));
-      expect(bundle.middlewares).toEqual([]);
-      expect(errorSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      errorSpy.mockRestore();
-    }
+  it('运行时抛错的中间件模块同样显式抛错（原始错误冒泡）', async () => {
+    writeFileSync(join(tempDir, 'middlewares.ts'), `throw new Error('middleware init boom');`);
+    await expect(loadMiddlewaresFile(join(tempDir, 'middlewares.ts'))).rejects.toThrow(
+      'middleware init boom',
+    );
   });
 
   it('加载有效的中间件数组（洋葱模型）', async () => {
@@ -101,60 +85,80 @@ export const injectors = {
     expect(bundle.injectors.user).toBeInstanceOf(Function);
   });
 
-  it('忽略非函数的中间件项', async () => {
+  it('中间件项非函数时抛 TypeError（含文件路径），不再忽略', async () => {
     writeFileSync(
       join(tempDir, 'middlewares.ts'),
       `
 export default [
   async (ctx, next) => { await next(); },
-  'invalid',       // 无效：不是函数
-  { name: 'obj' }, // 无效：不是函数
-  123,             // 无效：不是函数
+  'invalid',
 ];
 `,
     );
-    const bundle = await loadMiddlewaresFile(join(tempDir, 'middlewares.ts'));
-    expect(bundle.middlewares).toHaveLength(1);
+    await expect(loadMiddlewaresFile(join(tempDir, 'middlewares.ts'))).rejects.toThrow(
+      /every middleware must be a function.*middlewares\.ts/s,
+    );
   });
 
-  it('忽略非函数的注入器值', async () => {
+  it('注入器值非函数时抛 TypeError（含注入器名与文件路径），不再忽略', async () => {
     writeFileSync(
       join(tempDir, 'middlewares.ts'),
       `
 export const injectors = {
   db: () => ({ connected: true }),
   invalid: 'not-a-function',
-  bad: 123,
 };
 `,
     );
-    const bundle = await loadMiddlewaresFile(join(tempDir, 'middlewares.ts'));
-    expect(bundle.injectors.db).toBeInstanceOf(Function);
-    expect(bundle.injectors.invalid).toBeUndefined();
-    expect(bundle.injectors.bad).toBeUndefined();
+    await expect(loadMiddlewaresFile(join(tempDir, 'middlewares.ts'))).rejects.toThrow(
+      /injector "invalid" must be a function/,
+    );
   });
 
-  it('default 不是数组时返回空', async () => {
+  it('default 不是数组时抛 TypeError（不再返回空 bundle）', async () => {
     writeFileSync(
       join(tempDir, 'middlewares.ts'),
       `
 export default { name: 'not-an-array' };
 `,
     );
-    const bundle = await loadMiddlewaresFile(join(tempDir, 'middlewares.ts'));
-    expect(bundle.middlewares).toEqual([]);
-    expect(bundle.injectors).toEqual({});
+    await expect(loadMiddlewaresFile(join(tempDir, 'middlewares.ts'))).rejects.toThrow(
+      /must export an array/,
+    );
   });
 
-  it('injectors 不是对象时返回空', async () => {
+  it('injectors 不是对象时抛 TypeError（不再返回空 bundle）', async () => {
     writeFileSync(
       join(tempDir, 'middlewares.ts'),
       `
 export const injectors = 'not-an-object';
 `,
     );
-    const bundle = await loadMiddlewaresFile(join(tempDir, 'middlewares.ts'));
-    expect(bundle.middlewares).toEqual([]);
-    expect(bundle.injectors).toEqual({});
+    await expect(loadMiddlewaresFile(join(tempDir, 'middlewares.ts'))).rejects.toThrow(
+      /"injectors" export must be an object/,
+    );
+  });
+});
+
+describe('loadMergedMiddlewares 失败不缓存', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `faapi-mw-merge-${Date.now()}`);
+    mkdirSync(tempDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+    invalidateMiddlewareCache();
+  });
+
+  it('加载失败每次调用显式抛错，不缓存空 bundle 静默返回', async () => {
+    const mwPath = join(tempDir, 'middlewares.ts');
+    writeFileSync(mwPath, `throw new Error('broken at first');`);
+    // 旧语义：首次失败后缓存空 bundle，后续调用静默返回空（鉴权失效无感知）。
+    // 新语义：每次调用都抛原始错误（dev 下经 watcher cache-bust 重新加载修复后的文件）
+    await expect(loadMergedMiddlewares([mwPath])).rejects.toThrow('broken at first');
+    await expect(loadMergedMiddlewares([mwPath])).rejects.toThrow('broken at first');
   });
 });

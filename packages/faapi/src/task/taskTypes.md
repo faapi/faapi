@@ -34,16 +34,16 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 `TaskContext.log?: Logger` 为可选字段（直接构造 TaskContext 的测试/自定义执行器可不传；框架两条执行路径均注入）：scope `task:<name>`，字段自动携带 `jobId`/`task`/`attempt`，输出走 `config.log` 全局管道。两条路径语义一致：
 
 - **进程内路径**：`createLogger` 直接构造，条目直写全局管道
-- **隔离路径**（声明 `timeoutMs`）：日志配置（level/scope/fields，纯数据）随派发下发，worker 内联日志器做级别预过滤后把条目经 `{ type: 'log' }` 消息回传宿主 `onLog`（即 `writeLogEntry`）统一输出——自定义 sink 同样覆盖隔离任务；取消判定后（宽限期内）到达的条目不采纳（超时判定即终局）；fields 不可克隆时丢弃 fields 保底输出 warning 标记（已记入项目根 `fallback.md`）
+- **隔离路径**（声明 `timeoutMs`）：日志配置（level/scope/fields，纯数据）随派发下发，worker 内联日志器做级别预过滤后把条目经 `{ type: 'log' }` 消息回传宿主 `onLog`（即 `writeLogEntry`）统一输出——自定义 sink 同样覆盖隔离任务；取消判定后（宽限期内）到达的条目不采纳（超时判定即终局）；fields 不可克隆（postMessage 抛 `DataCloneError`）时按执行错误处理——一条日志的字段失败终止任务执行，与 progress 同语义（显式失败优于静默丢字段；业务侧将 fields 保持为可克隆纯数据即可避免）
 
 详见 `src/logger/logger.md`。
 
 ## TaskContext.llm（轻量 LLM 补全通道）
 
-`TaskContext.llm?: LlmComplete` 为可选字段（`@faapi/agent` 插件加载且 `agent.llms` 可解析时注入）：一次性 LLM 补全（分类/蒸馏/摘要/改写等）的官方出口——复用 `agent.llms` 同源配置与 provider 重试引擎，失败钩子/降级内建，详见 `@faapi/agent` 的 lightComplete.md。两条路径：
+`TaskContext.llm?: LlmComplete` 为可选字段（`@faapi/agent` 插件加载且 `agent.llms` 可解析时注入）：一次性 LLM 补全（分类/蒸馏/摘要/改写等）的官方出口——复用 `agent.llms` 同源配置与 provider 重试引擎，失败钩子内建、传输失败恒抛（不提供降级出口），详见 `@faapi/agent` 的 lightComplete.md。两条路径：
 
 - **进程内路径**：任务执行时刻从 `registries.llm` store 惰性读取（插件晚于队列构造注册，构造期快照会漏）——与 agent 循环共享同一 providers 单例
-- **隔离路径**（声明 `timeoutMs`）：channel 是函数闭包不可跨线程——`agent.llms` 纯数据快照（`TaskQueueDeps.llms`，可结构化克隆）随派发下发，worker 内动态加载 `@faapi/agent` 重建实例（`workerEntry.buildLlmChannel`，specifier 变量拼接、与 `loadTaskDriver` 加载驱动子包同策略）。`@faapi/agent` 不可解析时 warn 留痕、`taskCtx.llm` 为 `undefined`，任务照常执行（降级已记入项目根 `fallback.md`）
+- **隔离路径**（声明 `timeoutMs`）：channel 是函数闭包不可跨线程——`agent.llms` 纯数据快照（`TaskQueueDeps.llms`，可结构化克隆）随派发下发，worker 内动态加载 `@faapi/agent` 重建实例（`workerEntry.buildLlmChannel`，specifier 变量拼接、与 `loadTaskDriver` 加载驱动子包同策略）。**llms 已配置但 `@faapi/agent` 不可解析 → 显式抛错**（含安装指引），任务失败——配置声明了能力而环境不能交付属环境错误，fail fast；llms 未配置时不触发加载、`taskCtx.llm` 为 `undefined`（能力不存在，非降级）
 
 工具循环场景仍走 `registries.agent` 组装 `Agent`（见下节）——`llm` 只承接一次性补全，两者互补。
 

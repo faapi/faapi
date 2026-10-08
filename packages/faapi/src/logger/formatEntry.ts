@@ -1,3 +1,4 @@
+import { stringifyJson } from '../utils/stringifyJson';
 import type { LogEntry } from './loggerTypes';
 
 /**
@@ -8,7 +9,7 @@ import type { LogEntry } from './loggerTypes';
  * 循环依赖（logger.ts 编排 fileSink，fileSink 只依赖格式化）。
  */
 
-/** fields 值序列化：Error 实例展开为 { name, message, stack }（pino err serializer 惯例），其余原样交给 JSON.stringify */
+/** fields 值序列化：Error 实例展开为 { name, message, stack }（pino err serializer 惯例），其余原样交给 stringifyJson */
 function serializeFieldValue(value: unknown): unknown {
   if (value instanceof Error) {
     return { name: value.name, message: value.message, stack: value.stack };
@@ -16,7 +17,15 @@ function serializeFieldValue(value: unknown): unknown {
   return value;
 }
 
-/** 默认文本格式：[ISO] LEVEL [scope] message fields-JSON */
+/**
+ * 默认文本格式：[ISO] LEVEL [scope] message fields-JSON
+ *
+ * fields 序列化走框架统一出口 stringifyJson：Date → 毫秒时间戳、BigInt → 字符串、
+ * Map/Set → 数组、NaN/±Infinity → 字符串、RegExp → 字符串——原生 JSON.stringify
+ * 会抛错（BigInt）或静默丢数据（Map/Set/RegExp/NaN）的类型在此全部正确输出。
+ * 循环引用等结构错误抛 TypeError 冒泡，不降级——「日志调用永不抛错」契约已废除，
+ * 坏 fields 属业务数据缺陷，与全框架 JSON 序列化契约同口径显式失败。
+ */
 export function formatEntry(entry: LogEntry): string {
   let line = `[${entry.time}] ${entry.level.toUpperCase()} `;
   if (entry.scope) line += `[${entry.scope}] `;
@@ -25,12 +34,7 @@ export function formatEntry(entry: LogEntry): string {
     const plain = Object.fromEntries(
       Object.entries(entry.fields).map(([k, v]) => [k, serializeFieldValue(v)]),
     );
-    try {
-      line += ` ${JSON.stringify(plain)}`;
-    } catch (err) {
-      // 循环引用等不可序列化 fields：降级为提示文本，日志调用不抛错（fallback.md）
-      line += ` [unserializable fields: ${err instanceof Error ? err.message : String(err)}]`;
-    }
+    line += ` ${stringifyJson(plain)}`;
   }
   return line;
 }

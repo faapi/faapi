@@ -231,13 +231,9 @@ export async function ensureMiddlewaresCompiled(
 
   for (const mwPath of middlewarePaths) {
     const sourcePath = prodPathToSourcePath(mwPath, rootDir, dist);
-    try {
-      await ensureCompiled(sourcePath, rootDir, dist);
-    } catch (err) {
-      // 中间件编译失败不阻断请求——loadMiddlewaresFile 对 import 失败已有
-      // console.error + 空 bundle 降级语义（鉴权失效由 onError 感知），此处保持一致
-      console.error(`[faapi] Failed to compile middleware source ${sourcePath}:`, err);
-    }
+    // 编译失败直接冒泡不降级——中间件产物缺失时 loadMiddlewaresFile 的 import 必然
+    // 失败，语义层显式失败为请求 500（onError 可感知）；dev watcher 修复后自愈
+    await ensureCompiled(sourcePath, rootDir, dist);
   }
 }
 

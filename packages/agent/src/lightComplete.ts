@@ -10,8 +10,9 @@ import { createProvider } from './provider';
  *
  * 字符串进字符串出，复用 `agent.llms` 同源配置与 provider 重试引擎
  * （maxRetries / 指数退避 / Retry-After / 429·5xx 判定 / 超时），
- * 只统一传输机制，策略（重试次数、降级还是抛）留给调用方按场景声明。
- * 失败可降级不可静默：`fallback` 命中且未声明 `onFailure` 时框架 `console.warn` 兜底留痕。
+ * 只统一传输机制，策略（重试次数、失败后怎么办）留给调用方按场景声明。
+ * 失败恒抛不降级：传输失败（重试耗尽）原样抛 `LLMProviderError`——框架不提供
+ * 降级出口，需要降级语义的调用方在业务侧 try/catch 自行实现（降级是业务决策）。
  *
  * 接入点：
  * - handler `llm` 注入参数 / `taskCtx.llm`——由 [plugin](./plugin.md) 注册到 `registries.llm`
@@ -77,7 +78,7 @@ export function createLightComplete(deps: {
         });
         return response.message.content ?? '';
       } catch (err) {
-        // 用户取消不是故障：不走 fallback、不触发钩子、不 warn（与 reactLoop 语义一致）
+        // 用户取消不是故障：不触发钩子（与 reactLoop 语义一致）
         if (err instanceof AgentAbortError) throw err;
         // 非 LLM 传输错误（provider 实现异常等）不属于本通道的失败语义，原样冒泡
         if (!(err instanceof LLMProviderError)) throw err;
@@ -97,34 +98,25 @@ function buildProviders(llms: Record<string, LlmConfig>): Map<string, LLMProvide
 }
 
 /**
- * 传输失败处理（重试耗尽后到达）：留痕 + 降级/抛出
+ * 传输失败处理（重试耗尽后到达）：钩子留痕 + 恒抛（无降级出口）
  *
- * - `onFailure` 声明 → 调用（留痕点，自身抛错被忽略——副作用钩子不改变失败语义）
- * - `fallback` 声明 → 返回降级值；无 `onFailure` 时 `console.warn` 兜底（不可静默）
- * - 均未声明 → 原样抛出（调用方 try/catch 自主处理）
+ * - `onFailure` 声明 → 调用（留痕点，自身抛错 console.error 留痕——副作用钩子
+ *   不改变失败语义，但静默吞掉会让业务方误以为告警管道健康）
+ * - 未声明 → 原样抛出
  */
 function handleFailure(
   err: LLMProviderError,
   options: LlmCompleteOptions | undefined,
 ): Promise<string> {
-  const { onFailure, fallback } = options ?? {};
+  const { onFailure } = options ?? {};
   const attempts = err.attempts ?? 1;
 
   if (onFailure) {
     try {
       onFailure(err, { attempts });
-    } catch {
-      // 钩子是副作用，自身抛错被忽略（与 lifecycle.onError 同语义）
+    } catch (hookErr) {
+      console.error('[faapi/agent] llm.complete onFailure hook threw:', hookErr);
     }
-  }
-
-  if (fallback !== undefined) {
-    if (!onFailure) {
-      console.warn(
-        `[faapi/agent] llm.complete fallback engaged after ${attempts} attempt(s): ${err.message}`,
-      );
-    }
-    return Promise.resolve(fallback);
   }
 
   return Promise.reject(err);

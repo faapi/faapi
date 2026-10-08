@@ -24,26 +24,22 @@ describe('loadPlugins', () => {
   });
 
   it('enable: false 的插件跳过', async () => {
-    const { failures } = await loadPlugins([{ package: 'nonexistent', enable: false }], mockCtx);
-    // enable: false 跳过 import，不进 failures
-    expect(failures).toEqual([]);
+    await loadPlugins([{ package: 'nonexistent', enable: false }], mockCtx);
   });
 
-  it('加载失败的插件进入 failures（不再纯静默 warn）', async () => {
-    const { failures } = await loadPlugins(['nonexistent-package-xyz'], mockCtx);
-    expect(failures).toHaveLength(1);
-    expect(failures[0]!.specifier).toBe('nonexistent-package-xyz');
-    expect(failures[0]!.reason).toBeTruthy();
-  });
-
-  it('非法声明进 failures 而非崩掉启动', async () => {
-    const { failures } = await loadPlugins(
-      [{ foo: 'bar' } as unknown as NonNullable<Parameters<typeof loadPlugins>[0]>[number]],
-      mockCtx,
+  it('加载失败的插件聚合抛错（含 specifier 与原因），启动失败', async () => {
+    await expect(loadPlugins(['nonexistent-package-xyz'], mockCtx)).rejects.toThrow(
+      /1 plugin\(s\) failed to load[\s\S]*nonexistent-package-xyz/,
     );
-    expect(failures).toHaveLength(1);
-    expect(failures[0]!.specifier).toContain('foo');
-    expect(failures[0]!.reason).toContain('Invalid plugin declaration');
+  });
+
+  it('非法声明聚合抛错（含 Invalid plugin declaration 原因）', async () => {
+    await expect(
+      loadPlugins(
+        [{ foo: 'bar' } as unknown as NonNullable<Parameters<typeof loadPlugins>[0]>[number]],
+        mockCtx,
+      ),
+    ).rejects.toThrow(/Invalid plugin declaration/);
   });
 
   it('setup 缺失的插件进 failures', async () => {
@@ -51,9 +47,9 @@ describe('loadPlugins', () => {
     mkdirSync(tempDir, { recursive: true });
     writeFileSync(join(tempDir, 'no-setup.js'), `export default { name: 'no-setup' };\n`);
     try {
-      const { failures } = await loadPlugins([{ path: './no-setup.js' }], mockCtx, tempDir);
-      expect(failures).toHaveLength(1);
-      expect(failures[0]!.reason).toContain('no setup function');
+      await expect(loadPlugins([{ path: './no-setup.js' }], mockCtx, tempDir)).rejects.toThrow(
+        /no setup function/,
+      );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -67,8 +63,7 @@ describe('loadPlugins', () => {
       `export default { name: 'my-plugin', setup() { globalThis.__faapiPluginRan = true; } };\n`,
     );
     try {
-      const { failures } = await loadPlugins([{ path: './my-plugin.js' }], mockCtx, tempDir);
-      expect(failures).toEqual([]);
+      await loadPlugins([{ path: './my-plugin.js' }], mockCtx, tempDir);
       expect((globalThis as unknown as Record<string, boolean>).__faapiPluginRan).toBe(true);
     } finally {
       delete (globalThis as unknown as Record<string, boolean>).__faapiPluginRan;
@@ -84,12 +79,10 @@ describe('loadPlugins', () => {
       `export default { name: 'good', setup() { globalThis.__faapiGoodPlugin = true; } };\n`,
     );
     try {
-      const { failures } = await loadPlugins(
-        ['nonexistent-package-xyz', { path: './good.js' }],
-        mockCtx,
-        tempDir,
-      );
-      expect(failures).toHaveLength(1);
+      // 失败聚齐后统一抛错，但失败前的插件已正常加载（不中断其他插件）
+      await expect(
+        loadPlugins(['nonexistent-package-xyz', { path: './good.js' }], mockCtx, tempDir),
+      ).rejects.toThrow(/nonexistent-package-xyz/);
       expect((globalThis as unknown as Record<string, boolean>).__faapiGoodPlugin).toBe(true);
     } finally {
       delete (globalThis as unknown as Record<string, boolean>).__faapiGoodPlugin;
@@ -97,17 +90,16 @@ describe('loadPlugins', () => {
     }
   });
 
-  it('元组声明带 options（不存在的包进 failures）', async () => {
-    const { failures } = await loadPlugins(
-      [['nonexistent-package-xyz', { key: 'value' }]],
-      mockCtx,
-    );
-    expect(failures).toHaveLength(1);
+  it('元组声明带 options（不存在的包聚合抛错）', async () => {
+    await expect(
+      loadPlugins([['nonexistent-package-xyz', { key: 'value' }]], mockCtx),
+    ).rejects.toThrow(/nonexistent-package-xyz/);
   });
 
-  it('重复插件去重（不 crash，失败只记一次）', async () => {
-    const { failures } = await loadPlugins(['nonexistent-a', 'nonexistent-a'], mockCtx);
-    expect(failures).toHaveLength(1);
+  it('重复声明属配置错误：记入失败明细并聚合抛错', async () => {
+    await expect(loadPlugins(['nonexistent-a', 'nonexistent-a'], mockCtx)).rejects.toThrow(
+      /2 plugin\(s\) failed to load[\s\S]*duplicate plugin declaration/s,
+    );
   });
 });
 
@@ -160,14 +152,8 @@ export default {
     setDevOnDemandEnabled(true);
     setDevDist('.faapi');
 
-    const { failures } = await loadPlugins(
-      [{ path: './plugins/local-plugin' }],
-      mockCtx,
-      tempDir,
-      '.faapi',
-    );
+    await loadPlugins([{ path: './plugins/local-plugin' }], mockCtx, tempDir, '.faapi');
 
-    expect(failures).toEqual([]);
     // 插件 setup 执行且 src 内依赖（无扩展名 import）可用
     expect((globalThis as unknown as Record<string, unknown>).__localPluginGreeting).toBe(
       'hello-from-src',
@@ -189,27 +175,15 @@ export default {
       'utf-8',
     );
 
-    const { failures } = await loadPlugins(
-      [{ path: './plugins/local-plugin' }],
-      mockCtx,
-      tempDir,
-      '.faapi',
-    );
-    expect(failures).toEqual([]);
+    await loadPlugins([{ path: './plugins/local-plugin' }], mockCtx, tempDir, '.faapi');
   });
 
   it('prod 模式：build 固化产物后直接 import 产物', async () => {
     // 模拟 build 步骤 2.5：编译本地插件到 dist
     await compileProjectModules([join(tempDir, 'plugins', 'local-plugin.ts')], tempDir, 'dist');
 
-    const { failures } = await loadPlugins(
-      [{ path: './plugins/local-plugin' }],
-      mockCtx,
-      tempDir,
-      'dist',
-    );
+    await loadPlugins([{ path: './plugins/local-plugin' }], mockCtx, tempDir, 'dist');
 
-    expect(failures).toEqual([]);
     expect((globalThis as unknown as Record<string, unknown>).__localPluginGreeting).toBe(
       'hello-from-src',
     );
@@ -221,28 +195,19 @@ export default {
     const later = new Date(Date.now() + 10_000);
     utimesSync(join(tempDir, 'plugins', 'local-plugin.ts'), later, later);
 
-    const { failures } = await loadPlugins(
-      [{ path: './plugins/local-plugin' }],
-      mockCtx,
-      tempDir,
-      'dist',
-    );
-
-    expect(failures).toHaveLength(1);
-    expect(failures[0]!.reason).toContain('faapi build');
+    await expect(
+      loadPlugins([{ path: './plugins/local-plugin' }], mockCtx, tempDir, 'dist'),
+    ).rejects.toThrow(/faapi build/);
   });
 
-  it('探测失败时 failures 带候选文件与修复指引', async () => {
-    const { failures } = await loadPlugins(
-      [{ path: './plugins/nope' }],
-      mockCtx,
-      tempDir,
-      '.faapi',
-    );
-
-    expect(failures).toHaveLength(1);
-    expect(failures[0]!.reason).toContain('Cannot find local plugin');
-    expect(failures[0]!.reason).toContain(join(tempDir, 'plugins', 'nope.ts'));
+  it('探测失败时抛错带候选文件与修复指引', async () => {
+    await expect(
+      loadPlugins([{ path: './plugins/nope' }], mockCtx, tempDir, '.faapi'),
+    ).rejects.toThrow(/Cannot find local plugin/);
+    // toThrow(string) 为子串匹配，直接断言候选文件路径出现在错误信息中
+    await expect(
+      loadPlugins([{ path: './plugins/nope' }], mockCtx, tempDir, '.faapi'),
+    ).rejects.toThrow(join(tempDir, 'plugins', 'nope.ts'));
   });
 
   it('src 内插件走打平产物（与 routes 同一运行时对象）', async () => {
@@ -259,14 +224,8 @@ export default {
       'utf-8',
     );
 
-    const { failures } = await loadPlugins(
-      [{ path: './src/plugins/inner-plugin' }],
-      mockCtx,
-      tempDir,
-      '.faapi',
-    );
+    await loadPlugins([{ path: './src/plugins/inner-plugin' }], mockCtx, tempDir, '.faapi');
 
-    expect(failures).toEqual([]);
     expect((globalThis as unknown as Record<string, unknown>).__innerPluginRan).toBe(true);
     // src 内产物打平前缀（去 src/），与 compileDevRoutes 产物路径一致
     expect(existsSync(join(tempDir, '.faapi', 'plugins', 'inner-plugin.js'))).toBe(true);

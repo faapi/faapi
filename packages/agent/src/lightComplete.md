@@ -1,6 +1,6 @@
 # lightComplete（轻量 LLM 补全通道）
 
-一句话概括：agent 工具循环之外的一次性 LLM 补全官方通道——字符串进字符串出，复用 `agent.llms` 同源配置与 provider 重试引擎，超时/错误分型/失败钩子内建，降级永不静默。
+一句话概括：agent 工具循环之外的一次性 LLM 补全官方通道——字符串进字符串出，复用 `agent.llms` 同源配置与 provider 重试引擎，超时/错误分型/失败钩子内建，传输失败恒抛（无降级出口）。
 
 ## 为什么需要
 
@@ -11,8 +11,8 @@ ReAct 循环（`agent.run`）之外的「一次性补全」是高频场景：分
 1. 连接 `agent.llms` 同源配置，项目零新增配置；
 2. 复用 provider 重试引擎（maxRetries / 指数退避 / Retry-After / 429·5xx 判定）；
 3. 默认超时（60s）+ 错误分型（`LLMTimeoutError` 与 HTTP `status` 可编程区分）；
-4. 必带失败钩子 `onFailure`——「失败留痕/降级」是默认行为而非各项目纪律（约定：LLM 失败可降级不可静默——`fallback` 命中且未声明 `onFailure` 时框架兜底 `console.warn`）；
-5. 重试次数（`maxRetries`）、失败后降级（`fallback`）还是抛，由调用方按调用声明（导入切章要降级、面向用户的单发要直接回人，框架不代劳）。
+4. 失败钩子 `onFailure`——留痕/告警的挂点内建（钩子自身抛错 `console.error` 留痕，不静默吞掉）；
+5. 失败恒抛 `LLMProviderError`，框架不提供降级出口——需要降级语义的调用方在业务侧 try/catch 自行实现（降级是业务决策，不由框架代劳；导入切章要降级、面向用户的单发要直接回人，均属调用方策略）。
 
 ## 使用场景
 
@@ -29,10 +29,12 @@ export async function POST(llm: LlmComplete, body: { title: string }) {
       model: 'deepseek/deepseek-chat',       // llms key / provider/model / 纯 model 名，同 agent.run 解析规则
       system: '输出分类标签，不要解释。',
       maxRetries: 1,                          // 场景声明：导入类要快失败
-      fallback: 'uncategorized',              // 场景声明：失败降级（框架兜底 warn 留痕）
+      onFailure: (err) => metrics.incr('classify.fail'),  // 留痕/告警挂点
     });
     return { category };
   } catch (err) {
+    // 降级是业务决策，业务侧自行实现（框架恒抛不代劳）
+    if (err instanceof LLMProviderError) return { category: 'uncategorized' };
     if (err instanceof LLMTimeoutError) { /* 超时分型处理 */ }
     if (err instanceof LLMProviderError && err.status === 502) { /* 网关分型 */ }
     throw err;
@@ -60,8 +62,8 @@ export async function run(payload, taskCtx) {
 | model 解析 | 复用 agent 的字符串 key 规则（llms key / `provider/model` / 纯 model 名全 provider 查找，歧义抛错）；缺省回落 llms 第一个 provider 的第一个 model |
 | 超时 | `options.timeoutMs` > 目标 provider 的 `LlmConfig.timeoutMs` > 默认 60_000 |
 | 重试 | `options.maxRetries` > `LlmConfig.maxRetries`（默认 2，0 关闭）；429/5xx/网络错误/超时计入重试 |
-| 传输失败（重试耗尽） | 声明 `onFailure` → 调用后抛 `LLMProviderError`；声明 `fallback` → 返回 fallback（无 `onFailure` 时框架 `console.warn` 兜底留痕）；两者独立可组合 |
-| 用户取消（`options.signal`） | 恒抛 `AgentAbortError`——取消不是故障：不走 fallback、不触发 onFailure、不 warn |
+| 传输失败（重试耗尽） | **恒抛 `LLMProviderError`**（无降级出口）；声明 `onFailure` → 抛出前调用（留痕点，钩子自身抛错 `console.error` 留痕） |
+| 用户取消（`options.signal`） | 恒抛 `AgentAbortError`——取消不是故障，不触发 onFailure |
 | 配置错误（model 解析失败 / llms 空） | 立即抛 `AgentError`——编程/配置错误不重试、不降级 |
 | 响应携带 | `LLMResponse.attempts`（实际 HTTP 尝试次数，≥1）供钩子/日志观测重试 |
 
