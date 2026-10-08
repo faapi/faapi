@@ -192,4 +192,63 @@ describe('createToolSchemaResolver', () => {
       expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('agent 派发入参 schema（AgentMetadata 形状）', () => {
+    /** agent 完整元数据——无 functionName,结构满足 resolver 的最小参数 */
+    const agentEntryMeta = {
+      name: 'chapter-writer',
+      filePath: 'dist/agents/chapter-writer/handler.js',
+      inputTypeName: 'Input',
+    };
+
+    it('AgentMetadata 形状（无 functionName）可直接解析', async () => {
+      vi.mocked(loadToolSchema).mockResolvedValue({
+        schema: z.object({ novelId: z.string() }),
+        schemaName: 'InputSchema',
+      });
+
+      const resolveAgentInputSchema = createToolSchemaResolver({ rootDir: '/project' });
+      const res = await resolveAgentInputSchema(agentEntryMeta);
+
+      expect(vi.mocked(loadToolSchema)).toHaveBeenCalledWith(agentEntryMeta, '/project');
+      expect(res).toBeDefined();
+      expect(res!.jsonSchema.type).toBe('object');
+      expect((res!.jsonSchema as Record<string, unknown>).properties).toMatchObject({
+        novelId: { type: 'string' },
+      });
+      expect(res!.validate({ novelId: 'n1' })).toEqual({
+        ok: true,
+        value: { novelId: 'n1' },
+      });
+    });
+
+    it('同一实例服务 tool 与 agent 入参,缓存按 zod 路径分流', async () => {
+      vi.mocked(loadToolSchema)
+        .mockResolvedValueOnce({
+          schema: z.object({ city: z.string() }),
+          schemaName: 'TestInputSchema',
+        })
+        .mockResolvedValueOnce({
+          schema: z.object({ novelId: z.string() }),
+          schemaName: 'InputSchema',
+        });
+
+      const resolveSchema = createToolSchemaResolver({ rootDir: '/project' });
+      const toolRes = await resolveSchema(testTool);
+      const agentRes = await resolveSchema(agentEntryMeta);
+
+      expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(2);
+      expect((toolRes!.jsonSchema as Record<string, unknown>).properties).toMatchObject({
+        city: { type: 'string' },
+      });
+      expect((agentRes!.jsonSchema as Record<string, unknown>).properties).toMatchObject({
+        novelId: { type: 'string' },
+      });
+
+      // 复调各自命中缓存（键 = zodPath#inputTypeName,路径不同不冲突）
+      await resolveSchema(testTool);
+      await resolveSchema(agentEntryMeta);
+      expect(vi.mocked(loadToolSchema)).toHaveBeenCalledTimes(2);
+    });
+  });
 });

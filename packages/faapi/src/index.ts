@@ -86,7 +86,7 @@ export { loadTaskDriver } from './task/loadTaskDriver';
 export { createCronScheduler, type CronScheduler } from './task/cronScheduler';
 export { scanTasks, TASK_PATTERNS } from './task/scanTasks';
 export type { ToolModule } from './loader/loadToolModule';
-export type { ToolSchemaModule } from './loader/loadToolSchema';
+export type { ToolSchemaModule, SchemaSourceRef } from './loader/loadToolSchema';
 // 注册表访问器（单例模块,createAppBase 水合后可直接 import 调用）
 // getAgent 返回 AgentCore(LLM 可见字段);getAgentEntry 返回 AgentMetadata(含 filePath,声明文件定位)
 export {

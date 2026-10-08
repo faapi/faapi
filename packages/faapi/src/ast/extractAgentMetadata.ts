@@ -82,6 +82,15 @@ export interface AgentCore {
 export interface AgentMetadata extends AgentCore {
   /** 源码相对路径(从 `pathMeta` 透传)——声明文件定位与清单可观测性用 */
   filePath: string;
+  /**
+   * 派发入参 schema 声明(handler.ts 顶层 `interface Input` / `type Input` 检测)
+   *
+   * 声明时为 `'Input'`——[generateAgentArtifacts](../cli/generateAgentArtifacts.md)
+   * 据此生成 agent 的 zod.js,`@faapi/agent` 派发该 agent 时用富 JSON Schema 替代
+   * 默认单字段 `input` 交接单并在执行前校验;未声明为 `undefined`,派发行为不变
+   * (完全向后兼容)。DB-driven skill 无源文件,恒为 `undefined`。
+   */
+  inputTypeName?: string;
 }
 
 /**
@@ -112,6 +121,8 @@ interface FoundConfig {
  * 1. **JSDoc 描述** — config 导出的 JSDoc 自由文本
  * 2. **`@agent` 覆盖名** — JSDoc 中 `@agent` 标签后的文本，覆盖目录推导的 `name`
  * 3. **config 块字段** — systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription
+ * 4. **派发入参 schema 声明** — 顶层 `interface Input` / `type Input` 名字检测（记 `inputTypeName`，
+ *    类型提取由 generateAgentArtifacts 阶段完成）
  *
  * 不提取(由 `pathMeta` 透传)：`filePath`
  *
@@ -213,7 +224,36 @@ export function extractAgentMetadata(
     model,
     maxTurns,
     inputDescription,
+    inputTypeName: findInputDeclaration(sourceFile) ? 'Input' : undefined,
   };
+}
+
+/**
+ * 检测派发入参 schema 声明：源文件顶层是否存在名为 `Input` 的 interface / type alias
+ *
+ * 固定约定名——tool 的入参类型名由「函数第一参数的类型标注」定位，agent 无函数入参
+ * （声明式执行），固定名是唯一可预测的约定；`Input` 之外的类型导出（如 `Payload`）
+ * 不构成声明。
+ *
+ * - 导出与否不限——AST 按名字在顶层 statements 定位声明，与 tool 的参数类型未导出
+ *   也能提取一致（zod.js 自包含，不依赖运行时导出）
+ * - 同名非类型导出（`const Input` / class）与 import 进来的同名类型（无本地声明）
+ *   均不构成声明
+ * - 只做名字检测，不做类型解析——AST → RuntimeType 提取由 generateAgentArtifacts
+ *   阶段经 extractTypeInfo 完成（复用其已创建的 Program）
+ */
+function findInputDeclaration(sourceFile: ts.SourceFile): boolean {
+  let found = false;
+  ts.forEachChild(sourceFile, (node) => {
+    if (found) return;
+    if (
+      (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) &&
+      node.name.text === 'Input'
+    ) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 /**

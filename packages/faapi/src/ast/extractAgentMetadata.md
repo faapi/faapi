@@ -1,6 +1,6 @@
 # extractAgentMetadata
 
-一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、`@agent` 覆盖名、config 块字段(systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
+一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、`@agent` 覆盖名、config 块字段(systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription)与派发入参 schema 声明(`Input` 导出检测)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
 
 ## 为什么需要
 
@@ -8,6 +8,7 @@
 
 1. **JSDoc 描述 + `@agent` 覆盖名**——agent 名对 LLM 可见，描述让 LLM 理解 agent 用途。`@agent` 标签允许覆盖目录推导的默认名。
 2. **config 块字段**——`systemPrompt`(系统提示词,与 `systemPromptFile` 互斥二选一)、`systemPromptFile`(相对产物 resources 目录的提示词文件路径,运行时读文件内容)、`tools`(agent 显式声明可用 tool 引用列表)、`agents`(可调用的其他 agent 列表)、`model`(LLM 模型)、`maxTurns`(最大对话轮数)、`inputDescription`(agent-as-tool 派发交接单说明)。这些字段在运行时由 Agent 类/reactLoop 消费。
+3. **派发入参 schema 声明**——handler.ts 顶层声明名为 `Input` 的 interface / type alias 时，`AgentMetadata.inputTypeName` 记为 `'Input'`，[generateAgentArtifacts](../cli/generateAgentArtifacts.md) 据此生成 agent 的 zod.js，`@faapi/agent` 派发该 agent 时用富 JSON Schema 替代默认单字段 `input`。
 
 这些信息必须用 TypeScript AST 提取(JSDoc 和对象字面量在运行时被擦除)。本模块在 dev/build 启动时对每个 `AgentManifest` 调用一次，把路径推导字段(name/filePath)与 AST 提取字段(description/config 块字段)合并为完整的 `AgentMetadata`，供 [generateAgentArtifacts](../cli/generateAgentArtifacts.md) 直接序列化。
 
@@ -16,9 +17,9 @@
 `AgentCore` 描述 LLM 可见字段，`AgentMetadata` 继承 `AgentCore` 额外含 `filePath`：
 
 - **`AgentCore`** —— `name` / `description` / `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription`。文件型 agent 与 DB-driven skill 都实现此接口。`agentRegistry.getAgent` 返回此类型。
-- **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`(声明文件定位用)。仅文件型 agent 实现。`agentRegistry.getAgentEntry` 返回此类型。
+- **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`(声明文件定位)与 `inputTypeName`(派发入参 schema 定位,声明 `Input` 时为 `'Input'`)。仅文件型 agent 实现。`agentRegistry.getAgentEntry` 返回此类型。
 
-DB-driven skill 不实现 `AgentMetadata`(无源文件)，只实现 `AgentCore` 存入 `skillRegistry`。
+DB-driven skill 不实现 `AgentMetadata`(无源文件)，只实现 `AgentCore` 存入 `skillRegistry`——skill 无编译期产物，天然没有 `inputTypeName`，派发时走单字段 `input` 交接单模式。
 
 与 [extractToolMetadata](./extractToolMetadata.md) 的 `ToolCore` / `ToolMetadata` 分层同构。
 
@@ -106,6 +107,40 @@ export function config() {
 
 `inputDescription` 是 agent 被其他 agent 当 tool 派发时（agent-as-tool,`agents` 列表引用）,该工具 `input` 字段的 schema description——告诉主控 LLM 该给这个 sub-agent 传什么样的交接单;未声明时 `@faapi/agent` 的 `buildToolDefinitions` 用框架默认文案。运行时消费见 [agent](../../../agent/src/agent.md) 的「`buildToolDefinitions()`」章节。
 
+### 派发入参 schema 声明（`Input` 导出检测）
+
+handler.ts 顶层声明名为 `Input` 的 interface / type alias 时，该 agent 的派发工具（`agent-<name>`）用结构性入参 schema 替代默认单字段 `input` 交接单：
+
+```ts
+// src/agents/chapter-writer/handler.ts
+/** 章节写作子代理 */
+export const config = {
+  systemPrompt: '...',
+};
+
+/** 章节写作任务交接单（主控 LLM 可见参数描述即字段 JSDoc） */
+export interface Input {
+  /** 小说 ID */
+  novelId: string;
+  /** 章节 ID */
+  chapterId: number;
+  /** 写作要求（自然语言） */
+  brief: string;
+}
+```
+
+检测规则：
+
+| 场景 | `inputTypeName` | 派发工具行为 |
+|------|-----------------|-------------|
+| 顶层 `interface Input` / `type Input = ...`（导出与否不限） | `'Input'` | 富 schema 模式（zod.js + JSON Schema + runtime 校验） |
+| 未声明 `Input`（含同名 const / class / import 进来的类型） | `undefined` | 默认单字段 `input` + `inputDescription`（完全向后兼容） |
+
+- **固定约定名 `Input`**——tool 的入参类型名由「函数第一参数的类型标注」定位,agent 无函数入参（声明式执行）,固定名是唯一可预测的约定;`Input` 之外的类型导出（如 `Payload`）不构成声明。
+- **导出与否不限**——AST 提取按名字在源文件顶层定位声明,与 tool 的参数类型未导出也能提取一致;文档约定写 `export` 以获得 tsc 可见的类型引用。
+- **检测不解析**——本模块只记录 `inputTypeName`（名字检测,零类型解析开销）;类型的 AST → RuntimeType 提取由 [generateAgentArtifacts](../cli/generateAgentArtifacts.md) 经 [extractTypeInfo](./extractHandlerTypes.md) 完成（复用其已创建的 Program）。
+- **与 `inputDescription` 的关系**——声明 `Input` 后派发工具的 parameters 来自 schema（字段描述来自字段 JSDoc）,`inputDescription` 不再参与该工具的构建（二者互斥生效,以 `Input` 声明为准）;未声明 `Input` 的 agent 保持 `inputDescription` 语义不变。
+
 无插值模板字符串(`NoSubstitutionTemplateLiteral`)语义等价于字符串字面量(多行分析人设的常见写法)，与 `StringLiteral` 同等提取。此外，字符串字面量之间用 `+` 拼接的多行写法(`'a' +\n 'b' + 'c'`)静态可求值，同样接受——拼接两侧递归求值，链式拼接按左结合自然展开，求值结果与 JS 运行时语义一致。拼接中混入无法静态求值为字符串的操作数(变量引用、含插值模板字符串、数字等)或使用非 `+` 运算符，仍视为提取失败抛错。
 
 ### 声明但提取失败 / systemPrompt 缺失 → 构建期报错
@@ -150,6 +185,7 @@ interface AgentCore {
 // 文件型 agent 完整元数据(继承 AgentCore + 代码加载细节)
 interface AgentMetadata extends AgentCore {
   filePath: string;          // 从 pathMeta 透传,声明文件定位用
+  inputTypeName?: string;    // 派发入参 schema 声明(顶层 Input 导出检测,'Input' / undefined)
 }
 
 // 路径推导的元数据(scanAgents 产出)
@@ -171,8 +207,8 @@ function extractAgentMetadata(
 - **JSDoc 查找**对箭头函数/函数表达式自动回溯到外层 `VariableStatement`(与 [extractToolMetadata](./extractToolMetadata.md) 同构)
 - **config 块字段提取**仅处理字面量值——无插值模板字符串与字符串字面量同等提取，静态可求值的 `+` 字符串拼接同样接受(含数组元素)；声明了字段但值提取失败(变量引用/含插值模板字符串/拼接混入数字/混合数组元素等)抛 `SchemaExtractionError`，不静默降级
 - **systemPrompt 必填**——文件型 agent 未声明(无 config/config 无 return 对象/config 缺该 key)抛 `SchemaExtractionError`，提示词是 agent 的必要组成
+- **`Input` 检测是名字匹配**——顶层 `interface Input` / `type Input` 声明存在即记 `inputTypeName='Input'`,不做类型解析;类型提取（AST → RuntimeType → zod.js）由 generateAgentArtifacts 阶段完成
 - **无 try/catch**——AST 异常向上传播，依赖调用方处理
-- **不调用 `extractTypeInfo`**——agent 无静态类型输入 schema(tool 有,从 TS 类型生成;agent-as-tool 的入参约定是固定单字段 `input` 字符串,schema 由 `@faapi/agent` 的 `buildToolDefinitions` 运行时组装,`inputDescription` 只提供其中的 description 文案)
 
 ## 相关模块
 
@@ -183,4 +219,4 @@ function extractAgentMetadata(
 - [createProgram](./createProgram.md) - 创建 TypeScript Program
 - [extractToolMetadata](./extractToolMetadata.md) - tool 元数据提取(对称设计参考,同样有 ToolCore/ToolMetadata 分层)
 - [agentRegistry](../injection/agentRegistry.md) - `getAgent` 返回 `AgentCore`,`getAgentEntry` 返回 `AgentMetadata`
-- [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 下游消费 `AgentMetadata[]` 生成 `faapi-agents.js`(Phase 1.9)
+- [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 下游消费 `AgentMetadata[]` 生成 `faapi-agents.js` + 声明 `Input` 的 agent zod.js

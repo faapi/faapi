@@ -76,8 +76,9 @@ export {
   type ToolSchemaResolution,
 } from './agent';
 
-// tool schema 解析工厂——任务内组装 AgentDeps.resolveToolSchema 的官方入口
-export { createToolSchemaResolver } from './toolSchemaResolver';
+// schema 解析工厂——任务内组装 AgentDeps.resolveToolSchema / resolveAgentInputSchema 的官方入口
+// （同一实例服务 tool input 与 sub-agent 派发入参,参数为最小结构 SchemaSourceRef）
+export { createToolSchemaResolver, type SchemaSourceRef } from './toolSchemaResolver';
 
 // AgentHandle 接口 + AgentRunOptions（Phase 3.5）——handler 的 agent 参数类型,Agent 满足此接口
 export { type AgentHandle, type AgentRunOptions } from './agentHandle';

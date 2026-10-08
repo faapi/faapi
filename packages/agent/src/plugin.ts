@@ -111,9 +111,11 @@ const agentPlugin: FaapiPlugin = {
     };
 
     const rootDir = ctx.rootDir;
-    // tool schema 解析器（setup 闭包级缓存——root + sub-agent 共享）
+    // schema 解析器（setup 闭包级缓存——root + sub-agent 共享）
     // 实现与行为约定见 [toolSchemaResolver.md](./toolSchemaResolver.md)
-    const resolveToolSchema = createToolSchemaResolver({ rootDir });
+    // 同一实例注入两个 deps：resolveToolSchema（常规 tool input）+
+    // resolveAgentInputSchema（sub-agent 派发入参,声明 Input 的富 schema 模式）
+    const resolveSchema = createToolSchemaResolver({ rootDir });
 
     // 注册 agent handle 工厂——每次请求时构造 Agent 实例
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生
@@ -138,8 +140,9 @@ const agentPlugin: FaapiPlugin = {
         resolveSubAgents: registries.agent.resolveSubAgents,
         // 加载器包装：注入 rootDir 用于 dev 按需编译模式
         loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, rootDir),
-        // tool schema 解析（zod.js → JSON Schema + safeParse 校验）
-        resolveToolSchema,
+        // schema 解析（zod.js → JSON Schema + safeParse 校验）——tool 与 agent 入参共用
+        resolveToolSchema: resolveSchema,
+        resolveAgentInputSchema: resolveSchema,
       });
     });
 

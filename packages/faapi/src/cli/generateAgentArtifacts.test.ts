@@ -55,6 +55,7 @@ describe('generateAgentArtifacts', () => {
         model: 'gpt-4',
         maxTurns: 10,
         inputDescription: '研究任务交接单,含主题与输出格式',
+        inputTypeName: 'Input',
       };
       const result = serializeAgents([meta], 'dist');
       expect(result).toHaveLength(1);
@@ -67,6 +68,7 @@ describe('generateAgentArtifacts', () => {
         model: 'gpt-4',
         maxTurns: 10,
         inputDescription: '研究任务交接单,含主题与输出格式',
+        inputTypeName: 'Input',
         filePath: 'dist/agents/researcher/handler.js',
       });
     });
@@ -208,6 +210,7 @@ describe('generateAgentArtifacts', () => {
           systemPrompt: 'prompt',
           model: 'gpt-4',
           inputDescription: '研究任务交接单',
+          inputTypeName: 'Input',
         },
         {
           name: 'writer',
@@ -223,9 +226,11 @@ describe('generateAgentArtifacts', () => {
       expect(hydrated[0].systemPrompt).toBe(original[0].systemPrompt);
       expect(hydrated[0].model).toBe(original[0].model);
       expect(hydrated[0].inputDescription).toBe(original[0].inputDescription);
+      expect(hydrated[0].inputTypeName).toBe(original[0].inputTypeName);
       expect(hydrated[1].filePath).toBe('dist/agents/writer/handler.js');
       expect(hydrated[1].description).toBeUndefined();
       expect(hydrated[1].inputDescription).toBeUndefined();
+      expect(hydrated[1].inputTypeName).toBeUndefined();
     });
   });
 
@@ -604,6 +609,108 @@ export const config = { systemPrompt: 'x' };
 
       const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
       expect(content).toContain('custom-researcher');
+    });
+  });
+
+  // ─── 派发入参 schema 声明（Input 声明 → zod.js 生成） ───────────────────
+
+  describe('agent zod.js 生成（Input 声明）', () => {
+    /** 创建 agent fixture 文件（与 generateAgentArtifacts describe 内的同名 helper 一致） */
+    function writeAgent(relPath: string, content: string): string {
+      const absPath = join(tempDir, ...relPath.split('/'));
+      mkdirSync(join(tempDir, ...relPath.split('/').slice(0, -1)), { recursive: true });
+      writeFileSync(absPath, content);
+      return relPath;
+    }
+
+    it('声明 interface Input → 生成 zod.js 且可 import 校验', async () => {
+      writeAgent(
+        'src/agents/chapter-writer/handler.ts',
+        `export const config = { systemPrompt: 'write well' };
+export interface Input {
+  /** 小说 ID */
+  novelId: string;
+  /** 章节 ID */
+  chapterId: number;
+}
+`,
+      );
+      const agents: AgentManifest[] = [
+        { name: 'chapter-writer', filePath: 'src/agents/chapter-writer/handler.ts' },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
+
+      // 元数据记 inputTypeName
+      expect(metadata[0].inputTypeName).toBe('Input');
+
+      // zod.js 与 handler.js 同级,导出 InputSchema
+      const zodPath = join(dist, 'agents', 'chapter-writer', 'zod.js');
+      expect(existsSync(zodPath)).toBe(true);
+      const zodMod = await importWithCacheBust(zodPath);
+      const schema = (zodMod as Record<string, unknown>).InputSchema as {
+        safeParse: (v: unknown) => { success: boolean; data?: unknown };
+      };
+      expect(schema).toBeDefined();
+      const ok = schema.safeParse({ novelId: 'n1', chapterId: 3 });
+      expect(ok.success).toBe(true);
+      expect(ok.data).toEqual({ novelId: 'n1', chapterId: 3 });
+      expect(schema.safeParse({ novelId: 'n1' }).success).toBe(false);
+
+      // 清单含 inputTypeName
+      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
+      expect(content).toContain('"inputTypeName": "Input"');
+    });
+
+    it('type Input 声明同样生成 zod.js', async () => {
+      writeAgent(
+        'src/agents/writer/handler.ts',
+        `export const config = { systemPrompt: 'x' };
+export type Input = { topic: string };
+`,
+      );
+      const agents: AgentManifest[] = [
+        { name: 'writer', filePath: 'src/agents/writer/handler.ts' },
+      ];
+      const dist = join(tempDir, 'dist');
+      await generateAgentArtifacts(agents, tempDir, dist);
+
+      expect(existsSync(join(dist, 'agents', 'writer', 'zod.js'))).toBe(true);
+    });
+
+    it('未声明 Input → 不生成 zod.js,清单无 inputTypeName', async () => {
+      writeAgent('src/agents/writer/handler.ts', `export const config = { systemPrompt: 'x' };\n`);
+      const agents: AgentManifest[] = [
+        { name: 'writer', filePath: 'src/agents/writer/handler.ts' },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
+
+      expect(metadata[0].inputTypeName).toBeUndefined();
+      expect(existsSync(join(dist, 'agents', 'writer', 'zod.js'))).toBe(false);
+      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
+      expect(content).not.toContain('inputTypeName');
+    });
+
+    it('混合清单（一个声明一个未声明）→ 只为声明者生成', async () => {
+      writeAgent(
+        'src/agents/chapter-writer/handler.ts',
+        `export const config = { systemPrompt: 'x', agents: ['plain'] };
+export interface Input { novelId: string };
+`,
+      );
+      writeAgent('src/agents/plain/handler.ts', `export const config = { systemPrompt: 'y' };\n`);
+      const agents: AgentManifest[] = [
+        { name: 'chapter-writer', filePath: 'src/agents/chapter-writer/handler.ts' },
+        { name: 'plain', filePath: 'src/agents/plain/handler.ts' },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
+
+      expect(metadata[0].inputTypeName).toBe('Input');
+      expect(metadata[1].inputTypeName).toBeUndefined();
+      expect(existsSync(join(dist, 'agents', 'chapter-writer', 'zod.js'))).toBe(true);
+      expect(existsSync(join(dist, 'agents', 'plain', 'zod.js'))).toBe(false);
     });
   });
 });

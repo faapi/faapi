@@ -53,6 +53,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | `resolveSubAgents(name)` | [agentRegistry.resolveSubAgents](../../faapi/src/injection/agentRegistry.md) | agent 可调用 sub-agent 列表（`AgentCore[]`,仅查文件 registry,skill 不参与 sub-agent 递归） |
 | `loadToolModule(...)` | [loadToolModule](../../faapi/src/loader/loadToolModule.md) | 动态 import tool handler |
 | `resolveToolSchema?(tool)` | Phase 3.5 实现 | tool input 的 JSON Schema + 校验函数（基于 `zod.js` + `z.toJSONSchema`） |
+| `resolveAgentInputSchema?(agent)` | 同上（同一 resolver 实例） | sub-agent 派发入参 schema 解析（`AgentMetadata` 的 `inputTypeName` → zod.js → JSON Schema + 校验函数），见「派发入参 schema 声明」；未提供时派发一律走单字段 `input` 模式（编程式组装的向后兼容） |
 
 ### `AgentDeps.ctx`（请求上下文透传）
 
@@ -152,7 +153,22 @@ sub-agent 包装为 tool 发给 LLM 时,`function.name` 受 OpenAI 兼容协议�
 合并两个来源（按 `name` 去重,先入者保留）：
 
 1. **agent.tools 引用** —— `resolveAgentTools(agentName)` 返回 agent 显式声明的 `tools` 引用
-2. **sub-agent** —— `resolveSubAgents(agentName)` 每个经 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 包装为 `agent-<name>`,入参约定为显式单字段 schema：
+2. **sub-agent** —— `resolveSubAgents(agentName)` 每个经 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 包装为 `agent-<name>`,入参 schema 按「派发入参 schema 声明」二选一：
+
+**富 schema 模式**（sub-agent 的 handler.ts 顶层声明 `interface Input` / `type Input`,经 `getAgentEntry(name)` 取到 `inputTypeName`）——`parameters` 来自该 agent 的 zod.js（`resolveAgentInputSchema` 解析,字段 JSDoc 即主控 LLM 可见参数描述）：
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "novelId": { "type": "string", "description": "<字段 JSDoc>" },
+    "chapterId": { "type": "number", "description": "<字段 JSDoc>" }
+  },
+  "required": ["novelId", "chapterId"]
+}
+```
+
+**单字段 `input` 模式**（未声明 `Input`,或 `resolveAgentInputSchema` 未接线——完全向后兼容）：
 
 ```json
 {
@@ -168,6 +184,15 @@ sub-agent 包装为 tool 发给 LLM 时,`function.name` 受 OpenAI 兼容协议�
 ```
 
 显式 `input` 字段是 agent-as-tool 的派发交接单——严格遵循 JSON schema 的模型（GLM 系列、OpenAI strict mode 等）对无属性 `{ type: 'object' }` 只会回空 `{}`,派发上下文传不进子代理（宽松填参的模型不受影响,问题隐性）。默认文案提示 LLM 传自然语言交接单;sub 元数据声明 `inputDescription`（agent config 块,见 [extractAgentMetadata](../../faapi/src/ast/extractAgentMetadata.md)）时覆盖默认文案,让 sub-agent 自述需要什么交接单。
+
+### 派发入参 schema 声明（per-agent 富 schema）
+
+默认单字段 `input` 交接单的语义只能写进 description 文字——结构性交接单（`novelId` / `chapterId` 等硬定位字段）无法做成 schema 硬表达,主控漏带字段只能等 sub-agent 内部工具报错回灌重试。子代理的 handler.ts 顶层声明 `Input` 后,派发工具与普通 tool 同口径：
+
+- **声明即校验**——`buildToolDefinitions` 用 `resolveAgentInputSchema` 解析出的 JSON Schema 作为 `parameters`;`executeSubAgent` 执行前 `validate(args)`,失败返回 `{ error }` 回灌主控 LLM 重试（与常规 tool 校验失败同语义,不抛错、不进入子循环——省掉一次注定失败的子 agent 轮次）
+- **传导**——校验通过后 `extractSubAgentUserInput` 把多字段 args `JSON.stringify` 为交接单文本传给子循环（单字段 `{ input: string }` 声明时仍直传字符串,子代理读原文）
+- **产物**——zod.js 由构建期生成（`inputTypeName` 记入 faapi-agents.js 清单）,见主包 [generateAgentArtifacts](../../faapi/src/cli/generateAgentArtifacts.md);`inputDescription` 在富 schema 模式下不再参与该工具构建（字段描述来自字段 JSDoc,二者互斥以 `Input` 为准）
+- **产物异常显式失败**——`resolveAgentInputSchema` 已接线但解析结果为 `undefined`（声明了 `inputTypeName` 而 zod.js 缺失/损坏,dev/prod 全量生成下只可能是产物异常）抛 `AgentError`,不静默退回单字段模式
 
 每个常规 tool 的 `input`：
 - `getToolSchema(tool)`（带缓存）提供 → 用其 `jsonSchema`
@@ -216,10 +241,22 @@ if (newDepth > maxDepth) throw new AgentRecursionError(maxDepth, newDepth);
 
 const subAgent = new Agent(deps, newDepth);  // deps 共享（providers/llms/访问器）
 
+// 派发入参校验（富 schema 模式,与常规 tool 同语义）:声明了 inputTypeName 时
+// resolveAgentInputSchema 解析 zod.js,失败返回 { error } 回灌 LLM,不进入子循环
+const entry = deps.getAgentEntry(subName);
+let callArgs = args;
+if (entry?.inputTypeName && deps.resolveAgentInputSchema) {
+  const schemaRes = await deps.resolveAgentInputSchema(entry);
+  if (!schemaRes) throw new AgentError(...);        // 产物异常显式失败,不静默降级
+  const v = schemaRes.validate(args);
+  if (!v.ok) return { error: v.error };             // 回灌主控 LLM 重试
+  callArgs = v.value ?? args;
+}
+
 // 默认 reactLoop:继承父调用的 provider,sub 的 model 用其元数据声明（未声明沿用父 model）
 const subMeta = deps.getAgent(subName);
 const result = await subAgent.run(
-  extractSubAgentInput(args),  // 单字段 { input: string } 直传字符串;其余形状 stringify 兜底
+  extractSubAgentInput(callArgs),  // 单字段 { input: string } 直传字符串;其余形状 stringify 兜底
   {
     agent: subName,
     enableTracing: resolved.enableTracing,
@@ -239,7 +276,8 @@ return {
 ```
 
 - **`maxAgentDepth`**：默认 3。depth 从 1（根）开始,sub-agent 为 2、3...,超出抛 `AgentRecursionError`
-- **`getAgentEntry` vs `getAgent`**：`getAgentEntry` 返回 `AgentMetadata`（含 `filePath`）,`getAgent` 返回 `AgentCore`。两者都仅查文件 registry,不 fallback 到 skillRegistry（skill 与 agent 职责正交不耦合,skill 不参与 sub-agent 递归）。sub-agent 必须是文件型 agent,skill 不被 `agents` 列表自动引用
+- **派发入参校验（富 schema 模式）**：sub 元数据声明 `inputTypeName`（handler.ts 顶层 `Input` 导出,见「派发入参 schema 声明」）且 `deps.resolveAgentInputSchema` 已接线时,执行前 `validate(args)`——失败返回 `{ error }` 回灌主控 LLM 重试（与常规 tool 校验失败同语义,不进入子循环）;通过后以 coerce 后的 value 继续传导。解析结果 `undefined`（声明了但 zod.js 缺失/损坏）抛 `AgentError` 显式失败。resolver 未接线（编程式组装/测试）或未声明 `Input` 时跳过校验,行为与历史版本一致
+- **`getAgentEntry` vs `getAgent`**：`getAgentEntry` 返回 `AgentMetadata`（含 `filePath` + `inputTypeName`）,`getAgent` 返回 `AgentCore`。两者都仅查文件 registry,不 fallback 到 skillRegistry（skill 与 agent 职责正交不耦合,skill 不参与 sub-agent 递归）。sub-agent 必须是文件型 agent,skill 不被 `agents` 列表自动引用
 - **默认 reactLoop + provider 继承**：sub-agent 统一走默认循环,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）附在 `SubAgentToolResult` 的 `trace` 字段返回给 reactLoop,reactLoop 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`usage` / `turns` 字段始终携带（子循环整树口径,reactLoop 上卷进父 run 台账,详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）。`usage` / `turns` 缺省（如 provider 不返回用量）时 reactLoop 跳过对应累加
 
 ### Tracing

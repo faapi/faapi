@@ -311,6 +311,16 @@ export interface AgentDeps {
   loadToolModule: (filePath: string, functionName: string) => Promise<ToolModule>;
   /** tool input 的 schema 解析（Phase 3.5 实现，可选） */
   resolveToolSchema?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
+  /**
+   * sub-agent 派发入参 schema 解析（可选）
+   *
+   * sub 元数据声明 `inputTypeName`（handler.ts 顶层 `Input` 导出，构建期生成 zod.js）
+   * 时解析其 JSON Schema + 校验函数——`buildToolDefinitions` 用作派发工具 parameters、
+   * `executeSubAgent` 执行前校验。通常与 `resolveToolSchema` 是同一实现
+   * （[createToolSchemaResolver](./toolSchemaResolver.md) 返回值同时满足两个签名）。
+   * 未提供时派发一律走单字段 `input` 模式（编程式组装的向后兼容）。
+   */
+  resolveAgentInputSchema?: (agent: AgentMetadata) => Promise<ToolSchemaResolution | undefined>;
 }
 
 /**
@@ -754,9 +764,15 @@ export class Agent {
    * - `resolveToolSchema` 提供 → 用其 `jsonSchema`
    * - 未提供 / tool 无 `inputTypeName` → 自由 schema `{ type: 'object' }`
    *
-   * sub-agent 的 `function.parameters` 为显式单字段 `input` schema（string,必填）——
-   * 严格遵循 JSON schema 的模型对无属性 `{ type: 'object' }` 只回 `{}`,派发上下文
-   * 传不进子代理;description 用 sub 元数据 `inputDescription`,未声明用默认文案。
+   * sub-agent 的 `function.parameters` 按「派发入参 schema 声明」二选一：
+   * - **富 schema 模式**——sub 元数据声明 `inputTypeName`（handler.ts 顶层 `Input`
+   *   导出）且 `resolveAgentInputSchema` 已接线 → 用解析出的 JSON Schema（结构性
+   *   交接单,字段 JSDoc 即主控可见参数描述）。声明了但解析为 `undefined` 是产物
+   *   异常（dev/prod 全量生成下 zod.js 不可能合法缺失）,抛 `AgentError` 不静默降级
+   * - **单字段 `input` 模式**——未声明 `Input` 或 resolver 未接线 → 显式单字段
+   *   schema（string,必填）——严格遵循 JSON schema 的模型对无属性 `{ type: 'object' }`
+   *   只回 `{}`,派发上下文传不进子代理;description 用 sub 元数据 `inputDescription`,
+   *   未声明用默认文案
    */
   private async buildToolDefinitions(agentName: string): Promise<LLMToolDefinition[]> {
     const definitions = new Map<string, LLMToolDefinition>();
@@ -785,16 +801,7 @@ export class Agent {
         function: {
           name,
           description: subAgent.description,
-          parameters: {
-            type: 'object',
-            properties: {
-              input: {
-                type: 'string',
-                description: subAgent.inputDescription ?? DEFAULT_SUBAGENT_INPUT_DESCRIPTION,
-              },
-            },
-            required: ['input'],
-          },
+          parameters: await this.getSubAgentParameters(subAgent),
         },
       });
     }
@@ -803,6 +810,42 @@ export class Agent {
     const defs = Array.from(definitions.values());
     const filtered = this.deps.config?.filterTools?.(defs, this.deps.ctx);
     return filtered ?? defs;
+  }
+
+  /**
+   * 解析 sub-agent 派发工具的 parameters（富 schema / 单字段 input 二选一）
+   *
+   * 富 schema 判定需要完整元数据的 `inputTypeName`（`AgentCore` 不含）——经
+   * `getAgentEntry` 查询；未声明或 `resolveAgentInputSchema` 未接线时返回单字段
+   * `input` schema（历史行为,完全向后兼容）。`inputDescription` 仍从 `AgentCore`
+   * 读取（LLM 可见字段的既定来源,DB skill 同样可声明）。
+   *
+   * @throws {AgentError} 声明了 `inputTypeName` 且 resolver 已接线但解析为
+   *   `undefined`（zod.js 缺失/损坏的产物异常,不静默退回单字段模式）
+   */
+  private async getSubAgentParameters(
+    subAgent: AgentCore,
+  ): Promise<LLMToolDefinition['function']['parameters']> {
+    const entry = this.deps.getAgentEntry(subAgent.name);
+    if (!entry?.inputTypeName || !this.deps.resolveAgentInputSchema) {
+      return {
+        type: 'object',
+        properties: {
+          input: {
+            type: 'string',
+            description: subAgent.inputDescription ?? DEFAULT_SUBAGENT_INPUT_DESCRIPTION,
+          },
+        },
+        required: ['input'],
+      };
+    }
+    const schemaRes = await this.deps.resolveAgentInputSchema(entry);
+    if (!schemaRes) {
+      throw new AgentError(
+        `Sub-agent "${subAgent.name}" declares input schema "${entry.inputTypeName}" but its zod.js artifact is missing or broken (run \`faapi build\` / restart \`faapi dev\` to regenerate)`,
+      );
+    }
+    return schemaRes.jsonSchema;
   }
 
   /**
@@ -910,9 +953,15 @@ export class Agent {
    * sub-agent 递归执行
    *
    * 1. `maxAgentDepth` 防护——超限抛 {@link AgentRecursionError}
-   * 2. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`（无 trace、无结构化
+   * 2. **派发入参校验（富 schema 模式）**——sub 元数据声明 `inputTypeName` 且
+   *    `resolveAgentInputSchema` 已接线时执行前 `validate(args)`：失败返回
+   *    `{ error }` 回灌主控 LLM 重试（与常规 tool 校验失败同语义,不进入子循环——
+   *    省掉一次注定失败的子 agent 轮次）;通过后以 coerce 后的 value 继续传导。
+   *    声明了但解析为 `undefined`（zod.js 缺失/损坏）抛 `AgentError` 显式失败;
+   *    resolver 未接线或未声明 `Input` 时跳过校验,行为与历史版本一致
+   * 3. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`（无 trace、无结构化
    *    usage 可卷——直接返回业务结果,其 token 不进入父 run 台账）
-   * 3. 无 `run` 时调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`
+   * 4. 无 `run` 时调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`
    *    走默认 reactLoop——继承父调用的 provider,sub 元数据声明 `model` 时优先用自身的,
    *    未声明时沿用父 model
    *
@@ -929,7 +978,7 @@ export class Agent {
    */
   private async executeSubAgent(
     subName: string,
-    args: Record<string, unknown>,
+    rawArgs: Record<string, unknown>,
     callCtx: AgentCallContext,
     deltaEmitter?: SubAgentDeltaEmitter,
   ): Promise<unknown | SubAgentToolResult> {
@@ -937,6 +986,24 @@ export class Agent {
     const maxDepth = this.deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
     if (newDepth > maxDepth) {
       throw new AgentRecursionError(maxDepth, newDepth);
+    }
+
+    // 派发入参校验（富 schema 模式）——beforeToolCall 守卫改写后的 args 也在此校验
+    let args = rawArgs;
+    const entry = this.deps.getAgentEntry(subName);
+    if (entry?.inputTypeName && this.deps.resolveAgentInputSchema) {
+      const schemaRes = await this.deps.resolveAgentInputSchema(entry);
+      if (!schemaRes) {
+        throw new AgentError(
+          `Sub-agent "${subName}" declares input schema "${entry.inputTypeName}" but its zod.js artifact is missing or broken (run \`faapi build\` / restart \`faapi dev\` to regenerate)`,
+        );
+      }
+      const result = schemaRes.validate(args);
+      if (!result.ok) {
+        // 校验失败：返回 { error } 对象,不进入子循环——错误回传主控 LLM 重试
+        return { error: result.error };
+      }
+      args = result.value ?? args;
     }
 
     // 派发工具名（subagentDelta 冒泡标识 + afterToolCall 审计名,即 LLM 看到的名字）

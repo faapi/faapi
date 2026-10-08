@@ -75,7 +75,7 @@ PluginContext { config.agent, rootDir }
 
 ```ts
 // setup 内创建一次，工厂内复用（避免每次请求重建闭包）
-const resolveToolSchema = (tool) => resolveToolSchemaImpl(tool, rootDir);
+const resolveSchema = createToolSchemaResolver({ rootDir });
 
 registerAgentHandleFactory(() => {
   return new Agent({
@@ -91,7 +91,8 @@ registerAgentHandleFactory(() => {
     resolveSubAgents,
     loadToolModule: (filePath, functionName) =>
       loadToolModule(filePath, functionName, rootDir),  // 包装注入 rootDir
-    resolveToolSchema,           // setup 内创建的偏函数（工厂内复用）
+    resolveToolSchema: resolveSchema,       // 常规 tool schema（setup 内创建,工厂内复用）
+    resolveAgentInputSchema: resolveSchema, // sub-agent 派发入参 schema（同一实例,缓存共享）
   });
 });
 ```
@@ -122,13 +123,9 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 工厂未注册仅发生在 `@faapi/agent` 插件未加载时——此时 [getAgentHandle](../../faapi/src/injection/agentHandle.md) 返回 `undefined`,handler 的 `agent` 参数为 `undefined`。
 工厂已注册时 `agent` 参数不为 `undefined`,但 `agent.run(input)` 不传 `{ agent: 'name' }` 时抛 `AgentError`（无默认 agent——每次调用显式指定）。
 
-### resolveToolSchema 实现
+### resolveToolSchema / resolveAgentInputSchema 实现
 
-setup 调用 [createToolSchemaResolver](./toolSchemaResolver.md)（传 `ctx.rootDir`）创建闭包级 resolver——`loadToolSchema` 加载 zod.js → `z.toJSONSchema` 生成 JSON Schema + `safeParse` 校验函数，带 mtime 跨请求缓存（dev reloadTools 自愈 / 并发去重）。实现细节与行为约定见该文档，此处不重复。
-
-```ts
-const resolveToolSchema = createToolSchemaResolver({ rootDir }); // setup 内创建,工厂内复用
-```
+setup 调用 [createToolSchemaResolver](./toolSchemaResolver.md)（传 `ctx.rootDir`）创建闭包级 resolver——`loadToolSchema` 加载 zod.js → `z.toJSONSchema` 生成 JSON Schema + `safeParse` 校验函数，带 mtime 跨请求缓存（dev reload 自愈 / 并发去重）。**同一实例注入两个 deps**：`resolveToolSchema`（常规 tool input）与 `resolveAgentInputSchema`（sub-agent 派发入参，[agent.md](./agent.md)「派发入参 schema 声明」）——resolver 参数取最小结构 `{ filePath, inputTypeName? }`，tool 与 agent 元数据均满足，缓存按 zod.js 路径天然分流。实现细节与行为约定见该文档，此处不重复。
 
 ## 相关模块
 

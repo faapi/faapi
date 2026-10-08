@@ -1,6 +1,6 @@
 # loadToolSchema
 
-一句话概括：动态加载 tool 的 `zod.js` schema 模块，返回 zod schema 对象（`unknown` 类型，由 `@faapi/agent` 断言为 zod schema 用于 `z.toJSONSchema` + `safeParse`）。zod.js 不存在或加载失败时返回 `undefined`（tool input 用自由 schema `{ type: 'object' }`）。
+一句话概括：动态加载 `zod.js` schema 模块，返回 zod schema 对象（`unknown` 类型，由 `@faapi/agent` 断言为 zod schema 用于 `z.toJSONSchema` + `safeParse`）。zod.js 不存在或加载失败时返回 `undefined`（调用方按各自语义处理：tool 用自由 schema `{ type: 'object' }`，agent 派发入参显式抛错）。
 
 ## 为什么需要
 
@@ -14,14 +14,17 @@ faapi 核心不依赖 zod（zod 是 peerDep），因此 `loadToolSchema` 返回 
 
 - `@faapi/agent` 的 `plugin.ts` 实现 `resolveToolSchema`：加载 zod.js → `z.toJSONSchema(schema)` 生成 JSON Schema 发给 LLM → `schema.safeParse(input)` 校验 LLM 返回的参数
 - `agent.run` 调用 tool 前的 input 校验（`AgentDeps.resolveToolSchema?.(tool)` → `ToolSchemaResolution.validate(args)`）
+- sub-agent 派发入参 schema（`AgentDeps.resolveAgentInputSchema?.(agent)`）——agent 的 zod.js 与 tool 同构（`<dist>/agents/<name>/zod.js` 导出 `InputSchema`，见 [generateAgentArtifacts](../cli/generateAgentArtifacts.md)），同一加载器服务两类来源
 - `@faapi/agent` 的跨请求 schema 缓存用 [getToolSchemaPath](#gettooltlschemapath) 计算缓存键 + mtime 校验目标
 
 ## 导出
 
 | 函数 | 说明 |
 | --- | --- |
-| `loadToolSchema(tool, rootDir?)` | 动态加载 tool 的 zod.js，返回 `{ schema, schemaName } \| undefined` |
-| `getToolSchemaPath(tool, rootDir?)` | 计算 zod.js 绝对路径（纯路径计算，无 fs 访问；与 `loadToolSchema` 内部逻辑同源，共享 `getDist()`） |
+| `loadToolSchema(ref, rootDir?)` | 动态加载 zod.js，返回 `{ schema, schemaName } \| undefined` |
+| `getToolSchemaPath(ref, rootDir?)` | 计算 zod.js 绝对路径（纯路径计算，无 fs 访问；与 `loadToolSchema` 内部逻辑同源，共享 `getDist()`） |
+
+参数 `ref` 取最小结构 `{ filePath: string; inputTypeName?: string }`——zod.js 定位的全部所需。tool 元数据（`ToolMetadata`）与 agent 完整元数据（`AgentMetadata`）均满足（结构化参数，两者无需相互 cast）。
 
 ## 流程
 

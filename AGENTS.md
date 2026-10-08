@@ -633,6 +633,8 @@ agent 与 skill 物理隔离，职责正交不耦合：
 - **职责正交不耦合**——**agent 负责核心流程**（声明式 LLM 循环、文件型入口、sub-agent 递归；编排场景注册 tool）；**skill 用于拓展**（运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用）。两者不构成覆盖关系
 
 **agent 统一为声明式执行（自定义 run 已移除）**：agent = config 声明（systemPrompt / systemPromptFile / tools / agents / model / maxTurns）+ 默认 reactLoop。检测到 handler 导出 `run` 时构建期抛迁移错误。原 run 的两个场景由更强能力承接——**LLM 可调用的编排代码注册 tool**（有 schema 校验、trace 采集、鉴权钩子覆盖，全链路可观测），**多 agent 协作用 config.agents 声明 sub-agent**（继承 provider、delta 冒泡、usage 整树上卷）。
+
+**派发入参 schema 声明（per-agent 富 schema）**：agent handler.ts 顶层声明 `interface Input` / `type Input` 时，该 agent 被派发（`agent-<name>` 工具）的入参不再是单字段 `{ input: string }` 交接单，而是结构性 JSON Schema（构建期生成 `agents/<name>/zod.js` 导出 `InputSchema`，字段 JSDoc 即主控 LLM 可见参数描述），`executeSubAgent` 执行前校验，失败按工具同语义回灌 `{ error }`。未声明的 agent 保持单字段 `input` + `inputDescription` 行为，完全向后兼容；`inputDescription` 与 `Input` 互斥生效（声明了 `Input` 即以 schema 为准）。详见 `packages/agent/src/agent.md` 的「派发入参 schema 声明」。
 - **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 清单来自编译期产物，reload 时整体重新生成，**dev 模式 watcher 每次改文件都触发 reload**，业务方 DB skill 若混在同一 registry 会被清空，需要业务方手动重新塞，不可接受
 - **DB skill 是运行时增量**——业务方监听 DB change stream 单条增删改，与"整体替换"语义天然冲突
 
@@ -642,7 +644,7 @@ agent 与 skill 物理隔离，职责正交不耦合：
 
 DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetadata` 接口）：
 - 只填 LLM 可见字段：`name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?` / `inputDescription?`（agent-as-tool 派发交接单说明，未声明时 sub-agent 工具 schema 的 input description 用框架默认文案）
-- 无需 `filePath` 占位——该字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）
+- 无需 `filePath` / `inputTypeName` 占位——两字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）；skill 无编译期产物，派发时恒走单字段 `input` 交接单模式
 - DB skill 不支持自定义 `run` 函数——自定义 run 机制已整体移除（文件型 agent 同样声明式执行）
 
 详见 `src/injection/skillRegistry.md`。

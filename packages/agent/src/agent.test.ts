@@ -62,6 +62,7 @@ function agentEntry(opts: Partial<AgentMetadata> = {}): AgentMetadata {
     model: opts.model,
     maxTurns: opts.maxTurns,
     inputDescription: opts.inputDescription,
+    inputTypeName: opts.inputTypeName,
   };
 }
 
@@ -190,6 +191,7 @@ function createDeps(opts: {
   ctx?: Partial<FaapiContext>;
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
+  resolveAgentInputSchemaImpl?: (agent: AgentMetadata) => Promise<ToolSchemaResolution | undefined>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
 }): AgentDeps {
   const toolsByName = new Map<string, ToolMetadata>();
@@ -224,6 +226,9 @@ function createDeps(opts: {
         : Promise.reject(new Error(`loadToolModule not mocked for ${filePath}`)),
     resolveToolSchema: opts.resolveToolSchemaImpl
       ? (tool) => opts.resolveToolSchemaImpl!(tool)
+      : undefined,
+    resolveAgentInputSchema: opts.resolveAgentInputSchemaImpl
+      ? (agent) => opts.resolveAgentInputSchemaImpl!(agent)
       : undefined,
   };
 }
@@ -1019,6 +1024,254 @@ describe('Agent', () => {
       const childRequest = completeCalls.mock.calls[1][0];
       expect(childRequest.messages.find((m: LLMMessage) => m.role === 'user')!.content).toBe(
         '写一篇关于 AI 的短文',
+      );
+    });
+  });
+
+  describe('派发入参 schema 声明（per-agent 富 schema）', () => {
+    /** 构造声明了 Input 的 sub-agent（core + entry 成对） */
+    function writerWithInput(inputTypeName: string | undefined) {
+      return {
+        core: agentMeta({ name: 'writer', inputDescription: '自然语言交接单' }),
+        entry: agentEntry({ name: 'writer', inputTypeName }),
+      };
+    }
+
+    it('buildToolDefinitions：声明 inputTypeName 时 parameters 用富 schema,inputDescription 不再出现', async () => {
+      const writer = writerWithInput('Input');
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+          resolveAgentInputSchemaImpl: async () => ({
+            jsonSchema: {
+              type: 'object',
+              properties: {
+                novelId: { type: 'string', description: '小说 ID' },
+                chapterId: { type: 'number', description: '章节 ID' },
+              },
+              required: ['novelId', 'chapterId'],
+            },
+            validate: () => ({ ok: true, value: {} }),
+          }),
+        }),
+      );
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
+      const writerDef = tools.find((t) => t.function.name === 'agent-writer')!;
+      expect(writerDef.function.parameters).toEqual({
+        type: 'object',
+        properties: {
+          novelId: { type: 'string', description: '小说 ID' },
+          chapterId: { type: 'number', description: '章节 ID' },
+        },
+        required: ['novelId', 'chapterId'],
+      });
+      expect(JSON.stringify(writerDef.function.parameters)).not.toContain('交接单');
+    });
+
+    it('resolver 已接线但 sub 未声明 inputTypeName → 保持单字段 input 模式', async () => {
+      const writer = writerWithInput(undefined);
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+          resolveAgentInputSchemaImpl: async () => ({
+            jsonSchema: { type: 'object' },
+            validate: () => ({ ok: true, value: {} }),
+          }),
+        }),
+      );
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
+      const writerDef = tools.find((t) => t.function.name === 'agent-writer')!;
+      expect(writerDef.function.parameters).toEqual({
+        type: 'object',
+        properties: {
+          input: { type: 'string', description: '自然语言交接单' },
+        },
+        required: ['input'],
+      });
+    });
+
+    it('声明 inputTypeName 但 resolver 未接线（编程式组装）→ 保持单字段,向后兼容', async () => {
+      const writer = writerWithInput('Input');
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+        }),
+      );
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
+      const writerDef = tools.find((t) => t.function.name === 'agent-writer')!;
+      expect(writerDef.function.parameters).toEqual({
+        type: 'object',
+        properties: {
+          input: { type: 'string', description: '自然语言交接单' },
+        },
+        required: ['input'],
+      });
+    });
+
+    it('声明 inputTypeName 但 resolver 返回 undefined（产物异常）→ run 抛 AgentError', async () => {
+      const writer = writerWithInput('Input');
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+          resolveAgentInputSchemaImpl: async () => undefined,
+        }),
+      );
+
+      await expect(agent.run('hi', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrow(
+        AgentError,
+      );
+    });
+
+    it('executeSubAgent 校验失败 → { error } 回灌主控,子 agent 不启动', async () => {
+      const writer = writerWithInput('Input');
+      const { provider: parentProvider, completeCalls } = createMockProvider([
+        llmResponse({
+          // 主控漏带 chapterId
+          toolCalls: [toolCall('c1', 'agent-writer', { novelId: 'n1' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'parent-final', stopReason: 'stop' }),
+      ]);
+
+      const validate = vi.fn((): { ok: false; error: string } => ({
+        ok: false,
+        error: 'chapterId is required',
+      }));
+
+      const agent = new Agent(
+        createDeps({
+          provider: parentProvider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+          resolveAgentInputSchemaImpl: async () => ({
+            jsonSchema: { type: 'object' },
+            validate,
+          }),
+        }),
+      );
+
+      const result = await agent.run('write', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('parent-final');
+      expect(validate).toHaveBeenCalledWith({ novelId: 'n1' });
+
+      // 只有父的两次调用——子 agent 循环未启动
+      expect(completeCalls).toHaveBeenCalledTimes(2);
+
+      // error 回灌给主控 LLM
+      const secondRequest = completeCalls.mock.calls[1][0];
+      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
+      expect(toolMsg!.content).toMatch(/chapterId is required/);
+    });
+
+    it('校验成功 → coerce 后 value 的 stringify 传导给子循环', async () => {
+      const writer = writerWithInput('Input');
+      const { provider: parentProvider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { novelId: 'n1', chapterId: '3' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'parent-final', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider: parentProvider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+          resolveAgentInputSchemaImpl: async () => ({
+            jsonSchema: { type: 'object' },
+            validate: (): { ok: true; value: Record<string, unknown> } => ({
+              ok: true,
+              value: { novelId: 'n1', chapterId: 3 }, // coerce 后
+            }),
+          }),
+        }),
+      );
+
+      const result = await agent.run('write', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('parent-final');
+
+      // 子 agent 的 user 消息 = stringify(coerce 后 value)
+      const childRequest = completeCalls.mock.calls[1][0];
+      expect(childRequest.messages.find((m: LLMMessage) => m.role === 'user')!.content).toBe(
+        JSON.stringify({ novelId: 'n1', chapterId: 3 }),
+      );
+    });
+
+    it('单字段 { input: string } schema 声明 → 校验通过后直传字符串（去 JSON 壳）', async () => {
+      const writer = writerWithInput('Input');
+      const { provider: parentProvider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '写一篇短文' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'parent-final', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider: parentProvider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+          resolveAgentInputSchemaImpl: async () => ({
+            jsonSchema: {
+              type: 'object',
+              properties: { input: { type: 'string' } },
+              required: ['input'],
+            },
+            validate: (): { ok: true; value: Record<string, unknown> } => ({
+              ok: true,
+              value: { input: '写一篇短文' },
+            }),
+          }),
+        }),
+      );
+
+      await agent.run('write', { agent: 'researcher', model: 'gpt-4o' });
+
+      const childRequest = completeCalls.mock.calls[1][0];
+      expect(childRequest.messages.find((m: LLMMessage) => m.role === 'user')!.content).toBe(
+        '写一篇短文',
       );
     });
   });

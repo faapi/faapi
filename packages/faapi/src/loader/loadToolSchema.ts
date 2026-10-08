@@ -2,7 +2,6 @@ import { existsSync } from 'node:fs';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { isDevOnDemandEnabled, getDevDist } from '../cli/compileOnDemand';
 import { getRuntimeToolSchemaPath } from '../cli/generateToolArtifacts';
-import type { ToolMetadata } from '../ast/extractToolMetadata';
 
 /**
  * 加载后的 tool schema 模块
@@ -37,43 +36,57 @@ function getDist(): string {
  * 计算 tool 的 zod.js 绝对路径（纯路径计算，无 fs 访问）
  *
  * 与 [loadToolSchema](./loadToolSchema.ts) 内部使用的路径逻辑同源（共享 `getDist()`），
- * 供 `@faapi/agent` 的跨请求 schema 缓存用作缓存键 + mtime 校验目标。
- *
- * @param tool tool 元数据（含 `filePath`）
- * @param rootDir 项目根目录（`tool.filePath` 是相对路径时拼接）
+/**
+ * zod.js 定位的最小来源结构——`ToolMetadata` 与 `AgentMetadata`（派发入参 schema
+ * 声明场景）均满足，加载器无需感知来源差异
  */
-export function getToolSchemaPath(tool: ToolMetadata, rootDir?: string): string {
-  const dist = getDist();
-  return getRuntimeToolSchemaPath(tool.filePath, dist, rootDir ?? process.cwd());
+export interface SchemaSourceRef {
+  /** 源码/产物相对路径（与 zod.js 同级，推导 zod.js 路径用） */
+  filePath: string;
+  /** schema 类型名（`undefined` = 无 schema 声明） */
+  inputTypeName?: string;
 }
 
 /**
- * 动态加载 tool 的 zod.js schema 模块
+ * 计算 zod.js 的绝对路径（纯路径计算，无 fs 访问）
+ *
+ * 与 [loadToolSchema](./loadToolSchema.ts) 内部使用的路径逻辑同源（共享 `getDist()`），
+ * 供 `@faapi/agent` 的跨请求 schema 缓存用作缓存键 + mtime 校验目标。
+ *
+ * @param ref schema 来源元数据（tool / agent 均可，含 `filePath`）
+ * @param rootDir 项目根目录（`ref.filePath` 是相对路径时拼接）
+ */
+export function getToolSchemaPath(ref: SchemaSourceRef, rootDir?: string): string {
+  const dist = getDist();
+  return getRuntimeToolSchemaPath(ref.filePath, dist, rootDir ?? process.cwd());
+}
+
+/**
+ * 动态加载 zod.js schema 模块（tool input 与 agent 派发入参共用）
  *
  * 与 [loadToolModule](./loadToolModule.md) 对称——一个加载 handler.js（tool 函数），
- * 一个加载 zod.js（tool schema）。
+ * 一个加载 zod.js（schema 模块）。tool 的 zod.js 与 handler.js 同级；agent 声明
+ * `Input` 时同样生成同级 zod.js（见 generateAgentArtifacts），同一加载器服务两类来源。
  *
  * 行为：
- * - `tool.inputTypeName` 为 `undefined` → 返回 `undefined`（无 schema，用自由 schema）
- * - zod.js 文件不存在 → 返回 `undefined`（schema 可选，缺失用自由 schema）
+ * - `ref.inputTypeName` 为 `undefined` → 返回 `undefined`（无 schema 声明）
+ * - zod.js 文件不存在 → 返回 `undefined`（schema 缺失，调用方按各自语义处理——
+ *   tool 用自由 schema `{ type: 'object' }`；agent 派发入参在声明了 `inputTypeName`
+ *   时视为产物异常，由 `@faapi/agent` 侧显式抛错）
  * - import 失败 / 导出名不匹配 → 返回 `undefined`
  *
- * 与 route schema 不同（route schema 缺失抛 `InternalError`），tool schema 是可选的——
- * `@faapi/agent` 的 `resolveToolSchema` 未提供时用自由 schema `{ type: 'object' }`，
- * LLM 自由传参，handler 内部自行处理参数合法性。
- *
- * @param tool tool 元数据（含 `filePath` + `inputTypeName`）
- * @param rootDir 项目根目录（用于计算 zod.js 绝对路径，`tool.filePath` 是相对路径时拼接）
+ * @param ref schema 来源元数据（tool / agent 均可，含 `filePath` + `inputTypeName`）
+ * @param rootDir 项目根目录（用于计算 zod.js 绝对路径，`ref.filePath` 是相对路径时拼接）
  */
 export async function loadToolSchema(
-  tool: ToolMetadata,
+  ref: SchemaSourceRef,
   rootDir?: string,
 ): Promise<ToolSchemaModule | undefined> {
   // 无 inputTypeName → 无 zod.js
-  if (!tool.inputTypeName) return undefined;
+  if (!ref.inputTypeName) return undefined;
 
-  const schemaName = `${tool.inputTypeName}Schema`;
-  const zodPath = getToolSchemaPath(tool, rootDir);
+  const schemaName = `${ref.inputTypeName}Schema`;
+  const zodPath = getToolSchemaPath(ref, rootDir);
 
   // zod.js 文件不存在 → 返回 undefined（schema 可选）
   if (!existsSync(zodPath)) return undefined;
@@ -81,7 +94,7 @@ export async function loadToolSchema(
   // import zod.js
   try {
     const mod = await importWithCacheBust(zodPath, isDevOnDemandEnabled());
-    const schema = mod[`${tool.inputTypeName}Schema`];
+    const schema = mod[`${ref.inputTypeName}Schema`];
     if (!schema) return undefined;
     return { schema, schemaName };
   } catch {

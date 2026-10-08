@@ -5,6 +5,15 @@ import { extractAgentMetadata } from '../ast/extractAgentMetadata';
 import { createPrograms } from '../ast/createProgram';
 import { toProdFilePath } from '../utils/prodPaths';
 import { atomicWriteFile } from '../utils/atomicWrite';
+import {
+  extractTypeInfo,
+  createLazyTypeResolver,
+  type HandlerTypeInfo,
+  type LazyTypeResolver,
+} from '../ast/extractHandlerTypes';
+import type { RuntimeType } from '../ast/resolveTypeNode';
+import { generateZodSchemaSource, usesCoerceHelpers } from '../ast/generateZodSchema';
+import { generateZodArtifacts } from './generateZodArtifacts';
 
 /**
  * 序列化的 agent manifest 记录（可写入 JS 模块，无函数引用）
@@ -12,8 +21,9 @@ import { atomicWriteFile } from '../utils/atomicWrite';
  * 与 [AgentMetadata](../ast/extractAgentMetadata.md) 字段一一对应，仅 `filePath`
  * 由源码形式（`src/...`）转为产物形式（`<dist>/...`，打平 `src/` 前缀 + dist 前缀 + `.js`）。
  *
- * `undefined` 字段（description / systemPrompt / tools / agents / model / maxTurns / inputDescription）
- * 在 JSON.stringify 时自动省略，水合时通过 `??` 兜底为 undefined。
+ * `undefined` 字段（description / systemPrompt / tools / agents / model / maxTurns /
+ * inputDescription / inputTypeName）在 JSON.stringify 时自动省略，水合时通过 `??`
+ * 兜底为 undefined。
  *
  * > `hasConfig` / `hasRun` 字段已移除——自定义 run 机制已整体移除，agent 统一为
  * > 声明式执行（config + 默认 reactLoop）。
@@ -37,6 +47,8 @@ export interface SerializedAgentRecord {
   maxTurns?: number;
   /** agent-as-tool 派发交接单说明（config 块字面量提取），无/非字面量时省略 */
   inputDescription?: string;
+  /** 派发入参 schema 声明（handler.ts 顶层 Input 导出检测），无则省略 */
+  inputTypeName?: string;
   /** 产物形式路径（如 `dist/agents/researcher/handler.js`），声明文件定位与可观测性用 */
   filePath: string;
 }
@@ -70,6 +82,7 @@ export function serializeAgents(
     model: a.model,
     maxTurns: a.maxTurns,
     inputDescription: a.inputDescription,
+    inputTypeName: a.inputTypeName,
     filePath: toProdFilePath(a.filePath, dist),
   }));
 }
@@ -108,6 +121,7 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
     model: a.model ?? undefined,
     maxTurns: a.maxTurns ?? undefined,
     inputDescription: a.inputDescription ?? undefined,
+    inputTypeName: a.inputTypeName ?? undefined,
   }));
 }
 
@@ -146,23 +160,29 @@ function validateAgentList(metadata: AgentMetadata[]): void {
 }
 
 /**
- * 主入口：从 AgentManifest[] 生成 faapi-agents.js
- *
- * agent **不生成 zod.js**——与 tool 不同，agent 没有用户输入参数（config 块字段
- * 已在 [extractAgentMetadata](../ast/extractAgentMetadata.md) AST 阶段提取为字面量），
- * 运行时无需 schema 校验。`run` 函数参数由 [agentRegistry](../injection/agentRegistry.md)
- * 的 `asTool()` 在 Phase 2.2 处理（若需输入校验，由 agent 子包在 Phase 3.x 自行生成）。
+ * 主入口：从 AgentManifest[] 生成 faapi-agents.js + 声明 `Input` 的 agent zod.js
  *
  * 内部流程：
  * 1. 对每个 AgentManifest 调 `createProgram` + `extractAgentMetadata` → AgentMetadata[]
- *    （AST 增强：补全 description / `@agent` 覆盖名 / config 块字段）
+ *    （AST 增强：补全 description / `@agent` 覆盖名 / config 块字段 / inputTypeName）
  * 2. `validateAgentList` 清单级校验（名重复 / agents 互引存在性）
  * 3. `serializeAgents(metadata, dist)` → SerializedAgentRecord[]（filePath 转产物形式）
  * 4. `writeAgentsModule(serialized, faapiAgentsPath)` → 写入 `<dist>/faapi-agents.js`
+ * 5. 声明 `inputTypeName` 的 agent 生成 `<dist>/agents/<name>/zod.js`（导出 `InputSchema`，
+ *    coerce=false——入参来自 LLM JSON 调用，与 tool/task 同语义）
+ *
+ * **zod.js 生成与 tool/task 复用同一共享管线**（[generateZodArtifacts](./generateZodArtifacts.md)），
+ * 类型提取**复用步骤 1 已创建的 Program**（零额外解析成本）。
+ *
+ * **dev/prod 同路径全量生成**，不引入 tool 式 `skipSchema` 按需模式：agent 数量级小
+ * （十位数）且 Program 已复用，全量生成的边际成本可忽略；而「声明了 `Input` 但 zod.js
+ * 缺失」若走按需生成，运行时无法区分「尚未生成」与「产物损坏」，schema 会静默退回
+ * 单字段模式——全量生成让该场景只剩产物异常一种可能，`@faapi/agent` 侧对它显式抛错
+ * （见 `@faapi/agent` 的 agent.md「派发入参 schema 声明」）。
  *
  * 与 [generateToolArtifacts](./generateToolArtifacts.md) 的差异：
- * - 不生成 zod.js（agent 无输入参数）
- * - 无 `skipSchema` 选项（没有 schema 可跳过）
+ * - zod.js 仅对声明 `Input` 的 agent 生成（未声明保持单字段 `input` 交接单模式），
+ *   dev/prod 一致全量（无 `skipSchema` 选项）
  * - 文件名常量为 `faapi-agents.js`，导出 `agents` 而非 `tools`
  *
  * @param agents scanAgents 产出的 AgentManifest[]（仅路径推导字段）
@@ -203,5 +223,110 @@ export async function generateAgentArtifacts(
   const agentsPath = path.resolve(rootDir, dist, AGENTS_FILE);
   await writeAgentsModule(serialized, agentsPath);
 
+  // 4. 声明 Input 的 agent 生成 zod.js（复用步骤 1 的 Program，零额外解析成本）
+  await generateAgentZodArtifacts(metadata, programByFile, rootDir, dist);
+
   return metadata;
+}
+
+/**
+ * 单个 agent 的 schema 提取结果（与 ToolSchemaSource / TaskSchemaSource 同构）
+ */
+interface AgentSchemaSource {
+  /** agent 名（注释标识） */
+  name: string;
+  /** 源文件绝对路径（generateZodArtifacts 按文件分组生成 zod.js） */
+  filePath: string;
+  /** schema 名 = inputTypeName（导出 `${schemaName}Schema`，即 `InputSchema`） */
+  schemaName: string;
+  typeInfo: HandlerTypeInfo | null;
+}
+
+/**
+ * 为声明 `inputTypeName` 的 agent 生成 zod.js（与 tool/task 共享同一 zod 产物管线）
+ *
+ * 类型提取复用元数据提取阶段已创建的 Program（programByFile）——同一批源文件
+ * 二次 createPrograms 会全量重新解析，纯浪费。
+ */
+async function generateAgentZodArtifacts(
+  metadata: AgentMetadata[],
+  programByFile: ReturnType<typeof createPrograms>,
+  rootDir: string,
+  dist: string,
+): Promise<void> {
+  const declared = metadata.filter((a) => a.inputTypeName);
+  if (declared.length === 0) return;
+
+  const resolversByFile = new Map<string, LazyTypeResolver>();
+  const sources: AgentSchemaSource[] = [];
+  for (const agent of declared) {
+    const absPath = path.resolve(rootDir, agent.filePath);
+    const program = programByFile.get(absPath);
+    if (!program) {
+      // 步骤 1 已按同一批 filePath 建 Program——缺失说明内部状态不一致，显式失败
+      throw new Error(
+        `agent "${agent.name}" 源文件不在 Program 中: ${agent.filePath}——无法生成入参 schema`,
+      );
+    }
+    if (!resolversByFile.has(absPath)) {
+      resolversByFile.set(absPath, createLazyTypeResolver(program, absPath));
+    }
+    // inputTypeName 已在外层 filter 保证非空（防御性兜底同 tool 管线）
+    const typeInfo = extractTypeInfo(program, absPath, agent.inputTypeName!);
+    sources.push({
+      name: agent.name,
+      filePath: absPath,
+      schemaName: agent.inputTypeName!,
+      typeInfo,
+    });
+  }
+
+  await generateZodArtifacts(sources, {
+    generateFileSource: generateAgentSchemaFileSource,
+    resolversByFile,
+    rootDir,
+    dist,
+  });
+}
+
+/**
+ * 生成单个 agent handler.ts 的 zod.js 源码（coerce=false——入参来自 LLM JSON 调用）
+ *
+ * 与 [generateTaskSchemaFileSource](./generateTaskArtifacts.md) 同构：导出格式
+ * `${inputTypeName}Schema`（即 `InputSchema`），复用 [generateZodArtifacts](./generateZodArtifacts.md)
+ * 共享管线，与 tool 的 zod.js 生成逻辑（generateToolSchemaFileSource）一致，仅注释
+ * 标识不同（`// agent <name> → <schemaName>`）。
+ */
+function generateAgentSchemaFileSource(
+  sources: AgentSchemaSource[],
+  resolveType: (name: string) => RuntimeType | undefined,
+  helpersImportPath: string,
+): string {
+  const lines: string[] = ["import { z } from 'zod';"];
+
+  const schemaBlocks: string[] = [];
+  for (const source of sources) {
+    if (!source.typeInfo) continue;
+    const block = [`// agent ${source.name} → ${source.schemaName}`];
+    // agent schema coerce=false（入参来自 LLM JSON 调用,与 body/tool/task 一致）
+    const schemaCode = generateZodSchemaSource(
+      source.typeInfo,
+      resolveType,
+      source.schemaName,
+      false,
+    ).replace(/^import \{ z \} from 'zod';\s*\n\s*\n/, '');
+    block.push(schemaCode);
+    block.push('');
+    schemaBlocks.push(block.join('\n'));
+  }
+
+  const allSchemaCode = schemaBlocks.join('\n');
+  if (helpersImportPath && usesCoerceHelpers(allSchemaCode)) {
+    lines.push(
+      `import { coerceNumber, coerceBoolean, coerceMap, coerceSet } from '${helpersImportPath}';`,
+    );
+  }
+  lines.push('');
+  lines.push(...schemaBlocks);
+  return lines.join('\n').replace(/\n+$/, '\n');
 }

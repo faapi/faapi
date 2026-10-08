@@ -592,4 +592,72 @@ describe('extractAgentMetadata', () => {
       expect(result!.model).toBe('gpt-4');
     });
   });
+
+  describe('派发入参 schema 声明（Input 导出检测）', () => {
+    it('顶层 interface Input → inputTypeName 为 "Input"', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x' };\n` +
+          `export interface Input {\n  novelId: string;\n  chapterId: number;\n}\n`,
+      );
+      expect(result!.inputTypeName).toBe('Input');
+    });
+
+    it('顶层 type Input = {...} → inputTypeName 为 "Input"', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x' };\n` +
+          `export type Input = { novelId: string };\n`,
+      );
+      expect(result!.inputTypeName).toBe('Input');
+    });
+
+    it('未声明 Input → inputTypeName 为 undefined（向后兼容）', () => {
+      const result = extract(`export const config = { systemPrompt: 'x' };\n`);
+      expect(result!.inputTypeName).toBeUndefined();
+    });
+
+    it('其他名字的类型导出（如 Payload）不构成声明', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x' };\n` +
+          `export interface Payload { novelId: string }\n`,
+      );
+      expect(result!.inputTypeName).toBeUndefined();
+    });
+
+    it('同名非类型导出（const Input）不构成声明', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x' };\n` +
+          `export const Input = { novelId: 'x' };\n`,
+      );
+      expect(result!.inputTypeName).toBeUndefined();
+    });
+
+    it('未导出的 interface Input 也检测（AST 按名字定位,导出与否不限）', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x' };\n` +
+          `interface Input {\n  novelId: string;\n}\n`,
+      );
+      expect(result!.inputTypeName).toBe('Input');
+    });
+
+    it('import 进来的同名类型无本地声明 → 不构成声明', () => {
+      const result = extract(
+        `import type { Input } from './types';\n` +
+          `export const config = { systemPrompt: 'x' };\n`,
+      );
+      expect(result!.inputTypeName).toBeUndefined();
+    });
+
+    it('Input 检测不影响其他字段提取', () => {
+      const result = extract(
+        `/** 研究员 */\n` +
+          `export const config = { systemPrompt: 'x', model: 'gpt-4', inputDescription: '交接单' };\n` +
+          `export interface Input { q: string }\n`,
+      );
+      expect(result!.description).toBe('研究员');
+      expect(result!.systemPrompt).toBe('x');
+      expect(result!.model).toBe('gpt-4');
+      expect(result!.inputDescription).toBe('交接单');
+      expect(result!.inputTypeName).toBe('Input');
+    });
+  });
 });
