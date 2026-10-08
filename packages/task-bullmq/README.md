@@ -46,6 +46,7 @@ export function POST(body, tasks) {
 | `startWorker(name, { concurrency, process })` | `new Worker(name, handler, { connection, concurrency, prefix })`；attempt 取 `job.attemptsStarted`（跨实例/重启准确） |
 | `stop(timeoutMs)` | workers.close() + queues.close()（race 超时），超时 abort 在跑任务的 signal |
 | `stopWorkers()` | 仅关 Worker（dev 热替换重注册用），Queue 连接保持 |
+| `groups`（任务组记账，语义见主包 taskGroups.md） | 两组 Redis key：`<prefix>:group:<id>`（组行 hash）+ `<prefix>:group-members:<id>`（成员行 hash，jobId→状态幂等守卫），常驻不自动清理；经 `defineCommand`/`runCommand`（BullMQ 类型化 Lua 扩展口，专用连接复用连接池不加新连接）原子计账。成员组标识以载荷包装随 data 存储（`{ __faapiGroup, __faapiPayload }`，交付/查询还原）；`cancelRemaining` 仅对 waiting/delayed 成员 `job.remove()`，移除成功才落定 |
 | 失败重试 | BullMQ 侧执行（attempts = retries + 1，指数退避 500ms 起） |
 
 注意：BullMQ 不提供执行中任务的取消信号，但 `stop` 超时路径会 abort `taskCtx.signal`（任务监听 signal 可尽快退出）。

@@ -10,7 +10,12 @@
  * （loadTaskDriver.ts）；无任务清单时用 idleTaskDriver 占位（enqueue 显式报错）。
  */
 import type { TaskRegistry } from './taskRegistry';
-import type { TaskJobStatus } from './taskTypes';
+import type {
+  TaskGroupOnFailure,
+  TaskGroupOutcome,
+  TaskGroupSnapshot,
+  TaskJobStatus,
+} from './taskTypes';
 
 /** 驱动层交付给语义层执行的单个任务 */
 export interface TaskDriverJob {
@@ -22,6 +27,8 @@ export interface TaskDriverJob {
   attempt: number;
   /** 停机/取消信号；驱动不支持取消时为永不 abort 的信号 */
   signal: AbortSignal;
+  /** 所属任务组（组投递的成员任务携带；驱动在交付时从组标识载体还原） */
+  groupId?: string;
 }
 
 /** 语义层交给驱动层的执行函数（抛错 = 失败，由驱动按入队时的 retries 重试） */
@@ -45,6 +52,8 @@ export interface TaskDriverRecord {
   result?: unknown;
   /** 失败/取消原因 */
   error?: string;
+  /** 所属任务组（组投递的成员任务携带；驱动从组标识载体还原后返回） */
+  groupId?: string;
   createdAt: number;
   /** 计划执行时间戳（延迟任务） */
   runAt?: number;
@@ -76,6 +85,12 @@ export interface TaskDriver {
       dedupId?: string;
       timeoutMs?: number;
       graceMs?: number;
+      /**
+       * 所属任务组（组投递成员携带，可选）——驱动以此把组标识随任务持久化
+       * （载体为驱动内部实现，两内置驱动以载荷包装形态存储），交付/查询时还原为
+       * `TaskDriverJob.groupId` / `TaskDriverRecord.groupId`
+       */
+      groupId?: string;
     },
   ): Promise<string>;
   /**
@@ -115,6 +130,67 @@ export interface TaskDriver {
    * 任务不存在 / 状态不允许时由驱动抛错。
    */
   retry?(name: string, id: string): Promise<void>;
+  /**
+   * 任务组记账（可选能力，整对象实现——未实现时 TaskClient.enqueueGroup /
+   * getGroup 显式抛错）。语义与两内置驱动的存储映射见 taskGroups.md。
+   *
+   * 记账语义约束（实现须满足）：
+   * - 成员落定**幂等**——同一成员重复 settle 不重复计数（成员行 settled 守卫）
+   * - settle/unsettle 的计数与成员状态翻转须原子（单条 SQL / Lua）
+   * - 记账状态持久化在驱动存储，跨实例/重启正确
+   */
+  groups?: TaskDriverGroupOps;
+}
+
+/** 组记账 create 的声明（enqueueGroup 语义层透传） */
+export interface TaskDriverGroupCreate {
+  id: string;
+  /** 成员任务名（一组一个任务名） */
+  task: string;
+  total: number;
+  onComplete?: string;
+  onFailure: TaskGroupOnFailure;
+}
+
+/** settle 的返回：记账后快照 + 是否本次落定使组到达全部落定 */
+export type TaskDriverGroupSettleResult = TaskGroupSnapshot & {
+  /** 本次落定后 settled >= total */
+  isLast: boolean;
+};
+
+/**
+ * 任务组记账驱动能力（TaskDriver.groups）
+ */
+export interface TaskDriverGroupOps {
+  /**
+   * 创建组记账。同 id 重复创建：参数完全一致幂等跳过；不一致抛错
+   * （组标识是业务关联键，形状漂移属调用方错误）
+   */
+  create(decl: TaskDriverGroupCreate): Promise<void>;
+  /**
+   * 记账一次成员落定（幂等——已落定成员重复 settle 计数不变）
+   *
+   * @param outcome 成员最终终态
+   * @returns 记账后快照；isLast = 本次落定后 settled >= total
+   * @throws 组不存在
+   */
+  settle(
+    groupId: string,
+    jobId: string,
+    outcome: TaskGroupOutcome,
+  ): Promise<TaskDriverGroupSettleResult>;
+  /** 逆向记账：成员重试回 pending 时撤销一次落定（成员未落定时 no-op） */
+  unsettle(groupId: string, jobId: string): Promise<void>;
+  /** 标记完成回调已入队（幂等） */
+  markCompletionEnqueued(groupId: string): Promise<void>;
+  /** 组快照；不存在返回 undefined */
+  get(groupId: string): Promise<TaskGroupSnapshot | undefined>;
+  /**
+   * fail-fast：取消组内未落定成员（等待/延迟中的不再执行；在跑的自然跑完），
+   * 实际取消成功的成员落定为 cancelled（幂等守卫防与运行实例的落定竞态重复计数），
+   * 返回记账后快照。对 run-to-completion 组为 no-op（返回当前快照）。
+   */
+  cancelRemaining(groupId: string): Promise<TaskGroupSnapshot>;
 }
 
 /** 创建驱动时可选的工厂签名（loadTaskDriver 按包名动态加载后调用） */

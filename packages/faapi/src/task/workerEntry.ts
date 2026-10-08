@@ -1,5 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import type { TaskRegistriesSnapshot } from './taskTypes';
+import type { TaskRegistriesSnapshot, TaskClient } from './taskTypes';
 import type { LlmComplete } from '../injection/llmTypes';
 import type { LlmConfig } from '../config/configTypes';
 import type { LogEntry, LogLevel } from '../logger/loggerTypes';
@@ -211,6 +211,82 @@ export function createTaskLogger(
 }
 
 /**
+ * 隔离任务 taskCtx.tasks 代理工厂（worker 侧）
+ *
+ * 全方法经 `{ type: 'tasks-call', seq, method, args }` 消息回传宿主执行，宿主以
+ * `{ type: 'tasks-result', seq, ok, value | error }` 回传——按 seq 匹配挂起调用。
+ * 参数与返回值须可结构化克隆（不可克隆按调用错误抛出，与 progress/log 同口径，
+ * 不静默）；挂起的调用随任务超时两段式取消（terminate）一并终止，无独立超时。
+ *
+ * 纯函数形态（send/handleMessage 注入）：真实 worker 传 parentPort.postMessage，
+ * 单测直接构造（与 buildRegistriesView 同款可测性）。
+ */
+export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
+  proxy: TaskClient;
+  handleMessage: (msg: {
+    type?: string;
+    seq?: number;
+    ok?: boolean;
+    value?: unknown;
+    error?: SerializedWorkerError;
+  }) => boolean;
+} {
+  let seq = 0;
+  const pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (err: Error) => void; method: string }
+  >();
+
+  const call = (method: string, args: unknown[]): Promise<unknown> =>
+    new Promise((resolve, reject) => {
+      const s = ++seq;
+      pending.set(s, { resolve, reject, method });
+      try {
+        send({ type: 'tasks-call', seq: s, method, args });
+      } catch (err) {
+        pending.delete(s);
+        reject(
+          new Error(
+            `taskCtx.tasks.${method} arguments are not cloneable across the worker boundary: ` +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              'Keep arguments plain data (strings / numbers / plain objects).',
+            { cause: err },
+          ),
+        );
+      }
+    });
+
+  return {
+    proxy: {
+      enqueue: (name, payload, opts) =>
+        call('enqueue', [name, payload, opts]) as ReturnType<TaskClient['enqueue']>,
+      enqueueGroup: (name, payloads, opts) =>
+        call('enqueueGroup', [name, payloads, opts]) as ReturnType<TaskClient['enqueueGroup']>,
+      getGroup: (groupId) => call('getGroup', [groupId]) as ReturnType<TaskClient['getGroup']>,
+      list: (name) => call('list', [name]) as unknown as ReturnType<TaskClient['list']>,
+      listQueued: (name) =>
+        call('listQueued', [name]) as unknown as ReturnType<TaskClient['listQueued']>,
+      cancel: (name, id) => call('cancel', [name, id]) as ReturnType<TaskClient['cancel']>,
+      retry: (name, id) => call('retry', [name, id]) as ReturnType<TaskClient['retry']>,
+    },
+    handleMessage: (msg) => {
+      if (msg?.type !== 'tasks-result') return false;
+      const entry = msg.seq !== undefined ? pending.get(msg.seq) : undefined;
+      if (!entry) return true; // 迟到/未知 seq（取消终止后到达）——忽略
+      pending.delete(msg.seq!);
+      if (msg.ok) {
+        entry.resolve(msg.value);
+      } else {
+        const err = new Error(msg.error?.message ?? `taskCtx.tasks.${entry.method} failed`);
+        if (msg.error?.name !== undefined) err.name = msg.error.name;
+        entry.reject(err);
+      }
+      return true;
+    },
+  };
+}
+
+/**
  * worker 侧 bootstrap：播种读取根 + 桥接 run 消息
  *
  * 仅在 worker 线程执行（主线程 import 本模块时 parentPort 为空，只取上面的纯
@@ -229,6 +305,9 @@ function bootstrap(): void {
       data.resourcesDir;
   }
 
+  // taskCtx.tasks 代理：全方法经消息回传宿主（onTasksCall 分派到队列本体）
+  const tasksProxy = buildTasksProxy((msg) => parentPort?.postMessage(msg));
+
   let controller: AbortController | null = null;
   let modulePromise: Promise<{ run?: (payload: unknown, taskCtx: unknown) => unknown }> | null =
     null;
@@ -245,6 +324,7 @@ function bootstrap(): void {
       llms?: Record<string, LlmConfig>;
       log?: { level?: LogLevel; scope?: string; fields?: Record<string, unknown> };
     }) => {
+      if (tasksProxy.handleMessage(msg as Parameters<typeof tasksProxy.handleMessage>[0])) return;
       if (msg?.type === 'abort') {
         controller?.abort(new Error(msg.reason));
         return;
@@ -279,6 +359,7 @@ function bootstrap(): void {
           const result = await run(payload, {
             ...taskCtx,
             signal: controller!.signal,
+            tasks: tasksProxy.proxy,
             registries,
             llm,
             progress,

@@ -76,6 +76,10 @@ export type {
   TaskRegistriesSnapshot,
   TaskFailedInfo,
   TaskFailedHandler,
+  TaskGroupSummary,
+  TaskGroupSnapshot,
+  TaskGroupOnFailure,
+  TaskGroupOutcome,
 } from './task/taskTypes';
 export type { TaskRegistry } from './task/taskRegistry';
 export type {
@@ -83,6 +87,9 @@ export type {
   TaskDriverJob,
   TaskDriverProcess,
   TaskDriverRecord,
+  TaskDriverGroupOps,
+  TaskDriverGroupCreate,
+  TaskDriverGroupSettleResult,
 } from './task/driverTypes';
 export { createTaskRegistry } from './task/taskRegistry';
 export { createTaskQueue } from './task/taskQueue';

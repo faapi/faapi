@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { TaskRegistriesSnapshot } from './taskTypes';
-import type { WorkerEntryData } from './workerEntry';
+import type { WorkerEntryData, SerializedWorkerError } from './workerEntry';
 import type { LlmConfig } from '../config/configTypes';
 import type { LogEntry, LogLevel } from '../logger/loggerTypes';
 
@@ -113,6 +113,12 @@ export interface TaskWorkerOptions {
    * 不传则日志条目被忽略。宽限期（取消判定后）到达的条目不采纳（超时判定即终局）
    */
   onLog?: (entry: LogEntry) => void;
+  /**
+   * 任务客户端 RPC 分派（worker 内 `taskCtx.tasks.*` 经 `{ type: 'tasks-call' }`
+   * 消息回传宿主执行，结果/错误按 seq 回传）——语义层注入（闭包持有队列本体）；
+   * 不传则 worker 内 taskCtx.tasks 的调用以错误拒绝（直接构造执行器的测试场景）
+   */
+  onTasksCall?: (method: string, args: unknown[]) => Promise<unknown>;
 }
 
 /** worker 错误回传负载（serializeError 的结构化克隆产物） */
@@ -213,7 +219,66 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         error?: WorkerErrorPayload;
         value?: unknown;
         entry?: LogEntry;
+        seq?: number;
+        method?: string;
+        args?: unknown[];
       }) => {
+        // taskCtx.tasks RPC：worker 内代理调用回传宿主执行（结果/错误按 seq 回传）。
+        // running/grace 两阶段都处理——run 在宽限期内仍可能 await 一次入队；settled
+        // 后 worker 已 terminate，不会再有消息
+        if (msg?.type === 'tasks-call') {
+          const { seq, method, args } = msg;
+          const reply = (body: Record<string, unknown>) => {
+            try {
+              worker.postMessage({ type: 'tasks-result', seq, ...body });
+            } catch (err) {
+              // 回传值不可克隆：按调用错误回传（与 progress/log 同口径，不静默）
+              try {
+                worker.postMessage({
+                  type: 'tasks-result',
+                  seq,
+                  ok: false,
+                  error: {
+                    name: 'Error',
+                    message: `taskCtx.tasks.${method} result is not cloneable: ${String(err)}`,
+                    stack: undefined,
+                    props: {},
+                  } satisfies SerializedWorkerError,
+                });
+              } catch {
+                // 连错误负载都不可克隆（理论上不发生）——放弃回传，worker 侧按
+                // 挂起处理并随超时终止
+              }
+            }
+          };
+          if (!options.onTasksCall) {
+            reply({
+              ok: false,
+              error: {
+                name: 'Error',
+                message: `taskCtx.tasks.${method} is unavailable: no host handler was provided for this execution`,
+                stack: undefined,
+                props: {},
+              } satisfies SerializedWorkerError,
+            });
+            return;
+          }
+          options
+            .onTasksCall(method!, args ?? [])
+            .then((value) => reply({ ok: true, value }))
+            .catch((err: unknown) => {
+              reply({
+                ok: false,
+                error: {
+                  name: err instanceof Error ? err.name : 'Error',
+                  message: err instanceof Error ? err.message : String(err),
+                  stack: err instanceof Error ? err.stack : undefined,
+                  props: {},
+                } satisfies SerializedWorkerError,
+              });
+            });
+          return;
+        }
         if (phase === 'grace') {
           // 宽限期内收到消息 = run 已结束（worker 因 parentPort 监听不会自行 exit）——
           // 保持取消失败终局，立即返回；迟到的完成结果/进度不采纳（超时判定即终局）

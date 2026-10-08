@@ -94,6 +94,61 @@ describe('runTaskInWorker', () => {
     expect(result).toEqual({ hasField: false });
   });
 
+  it('taskCtx.tasks 代理：全方法经 RPC 回宿主（onTasksCall），结果回传 worker', async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const modulePath = writeTaskModule(
+      'tasks-proxy',
+      `export async function run(payload, taskCtx) {
+        const enq = await taskCtx.tasks.enqueue('chunks', { i: 1 }, { dedupId: 'k1' });
+        const group = await taskCtx.tasks.getGroup('g1');
+        return { id: enq.id, group };
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      onTasksCall: async (method, args) => {
+        calls.push({ method, args });
+        if (method === 'enqueue') return { id: 'h-1' };
+        if (method === 'getGroup')
+          return { id: args[0], total: 2, done: 1, failed: 0, cancelled: 0, settled: 1 };
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    expect(result).toEqual({
+      id: 'h-1',
+      group: { id: 'g1', total: 2, done: 1, failed: 0, cancelled: 0, settled: 1 },
+    });
+    expect(calls.map((c) => c.method)).toEqual(['enqueue', 'getGroup']);
+    expect(calls[0]!.args).toEqual(['chunks', { i: 1 }, { dedupId: 'k1' }]);
+  });
+
+  it('taskCtx.tasks 代理：宿主 handler 抛错回传为 worker 侧异常（reject）', async () => {
+    const modulePath = writeTaskModule(
+      'tasks-proxy-err',
+      `export async function run(payload, taskCtx) {
+        try {
+          await taskCtx.tasks.enqueue('nope', {});
+          return { threw: false };
+        } catch (err) {
+          return { threw: true, message: err.message };
+        }
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      onTasksCall: async () => {
+        throw new Error('[faapi] Unknown task "nope"');
+      },
+    });
+    expect(result).toEqual({ threw: true, message: '[faapi] Unknown task "nope"' });
+  });
+
   it('读取根播种先于任务模块求值：模块顶层（readResource 顶层调用前提）即已绑定', async () => {
     // ESM 静态 import 提升求值——wrapper 必须在任务模块顶层代码执行前播种读取根，
     // 否则任务模块 top-level await 调用 readResource 会得到"未绑定"。模块级 throw

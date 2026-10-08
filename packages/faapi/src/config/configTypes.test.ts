@@ -57,6 +57,8 @@ describe('configTypes', () => {
         listQueued: async () => [],
         cancel: async () => {},
         retry: async () => {},
+        enqueueGroup: async () => ({ groupId: 'test', jobs: [] }),
+        getGroup: async () => undefined,
       },
     };
     expect(ctx.rootDir).toBe('/app');

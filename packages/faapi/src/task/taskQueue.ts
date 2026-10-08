@@ -7,6 +7,10 @@ import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { TaskDriverJob } from './driverTypes';
 import type {
   TaskContext,
+  TaskGroupOnFailure,
+  TaskGroupOutcome,
+  TaskGroupSnapshot,
+  TaskGroupSummary,
   TaskJob,
   TaskJobStatus,
   TaskModule,
@@ -17,6 +21,25 @@ import type {
 
 /** 终态（内存护栏的计数范围）：pending/running/retry 永不淘汰 */
 const TERMINAL_STATUSES: ReadonlySet<TaskJobStatus> = new Set(['done', 'failed', 'cancelled']);
+
+/**
+ * 任务组成员 dedupId 前缀与完成回调 dedupId 后缀（组投递幂等键由框架独占管理，
+ * 形状见 taskGroups.md——业务自拼序号扇出由本约定替代）
+ */
+const GROUP_MEMBER_DEDUP = (groupId: string, index: number): string =>
+  `faapi-group:${groupId}:${index}`;
+const GROUP_COMPLETION_DEDUP = (groupId: string): string => `faapi-group:${groupId}:complete`;
+
+/** 隔离任务 taskCtx.tasks 代理允许回传宿主的方法（TaskClient 全集） */
+const TASK_CLIENT_METHODS: ReadonlySet<string> = new Set([
+  'enqueue',
+  'enqueueGroup',
+  'list',
+  'listQueued',
+  'cancel',
+  'retry',
+  'getGroup',
+]);
 
 /**
  * 终态记录内存上限：`list()` 为进程内观测快照而非持久化历史，长驻进程的
@@ -108,6 +131,78 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     }
   }
 
+  function assertGroupSupport(): void {
+    if (!driver.groups) {
+      throw new Error(
+        '[faapi] Task driver does not support group accounting (TaskDriver.groups is not implemented). ' +
+          'Group enqueue/settle requires a driver that implements it — see driverTypes.md / taskGroups.md.',
+      );
+    }
+  }
+
+  /**
+   * fan-in：组全部落定且声明了 onComplete 而回调未入队时，入队完成回调任务
+   * （TaskGroupSummary 契约 payload + dedup 兜底至多一份），成功后标记
+   * completionEnqueued。入队失败 console.error 留痕（组计数已落定、可经同
+   * groupId 幂等重投自愈）——记账失败不改成员执行语义，但不静默。
+   * 供落定接线与 enqueueGroup 幂等重投自愈两条路径共用（enqueueGroup 重投时
+   * 新组 settled=0 自然短路，零开销）。
+   */
+  async function maybeFireCompletion(snap: TaskGroupSnapshot): Promise<void> {
+    if (!driver.groups) return;
+    if (!snap.onComplete || snap.completionEnqueued || snap.settled < snap.total) return;
+    const summary: TaskGroupSummary = {
+      groupId: snap.groupId,
+      task: snap.task,
+      total: snap.total,
+      done: snap.done,
+      failed: snap.failed,
+      cancelled: snap.cancelled,
+      settled: snap.settled,
+    };
+    try {
+      await enqueueCore(snap.onComplete, summary, {
+        dedupId: GROUP_COMPLETION_DEDUP(snap.groupId),
+      });
+      await driver.groups.markCompletionEnqueued(snap.groupId);
+    } catch (err) {
+      console.error(
+        `[faapi] task group "${snap.groupId}" completion enqueue failed (group is settled; ` +
+          're-invoke enqueueGroup with the same groupId to re-arm the callback):',
+        err,
+      );
+    }
+  }
+
+  /**
+   * 组内成员落定接线：成员到达最终终态（done；failed/cancelled 且重试额度已尽）
+   * 时驱动侧记账 + fan-in 判定；fail-fast 组在成员最终失败时先取消余下成员
+   * （实际取消成功的成员由驱动落定 cancelled，取消后快照同样过 fan-in 判定）。
+   * 记账失败 console.error 留痕（成员执行语义已定，不因记账失败翻案，但不静默）。
+   */
+  async function settleGroup(
+    record: TaskJob,
+    outcome: TaskGroupOutcome,
+    willRetry: boolean,
+  ): Promise<void> {
+    const groupId = record.groupId;
+    if (!groupId || !driver.groups) return;
+    if (outcome !== 'done' && willRetry) return; // 驱动还会重试——不算落定
+    try {
+      const snap = await driver.groups.settle(groupId, record.id, outcome);
+      if (outcome === 'failed' && snap.onFailure === 'fail-fast') {
+        await maybeFireCompletion(await driver.groups.cancelRemaining(groupId));
+      }
+      await maybeFireCompletion(snap);
+    } catch (err) {
+      console.error(
+        `[faapi] task group accounting failed for "${groupId}" (job ${record.id}, ` +
+          `outcome ${outcome}):`,
+        err,
+      );
+    }
+  }
+
   /**
    * 注册表纯数据快照（隔离路径 postMessage 用）——agent 取完整元数据
    * （getAgentEntry 含 filePath，非仅 LLM 可见字段），派发时刻生成
@@ -172,12 +267,16 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       attempts: 0,
       createdAt: Date.now(),
     };
+    if (job.groupId !== undefined) record.groupId = job.groupId;
     record.attempts = job.attempt;
     transitionStatus(record, 'running');
     // 派发清空上一轮的进度（本轮执行经 taskCtx.progress 重新写入）
     delete record.progress;
     record.error = undefined;
     records.set(job.id, record);
+
+    // willRetry 按任务 meta.retries 推算——failed/cancelled 但驱动还会重试时不算落定
+    const willRetry = job.attempt <= (meta.retries ?? 0);
 
     try {
       let result: unknown;
@@ -209,6 +308,17 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             if (record.status === 'running') record.progress = value;
           },
           onLog: writeLogEntry,
+          // 隔离路径的 taskCtx.tasks 为 postMessage RPC 代理——宿主侧按方法名
+          // 分派到队列本体（与 ctx.tasks / app.tasks 同一实例），结果/错误按 seq 回传
+          onTasksCall: async (method, args) => {
+            if (!TASK_CLIENT_METHODS.has(method)) {
+              throw new Error(`[faapi] Unknown task client method "${method}"`);
+            }
+            const fn = (queue as unknown as Record<string, (...a: unknown[]) => unknown>)[
+              method
+            ] as (...a: unknown[]) => unknown;
+            return fn.apply(queue, args);
+          },
         });
       } else {
         let mod = moduleCache.get(job.name);
@@ -221,6 +331,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         }
         const taskCtx: TaskContext = {
           signal: job.signal,
+          // 活引用：与 ctx.tasks / app.tasks 同一 app 实例队列
+          tasks: queue,
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
           registries: registriesView,
@@ -238,14 +350,17 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       transitionStatus(record, 'done');
       record.result = result;
       evictFinishedRecords();
+      await settleGroup(record, 'done', willRetry);
       return result;
     } catch (err) {
       // 取消（执行被框架终止：隔离执行超时终止 / 停机取消）与 run 自身失败分开记，
       // list() 可区分"任务被取消"与"任务出错"；两者都向上抛错交驱动按 retries 重试
       const cancelled = err instanceof TaskCancelledError || job.signal.aborted;
-      transitionStatus(record, cancelled ? 'cancelled' : 'failed');
+      const outcome: TaskGroupOutcome = cancelled ? 'cancelled' : 'failed';
+      transitionStatus(record, outcome);
       record.error = err instanceof Error ? err.message : String(err);
       evictFinishedRecords();
+      await settleGroup(record, outcome, willRetry);
       // onFailed 副作用钩子（告警/死信上报）：willRetry 按 meta.retries 推算，
       // 自身抛错 console.error 留痕——不影响驱动重试决策，但不静默吞掉
       if (deps.onFailed) {
@@ -255,7 +370,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               task: job.name,
               jobId: job.id,
               attempt: job.attempt,
-              willRetry: job.attempt <= (meta.retries ?? 0),
+              willRetry,
               cancelled,
               error: record.error!,
             }),
@@ -277,37 +392,106 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     }
   }
 
+  /**
+   * 入队核心（queue.enqueue / enqueueGroup / fan-in 回调入队共用）：
+   * 停止检查 → 存在性检查 → payload 校验 → 驱动入队 → 本地记录。
+   * 供对象字面量定义前引用的辅助函数形式（queue 方法内部调用时 queue 已初始化）。
+   */
+  async function enqueueCore(
+    name: string,
+    payload: unknown,
+    opts?: { delayMs?: number; dedupId?: string; groupId?: string },
+  ): Promise<string> {
+    if (stopped) {
+      throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
+    }
+    assertKnownTask(name);
+    const data = await validatePayload(name, payload);
+    const meta = registry.get(name)!;
+    const id = await driver.enqueue(name, data, {
+      delayMs: opts?.delayMs,
+      retries: meta.retries ?? 0,
+      dedupId: opts?.dedupId,
+      // 执行硬限预算透传驱动（pgboss 映射 expireInSeconds）：未声明 timeoutMs 时
+      // 两字段为 undefined，驱动用自身兜底
+      timeoutMs: meta.timeoutMs,
+      graceMs: meta.graceMs,
+      ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
+    });
+    // driver.enqueue 可能已同步触发派发——runJob 已写入
+    // running/done 记录时不要用 pending 覆盖
+    if (!records.has(id)) {
+      records.set(id, {
+        id,
+        name,
+        payload: data,
+        status: 'pending',
+        attempts: 0,
+        ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
+        createdAt: Date.now(),
+        ...(opts?.delayMs ? { runAt: Date.now() + opts.delayMs } : {}),
+      });
+    }
+    return id;
+  }
+
   const queue: TaskQueue = {
     async enqueue(name, payload = {}, opts) {
+      const id = await enqueueCore(name, payload, {
+        delayMs: opts?.delayMs,
+        dedupId: opts?.dedupId,
+      });
+      return { id };
+    },
+
+    async enqueueGroup(name, payloads, opts) {
       if (stopped) {
         throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
       }
+      assertGroupSupport();
       assertKnownTask(name);
-      const data = await validatePayload(name, payload);
-      const meta = registry.get(name)!;
-      const id = await driver.enqueue(name, data, {
-        delayMs: opts?.delayMs,
-        retries: meta.retries ?? 0,
-        dedupId: opts?.dedupId,
-        // 执行硬限预算透传驱动（pgboss 映射 expireInSeconds）：未声明 timeoutMs 时
-        // 两字段为 undefined，驱动用自身兜底
-        timeoutMs: meta.timeoutMs,
-        graceMs: meta.graceMs,
-      });
-      // driver.enqueue 可能已同步触发派发——runJob 已写入
-      // running/done 记录时不要用 pending 覆盖
-      if (!records.has(id)) {
-        records.set(id, {
-          id,
-          name,
-          payload: data,
-          status: 'pending',
-          attempts: 0,
-          createdAt: Date.now(),
-          ...(opts?.delayMs ? { runAt: Date.now() + opts.delayMs } : {}),
-        });
+      if (!Array.isArray(payloads) || payloads.length === 0) {
+        throw new Error(
+          '[faapi] enqueueGroup requires a non-empty payloads array — a group without members can never settle.',
+        );
       }
-      return { id };
+      const onComplete = opts?.onComplete;
+      if (onComplete !== undefined) assertKnownTask(onComplete);
+      const onFailure: TaskGroupOnFailure = opts?.onFailure ?? 'run-to-completion';
+      // 全量校验前置：任一 payload 不合法整组不投递（部分投递的组永不落定）
+      const validated: unknown[] = [];
+      for (const p of payloads) {
+        validated.push(await validatePayload(name, p));
+      }
+      const groupId = opts?.groupId ?? crypto.randomUUID();
+      await driver.groups!.create({
+        id: groupId,
+        task: name,
+        total: validated.length,
+        ...(onComplete !== undefined ? { onComplete } : {}),
+        onFailure,
+      });
+      const jobs: { id: string }[] = [];
+      for (let i = 0; i < validated.length; i++) {
+        // 成员 dedupId 框架独占派生（组幂等键形状是组语义的一部分）：
+        // 同 groupId 幂等重投时已存在的成员直接命中不重复执行——发起任务
+        // （groupId 从业务键派生）被驱动重试时重调 enqueueGroup 即天然补投自愈
+        const id = await enqueueCore(name, validated[i]!, {
+          delayMs: opts?.delayMs,
+          dedupId: GROUP_MEMBER_DEDUP(groupId, i + 1),
+          groupId,
+        });
+        jobs.push({ id });
+      }
+      // 自愈路径：组已落定而回调未入队（宿主在落定与回调入队之间崩溃/失败）→ 补投；
+      // 新组 settled=0 自然短路
+      await maybeFireCompletion((await driver.groups!.get(groupId))!);
+      return { groupId, jobs };
+    },
+
+    async getGroup(groupId) {
+      assertGroupSupport();
+      return driver.groups!.get(groupId);
     },
 
     list(name?: string): TaskJob[] {
@@ -337,6 +521,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           status: record.status,
           attempts: record.attempts,
           createdAt: record.createdAt,
+          ...(record.groupId !== undefined ? { groupId: record.groupId } : {}),
           ...(record.result !== undefined ? { result: record.result } : {}),
           ...(record.error !== undefined ? { error: record.error } : {}),
           ...(record.runAt !== undefined ? { runAt: record.runAt } : {}),
@@ -358,8 +543,12 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       }
       await driver.cancel(name, id);
       const record = records.get(id);
-      if (record) transitionStatus(record, 'cancelled');
-      evictFinishedRecords();
+      if (record) {
+        transitionStatus(record, 'cancelled');
+        evictFinishedRecords();
+        // 组内成员：管理取消即最终终态（无重试语义），照常落定 + fan-in 判定
+        await settleGroup(record, 'cancelled', false);
+      }
     },
 
     async retry(name: string, id: string): Promise<void> {
@@ -370,7 +559,19 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       }
       await driver.retry(name, id);
       const record = records.get(id);
-      if (record) transitionStatus(record, 'pending'); // 等待驱动重新派发
+      if (record) {
+        const wasTerminal = TERMINAL_STATUSES.has(record.status);
+        transitionStatus(record, 'pending'); // 等待驱动重新派发
+        // 组内成员撤回落定（计数回退），重新派发落定后重新记账
+        if (wasTerminal && record.groupId && driver.groups) {
+          await driver.groups.unsettle(record.groupId, record.id).catch((err) => {
+            console.error(
+              `[faapi] task group unsettle failed for "${record.groupId}" (job ${record.id}):`,
+              err,
+            );
+          });
+        }
+      }
     },
 
     async start() {

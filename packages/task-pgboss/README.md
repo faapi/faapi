@@ -42,6 +42,7 @@ export function POST(body, tasks) {
 | `startWorker(name, { concurrency, process })` | 幂等 `createQueue(name)` → `boss.work(name, { batchSize: concurrency }, handler)`。批内任务并发执行、逐任务 `complete`/`fail` 结算——单个任务失败只消耗自己的重试额度，不毒化同批 |
 | `stop(timeoutMs)` | `offWork`（与 deadline 竞速，卡死任务不悬挂停机）+ `boss.stop({ close: true, graceful: true, timeout })`（timeout 单位毫秒）；deadline 到点 abort 在跑任务的 signal |
 | `stopWorkers()` | `offWork()`（不断开连接，dev 热替换重注册用） |
+| `groups`（任务组记账，语义见主包 taskGroups.md） | 同库两张自建表 `faapi_task_groups`（组行：计数器 + 回调声明 + 失败策略）+ `faapi_task_group_members`（成员行：settled/outcome 幂等守卫），首次组操作 `CREATE TABLE IF NOT EXISTS`；经 `boss.getDb().executeSql` 计账——落定为单条 CTE（成员行守卫翻转 + 计数递增原子）。成员组标识以载荷包装随 data 存储（`{ __faapiGroup, __faapiPayload }`，交付/查询还原）；`cancelRemaining` 逐成员 `boss.cancel` + `getJobById` 核实生效才落定 |
 | 失败重试 | pg-boss 侧执行（retryLimit + retryBackoff 指数退避） |
 
 注意：pg-boss（v10 起）不再隐式建队列（`send()` 对未创建队列静默返回 null）——驱动在投递/注册 worker 前自动幂等建队列，业务方无需预建。pg-boss 自身不提供执行中任务的取消信号，但 `stop` 超时路径会 abort `taskCtx.signal`（任务监听 signal 可尽快退出；仍不退出的由 expire_in 兜底结算）。

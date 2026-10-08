@@ -29,6 +29,10 @@
 - `retry(name, id)`：重试失败/取消的任务——pgboss 映射 `boss.resume`（仅 cancelled 任务可恢复）；bullmq 映射 `job.retry()`（仅 failed 可重试，其余状态由 BullMQ 抛错；任务不存在时抛错）
 - 语义层补充：`TaskClient.listQueued` 把驱动记录与本进程执行记录按 id 合并（本进程观测优先——attempts/status/result 更实时）
 
+## 组记账能力（`groups`，可选）
+
+`TaskDriver.groups?: TaskDriverGroupOps`——任务组记账（创建 / 落定 / 逆向 / 查询 / fail-fast 取消余下）的驱动侧存储与原子性，**整对象实现**（与 list/cancel/retry 同为可选能力，未实现时 `TaskClient.enqueueGroup` / `getGroup` 显式抛错不降级）。完整语义、两内置驱动的存储与原子性映射、成员组标识的载荷包装传输见 [taskGroups.md](./taskGroups.md)。
+
 ## 相关模块
 
 - `src/task/loadTaskDriver.ts` — 按 config.task.driver 动态加载子包驱动

@@ -20,6 +20,10 @@ const h = vi.hoisted(() => {
     complete: ReturnType<typeof vi.fn>;
     fail: ReturnType<typeof vi.fn>;
     on: ReturnType<typeof vi.fn>;
+    getJobById: ReturnType<typeof vi.fn>;
+    sqls: Array<{ text: string; values: unknown[] }>;
+    sqlHandler: ((text: string, values: unknown[]) => unknown[]) | null;
+    getDb: ReturnType<typeof vi.fn>;
     sent: Array<{ name: string; data: unknown; options: unknown }>;
     workHandlers: Array<{
       options: Record<string, unknown>;
@@ -99,6 +103,20 @@ vi.mock('pg-boss', () => {
     complete = vi.fn(async (_name: string, _id: string) => {});
     fail = vi.fn(async (_name: string, _id: string, _reason?: unknown) => {});
     on = vi.fn((_event: string, _listener: (...args: unknown[]) => void) => {});
+    getJobById = vi.fn(async (_name: string, _id: string) => null);
+    /** executeSql 记录 + 可编程结果（组记账 SQL 的假库——按 SQL 形态注入返回行） */
+    sqls: Array<{ text: string; values: unknown[] }> = [];
+    sqlHandler: ((text: string, values: unknown[]) => unknown[]) | null = null;
+    getDb = vi.fn(() => ({
+      executeSql: async (text: string, values: unknown[] = []) => {
+        const self = this as unknown as {
+          sqls: Array<{ text: string; values: unknown[] }>;
+          sqlHandler: ((text: string, values: unknown[]) => unknown[]) | null;
+        };
+        self.sqls.push({ text, values });
+        return { rows: self.sqlHandler ? self.sqlHandler(text, values) : [] };
+      },
+    }));
     sent: Array<{ name: string; data: unknown; options: unknown }> = [];
     workHandlers: Array<{
       options: Record<string, unknown>;
@@ -118,6 +136,238 @@ beforeEach(() => {
   h.counters.send = 0;
   h.counters.worker = 0;
   h.counters.failStart = 0;
+});
+
+/** 组记账 SQL 形态判别（假库按形态注入返回行） */
+const SQL_IS = {
+  create: (t: string) => t.includes('INSERT INTO faapi_task_groups'),
+  settle: (t: string) =>
+    t.includes('WITH member AS') && t.includes('INSERT INTO faapi_task_group_members'),
+  unsettle: (t: string) => t.includes('WITH member AS') && t.includes('SET settled = false'),
+  markCompletion: (t: string) => t.includes('completion_enqueued = true'),
+  getGroup: (t: string) => t.includes('SELECT id, task, total'),
+  memberInsert: (t: string) => t.includes('INSERT INTO faapi_task_group_members'),
+  pendingMembers: (t: string) => t.includes('settled = false') && t.includes('SELECT job_id'),
+};
+
+/** 组行假记录（SELECT 返回形态） */
+const groupRow = (over: Record<string, unknown> = {}) => ({
+  id: 'g1',
+  task: 'chunks',
+  total: 2,
+  done: 1,
+  failed: 0,
+  cancelled: 0,
+  on_complete: 'summary',
+  on_failure: 'run-to-completion',
+  completion_enqueued: false,
+  ...over,
+});
+
+describe('createPgBossDriver 组记账', () => {
+  /** 组记账测试的前置：组操作惰性建连——先触发一次 enqueue 确保 FakeBoss 已创建 */
+  async function warmDriver() {
+    const driver = createPgBossDriver();
+    await driver.enqueue('warm', {});
+    return driver;
+  }
+
+  /** 组记账测试的 job 字面量（mkJob 为 list 测试 describe 的局部助手） */
+  const rawJob = (over: Record<string, unknown>) => ({
+    name: 'chunks',
+    retryCount: 0,
+    createdOn: new Date(1700000000000),
+    startAfter: new Date(1700000000000),
+    output: {},
+    ...over,
+  });
+
+  it('enqueue 带组标识：载荷包装存储 + 成员表登记；dedup 幂等命中也登记', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('chunks', { i: 1 }, { groupId: 'g1', dedupId: 'faapi-group:g1:1' });
+    const boss = fakeBosses()[0]!;
+    expect(boss.sent[0]!.data).toEqual({ __faapiGroup: 'g1', __faapiPayload: { i: 1 } });
+    const insert = boss.sqls.find((s) => SQL_IS.memberInsert(s.text))!;
+    expect(insert.values).toEqual(['g1', 'pgb-1']);
+    // 幂等命中（send 返回 null → 返回确定性 id）同样登记成员行
+    boss.sqls.length = 0;
+    boss.send.mockResolvedValue(null);
+    const id2 = await driver.enqueue(
+      'chunks',
+      { i: 2 },
+      { groupId: 'g1', dedupId: 'faapi-group:g1:2' },
+    );
+    expect(id2).toMatch(/^[0-9a-f-]{36}$/);
+    expect(boss.sqls.find((s) => SQL_IS.memberInsert(s.text))!.values).toEqual(['g1', id2]);
+  });
+
+  it('enqueue 不带组标识不包装（存量行为不变）', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('mail', { to: 'a@b.c' });
+    expect(fakeBosses()[0]!.sent[0]!.data).toEqual({ to: 'a@b.c' });
+  });
+
+  it('work 交付从载荷包装还原业务 payload 与 groupId', async () => {
+    const driver = createPgBossDriver();
+    const process = vi.fn(async () => 'ok');
+    await driver.startWorker('chunks', { concurrency: 1, process });
+    const boss = fakeBosses()[0]!;
+    await boss.workHandlers[0]!.handler([
+      { id: 'j1', data: { __faapiGroup: 'g1', __faapiPayload: { i: 1 } }, retryCount: 0 },
+    ]);
+    expect(process).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'j1', payload: { i: 1 }, groupId: 'g1' }),
+    );
+  });
+
+  it('findJobs 记录从载荷包装还原（payload 原始 + groupId），普通任务不带 groupId', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('chunks', { i: 1 }, { groupId: 'g1' });
+    const boss = fakeBosses()[0]!;
+    boss.findJobs.mockResolvedValue([
+      rawJob({
+        id: 'j1',
+        state: 'created',
+        data: { __faapiGroup: 'g1', __faapiPayload: { i: 1 } },
+      }),
+      rawJob({ id: 'j2', state: 'created', data: { to: 'a@b.c' } }),
+    ]);
+    const records = await driver.list!({ name: 'chunks' });
+    expect(records[0]).toMatchObject({ id: 'j1', payload: { i: 1 }, groupId: 'g1' });
+    expect(records[1]!.groupId).toBeUndefined();
+  });
+
+  it('settle：成员翻转 + 计数递增单语句 CTE，返回快照 + isLast；重复落定走 fallback 且 isLast=false', async () => {
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    // 首落定：CTE 返回记账后行 → 单语句，无 fallback SELECT
+    boss.sqlHandler = (t) => (SQL_IS.settle(t) ? [groupRow({ done: 2, total: 2 })] : []);
+    const res = await groups.settle('g1', 'j1', 'done');
+    expect(res).toMatchObject({
+      done: 2,
+      total: 2,
+      settled: 2,
+      status: 'settled',
+      isLast: true,
+      onComplete: 'summary',
+    });
+    const settleCalls = boss.sqls.filter((s) => SQL_IS.settle(s.text));
+    expect(settleCalls).toHaveLength(1);
+    expect(settleCalls[0]!.values).toEqual(['g1', 'j1', 'done']);
+    // 重复落定：CTE 返回 0 行 → fallback SELECT 当前快照，计数不变 isLast=false
+    boss.sqls.length = 0;
+    boss.sqlHandler = (t) =>
+      SQL_IS.settle(t) ? [] : SQL_IS.getGroup(t) ? [groupRow({ done: 2, total: 2 })] : [];
+    const again = await groups.settle('g1', 'j1', 'done');
+    expect(again).toMatchObject({ done: 2, isLast: false });
+  });
+
+  it('create：首次插入返回行；同 id 参数一致幂等跳过；参数不一致抛错', async () => {
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    // 首次：INSERT RETURNING 有行 → 不触发对比 SELECT
+    boss.sqlHandler = (t) => (SQL_IS.create(t) ? [{ id: 'g1' }] : []);
+    await groups.create({
+      id: 'g1',
+      task: 'chunks',
+      total: 2,
+      onComplete: 'summary',
+      onFailure: 'fail-fast',
+    });
+    expect(boss.sqls.some((s) => s.text.includes('SELECT task, total'))).toBe(false);
+    // 已存在 + 参数一致 → 幂等跳过
+    boss.sqls.length = 0;
+    boss.sqlHandler = (t) =>
+      SQL_IS.create(t)
+        ? []
+        : [
+            {
+              task: 'chunks',
+              total: 2,
+              on_complete: 'summary',
+              on_failure: 'fail-fast',
+            },
+          ];
+    await groups.create({
+      id: 'g1',
+      task: 'chunks',
+      total: 2,
+      onComplete: 'summary',
+      onFailure: 'fail-fast',
+    });
+    // 已存在 + 参数漂移 → 抛错（不静默沿用旧声明）
+    await expect(
+      groups.create({
+        id: 'g1',
+        task: 'chunks',
+        total: 3,
+        onComplete: 'summary',
+        onFailure: 'fail-fast',
+      }),
+    ).rejects.toThrow(/already exists with different options/);
+  });
+
+  it('cancelRemaining：fail-fast 取消未落定成员，仅真实生效（state=cancelled）才落定；run-to-completion 为 no-op', async () => {
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    // 有状态假库：settle 落定后组行被更新（get 返回最新行）
+    let currentRow = groupRow({ on_failure: 'fail-fast' });
+    boss.sqlHandler = (t) => {
+      if (SQL_IS.getGroup(t)) return [currentRow];
+      if (SQL_IS.pendingMembers(t)) return [{ job_id: 'j2' }];
+      if (SQL_IS.settle(t)) {
+        currentRow = groupRow({ cancelled: 1, on_failure: 'fail-fast' });
+        return [currentRow];
+      }
+      return [];
+    };
+    boss.getJobById.mockResolvedValue({ state: 'cancelled' });
+    const snap = await groups.cancelRemaining('g1');
+    expect(boss.cancel).toHaveBeenCalledWith('chunks', 'j2');
+    expect(snap).toMatchObject({ cancelled: 1 });
+    // getJobById 显示已 completed（运行实例竞态落定）→ 不落定
+    boss.sqls.length = 0;
+    boss.cancel.mockClear();
+    boss.getJobById.mockResolvedValue({ state: 'completed' });
+    await groups.cancelRemaining('g1');
+    expect(boss.cancel).toHaveBeenCalledWith('chunks', 'j2');
+    expect(boss.sqls.some((s) => SQL_IS.settle(s.text))).toBe(false);
+    // run-to-completion：no-op 不触达 boss.cancel
+    boss.cancel.mockClear();
+    boss.sqlHandler = (t) =>
+      SQL_IS.getGroup(t) ? [groupRow({ on_failure: 'run-to-completion' })] : [];
+    await groups.cancelRemaining('g1');
+    expect(boss.cancel).not.toHaveBeenCalled();
+  });
+
+  it('unsettle 逆向记账；markCompletionEnqueued 标记 UPDATE', async () => {
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    await groups.unsettle('g1', 'j1');
+    expect(boss.sqls.some((s) => SQL_IS.unsettle(s.text))).toBe(true);
+    await groups.markCompletionEnqueued('g1');
+    const mark = boss.sqls.find((s) => SQL_IS.markCompletion(s.text))!;
+    expect(mark.values).toEqual(['g1']);
+  });
+
+  it('get：组不存在返回 undefined；存在返回快照（status/completionEnqueued 映射）', async () => {
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    boss.sqlHandler = (t) => (SQL_IS.getGroup(t) ? [] : []);
+    await expect(groups.get('nope')).resolves.toBeUndefined();
+    boss.sqlHandler = (t) =>
+      SQL_IS.getGroup(t) ? [groupRow({ done: 2, total: 2, completion_enqueued: true })] : [];
+    await expect(groups.get('g1')).resolves.toMatchObject({
+      status: 'settled',
+      completionEnqueued: true,
+      settled: 2,
+    });
+  });
 });
 
 describe('createPgBossDriver', () => {
@@ -520,11 +770,12 @@ describe('list（v12 findJobs 批量列出）', () => {
     createdOn?: Date;
     startAfter?: Date;
     output?: unknown;
+    data?: unknown;
   }) =>
     ({
       id: over.id,
       name: 'mail',
-      data: { to: 'a@b.c' },
+      data: over.data ?? { to: 'a@b.c' },
       retryCount: over.retryCount ?? 0,
       state: over.state,
       createdOn: over.createdOn ?? new Date(1700000000000),

@@ -40,6 +40,7 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 | `llm` | `registries.llm` 活引用（共享 providers 单例） | worker 内按 `agent.llms` 快照重建；llms 配置但不可解析 → 任务显式失败 |
 | `log` | 直写 `config.log` 管道 | postMessage 回传宿主输出——**fields 须可结构化克隆**（不可克隆按执行错误处理） |
 | `progress` | 直写任务记录 | postMessage 回传——**值须可结构化克隆**（不可克隆按执行错误处理） |
+| `tasks` | 活引用（与 `ctx.tasks` / `app.tasks` 同一 app 实例队列） | 代理对象——全方法经 postMessage RPC 回传宿主执行，**参数与返回值须可结构化克隆**（不可克隆按执行错误处理） |
 | 模块级状态 | 跨执行共享 | 每次执行独立 |
 | 取消 | 协作式（监听 signal 自行退出） | 两段式真终止（abort 宽限 → terminate 硬杀） |
 
@@ -62,6 +63,15 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 - **隔离路径**（声明 `timeoutMs`）：channel 是函数闭包不可跨线程——`agent.llms` 纯数据快照（`TaskQueueDeps.llms`，可结构化克隆）随派发下发，worker 内动态加载 `@faapi/agent` 重建实例（`workerEntry.buildLlmChannel`，specifier 变量拼接、与 `loadTaskDriver` 加载驱动子包同策略）。**llms 已配置但 `@faapi/agent` 不可解析 → 显式抛错**（含安装指引），任务失败——配置声明了能力而环境不能交付属环境错误，fail fast；llms 未配置时不触发加载、`taskCtx.llm` 为 `undefined`（能力不存在，非降级）
 
 工具循环场景仍走 `registries.agent` 组装 `Agent`（见下节）——`llm` 只承接一次性补全，两者互补。
+
+## TaskContext.tasks（任务侧任务客户端）
+
+`TaskContext.tasks: TaskClient` 为**必有字段**（两条执行路径均注入）：任务内入队/组投递/查询不再绕 `getApp()`（隔离 worker 内 `getApp()` 本就不可用，全局访问器读的是 app 启动从不水合的默认实例）。与 handler `ctx.tasks` / `app.tasks` / lifecycle `{ tasks }` 指向同一 app 实例队列：
+
+- **进程内路径**：活引用——直接调队列本体
+- **隔离路径**：worker 内代理对象——全方法经 `{ type: 'tasks-call' }` 消息回传宿主执行（宿主走完整 enqueue 通道：存在性检查 + payload 校验 + 驱动入队 + 本地记录），结果/错误按 seq 匹配回传；**参数与返回值须可结构化克隆**（不可克隆按执行错误处理，与 progress/log 同口径）；挂起的调用随任务超时两段式取消一并终止，无独立超时
+
+组投递 / fan-in / 记账语义见 [taskGroups.md](./taskGroups.md)。
 
 ## TaskContext.resourcesDir（已删除）
 

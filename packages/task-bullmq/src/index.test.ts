@@ -28,7 +28,47 @@ const h = vi.hoisted(() => {
     close: ReturnType<typeof vi.fn>;
   }> = [];
   let addCounter = 0;
-  return { fakeQueues, fakeWorkers, getAddCounter: () => ++addCounter };
+  /** 组记账假 redis（defineCommand/runCommand 契约；按命令名注入返回值） */
+  const fakeRedis = {
+    called: [] as { command: string; args: string[] }[],
+    hashes: new Map<string, Record<string, string>>(),
+    commandHandler: null as null | ((command: string, args: string[]) => unknown),
+    defineCommand: (name: string, _def: { numberOfKeys: number; lua: string }) => {
+      fakeRedis.commands.add(name);
+    },
+    commands: new Set<string>(),
+    runCommand: async (name: string, args: unknown[]) => {
+      const argv = args.map(String);
+      fakeRedis.called.push({ command: name, args: argv });
+      if (fakeRedis.commandHandler) return fakeRedis.commandHandler(name, argv);
+      // 缺省仅模拟成员登记 HSETNX（真实 Lua 落库——fake 同构写成员 hash）
+      if (name === 'faapiGroupMemberHsetnx') {
+        const [key, field, value] = argv;
+        const h0 = fakeRedis.hashes.get(key) ?? {};
+        if (field in h0) return 0;
+        fakeRedis.hashes.set(key, { ...h0, [field]: value });
+        return 1;
+      }
+      return [];
+    },
+    hset: async (key: string, data: Record<string, string | number>) => {
+      const h0 = fakeRedis.hashes.get(key) ?? {};
+      const entries = Object.entries(data).map(([f, v]) => [f, String(v)] as const);
+      // ioredis 全量返回字符串——fake 同构（驱动按字符串解析）
+      fakeRedis.hashes.set(key, { ...h0, ...Object.fromEntries(entries) });
+      return entries.length;
+    },
+    hgetall: async (key: string) => fakeRedis.hashes.get(key) ?? {},
+  };
+  return {
+    fakeQueues,
+    fakeWorkers,
+    fakeRedis,
+    getAddCounter: () => ++addCounter,
+    resetAddCounter: () => {
+      addCounter = 0;
+    },
+  };
 });
 
 vi.mock('bullmq', () => {
@@ -54,6 +94,10 @@ vi.mock('bullmq', () => {
       return end === -1 ? list.slice(start) : list.slice(start, end + 1);
     });
     getJob = vi.fn(async (id: string) => this.byId.get(id) ?? null);
+    /** Queue.backend.client 契约：底层 redis（组记账复用该连接） */
+    backend = {
+      client: Promise.resolve(h.fakeRedis),
+    };
     constructor(name: string, opts: Record<string, unknown>) {
       this.name = name;
       this.opts = opts;
@@ -88,6 +132,223 @@ import { createBullMQDriver } from './index';
 beforeEach(() => {
   h.fakeQueues.length = 0;
   h.fakeWorkers.length = 0;
+  h.fakeRedis.called.length = 0;
+  h.fakeRedis.hashes.clear();
+  h.fakeRedis.commandHandler = null;
+  h.fakeRedis.commands.clear();
+  h.resetAddCounter();
+});
+
+/** 组记账命令名（与驱动 defineCommand 注册名一致） */
+const CMD = {
+  create: 'faapiGroupCreate',
+  settle: 'faapiGroupSettle',
+  unsettle: 'faapiGroupUnsettle',
+  hsetnx: 'faapiGroupMemberHsetnx',
+};
+
+/** settle Lua 返回行（[changed, done, failed, cancelled, total, onComplete, onFailure, ce]） */
+const settleRow = (over: number[] = []) => [
+  1,
+  over[0] ?? 1,
+  over[1] ?? 0,
+  over[2] ?? 0,
+  over[3] ?? 2,
+  'summary',
+  'fail-fast',
+  over[4] ?? 0,
+];
+
+describe('createBullMQDriver 组记账', () => {
+  it('enqueue 带组标识：载荷包装存储 + 成员 hash 登记幂等（HSETNX）', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    await driver.enqueue('chunks', { i: 1 }, { groupId: 'g1', dedupId: 'faapi-group:g1:1' });
+    const queue = h.fakeQueues.find((q) => q.name === 'chunks')!;
+    expect(queue.adds[0]!.data).toEqual({ __faapiGroup: 'g1', __faapiPayload: { i: 1 } });
+    expect(h.fakeRedis.hashes.get('faapi:group-members:g1')).toEqual({ 'bm-1': 'pending' });
+    // 存量路径：不带组标识不包装、不登记
+    await driver.enqueue('mail', { to: 'a@b.c' });
+    const mail = h.fakeQueues.find((q) => q.name === 'mail')!;
+    expect(mail.adds[0]!.data).toEqual({ to: 'a@b.c' });
+    expect(h.fakeRedis.hashes.has('faapi:group-members:mail')).toBe(false);
+  });
+
+  it('work 交付从载荷包装还原业务 payload 与 groupId', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const process = vi.fn(async () => 'ok');
+    await driver.startWorker('chunks', { concurrency: 1, process });
+    const worker = h.fakeWorkers[0]!;
+    await worker.handler({
+      id: 'j1',
+      data: { __faapiGroup: 'g1', __faapiPayload: { i: 1 } },
+      attemptsStarted: 1,
+    });
+    expect(process).toHaveBeenCalledWith(
+      expect.objectContaining({ payload: { i: 1 }, groupId: 'g1' }),
+    );
+  });
+
+  it('getJobs 记录从载荷包装还原（payload 原始 + groupId），普通任务不带 groupId', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    // list 不传 name 遍历驱动内已建 Queue——先经 enqueue 创建 chunks 队列
+    await driver.enqueue('chunks', { i: 1 }, { groupId: 'g1' });
+    const queue = h.fakeQueues.find((q) => q.name === 'chunks')!;
+    queue.store.set('waiting', [
+      {
+        id: 'j1',
+        name: 'chunks',
+        data: { __faapiGroup: 'g1', __faapiPayload: { i: 1 } },
+        timestamp: 1700000000000,
+      },
+      { id: 'j2', name: 'chunks', data: { to: 'a@b.c' }, timestamp: 1700000000000 },
+    ]);
+    const records = await driver.list!({ name: 'chunks' });
+    expect(records[0]).toMatchObject({ id: 'j1', payload: { i: 1 }, groupId: 'g1' });
+    expect(records[1]!.groupId).toBeUndefined();
+  });
+
+  it('settle：Lua 原子计账调用（keys + jobId + outcome），返回行解析为快照 + isLast', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const groups = driver.groups!;
+    // 组不存在：Lua 返回 [-1] → 抛错（不静默记账）
+    h.fakeRedis.commandHandler = (c) => (c === CMD.settle ? [-1] : []);
+    await expect(groups.settle('g1', 'j1', 'done')).rejects.toThrow(/not found/);
+    // 首落定：返回记账后行 → 快照 + isLast
+    h.fakeRedis.commandHandler = (c) => (c === CMD.settle ? settleRow([1, 0, 0, 2, 0]) : []);
+    const res = await groups.settle('g1', 'j1', 'done');
+    expect(res).toMatchObject({
+      groupId: 'g1',
+      done: 1,
+      failed: 0,
+      cancelled: 0,
+      total: 2,
+      settled: 1,
+      status: 'open',
+      isLast: false,
+      onComplete: 'summary',
+      onFailure: 'fail-fast',
+    });
+    // 末落定：settled >= total → isLast true
+    h.fakeRedis.commandHandler = (c) => (c === CMD.settle ? settleRow([2, 0, 0, 2, 0]) : []);
+    const last = await groups.settle('g1', 'j2', 'done');
+    expect(last).toMatchObject({ settled: 2, status: 'settled', isLast: true });
+    const settleCall = h.fakeRedis.called.filter((e) => e.command === CMD.settle).at(-1)!;
+    expect(settleCall.args).toEqual(['faapi:group:g1', 'faapi:group-members:g1', 'j2', 'done']);
+  });
+
+  it('create：Lua 返回 0 幂等跳过；-1 读旧声明抛参数漂移；1 首次创建', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const groups = driver.groups!;
+    const decl = {
+      id: 'g1',
+      task: 'chunks',
+      total: 2,
+      onComplete: 'summary',
+      onFailure: 'fail-fast' as const,
+    };
+    // 首次创建（Lua 返回 1）
+    h.fakeRedis.commandHandler = (c) => (c === CMD.create ? 1 : []);
+    await groups.create(decl);
+    const createCall = h.fakeRedis.called.find((e) => e.command === CMD.create)!;
+    expect(createCall.args).toEqual([
+      'faapi:group:g1',
+      'faapi:group-members:g1',
+      'chunks',
+      '2',
+      'summary',
+      'fail-fast',
+    ]);
+    // 幂等命中（返回 0）不抛错不读旧声明
+    h.fakeRedis.commandHandler = (c) => (c === CMD.create ? 0 : []);
+    await groups.create(decl);
+    // 参数漂移（返回 -1）→ 读旧声明抛错
+    h.fakeRedis.hashes.set('faapi:group:g1', {
+      task: 'chunks',
+      total: '5',
+      onComplete: 'other',
+      onFailure: 'run-to-completion',
+    });
+    h.fakeRedis.commandHandler = (c) => (c === CMD.create ? -1 : []);
+    await expect(groups.create(decl)).rejects.toThrow(/already exists with different options/);
+  });
+
+  it('cancelRemaining：fail-fast 取消 waiting/delayed 成员并落定；run-to-completion 为 no-op', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const groups = driver.groups!;
+    // 组快照：fail-fast
+    h.fakeRedis.hashes.set('faapi:group:g1', {
+      task: 'chunks',
+      total: '3',
+      done: '1',
+      failed: '0',
+      cancelled: '0',
+      onComplete: 'summary',
+      onFailure: 'fail-fast',
+      completionEnqueued: '0',
+    });
+    // 成员：j2 待落定 + j3 已落定（跳过）；settle Lua 返回取消后的计数
+    h.fakeRedis.hashes.set('faapi:group-members:g1', { j2: 'pending', j3: 's:done' });
+    h.fakeRedis.commandHandler = (c) => (c === CMD.settle ? settleRow([1, 0, 1, 3, 0]) : []);
+    const settleCalls = () => h.fakeRedis.called.filter((e) => e.command === CMD.settle);
+    const remove = vi.fn(async () => {});
+    // j2 waiting：remove 成功 → settle('j2','cancelled')；j3 已落定跳过
+    await driver.enqueue('chunks', {}, { groupId: 'g1' }); // 触发 chunks 队列创建
+    const chunksQueue = h.fakeQueues.find((q) => q.name === 'chunks')!;
+    chunksQueue.byId.set('j2', { getState: async () => 'waiting', remove } as never);
+    await groups.cancelRemaining('g1');
+    expect(remove).toHaveBeenCalledOnce();
+    const lastSettle = settleCalls().at(-1)!;
+    expect(lastSettle.args.slice(-2)).toEqual(['j2', 'cancelled']);
+    // 非 waiting/delayed 状态（active）不取消——成员表只留 active 成员
+    chunksQueue.byId.set('j5', { getState: async () => 'active', remove: vi.fn() } as never);
+    h.fakeRedis.hashes.set('faapi:group-members:g1', { j5: 'pending' });
+    remove.mockClear();
+    h.fakeRedis.called.length = 0;
+    await groups.cancelRemaining('g1');
+    expect(remove).not.toHaveBeenCalled();
+    // run-to-completion：no-op（不落定成员）
+    h.fakeRedis.hashes.set('faapi:group:g1', {
+      task: 'chunks',
+      total: '3',
+      done: '0',
+      failed: '0',
+      cancelled: '0',
+      onComplete: '',
+      onFailure: 'run-to-completion',
+      completionEnqueued: '0',
+    });
+    h.fakeRedis.called.length = 0;
+    const snap = await groups.cancelRemaining('g1');
+    expect(snap.onFailure).toBe('run-to-completion');
+    expect(settleCalls()).toHaveLength(0);
+  });
+
+  it('unsettle 调 Lua 逆向记账；markCompletionEnqueued 写 HSET；get 解析组 hash', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const groups = driver.groups!;
+    await groups.unsettle('g1', 'j1');
+    expect(h.fakeRedis.called.some((e) => e.command === CMD.unsettle)).toBe(true);
+    await groups.markCompletionEnqueued('g1');
+    expect(h.fakeRedis.hashes.get('faapi:group:g1')).toMatchObject({ completionEnqueued: '1' });
+    // 组不存在 → undefined
+    await expect(groups.get('nope')).resolves.toBeUndefined();
+    h.fakeRedis.hashes.set('faapi:group:g1', {
+      task: 'chunks',
+      total: '2',
+      done: '2',
+      failed: '0',
+      cancelled: '0',
+      onComplete: 'summary',
+      onFailure: 'run-to-completion',
+      completionEnqueued: '1',
+    });
+    await expect(groups.get('g1')).resolves.toMatchObject({
+      status: 'settled',
+      completionEnqueued: true,
+      settled: 2,
+      onComplete: 'summary',
+    });
+  });
 });
 
 describe('createBullMQDriver', () => {

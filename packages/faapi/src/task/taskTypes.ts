@@ -80,6 +80,53 @@ export interface TaskMetadata {
 export type TaskJobStatus = 'pending' | 'running' | 'retry' | 'done' | 'failed' | 'cancelled';
 
 /**
+ * 组内成员落定的终态（TaskJobStatus 的终态子集——落定 = 最终终态，
+ * 重试等待中的失败不算）
+ */
+export type TaskGroupOutcome = 'done' | 'failed' | 'cancelled';
+
+/**
+ * 组级失败语义（enqueueGroup 声明）：
+ * - 'run-to-completion'（默认）：成员最终失败不影响其余成员，回调照常在全部落定时触发
+ * - 'fail-fast'：首个成员最终失败即取消组内未落定成员（在跑的自然跑完），取消成员落定 cancelled
+ */
+export type TaskGroupOnFailure = 'fail-fast' | 'run-to-completion';
+
+/**
+ * 完成回调任务的 payload 契约（fan-in）——全部成员落定时框架以该形状入队
+ * onComplete 任务（走 enqueue 同一 payload 校验通道，回调任务 Payload 声明须兼容，
+ * 建议 `interface Payload extends TaskGroupSummary {}`）
+ */
+export interface TaskGroupSummary {
+  /** 组标识（业务关联键原样透传） */
+  groupId: string;
+  /** 成员任务名 */
+  task: string;
+  /** 成员总数 */
+  total: number;
+  /** 按最终终态分桶计数 */
+  done: number;
+  failed: number;
+  cancelled: number;
+  /** 已落定数（done + failed + cancelled） */
+  settled: number;
+}
+
+/**
+ * 组记账快照（getGroup 返回；驱动侧存储的实时投影）
+ */
+export interface TaskGroupSnapshot extends TaskGroupSummary {
+  /** 完成回调任务名（未声明时无 fan-in，仅记账） */
+  onComplete?: string;
+  /** 组级失败语义 */
+  onFailure: TaskGroupOnFailure;
+  /** 'settled' = 全部落定 */
+  status: 'open' | 'settled';
+  /** 完成回调是否已入队（false 且 status settled = 回调未入队——可经同 groupId 重投自愈） */
+  completionEnqueued: boolean;
+}
+
+/**
  * 任务执行记录（内存快照）
  */
 export interface TaskJob {
@@ -95,6 +142,8 @@ export interface TaskJob {
   error?: string;
   /** 最近一次进度上报值（run 内 `taskCtx.progress(value)` 写入；派发时清空上一轮） */
   progress?: unknown;
+  /** 所属任务组（组投递的成员任务携带；非组任务无此字段） */
+  groupId?: string;
   createdAt: number;
   /** 计划执行时间戳（重试/延迟任务与 createdAt 不同） */
   runAt?: number;
@@ -123,6 +172,12 @@ export interface TaskRegistriesSnapshot {
 export interface TaskContext {
   /** 优雅停机时对在跑任务 abort 的信号 */
   signal: AbortSignal;
+  /**
+   * 任务客户端（与 `ctx.tasks` / `app.tasks` 同一 app 实例队列）——任务内入队 /
+   * 组投递 / 查询不绕 `getApp()`。隔离路径为 postMessage RPC 代理（语义一致，
+   * 参数与返回值须可结构化克隆）
+   */
+  tasks: TaskClient;
   /**
    * faapi.config.ts 全量配置（含自定义业务配置），类型经 `FaapiContextConfig`
    * 声明合并增强——与 handler `ctx.config` 同一类型、同一对象（活引用）。
@@ -178,6 +233,13 @@ export interface TaskContext {
 export interface IsolatedTaskContext {
   /** 优雅停机时对在跑任务 abort 的信号（abort 后宽限期内未退出 terminate 硬杀） */
   signal: AbortSignal;
+  /**
+   * 任务客户端代理——全方法经 postMessage RPC 回传宿主执行（宿主走完整 enqueue
+   * 通道：存在性检查 + payload 校验 + 驱动入队 + 本地记录），与进程内路径零语义差；
+   * **参数与返回值须可结构化克隆**（不可克隆按执行错误处理，与 progress/log 同口径）；
+   * 挂起的调用随任务超时两段式取消一并终止，无独立超时
+   */
+  tasks: TaskClient;
   job: { id: string; name: string; attempt: number };
   /**
    * app 注册表只读视图——**派发时刻的快照**在 worker 内重建（宿主生成
@@ -259,6 +321,39 @@ export interface TaskClient {
    * @throws 驱动未实现 TaskDriver.retry
    */
   retry(name: string, id: string): Promise<void>;
+  /**
+   * 组投递：一次投递 N 个同构子任务并挂同一组标识（组投递 / 记账 / fan-in 完整
+   * 语义见 taskGroups.md）
+   *
+   * - payloads 全量校验前置（任一失败整组不投递）；空数组抛错
+   * - opts.groupId 缺省自动生成；同 id 幂等重投（成员 dedupId 自动派生
+   *   `faapi-group:<groupId>:<index>`，替代业务自拼序号；长任务扇出建议 groupId
+   *   从业务键派生——发起任务重试即天然补投自愈）
+   * - opts.onComplete：全部成员落定时框架自动入队的回调任务名（payload =
+   *   TaskGroupSummary 契约）；opts.onFailure：'fail-fast' | 'run-to-completion'
+   *   （缺省后者）
+   *
+   * @returns groupId 与各成员任务 id
+   * @throws 任务不存在 / payloads 为空 / payload 校验失败（ValidationError）/
+   *   队列已停止 / 驱动未实现组记账（TaskDriver.groups 缺失）
+   */
+  enqueueGroup(
+    name: string,
+    payloads: unknown[],
+    opts?: {
+      groupId?: string;
+      onComplete?: string;
+      onFailure?: TaskGroupOnFailure;
+      delayMs?: number;
+    },
+  ): Promise<{ groupId: string; jobs: { id: string }[] }>;
+  /**
+   * 组记账快照（计数器为驱动侧存储的实时投影——跨实例/重启正确）
+   *
+   * @returns 组不存在返回 undefined
+   * @throws 驱动未实现组记账（TaskDriver.groups 缺失）
+   */
+  getGroup(groupId: string): Promise<TaskGroupSnapshot | undefined>;
 }
 
 /**

@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import type { TaskDriver, TaskDriverProcess, TaskDriverRecord } from '@faapi/faapi';
+import type {
+  TaskDriver,
+  TaskDriverGroupCreate,
+  TaskDriverGroupOps,
+  TaskDriverProcess,
+  TaskDriverRecord,
+  TaskGroupSnapshot,
+} from '@faapi/faapi';
 import { PgBoss } from 'pg-boss';
 import type { ConstructorOptions, SendOptions } from 'pg-boss';
 
@@ -27,6 +34,68 @@ export type PgBossDriverOptions = ConstructorOptions & {
 };
 
 /**
+ * 成员组标识的载荷包装（组投递成员的传输载体）
+ *
+ * pg-boss 的 job 除 data（payload）外无任意元数据字段，组标识随载荷一起存储：
+ * `enqueue(opts.groupId)` 时包装、work 交付 / findJobs 查询时还原。仅组任务包装
+ * （存量行为不变）；包装对业务不可见，`TaskDriverRecord.payload` 恒为业务原始
+ * payload。业务 payload 恰为该形状（两保留键 + 无其他键）会被误解包——保留键为
+ * 框架命名空间，业务 payload 不应占用。
+ */
+const GROUP_KEY = '__faapiGroup';
+const PAYLOAD_KEY = '__faapiPayload';
+
+function wrapGroupPayload(groupId: string, payload: unknown): object {
+  return { [GROUP_KEY]: groupId, [PAYLOAD_KEY]: payload };
+}
+
+function unwrapGroupPayload(data: unknown): { payload: unknown; groupId?: string } {
+  if (
+    data !== null &&
+    typeof data === 'object' &&
+    !Array.isArray(data) &&
+    (data as Record<string, unknown>)[GROUP_KEY] !== undefined &&
+    typeof (data as Record<string, unknown>)[GROUP_KEY] === 'string' &&
+    (data as Record<string, unknown>)[PAYLOAD_KEY] !== undefined &&
+    Object.keys(data as Record<string, unknown>).length === 2
+  ) {
+    const wrapped = data as Record<string, unknown>;
+    return { payload: wrapped[PAYLOAD_KEY], groupId: wrapped[GROUP_KEY] as string };
+  }
+  return { payload: data };
+}
+
+/**
+ * 任务组记账表（同库自建，与 pg-boss 自身 schema 表无关）
+ *
+ * 组行 = 计数器 + 完成回调声明 + 失败策略；成员行 = job 级 settled/outcome，
+ * 落定记账的幂等守卫（同一成员重复 settle 不重复计数）。首次组操作时
+ * CREATE TABLE IF NOT EXISTS，业务方按保留策略自行清理（框架不自动删——
+ * 自动删业务可能还要查的记账是静默丢数据）。
+ */
+const GROUP_TABLES_SQL = [
+  `CREATE TABLE IF NOT EXISTS faapi_task_groups (
+  id text PRIMARY KEY,
+  task text NOT NULL,
+  total integer NOT NULL,
+  done integer NOT NULL DEFAULT 0,
+  failed integer NOT NULL DEFAULT 0,
+  cancelled integer NOT NULL DEFAULT 0,
+  on_complete text,
+  on_failure text NOT NULL,
+  completion_enqueued boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+)`,
+  `CREATE TABLE IF NOT EXISTS faapi_task_group_members (
+  group_id text NOT NULL,
+  job_id text NOT NULL,
+  settled boolean NOT NULL DEFAULT false,
+  outcome text,
+  PRIMARY KEY (group_id, job_id)
+)`,
+];
+
+/**
  * faapi 任务队列 pg-boss 驱动（PostgreSQL 持久化队列）
  *
  * 与 faapi 主包 `config.task.driver: 'pgboss'` 配合使用：
@@ -42,15 +111,20 @@ export type PgBossDriverOptions = ConstructorOptions & {
  * ```
  *
  * 语义映射（详见包根 README）：
- * - `enqueue` → 幂等 ensureQueue + `boss.send(name, payload, { retryLimit, retryDelay, retryBackoff, expireInSeconds, startAfter })`
+ * - `enqueue` → 幂等 ensureQueue + `boss.send(name, payload, { retryLimit, retryDelay, retryBackoff, expireInSeconds, startAfter })`；
+ *   组投递成员（opts.groupId）以载荷包装携带组标识并在成员表登记
  * - `startWorker` → 幂等 ensureQueue + `boss.work(name, { batchSize: concurrency, includeMetadata: true }, handler)`；
- *   批内任务并发执行、逐任务 complete/fail 结算（失败不毒化同批）
+ *   批内任务并发执行、逐任务 complete/fail 结算（失败不毒化同批）；交付时从载荷
+ *   包装还原 groupId
  * - `stop` → `offWork` + `boss.stop({ close: true, graceful: true, timeout })` 整体与
  *   deadline 竞速；deadline 到点 abort 在跑任务的 signal
  * - 重试 → pg-boss 侧执行（retryLimit + retryBackoff 指数退避）
  * - `list` → `boss.findJobs(name)`（v12）：六态精确映射（created→pending、retry→retry、
  *   active→running、completed→done、failed→failed、cancelled→cancelled）；不传 name
  *   遍历本进程已 ensureQueue 的任务名；createdAt 降序截断 limit
+ * - `groups` → 同库两张表（faapi_task_groups / faapi_task_group_members）经
+ *   `boss.getDb().executeSql` 计账：成员行 settled 守卫保证落定幂等，CTE 内
+ *   成员翻转 + 计数递增单语句原子
  */
 /**
  * dedupId → 确定性 UUID：pg-boss 的 send 自定义 id 要求 UUID 格式（SQL 侧 cast），
@@ -90,6 +164,197 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
   const ensuring = new Map<string, Promise<void>>();
   /** boss.start() in-flight 共享 promise（并发首调等待同一次建连，不出现半启动实例） */
   let bossStarting: Promise<PgBoss> | null = null;
+  /** 组记账表已确保（每进程一次 CREATE TABLE IF NOT EXISTS，之后短路） */
+  let groupTablesEnsured = false;
+
+  async function ensureGroupTables(b: PgBoss): Promise<void> {
+    if (groupTablesEnsured) return;
+    const db = b.getDb();
+    for (const sql of GROUP_TABLES_SQL) {
+      await db.executeSql(sql, []);
+    }
+    groupTablesEnsured = true;
+  }
+
+  /** 组行 → TaskGroupSnapshot（行字段 snake_case → 快照契约） */
+  function rowToSnapshot(row: Record<string, unknown>): TaskGroupSnapshot {
+    const done = Number(row.done);
+    const failed = Number(row.failed);
+    const cancelled = Number(row.cancelled);
+    const total = Number(row.total);
+    const settled = done + failed + cancelled;
+    return {
+      groupId: String(row.id),
+      task: String(row.task),
+      total,
+      done,
+      failed,
+      cancelled,
+      settled,
+      status: settled >= total ? 'settled' : 'open',
+      completionEnqueued: row.completion_enqueued === true,
+      ...(row.on_complete !== null && row.on_complete !== undefined
+        ? { onComplete: String(row.on_complete) }
+        : {}),
+      onFailure: String(row.on_failure) as TaskGroupSnapshot['onFailure'],
+    };
+  }
+
+  /**
+   * 组记账实现（TaskDriver.groups）——经 boss.getDb().executeSql 计账。
+   * 落定幂等由成员行 settled 守卫承载；成员翻转 + 计数递增在单条 CTE 语句内原子。
+   */
+  function createGroupOps(getBoss: () => Promise<PgBoss>): TaskDriverGroupOps {
+    return {
+      async create(decl: TaskDriverGroupCreate): Promise<void> {
+        const b = await getBoss();
+        await ensureGroupTables(b);
+        const db = b.getDb();
+        const inserted = await db.executeSql(
+          `INSERT INTO faapi_task_groups (id, task, total, on_complete, on_failure)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING RETURNING id`,
+          [decl.id, decl.task, decl.total, decl.onComplete ?? null, decl.onFailure],
+        );
+        if (inserted.rows.length > 0) return;
+        // 同 id 已存在：参数完全一致幂等跳过；不一致抛错（组标识是业务关联键，
+        // 形状漂移属调用方错误——静默沿用旧声明会让 fan-in 指向错误的回调任务）
+        const existing = await db.executeSql(
+          `SELECT task, total, on_complete, on_failure FROM faapi_task_groups WHERE id = $1`,
+          [decl.id],
+        );
+        const row = existing.rows[0] as Record<string, unknown> | undefined;
+        const same =
+          row !== undefined &&
+          row.task === decl.task &&
+          Number(row.total) === decl.total &&
+          (row.on_complete ?? null) === (decl.onComplete ?? null) &&
+          row.on_failure === decl.onFailure;
+        if (!same) {
+          throw new Error(
+            `[faapi] Task group "${decl.id}" already exists with different options ` +
+              `(existing: task=${row?.task}, total=${row?.total}, onComplete=${row?.on_complete}, ` +
+              `onFailure=${row?.on_failure})`,
+          );
+        }
+      },
+
+      async settle(groupId, jobId, outcome) {
+        const b = await getBoss();
+        await ensureGroupTables(b);
+        const db = b.getDb();
+        // 单语句原子：成员行 settled 守卫翻转（已落定成员返回 0 行 → 不递增）+
+        // 组行计数按 outcome 递增 + 返回记账后快照
+        const result = await db.executeSql(
+          `WITH member AS (
+             INSERT INTO faapi_task_group_members (group_id, job_id, settled, outcome)
+             VALUES ($1, $2, true, $3)
+             ON CONFLICT (group_id, job_id) DO UPDATE
+               SET settled = true, outcome = EXCLUDED.outcome
+             WHERE faapi_task_group_members.settled = false
+             RETURNING job_id
+           )
+           UPDATE faapi_task_groups g
+           SET done = done + CASE WHEN $3 = 'done' THEN 1 ELSE 0 END,
+               failed = failed + CASE WHEN $3 = 'failed' THEN 1 ELSE 0 END,
+               cancelled = cancelled + CASE WHEN $3 = 'cancelled' THEN 1 ELSE 0 END
+           FROM member
+           WHERE g.id = $1
+           RETURNING g.id, g.task, g.total, g.done, g.failed, g.cancelled,
+                     g.on_complete, g.on_failure, g.completion_enqueued`,
+          [groupId, jobId, outcome],
+        );
+        const row = result.rows[0] as Record<string, unknown> | undefined;
+        if (row !== undefined) {
+          const snap = rowToSnapshot(row);
+          return { ...snap, isLast: snap.settled >= snap.total };
+        }
+        // 成员已落定（重复 settle）：计数不变，返回当前快照（isLast=false——
+        // 重复落定不重新触发 fan-in；回调自身还有 dedupId + completionEnqueued 双守卫）
+        const current = await db.executeSql(
+          `SELECT id, task, total, done, failed, cancelled, on_complete, on_failure,
+                  completion_enqueued
+           FROM faapi_task_groups WHERE id = $1`,
+          [groupId],
+        );
+        const cur = current.rows[0] as Record<string, unknown> | undefined;
+        if (cur === undefined) {
+          throw new Error(`[faapi] Task group "${groupId}" not found`);
+        }
+        return { ...rowToSnapshot(cur), isLast: false };
+      },
+
+      async unsettle(groupId, jobId) {
+        const b = await getBoss();
+        const db = b.getDb();
+        // 单语句原子：成员行 settled 守卫撤销（未落定成员返回 0 行 → 不递减）+
+        // 组行计数按原 outcome 递减
+        await db.executeSql(
+          `WITH member AS (
+             UPDATE faapi_task_group_members
+             SET settled = false, outcome = NULL
+             WHERE group_id = $1 AND job_id = $2 AND settled = true
+             RETURNING outcome
+           )
+           UPDATE faapi_task_groups g
+           SET done = done - CASE WHEN member.outcome = 'done' THEN 1 ELSE 0 END,
+               failed = failed - CASE WHEN member.outcome = 'failed' THEN 1 ELSE 0 END,
+               cancelled = cancelled - CASE WHEN member.outcome = 'cancelled' THEN 1 ELSE 0 END
+           FROM member
+           WHERE g.id = $1`,
+          [groupId, jobId],
+        );
+      },
+
+      async markCompletionEnqueued(groupId) {
+        const b = await getBoss();
+        const db = b.getDb();
+        await db.executeSql(
+          `UPDATE faapi_task_groups SET completion_enqueued = true WHERE id = $1`,
+          [groupId],
+        );
+      },
+
+      async get(groupId) {
+        const b = await getBoss();
+        const db = b.getDb();
+        const result = await db.executeSql(
+          `SELECT id, task, total, done, failed, cancelled, on_complete, on_failure,
+                  completion_enqueued
+           FROM faapi_task_groups WHERE id = $1`,
+          [groupId],
+        );
+        const row = result.rows[0] as Record<string, unknown> | undefined;
+        return row === undefined ? undefined : rowToSnapshot(row);
+      },
+
+      async cancelRemaining(groupId) {
+        const b = await getBoss();
+        const db = b.getDb();
+        const group = await this.get(groupId);
+        if (group === undefined) {
+          throw new Error(`[faapi] Task group "${groupId}" not found`);
+        }
+        // 仅 fail-fast 组执行取消语义（run-to-completion 为 no-op，返回当前快照）
+        if (group.onFailure !== 'fail-fast') return group;
+        const pending = await db.executeSql(
+          `SELECT job_id FROM faapi_task_group_members WHERE group_id = $1 AND settled = false`,
+          [groupId],
+        );
+        for (const row of pending.rows as Array<{ job_id: string }>) {
+          const jobId = row.job_id;
+          // cancel（等待/延迟中的不再执行）后经 getJobById 核实真实生效才落定——
+          // pg-boss 对不可取消状态静默 no-op，落定前核实防与运行实例的落定竞态重复计数
+          await b.cancel(group.task, jobId);
+          const job = await b.getJobById(group.task, jobId);
+          if (job !== null && job.state === 'cancelled') {
+            await this.settle(groupId, jobId, 'cancelled');
+          }
+        }
+        const after = await this.get(groupId);
+        return after!;
+      },
+    };
+  }
 
   async function ensureBoss(): Promise<PgBoss> {
     if (boss) return boss;
@@ -169,17 +434,29 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
         ...(opts?.dedupId ? { id: dedupIdToUuid(opts.dedupId) } : {}),
         ...(opts?.delayMs ? { startAfter: new Date(Date.now() + opts.delayMs) } : {}),
       };
-      // pg-boss data 形参为 object——基础类型 payload（cron 空任务等）按 JSON 语义透传
-      const id = await b.send(name, payload as object, sendOptions);
-      if (!id) {
-        // dedupId 幂等投递：同键已存在（主键冲突 DO NOTHING → send 返回 null），
-        // 返回已存在任务的确定性 id；无 dedupId 的失败投递才是异常
-        if (opts?.dedupId) {
-          return dedupIdToUuid(opts.dedupId);
-        }
+      // pg-boss data 形参为 object——基础类型 payload（cron 空任务等）按 JSON 语义透传；
+      // 组投递成员以载荷包装携带组标识（交付时还原，业务 payload 不变）
+      const id = await b.send(
+        name,
+        opts?.groupId !== undefined ? wrapGroupPayload(opts.groupId, payload) : (payload as object),
+        sendOptions,
+      );
+      const jobId = id ?? (opts?.dedupId ? dedupIdToUuid(opts.dedupId) : null);
+      if (!jobId) {
+        // 无 dedupId 的失败投递才是异常（dedupId 幂等命中已在上方还原确定性 id）
         throw new Error(`[faapi] pg-boss send failed for task "${name}"`);
       }
-      return id;
+      // 组投递成员登记（成员表行 = 落定记账的幂等守卫载体；幂等命中时
+      // ON CONFLICT DO NOTHING——重复投递不重复登记）
+      if (opts?.groupId !== undefined) {
+        await ensureGroupTables(b);
+        await b.getDb().executeSql(
+          `INSERT INTO faapi_task_group_members (group_id, job_id)
+           VALUES ($1, $2) ON CONFLICT (group_id, job_id) DO NOTHING`,
+          [opts.groupId, jobId],
+        );
+      }
+      return jobId;
     },
 
     async startWorker(name, workerOpts) {
@@ -203,6 +480,8 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
             jobs.map(async (job) => {
               // retryCount 从 0 起（首次执行为 0）→ faapi attempt 从 1 起
               const attempt = job.retryCount + 1;
+              // 组投递成员：从载荷包装还原业务 payload 与组标识（语义层据此记账）
+              const { payload, groupId } = unwrapGroupPayload(job.data);
               // 信号由驱动自管：stop 超时 abort（pg-boss 自身不提供执行中任务的取消能力）
               const controller = new AbortController();
               inflight.set(job.id, controller);
@@ -211,9 +490,10 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
                   await process({
                     id: job.id,
                     name,
-                    payload: job.data,
+                    payload,
                     attempt,
                     signal: controller.signal,
+                    ...(groupId !== undefined ? { groupId } : {}),
                   });
                 } catch (err) {
                   // fail 的 data 存 jsonb：传可序列化的错误摘要（原始 Error 序列化为 {} 丢信息）
@@ -349,6 +629,8 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
           const status = stateMap[job.state];
           if (!status) continue;
           if (wanted && !wanted.includes(status)) continue;
+          // 组投递成员：从载荷包装还原业务 payload 与组标识（记录对业务不可见包装）
+          const { payload, groupId } = unwrapGroupPayload(job.data);
           // fail 的 data 存 output jsonb：{ name, message } 或 { value }（startWorker
           // 结算形态）；错误摘要优先取 message/value——提取不到（空对象/缺失）时
           // 不放 error 字段，其余形态 String 化保底
@@ -367,7 +649,7 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
           records.push({
             id: job.id,
             name: job.name,
-            payload: job.data,
+            payload,
             status,
             // retryCount 从 0 起（首次执行为 0）→ faapi attempts 从 1 起
             attempts: job.retryCount + 1,
@@ -375,11 +657,14 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
             createdAt: job.createdOn.getTime(),
             // startAfter 恒有值（send 未传时默认 now）——计划执行时间即本字段语义
             runAt: job.startAfter.getTime(),
+            ...(groupId !== undefined ? { groupId } : {}),
             ...(error !== undefined ? { error } : {}),
           });
         }
       }
       return records.sort((a, b2) => b2.createdAt - a.createdAt).slice(0, opts?.limit ?? 50);
     },
+
+    groups: createGroupOps(ensureBoss),
   };
 }

@@ -45,6 +45,14 @@ const queued = await tasks.listQueued('send-email'); // 队列侧任务（含其
 await tasks.cancel('send-email', queued[0].id);      // 取消等待/延迟中的任务
 await tasks.retry('send-email', failed.id);          // 重试失败/取消的任务
 
+// 4.5 任务组：切批扇出 + 记账 + fan-in（完整语义见 taskGroups.md）
+await tasks.enqueueGroup('book-import-chunks', batches, {
+  groupId: `import:${importId}`,    // 业务关联键（缺省自动生成；同 id 重投幂等自愈）
+  onComplete: 'import-finished',    // 全部落定时框架自动入队（payload = TaskGroupSummary）
+  onFailure: 'fail-fast',           // 缺省 'run-to-completion'（跑完记 partial）
+});
+const group = await tasks.getGroup(`import:${importId}`); // 计数器快照（done/failed/…）
+
 // 5. 中间件 / 编程式：ctx.tasks（同 TaskClient）、app.tasks、lifecycle 钩子的 { tasks }
 
 // 6. 任务内访问 app 注册表（只读视图）：组装/调用 agent 不再依赖 getApp()——
@@ -65,8 +73,9 @@ export async function run(payload: Payload, taskCtx: TaskContext) {
 | `taskTypes.ts` | 子系统全部类型（meta / manifest / metadata / job / client / queue / config） |
 | `scanTasks.ts` | CLI 扫描 `src/tasks/**/task.ts`（零 import，正则提取 meta），产出 TaskManifest[] |
 | `taskRegistry.ts` | app 级 TaskRegistry（hydrate/get/list/clear，方案 A 实例化） |
-| `taskQueue.ts` | 队列语义层：payload zod 校验 + worker 执行包装（模块加载/run/记录）+ 生命周期编排 |
-| `driverTypes.ts` | `TaskDriver` 驱动抽象（存储/消费/重试/停机的边界接口） |
+| `taskQueue.ts` | 队列语义层：payload zod 校验 + worker 执行包装（模块加载/run/记录）+ 生命周期编排 + 任务组门面与落定接线 |
+| `taskGroups.md` | 任务组原语契约（组投递 / 记账 / fan-in / 失败语义 / TaskContext.tasks）——完整设计单点维护 |
+| `driverTypes.ts` | `TaskDriver` 驱动抽象（存储/消费/重试/停机的边界接口，含可选组记账能力 `groups`） |
 | `loadTaskDriver.ts` | 按 `config.task.driver` 动态加载子包驱动 / 透传自定义实例，缺失显式抛错 |
 | `idleTaskDriver.ts` | 空闲占位驱动（无任务清单时使用，enqueue 显式报错引导配置驱动） |
 | `taskWorker.ts` | 隔离执行器：`timeoutMs` 任务在独立线程执行，超时两段式取消（真终止） |
@@ -80,6 +89,7 @@ export async function run(payload: Payload, taskCtx: TaskContext) {
 - **驱动必填（memory 内置驱动已移除）**：队列语义（存储/消费/重试/停机）抽象为 `TaskDriver` 接口（driverTypes.md），由独立子包提供实现——`@faapi/task-pgboss`（Postgres）、`@faapi/task-bullmq`（Redis），主包零依赖、按 `config.task.driver` 动态加载（loadTaskDriver.ts），未安装/未配置显式报错不静默降级。**存在任务清单时必须显式配置 driver**，否则 `createAppBase` 启动报错；无任务清单的项目不加载驱动（零任务项目无需安装驱动子包，`createAppBase` 用空闲占位驱动 idleTaskDriver）。进程内重启丢任务/多实例不防重跑的问题由持久化驱动天然解决——框架不再提供"可丢任务"的默认实现。
 - **统一产物驱动**：dev/prod 产物集一致（`faapi-tasks.js` + `tasks/**/zod.js` + `tasks/**/task.js`），`createAppBase` 无 `if (isDev)` 分支。dev 与 handler 不同，任务文件启动时全量编译（任务数量小，且 worker 运行时 import 失败无法像 HTTP 请求那样反馈给调用方）。
 - **任务与定时一条线**：cron 只是"自动投递者"，到点调 `enqueue`，复用同一队列与执行模型，不做第二套执行器。
+- **任务组 = 记账在驱动侧 + 回调按任务名声明**：切批扇出/进度聚合/fan-in 三件编排样板收编为框架原语（见 taskGroups.md）——组记账存驱动（pg-boss 表 / Redis hash，跨实例/重启正确），完成回调是普通任务（持久化、可重试、独立 meta，不是闭包）；`TaskContext.tasks` 两条执行路径注入（隔离路径 postMessage RPC 代理回宿主），任务内扇出不绕 `getApp()`。组记账是驱动可选能力（`TaskDriver.groups`，未实现显式抛错不降级）；切分策略是业务知识，不在框架范围。
 - **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle `{ tasks }` 全部指向同一 app 实例的 TaskClient；不做外部 HTTP 触发端点。
 - **payload 校验复用 zod 代码生成链路**：`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时 safeParse，不合法抛 `ValidationError`（422）。无 Payload 类型声明则跳过校验（与 tool 行为对齐）。
 - **不实现 handler 返回值隐式投递**：混淆统一响应包装语义。
