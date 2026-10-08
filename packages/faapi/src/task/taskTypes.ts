@@ -114,52 +114,48 @@ export interface TaskRegistriesSnapshot {
 }
 
 /**
- * 传给任务 run 函数的第二参数
+ * 进程内任务的 run 第二参数（默认路径——任务未声明 `timeoutMs` 时）
+ *
+ * 与 {@link IsolatedTaskContext} 显式分开：两条执行路径的行为差异是实质性的
+ * （config 有无、registries 活引用 vs 快照、模块级状态共享 vs 独立、取消语义），
+ * 由任务 meta 是否声明 `timeoutMs` 决定——业务按路径标注对应类型，边界编译期可见。
  */
 export interface TaskContext {
   /** 优雅停机时对在跑任务 abort 的信号 */
   signal: AbortSignal;
   /**
    * faapi.config.ts 全量配置（含自定义业务配置），类型经 `FaapiContextConfig`
-   * 声明合并增强——与 handler `ctx.config` 同一类型、同一对象（进程内路径为
-   * 活引用）。
+   * 声明合并增强——与 handler `ctx.config` 同一类型、同一对象（活引用）。
+   * 业务增强的类型字段全部可读，函数字段可调用（同进程）。
    *
-   * **隔离任务（声明 `timeoutMs`）为 `undefined`**：worker 线程不传进程配置
-   * （config 含函数字段不可结构化克隆，框架不做任何降级传递）——任务需要的
-   * 数据经 payload 显式传入（调用方入队时给，如 `tasks.enqueue('sync', {
-   * db: ctx.config.db })`）。可选字段是把"有无取决于执行路径"暴露到编译期。
+   * 仅进程内任务存在：隔离任务（声明 `timeoutMs`）的上下文类型
+   * {@link IsolatedTaskContext} 没有此字段——worker 线程不接收进程配置，
+   * 任务数据经 payload 显式传入。
    */
-  config?: FaapiContextConfig;
+  config: FaapiContextConfig;
   job: { id: string; name: string; attempt: number };
   /**
    * app 注册表只读视图（agent/tool/skill 元数据查询，不含 hydrate/clear 写接口）
    *
-   * 进程内执行为活引用；隔离执行为派发时刻的快照视图（worker 内重建）——
-   * 执行中途的 reload/DB skill 变更不影响当次执行。
+   * 活引用（`createAppBase` 创建队列时传入）——反映注册表实时状态。
    * 任务内组装 agent 用 `registries.agent.getAgentEntry(name)`（含 filePath）。
    */
   registries: TaskRegistriesView;
   /**
-   * 进度上报（可选）：执行中主动上报进度，记入 `TaskJob.progress`（`list()` 可见）
-   *
-   * 进程内直写记录；隔离路径经 postMessage 回传宿主（值必须可结构化克隆，
-   * 不可克隆按执行错误处理）。仅 running 状态生效，终态后调用被忽略。
+   * 进度上报（可选）：执行中主动上报进度，直写本进程任务记录
+   * （`TaskJob.progress`，`list()` 可见）。仅 running 状态生效，终态后调用被忽略。
    */
   progress?: (value: unknown) => void;
   /**
-   * 任务级日志器（可选字段；框架两条执行路径均注入，直接构造 TaskContext 的
-   * 测试/自定义执行器可不传）——scope `task:<name>`，字段自动携带
-   * jobId/task/attempt，输出走 `config.log` 统一管道（详见 logger/logger.md）。
-   * 隔离执行时条目经 postMessage 回传宿主输出，fields 需可结构化克隆。
+   * 任务级日志器（可选字段；框架注入，直接构造 TaskContext 的测试/自定义执行器
+   * 可不传）——scope `task:<name>`，字段自动携带 jobId/task/attempt，直写
+   * `config.log` 全局管道（详见 logger/logger.md）。
    */
   log?: Logger;
   /**
    * 轻量 LLM 补全通道（可选字段；`@faapi/agent` 插件加载且 `agent.llms` 可解析时注入）
    *
-   * 进程内执行为 `registries.llm` 的活引用（与 agent 循环共享 providers 单例）；
-   * 隔离执行为 worker 内按 `agent.llms` 纯数据快照重建的实例——llms 已配置但
-   * `@faapi/agent` 不可解析时任务显式失败（含安装指引）；llms 未配置时为
-   * `undefined`（能力不存在，非降级）。
+   * `registries.llm` 的活引用（与 agent 循环共享 providers 单例）。
    * 一次性补全（分类/蒸馏/摘要等）用此通道，不必在任务内组装 agent；
    * 工具循环场景仍走 registries.agent 组装 Agent。详见 `@faapi/agent` 的 lightComplete.md。
    */
@@ -167,10 +163,58 @@ export interface TaskContext {
 }
 
 /**
+ * 隔离任务的 run 第二参数（任务声明 `timeoutMs` 时——独立 worker 线程执行）
+ *
+ * 与进程内 {@link TaskContext} 显式分开，差异由隔离语义决定：
+ * - **没有 config 字段**——进程配置不跨线程（config 含函数字段不可结构化克隆，
+ *   框架不做降级传递）；任务数据经 payload 显式传入，`ctx.config` 是编译错误
+ * - registries 为派发时刻的**快照**重建视图（执行中途 reload 不影响当次执行）
+ * - llm 为 worker 内按 `agent.llms` 纯数据快照重建的实例
+ * - log 条目经 postMessage 回传宿主统一输出（fields 须可结构化克隆，
+ *   不可克隆按执行错误处理）
+ * - progress 值经 postMessage 回传（须可结构化克隆，不可克隆按执行错误处理）
+ * - 模块级状态每次执行独立；取消为两段式真终止（abort 宽限 → terminate 硬杀）
+ */
+export interface IsolatedTaskContext {
+  /** 优雅停机时对在跑任务 abort 的信号（abort 后宽限期内未退出 terminate 硬杀） */
+  signal: AbortSignal;
+  job: { id: string; name: string; attempt: number };
+  /**
+   * app 注册表只读视图——**派发时刻的快照**在 worker 内重建（宿主生成
+   * `TaskRegistriesSnapshot` 纯数据随 postMessage 传入），查询方法与活引用
+   * 视图同型；执行中途的 reload/DB skill 变更不影响当次执行。
+   */
+  registries: TaskRegistriesView;
+  /**
+   * 进度上报（可选）：值经 postMessage 回传宿主写入任务记录——**值必须可
+   * 结构化克隆**，不可克隆按执行错误处理。仅 running 状态生效；取消判定后
+   * （宽限期内）到达的上报忽略。
+   */
+  progress?: (value: unknown) => void;
+  /**
+   * 任务级日志器（可选字段；框架注入）——scope `task:<name>`，条目经 postMessage
+   * 回传宿主走 `config.log` 统一管道；**fields 须可结构化克隆**（不可克隆按
+   * 执行错误处理，与 progress 同语义）。
+   */
+  log?: Logger;
+  /**
+   * 轻量 LLM 补全通道（可选字段）——worker 内按 `agent.llms` 纯数据快照动态
+   * 加载 `@faapi/agent` 重建；llms 已配置但不可解析时任务显式失败（含安装指引），
+   * llms 未配置时为 `undefined`（能力不存在，非降级）。
+   * 详见 `@faapi/agent` 的 lightComplete.md。
+   */
+  llm?: LlmComplete;
+}
+
+/**
  * 任务模块形态（task.ts 编译产物中与执行相关的导出）
+ *
+ * run 第二参数按执行路径二选一：进程内 {@link TaskContext} / 隔离
+ * {@link IsolatedTaskContext}——路径由任务 meta 是否声明 `timeoutMs` 决定，
+ * 业务标注对应类型后差异编译期可见（隔离上下文无 config 字段，访问即编译错误）。
  */
 export interface TaskModule {
-  run?: (payload: unknown, taskCtx: TaskContext) => unknown;
+  run?: (payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => unknown;
 }
 
 /**
@@ -237,8 +281,8 @@ export interface TaskQueue extends TaskClient {
 export interface TaskQueueDeps {
   registry: TaskRegistry;
   rootDir: string;
-  /** faapi.config.ts 全量配置——仅注入进程内路径的 TaskContext.config（隔离任务不传 config） */
-  config?: FaapiContextConfig;
+  /** faapi.config.ts 全量配置——注入进程内路径的 TaskContext.config（必填：无配置文件传空对象；隔离任务不传 config） */
+  config: FaapiContextConfig;
   /**
    * 产物 resources 目录绝对路径——**内部字段**，仅作隔离 worker 读取根播种的
    * 数据源（经 workerData 传入 workerEntry，不进业务可见的 TaskContext——

@@ -6,7 +6,7 @@ import { createAppRegistries, createTaskRegistriesView } from '../injection/regi
 import type { LlmChannelStore } from '../injection/registries';
 import type { LlmComplete } from '../injection/llmTypes';
 import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
-import type { TaskContext, TaskModule } from './taskTypes';
+import type { IsolatedTaskContext, TaskContext, TaskModule } from './taskTypes';
 
 interface EnqueueCall {
   name: string;
@@ -94,7 +94,7 @@ function makeDeps(modules: Record<string, TaskModule>, schemas: Record<string, u
     // 缺省透传 schema（构建期 Payload 声明必填后，运行时产物恒有 schema）
     return schemas[name] ?? PASS_THROUGH_SCHEMA;
   });
-  return { registry, rootDir: '/fake', loadTaskModule, loadPayloadSchema };
+  return { registry, rootDir: '/fake', config: {}, loadTaskModule, loadPayloadSchema };
 }
 
 describe('createTaskQueue', () => {
@@ -124,6 +124,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       loadTaskModule: async () => ({ run: vi.fn() }),
       loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
@@ -157,6 +158,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       ...deps,
       driver: fake.driver,
+      config: {},
       // 模拟产物缺失：构建期已强制 Payload 声明必填，运行时缺 schema 即产物不一致
       loadPayloadSchema: async () => undefined,
     });
@@ -395,7 +397,7 @@ describe('createTaskQueue', () => {
   it('进程内 taskCtx.progress 记入记录（list 可见），派发清空上一轮，终态后调用被忽略', async () => {
     let lateProgress: ((value: unknown) => void) | undefined;
     let calls = 0;
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
       calls += 1;
       if (calls === 1) {
         taskCtx.progress?.({ pct: 30 });
@@ -480,6 +482,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       resourcesDir: '/fake/dist/resources',
       driver: fake.driver,
       runIsolated: runIsolated as never,
@@ -518,6 +521,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
@@ -547,6 +551,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
@@ -569,6 +574,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
@@ -764,6 +770,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       onFailed,
       loadTaskModule: async () => ({
@@ -801,6 +808,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       onFailed,
       runIsolated: runIsolated as never,
@@ -891,6 +899,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       registries: createTaskRegistriesView(appRegistries),
       runIsolated: runIsolated as never,
@@ -939,6 +948,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({ run }),
@@ -962,7 +972,7 @@ describe('createTaskQueue', () => {
   // ─── taskCtx.llm 轻量补全通道注入 ─────────────────────────
 
   it('进程内 taskCtx.llm 注入：deps.llm store 惰性读取（执行时刻取值，插件后注册也可见）', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => ({
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => ({
       llmTag: (taskCtx.llm as (LlmComplete & { tag: string }) | undefined)?.tag ?? 'none',
     }));
     const fake = makeFakeDriver();
@@ -1020,6 +1030,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       llms,
       runIsolated: runIsolated as never,
@@ -1041,6 +1052,7 @@ describe('createTaskQueue', () => {
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
+      config: {},
       driver: fake.driver,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),

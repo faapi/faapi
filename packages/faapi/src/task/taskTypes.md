@@ -29,14 +29,21 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 `progress` 不做持久化（驱动侧无此概念）、不参与重试恢复——每次派发清空上一轮的 progress，本轮执行重新写入（终态后调用被忽略）；值必须可结构化克隆（隔离路径经 postMessage，不可克隆按执行错误处理）。不调用 `progress` 的任务零开销，`TaskJob.progress` 不出现。
 
-## TaskContext.config（进程配置，仅进程内路径）
+## TaskContext / IsolatedTaskContext（两条执行路径显式分开）
 
-`TaskContext.config?: FaapiContextConfig` 为可选字段，类型经 `FaapiContextConfig` 声明合并增强——与 handler `ctx.config` 同一类型。两条路径语义不同且**为真**：
+进程内与隔离执行的行为差异是实质性的，两个上下文类型**显式分开**，由任务 meta 是否声明 `timeoutMs` 决定路径；业务按路径标注 ctx 类型，边界编译期可见：
 
-- **进程内路径**（默认）：活引用全量配置，与 handler `ctx.config` 是**同一个对象**——业务增强的类型字段全部可读
-- **隔离路径**（声明 `timeoutMs`）：**恒为 `undefined`**——config 含函数字段（lifecycle 钩子等）不可结构化克隆，框架不做任何降级传递（不裁剪、不标记、不 JSON 快照）；worker 线程不接收进程配置是隔离语义的一部分
+| 维度 | `TaskContext`（进程内，默认） | `IsolatedTaskContext`（隔离） |
+|------|------------------------------|------------------------------|
+| `config` | `FaapiContextConfig` **必有**——活引用全量配置，与 handler `ctx.config` 同一对象，增强类型字段全可读、函数字段可调用（同进程） | **无此字段**——`ctx.config` 是编译错误。进程配置不跨线程（含函数字段不可结构化克隆，框架不做降级传递），数据经 payload 显式传入（调用方 `tasks.enqueue('sync', { db: ctx.config.db })`，享受 Payload 强制声明与 zod 校验） |
+| `registries` | 活引用视图，反映实时状态 | 派发时刻**快照**在 worker 内重建，中途 reload 不影响当次执行 |
+| `llm` | `registries.llm` 活引用（共享 providers 单例） | worker 内按 `agent.llms` 快照重建；llms 配置但不可解析 → 任务显式失败 |
+| `log` | 直写 `config.log` 管道 | postMessage 回传宿主输出——**fields 须可结构化克隆**（不可克隆按执行错误处理） |
+| `progress` | 直写任务记录 | postMessage 回传——**值须可结构化克隆**（不可克隆按执行错误处理） |
+| 模块级状态 | 跨执行共享 | 每次执行独立 |
+| 取消 | 协作式（监听 signal 自行退出） | 两段式真终止（abort 宽限 → terminate 硬杀） |
 
-隔离任务需要的数据经 payload 显式传入（调用方 `tasks.enqueue('sync', { db: ctx.config.db })`）——任务的依赖显式出现在它的输入里，享受 Payload 的强制声明与 zod 校验。误访问 `ctx.config.db`（config 为 undefined）是响亮的 TypeError 指向代码行，不产生静默错值；可选字段（`config?:`）把"有无取决于执行路径"暴露到编译期。
+误用路径的暴露方式：隔离任务标注 `IsolatedTaskContext` 后访问 `ctx.config` 是**编译错误**（字段不存在）；未标注 ctx 的任务误访问则是响亮的 TypeError（undefined 上取属性）。`TaskModule.run` 的签名为两类型的联合。
 
 ## TaskContext.log（任务级日志器）
 
