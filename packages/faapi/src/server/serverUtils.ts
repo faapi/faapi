@@ -1,4 +1,5 @@
 import type { IncomingMessage } from 'node:http';
+import type { FaapiContextConfig } from '../runtime/contextTypes';
 import { markBufferedBody } from '../response/bufferedBody';
 import { formatErrorResponse } from '../errors/formatErrorResponse';
 
@@ -34,7 +35,7 @@ export function nodeHttpToWebHeaders(req: IncomingMessage): Headers {
  */
 export function buildErrorResponse(
   err: unknown,
-  config?: Record<string, unknown> | undefined,
+  config?: FaapiContextConfig | undefined,
 ): Response {
   try {
     return formatErrorResponse(err, config);

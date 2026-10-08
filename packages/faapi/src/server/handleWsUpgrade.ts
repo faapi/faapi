@@ -20,7 +20,7 @@ import type { WsRouteMatch, RoutesRef } from '../router/routeTypes';
 import { matchWsRoute } from '../router/matchRoute';
 import { createContext } from '../runtime/createContext';
 import { compose, mergeMeta } from '../runtime/invokeHandler';
-import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
+import type { FaapiContext, FaapiContextConfig, ResponseMeta } from '../runtime/contextTypes';
 import type { FaapiMiddleware } from '../middleware/middlewareTypes';
 import type { InjectorMap } from '../middleware/injectorTypes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
@@ -208,7 +208,7 @@ export interface AttachWsOptions {
   /** 产物输出目录（如 '.faapi' 或 'dist'），用于计算 WS schema 路径 */
   dist: string;
   /** 业务配置，注入到 WsContext.config */
-  config?: Record<string, unknown>;
+  config?: FaapiContextConfig;
   /** 全局中间件（来自 faapi.config.ts，WS 握手最外层） */
   globalMiddlewares?: FaapiMiddleware[];
   /** 全局注入器（来自 faapi.config.ts，WS handler 可通过 ctx 间接访问全局依赖） */

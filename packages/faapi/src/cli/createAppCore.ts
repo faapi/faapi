@@ -1,4 +1,5 @@
 import type { Server } from 'node:http';
+import type { FaapiContextConfig } from '../runtime/contextTypes';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { RouteManifest, WsRouteManifest, RoutesRef } from '../router/routeTypes';
@@ -319,7 +320,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     dist,
     cors: config?.cors ?? true,
     onError: config?.lifecycle?.onError,
-    config: (config as Record<string, unknown> | null) ?? undefined,
+    config: config as FaapiContextConfig | undefined,
     wsRoutes,
     middlewares: config?.middlewares,
     injectors: config?.injectors,

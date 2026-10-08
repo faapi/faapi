@@ -14,7 +14,7 @@ import { loadRouteModule } from '../loader/loadRouteModule';
 import { createContextFromUrl } from '../runtime/createContext';
 import { resolveInputFromUrl, resolveBodyForQueryMethod } from '../runtime/resolveInput';
 import { invokeHandler, compose, mergeMeta } from '../runtime/invokeHandler';
-import type { FaapiContext, ResponseMeta } from '../runtime/contextTypes';
+import type { FaapiContext, FaapiContextConfig, ResponseMeta } from '../runtime/contextTypes';
 import { sendNodeResponse } from '../response/sendNodeResponse';
 import {
   RouteNotFoundError,
@@ -202,7 +202,7 @@ export interface CreateServerOptions {
   /** 请求错误钩子（在错误响应生成后调用，用于副作用；不修改已发出的响应） */
   onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
   /** 自定义业务配置（来自 faapi.config.ts，注入到 ctx.config） */
-  config?: Record<string, unknown>;
+  config?: FaapiContextConfig;
   /** WebSocket 路由清单（空数组则不挂载 WS 支持） */
   wsRoutes?: WsRouteManifest;
   /** 全局中间件（来自 faapi.config.ts，对所有路由生效，最外层） */
@@ -391,7 +391,7 @@ function prepareRequest(
   req: IncomingMessage,
   request: Request,
   url: URL,
-  config: Record<string, unknown> | undefined,
+  config: FaapiContextConfig | undefined,
   trustedProxy: boolean,
   registries?: AppRegistries,
   preMatched?: RouteMatch | null,
@@ -706,7 +706,7 @@ async function handleRequest(
   res: ServerResponse,
   outerMiddlewares: FaapiMiddleware[],
   onError: ((error: unknown, ctx: FaapiContext) => Promise<void> | void) | undefined,
-  config: Record<string, unknown> | undefined,
+  config: FaapiContextConfig | undefined,
   globalInjectors: InjectorMap | undefined,
   bodyLimit: number,
   trustedProxy: boolean,

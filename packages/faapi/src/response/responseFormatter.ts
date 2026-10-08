@@ -1,4 +1,5 @@
 import type { ResponseConfig } from '../config/configTypes';
+import type { FaapiContextConfig } from '../runtime/contextTypes';
 import { markBufferedBody } from './bufferedBody';
 import { FaapiError } from '../errors/FaapiError';
 import { ValidationError, MethodNotAllowedError, PayloadTooLargeError } from '../errors/httpErrors';
@@ -42,7 +43,7 @@ export function defaultFail(e: {
 
 /** 从 ctx.config 读取 ResponseConfig（业务方在 faapi.config.ts 中配置的 response 字段） */
 export function getResponseConfig(
-  config: Record<string, unknown> | undefined,
+  config: FaapiContextConfig | undefined,
 ): ResponseConfig | undefined {
   return (config as { response?: ResponseConfig } | undefined)?.response;
 }
@@ -90,10 +91,7 @@ function jsonRaw(body: unknown, status: number, extraHeaders?: HeadersInit): Res
  * 不构造 Response,只返回包装后的值——最终序列化交给 toResponse 处理(支持多类型分发 +
  * 合并 ctx.meta 的 setStatus/setHeader/setCookie)。
  */
-export function wrapOkResult(
-  result: unknown,
-  config: Record<string, unknown> | undefined,
-): unknown {
+export function wrapOkResult(result: unknown, config: FaapiContextConfig | undefined): unknown {
   if (result instanceof Response) return result;
   return resolveOkFn(config)(result);
 }
@@ -108,7 +106,7 @@ export function wrapOkResult(
  */
 export function formatFailResponse(
   options: { status?: number; code?: string; message: string },
-  config: Record<string, unknown> | undefined,
+  config: FaapiContextConfig | undefined,
 ): Response {
   const failFn = resolveFailFn(config);
   const body = failFn({
@@ -137,7 +135,7 @@ export function formatFailResponse(
  */
 export function formatErrorResponse(
   error: unknown,
-  config?: Record<string, unknown> | undefined,
+  config?: FaapiContextConfig | undefined,
 ): Response {
   const failFn = resolveFailFn(config);
 

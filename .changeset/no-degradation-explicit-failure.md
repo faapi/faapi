@@ -22,3 +22,4 @@ feat: 框架禁降级——全部降级路径改为显式失败
 - 钩子留痕：lifecycle `onError` / 任务 `onFailed` 自身抛错从静默吞掉改为 `console.error` 留痕
 - 隔离任务 config：删除 `safeConfig` JSON 快照降级——**隔离任务（声明 timeoutMs）的 `ctx.config` 为 `undefined`**，worker 线程不接收进程配置（config 含函数字段不可结构化克隆，不做降级传递）；任务数据经 payload 显式传入（调用方 `tasks.enqueue(name, { db: ctx.config.db })`）。进程内任务不变：`ctx.config` 为活引用全量配置，类型从 `unknown` 收紧为 `FaapiContextConfig`（声明合并增强与 handler `ctx.config` 同源同型）。
 - 上下文类型显式分开：新增 `IsolatedTaskContext`（隔离任务上下文，**无 config 字段**——访问即编译错误；registries/log/progress 的快照与克隆约束写在字段文档）。`TaskContext`（进程内）config 恢复必有——进程内恒有活引用。`TaskModule.run` 签名为两类型联合，业务按执行路径标注对应类型，边界编译期可见
+- 内部 config plumbing 类型对齐：`createServer`/`handleWsUpgrade` options 与错误响应格式化链路的 config 参数从 `Record<string, unknown>` 收紧为 `FaapiContextConfig`（与 `ctx.config` 同型；业务若以 `Record<string, unknown>` 变量传入需适配，对象字面量不受影响）
