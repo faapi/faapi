@@ -6,6 +6,7 @@ import type { TaskWorkerRunner } from './taskWorker';
 import type { TaskRegistriesView, LlmChannelStore } from '../injection/registries';
 import type { LlmComplete } from '../injection/llmTypes';
 import type { LlmConfig } from '../config/configTypes';
+import type { FaapiContextConfig } from '../runtime/contextTypes';
 import type { Logger } from '../logger/loggerTypes';
 
 /**
@@ -118,8 +119,17 @@ export interface TaskRegistriesSnapshot {
 export interface TaskContext {
   /** 优雅停机时对在跑任务 abort 的信号 */
   signal: AbortSignal;
-  /** faapi.config.ts 全量配置（含自定义业务配置） */
-  config: unknown;
+  /**
+   * faapi.config.ts 全量配置（含自定义业务配置），类型经 `FaapiContextConfig`
+   * 声明合并增强——与 handler `ctx.config` 同一类型、同一对象（进程内路径为
+   * 活引用）。
+   *
+   * **隔离任务（声明 `timeoutMs`）为 `undefined`**：worker 线程不传进程配置
+   * （config 含函数字段不可结构化克隆，框架不做任何降级传递）——任务需要的
+   * 数据经 payload 显式传入（调用方入队时给，如 `tasks.enqueue('sync', {
+   * db: ctx.config.db })`）。可选字段是把"有无取决于执行路径"暴露到编译期。
+   */
+  config?: FaapiContextConfig;
   job: { id: string; name: string; attempt: number };
   /**
    * app 注册表只读视图（agent/tool/skill 元数据查询，不含 hydrate/clear 写接口）
@@ -147,8 +157,9 @@ export interface TaskContext {
    * 轻量 LLM 补全通道（可选字段；`@faapi/agent` 插件加载且 `agent.llms` 可解析时注入）
    *
    * 进程内执行为 `registries.llm` 的活引用（与 agent 循环共享 providers 单例）；
-   * 隔离执行为 worker 内按 `agent.llms` 纯数据快照重建的实例（`@faapi/agent`
-   * 不可解析时为 `undefined`，warn 留痕不中断执行）。
+   * 隔离执行为 worker 内按 `agent.llms` 纯数据快照重建的实例——llms 已配置但
+   * `@faapi/agent` 不可解析时任务显式失败（含安装指引）；llms 未配置时为
+   * `undefined`（能力不存在，非降级）。
    * 一次性补全（分类/蒸馏/摘要等）用此通道，不必在任务内组装 agent；
    * 工具循环场景仍走 registries.agent 组装 Agent。详见 `@faapi/agent` 的 lightComplete.md。
    */
@@ -226,8 +237,8 @@ export interface TaskQueue extends TaskClient {
 export interface TaskQueueDeps {
   registry: TaskRegistry;
   rootDir: string;
-  /** faapi.config.ts 全量配置，透传给 run 的 TaskContext.config */
-  config?: unknown;
+  /** faapi.config.ts 全量配置——仅注入进程内路径的 TaskContext.config（隔离任务不传 config） */
+  config?: FaapiContextConfig;
   /**
    * 产物 resources 目录绝对路径——**内部字段**，仅作隔离 worker 读取根播种的
    * 数据源（经 workerData 传入 workerEntry，不进业务可见的 TaskContext——

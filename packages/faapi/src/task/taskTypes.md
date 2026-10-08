@@ -29,6 +29,15 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 `progress` 不做持久化（驱动侧无此概念）、不参与重试恢复——每次派发清空上一轮的 progress，本轮执行重新写入（终态后调用被忽略）；值必须可结构化克隆（隔离路径经 postMessage，不可克隆按执行错误处理）。不调用 `progress` 的任务零开销，`TaskJob.progress` 不出现。
 
+## TaskContext.config（进程配置，仅进程内路径）
+
+`TaskContext.config?: FaapiContextConfig` 为可选字段，类型经 `FaapiContextConfig` 声明合并增强——与 handler `ctx.config` 同一类型。两条路径语义不同且**为真**：
+
+- **进程内路径**（默认）：活引用全量配置，与 handler `ctx.config` 是**同一个对象**——业务增强的类型字段全部可读
+- **隔离路径**（声明 `timeoutMs`）：**恒为 `undefined`**——config 含函数字段（lifecycle 钩子等）不可结构化克隆，框架不做任何降级传递（不裁剪、不标记、不 JSON 快照）；worker 线程不接收进程配置是隔离语义的一部分
+
+隔离任务需要的数据经 payload 显式传入（调用方 `tasks.enqueue('sync', { db: ctx.config.db })`）——任务的依赖显式出现在它的输入里，享受 Payload 的强制声明与 zod 校验。误访问 `ctx.config.db`（config 为 undefined）是响亮的 TypeError 指向代码行，不产生静默错值；可选字段（`config?:`）把"有无取决于执行路径"暴露到编译期。
+
 ## TaskContext.log（任务级日志器）
 
 `TaskContext.log?: Logger` 为可选字段（直接构造 TaskContext 的测试/自定义执行器可不传；框架两条执行路径均注入）：scope `task:<name>`，字段自动携带 `jobId`/`task`/`attempt`，输出走 `config.log` 全局管道。两条路径语义一致：

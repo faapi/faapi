@@ -280,7 +280,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   const taskQueue = createTaskQueue({
     registry: registries.task,
     rootDir,
-    config,
+    config: config ?? undefined,
     resourcesDir,
     registries: createTaskRegistriesView(registries),
     // 轻量补全通道：进程内路径经 store 惰性读取（插件注册后的活引用）；

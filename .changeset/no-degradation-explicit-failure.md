@@ -20,3 +20,4 @@ feat: 框架禁降级——全部降级路径改为显式失败
 - 插件：任一插件失败从「console.error 汇总后继续启动」改为聚合抛错（`createAppBase` 启动失败、listen 不执行）；重复声明从「warn 跳过」改为记入失败
 - 日志：fields 序列化对齐框架统一出口 `stringifyJson`（BigInt 原抛错、Map/Set/RegExp/NaN 原静默丢数据，现全部正确输出可逆原生表示）；循环引用等结构错误抛 `TypeError` 冒泡（「日志调用永不抛错」契约废除）；文件 sink 流错误（磁盘满等）从完全静默改为每流首次 `console.error` 留痕
 - 钩子留痕：lifecycle `onError` / 任务 `onFailed` 自身抛错从静默吞掉改为 `console.error` 留痕
+- 隔离任务 config：删除 `safeConfig` JSON 快照降级——**隔离任务（声明 timeoutMs）的 `ctx.config` 为 `undefined`**，worker 线程不接收进程配置（config 含函数字段不可结构化克隆，不做降级传递）；任务数据经 payload 显式传入（调用方 `tasks.enqueue(name, { db: ctx.config.db })`）。进程内任务不变：`ctx.config` 为活引用全量配置，类型从 `unknown` 收紧为 `FaapiContextConfig`（声明合并增强与 handler `ctx.config` 同源同型，可选字段把"有无取决于执行路径"暴露到编译期）

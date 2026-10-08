@@ -19,7 +19,7 @@
   - 校验后的 payload + `retries`（任务 meta）+ `delayMs`/`dedupId` 透传给 `driver.enqueue`，返回驱动侧 `{ id }`；`dedupId` 为幂等键（同键不重复入队，重复投递返回已存在任务 id），cron 投递自动携带
 - `onFailed` 钩子（`config.task.onFailed`）：每次 process 抛错后触发（含将重试的失败），`info = { task, jobId, attempt, willRetry, cancelled, error }`——`willRetry` 按任务 meta.retries 推算（attempt <= retries）；用于告警/死信上报等副作用，自身抛错 `console.error` 留痕（不改变已定的失败/重试语义，但不静默）
 - worker 执行（驱动按并发/重试策略调 `process`），按任务 meta 分两条路径，**均注入 `taskCtx.registries`（app 注册表只读视图，任务侧组装 agent 用，见 taskTypes.md）**：
-  - **进程内**（默认）：import 任务模块（缓存），调用 `run(payload, { signal, job, config, registries })`——registries 为活引用视图（`createAppBase` 创建队列时传入）
+  - **进程内**（默认）：import 任务模块（缓存），调用 `run(payload, { signal, job, config, registries })`——registries 为活引用视图（`createAppBase` 创建队列时传入）；config 为活引用全量配置（`FaapiContextConfig`，与 handler `ctx.config` 同一对象）
   - **隔离执行**（任务声明 `timeoutMs`，60s ~ 23h——扫描期校验，理由见 taskWorker.md）：走 taskWorker 独立线程执行，超时两段式取消（abort 信号宽限 → terminate 硬杀）——判定超时即执行真正终止，宽限期默认 5s、经 task meta `graceMs` 按任务配置（详见 taskWorker.md）；registries 以纯数据快照传入（worker 内重建视图，派发时刻快照语义）
 
 - 轻量 LLM 补全通道（`taskCtx.llm`，可选）双路径注入：**进程内**从 `AppRegistries.llm` store 惰性读取（`TaskQueueDeps.llm`，插件晚于队列构造注册，执行时刻取值才可见）；**隔离**传 `agent.llms` 纯数据快照（`TaskQueueDeps.llms`），worker 内重建。详见 taskTypes.md 与 `@faapi/agent` 的 lightComplete.md

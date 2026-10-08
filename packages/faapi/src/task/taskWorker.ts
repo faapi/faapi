@@ -64,9 +64,8 @@ export interface TaskWorkerOptions {
   /** 任务产物模块绝对路径（`<dist>/tasks/<dir>/task.js`） */
   taskModulePath: string;
   payload: unknown;
-  /** signal 由执行器构造（abort/terminate 时触发），宿主只传 config 与 job 信息 */
+  /** signal 由执行器构造（abort/terminate 时触发），宿主只传 job 信息 */
   taskCtx: {
-    config: unknown;
     /**
      * 产物 resources 目录绝对路径（纯字符串可结构化克隆）——经 workerData
      * 传给入口在任务模块求值前播种全局读取根（内部字段，不进业务 taskCtx）
@@ -114,26 +113,6 @@ export interface TaskWorkerOptions {
    * 不传则日志条目被忽略。宽限期（取消判定后）到达的条目不采纳（超时判定即终局）
    */
   onLog?: (entry: LogEntry) => void;
-}
-
-/**
- * config 可克隆化：worker 传参经结构化克隆，含函数的配置项传不进去——
- * structuredClone 优先（保 Map/Set/Date），失败退化 JSON round-trip（丢函数留数据），
- * 再失败（循环引用等）传 undefined。任务收到的 config 是纯数据快照。
- */
-function safeConfig(config: unknown): unknown {
-  if (config === undefined || config === null) return config;
-  try {
-    structuredClone(config);
-    return config;
-  } catch {
-    // 不可克隆：JSON 快照兜底
-  }
-  try {
-    return JSON.parse(JSON.stringify(config));
-  } catch {
-    return undefined;
-  }
 }
 
 /** worker 错误回传负载（serializeError 的结构化克隆产物） */
@@ -282,15 +261,14 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
       }
     });
 
-    // taskCtx.config 为可克隆快照（含函数的配置项 JSON 快照兜底）；registries 为纯数据
-    // 快照（registries?: TaskRegistriesSnapshot，缺省 undefined → worker 内空视图）
+    // taskCtx 仅含 job（隔离任务无 config——worker 线程不接收进程配置）；
+    // registries 为纯数据快照（缺省 undefined → worker 内空视图）
     // postMessage 不可克隆时按错误处理
     try {
       worker.postMessage({
         type: 'run',
         payload,
         taskCtx: {
-          config: safeConfig(taskCtx.config),
           job: taskCtx.job,
         },
         registries: options.registries,
@@ -299,9 +277,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
       });
     } catch (err) {
       finish(() =>
-        reject(
-          new Error(`Task "${taskCtx.job.name}" payload/config is not cloneable: ${String(err)}`),
-        ),
+        reject(new Error(`Task "${taskCtx.job.name}" payload is not cloneable: ${String(err)}`)),
       );
     }
   });

@@ -44,7 +44,6 @@ function writeTaskModule(name: string, code: string): string {
 }
 
 const baseCtx = {
-  config: { db: { host: 'h' } },
   job: { id: 'j1', name: 't', attempt: 1 },
 };
 
@@ -59,7 +58,6 @@ describe('runTaskInWorker', () => {
           jobName: taskCtx.job.name,
           attempt: taskCtx.job.attempt,
           hasSignal: taskCtx.signal instanceof AbortSignal,
-          configData: taskCtx.config.db,
         };
       }`,
     );
@@ -75,7 +73,6 @@ describe('runTaskInWorker', () => {
       jobName: 't',
       attempt: 1,
       hasSignal: true,
-      configData: { host: 'h' },
     });
   });
 
@@ -121,23 +118,20 @@ describe('runTaskInWorker', () => {
     });
   });
 
-  it('config 含函数字段：降级为 JSON 快照（丢函数、留数据）', async () => {
+  it('隔离任务不传 config：taskCtx.config 为 undefined（进程配置不跨线程，数据走 payload）', async () => {
     const modulePath = writeTaskModule(
-      'config',
+      'no-config',
       `export function run(_payload, taskCtx) {
-        return { db: taskCtx.config.db, hasFn: typeof taskCtx.config.onEvent };
+        return { hasConfig: taskCtx.config !== undefined };
       }`,
     );
     const result = await runTaskInWorker({
       taskModulePath: modulePath,
       payload: {},
-      taskCtx: {
-        config: { db: { host: 'h' }, onEvent: () => 'fn' },
-        job: baseCtx.job,
-      },
+      taskCtx: baseCtx,
       timeoutMs: 5000,
     });
-    expect(result).toEqual({ db: { host: 'h' }, hasFn: 'undefined' });
+    expect(result).toEqual({ hasConfig: false });
   });
 
   it('run 抛错：错误消息回传 reject', async () => {

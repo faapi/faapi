@@ -239,7 +239,8 @@ function bootstrap(): void {
       type?: string;
       reason?: string;
       payload?: unknown;
-      taskCtx?: Record<string, unknown>;
+      /** 隔离任务仅含 job——worker 线程不接收进程 config */
+      taskCtx?: { job?: { id: string; name: string; attempt: number } };
       registries?: TaskRegistriesSnapshot;
       llms?: Record<string, LlmConfig>;
       log?: { level?: LogLevel; scope?: string; fields?: Record<string, unknown> };

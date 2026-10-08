@@ -186,7 +186,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           taskModulePath: path.resolve(rootDir, meta.filePath),
           payload: job.payload,
           taskCtx: {
-            config: deps.config,
+            // 隔离任务不传 config：worker 线程不接收进程配置（config 含函数字段
+            // 不可结构化克隆，框架不做降级传递）——任务数据经 payload 显式传入
             resourcesDir: deps.resourcesDir,
             job: { id: job.id, name: job.name, attempt: job.attempt },
           },
