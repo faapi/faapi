@@ -111,6 +111,92 @@ function materializeProvider(external: LlmConfig | LLMProvider): LLMProvider {
 }
 
 /**
+ * 解析模型字符串 key → provider + model（模块级导出——Agent 与
+ * [lightComplete](./lightComplete.md) 共用同一解析实现，规则见
+ * [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」）
+ *
+ * 无默认 provider——`key` 未传时用 `fallbackKey`（Agent 场景为 agent 元数据
+ * `config.model`，lightComplete 场景为 llms 第一个 key）；两者皆无抛 `AgentError`。
+ * 1. 精确匹配 `deps.providers` 的 key → 该 provider + 其 `models` 第一个 key
+ * 2. 含 `/` → `provider/model` 形式（要求该 model 在 `deps.llms[provider].models` 里）
+ * 3. 不含 `/` 且非 provider key → 在所有 provider 的 `models` 里按 model 名查找
+ *    - 唯一 → 该 provider + 该 model
+ *    - 多个 → 抛 `AgentError`（要求用 `provider/model` 消歧）
+ *    - 无 → 抛 `AgentError`
+ *
+ * @returns provider + provider 名（lightComplete 据此读该 provider 的 LlmConfig）+ model
+ * @throws {AgentError} key 与 fallbackKey 均缺省；key 解析失败（provider/model 不存在或歧义）
+ */
+export function resolveModelKey(
+  key: string | undefined,
+  deps: { providers: Map<string, LLMProvider>; llms: Record<string, LlmConfig> },
+  fallbackKey?: string,
+): { provider: LLMProvider; providerName: string; model: string | undefined } {
+  const effectiveKey = key ?? fallbackKey;
+  if (effectiveKey === undefined) {
+    throw new AgentError(
+      'No LLM provider resolved: pass options.model (a provider key / "provider/model" / model name from config.agent.llms), options.provider (external provider), or declare model in the agent config',
+    );
+  }
+
+  // 规则 1：精确匹配 providers key（如 'openai'）
+  const byProviderKey = deps.providers.get(effectiveKey);
+  if (byProviderKey) {
+    const llmConfig = deps.llms[effectiveKey];
+    const firstModel = llmConfig ? Object.keys(llmConfig.models)[0] : undefined;
+    return {
+      provider: byProviderKey,
+      providerName: effectiveKey,
+      model: firstModel ?? fallbackKey,
+    };
+  }
+
+  // 规则 2：含 '/' → provider/model 形式（如 'openai/gpt-4o'）
+  if (effectiveKey.includes('/')) {
+    const slashIdx = effectiveKey.indexOf('/');
+    const providerName = effectiveKey.slice(0, slashIdx);
+    const modelName = effectiveKey.slice(slashIdx + 1);
+    const provider = deps.providers.get(providerName);
+    if (!provider) {
+      throw new AgentError(
+        `Unknown provider "${providerName}" in model key "${effectiveKey}". Declare it in config.agent.llms, or pass options.provider to use an external provider.`,
+      );
+    }
+    const llmConfig = deps.llms[providerName];
+    if (!llmConfig || !llmConfig.models[modelName]) {
+      throw new AgentError(
+        `Model "${modelName}" not found in provider "${providerName}". Declare it in config.agent.llms.${providerName}.models.`,
+      );
+    }
+    return { provider, providerName, model: modelName };
+  }
+
+  // 规则 3：纯 model 名模糊匹配（如 'gpt-4o'）
+  const matches: { provider: LLMProvider; providerName: string }[] = [];
+  for (const [providerName, provider] of deps.providers) {
+    const llmConfig = deps.llms[providerName];
+    if (llmConfig && llmConfig.models[effectiveKey]) {
+      matches.push({ provider, providerName });
+    }
+  }
+  if (matches.length === 1) {
+    return {
+      provider: matches[0]!.provider,
+      providerName: matches[0]!.providerName,
+      model: effectiveKey,
+    };
+  }
+  if (matches.length > 1) {
+    throw new AgentError(
+      `Model "${effectiveKey}" is ambiguous (found in providers: ${matches.map((m) => m.providerName).join(', ')}). Use "provider/model" to disambiguate.`,
+    );
+  }
+  throw new AgentError(
+    `Model "${effectiveKey}" not found in any provider. Declare it in config.agent.llms.*.models, or pass options.provider to use an external provider.`,
+  );
+}
+
+/**
  * 校验续跑历史结构（见 reactLoop.md 中断恢复章节）
  *
  * `AgentRunOptions.messages` 是业务方持久化后回传的历史，最常见的损坏是截断在
@@ -675,19 +761,8 @@ export class Agent {
   }
 
   /**
-   * 解析 `options.model` 字符串 key → provider + model
-   *
-   * 规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
-   * 无默认 provider——`key` 未传时用 agent 元数据 `config.model` 作为缺省 key；
-   * 两者皆无抛 `AgentError`（要求调用方传 `options.model` 或 `options.provider`）。
-   * 1. 精确匹配 `deps.providers` 的 key → 该 provider + 其 `models` 第一个 key
-   *    （该 provider 未声明 `models` 时回落 `meta.model`）
-   * 2. 含 `/` → `provider/model` 形式,`deps.providers.get(provider)` + 该 model
-   *    （要求该 model 在 `deps.llms[provider].models` 里）
-   * 3. 不含 `/` 且非 provider key → 在所有 provider 的 `models` 里按 model 名查找
-   *    - 唯一 → 该 provider + 该 model
-   *    - 多个 → 抛 `AgentError`（要求用 `provider/model` 消歧）
-   *    - 无 → 抛 `AgentError`
+   * 解析 `options.model` 字符串 key → provider + model（模块级 [resolveModelKey] 的
+   * Agent 方法包装——meta.model 作缺省 key，与 [lightComplete](./lightComplete.md) 共用同一解析实现）
    *
    * @throws {AgentError} key 与 `meta.model` 均缺省；key 解析失败（provider/model
    *   不存在或歧义）
@@ -696,61 +771,7 @@ export class Agent {
     key: string | undefined,
     meta: AgentCore,
   ): { provider: LLMProvider; model: string | undefined } {
-    // 无默认 provider——未传 options.model 时用 agent 元数据 model 作为缺省 key
-    const effectiveKey = key ?? meta.model;
-    if (effectiveKey === undefined) {
-      throw new AgentError(
-        'No LLM provider resolved: pass options.model (a provider key / "provider/model" / model name from config.agent.llms), options.provider (external provider), or declare model in the agent config',
-      );
-    }
-
-    // 规则 1：精确匹配 providers key（如 'openai'）
-    const byProviderKey = this.deps.providers.get(effectiveKey);
-    if (byProviderKey) {
-      const llmConfig = this.deps.llms[effectiveKey];
-      const firstModel = llmConfig ? Object.keys(llmConfig.models)[0] : undefined;
-      return { provider: byProviderKey, model: firstModel ?? meta.model };
-    }
-
-    // 规则 2：含 '/' → provider/model 形式（如 'openai/gpt-4o'）
-    if (effectiveKey.includes('/')) {
-      const slashIdx = effectiveKey.indexOf('/');
-      const providerName = effectiveKey.slice(0, slashIdx);
-      const modelName = effectiveKey.slice(slashIdx + 1);
-      const provider = this.deps.providers.get(providerName);
-      if (!provider) {
-        throw new AgentError(
-          `Unknown provider "${providerName}" in model key "${effectiveKey}". Declare it in config.agent.llms, or pass options.provider to use an external provider.`,
-        );
-      }
-      const llmConfig = this.deps.llms[providerName];
-      if (!llmConfig || !llmConfig.models[modelName]) {
-        throw new AgentError(
-          `Model "${modelName}" not found in provider "${providerName}". Declare it in config.agent.llms.${providerName}.models.`,
-        );
-      }
-      return { provider, model: modelName };
-    }
-
-    // 规则 3：纯 model 名模糊匹配（如 'gpt-4o'）
-    const matches: { provider: LLMProvider; providerName: string }[] = [];
-    for (const [providerName, provider] of this.deps.providers) {
-      const llmConfig = this.deps.llms[providerName];
-      if (llmConfig && llmConfig.models[effectiveKey]) {
-        matches.push({ provider, providerName });
-      }
-    }
-    if (matches.length === 1) {
-      return { provider: matches[0]!.provider, model: effectiveKey };
-    }
-    if (matches.length > 1) {
-      throw new AgentError(
-        `Model "${effectiveKey}" is ambiguous (found in providers: ${matches.map((m) => m.providerName).join(', ')}). Use "provider/model" to disambiguate.`,
-      );
-    }
-    throw new AgentError(
-      `Model "${effectiveKey}" not found in any provider. Declare it in config.agent.llms.*.models, or pass options.provider to use an external provider.`,
-    );
+    return resolveModelKey(key, this.deps, meta.model);
   }
 
   /**

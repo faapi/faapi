@@ -529,4 +529,36 @@ describe('injectParams', () => {
       expect(result).toEqual({ page: '1', pageSize: '10' });
     });
   });
+
+  describe('llm 注入（轻量补全通道）', () => {
+    it('有 registries 且 store 已注册 → 注入 channel 实例', async () => {
+      const channel = { complete: async () => 'ok' };
+      const ctx = createMockContext({
+        registries: {
+          llm: { register: () => {}, get: () => channel, clear: () => {} },
+        } as never,
+      });
+      const fn = eval('(llm) => llm');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBe(channel);
+    });
+
+    it('有 registries 但插件未注册（get 返回 undefined）→ 注入 undefined', async () => {
+      const ctx = createMockContext({
+        registries: {
+          llm: { register: () => {}, get: () => undefined, clear: () => {} },
+        } as never,
+      });
+      const fn = eval('(llm) => llm');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBeUndefined();
+    });
+
+    it('无 registries（编程式直调 ctx）→ 注入 undefined', async () => {
+      const ctx = createMockContext();
+      const fn = eval('(llm) => llm');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBeUndefined();
+    });
+  });
 });

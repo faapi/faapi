@@ -62,6 +62,7 @@ export async function run(payload, taskCtx) {
 - `taskCtx.config` 为可克隆快照：structuredClone 优先，失败退化 JSON round-trip（丢函数字段），再失败传 `undefined`——任务收到的配置是纯数据
 - `resourcesDir` 为产物 resources 目录绝对路径（纯字符串，经 workerData 传入）——**仅作读取根播种数据源，不进业务可见的 taskCtx**（该数据字段已删除），任务读 `src/resources/` 静态文件走免传参 `readResource`。**读取根在入口 bootstrap 播种（`globalThis[Symbol.for('faapi.resources.dir')]`，与 `utils/readResource.ts` 的 symbol key 字面量需一致）**：入口自身的语句先于对任务模块的动态 import 执行，"播种先于任务模块求值"由结构保证（任务模块顶层 top-level await 调用 readResource 必然读到已绑定的读取根）；读取根经 globalThis 而非模块状态承载——入口 bundle 与 index bundle 是两份代码副本，globalThis 是唯一跨副本共享面。免传参 `readResource` 与 agent `systemPromptFile` 在 worker 内自动可用
 - `taskCtx.registries` 为注册表只读视图：宿主从 app 注册表生成 `TaskRegistriesSnapshot` 纯数据快照（agents 含 `filePath` 完整元数据 + tools + skills）随 postMessage 传入，worker 入口内重建视图——注册表对象含函数闭包不可跨线程，元数据本身可克隆。**快照语义**：视图反映派发时刻的注册表（每次 dispatch 重新生成），执行中途的 reload/DB skill 变更不影响当次执行；`taskCtx.registries.agent.getAgentEntry(name)` 拿到的 `filePath` 为产物路径（元数据查询用）。**视图语义与宿主一致**：worker 内重建的查询方法（workerEntry 的 `buildRegistriesView`，真实模块可直接单测）与宿主 `createTaskRegistriesView` 的运行时行为对齐（同一份注册表数据下两边输出逐字段一致），由对照测试锚定（`taskWorker.test.ts`），宿主侧语义变更会同步暴露漂移
+- `taskCtx.llm` 为轻量 LLM 补全通道（可选）：`agent.llms` 纯数据快照随 run 消息传入，worker 内动态加载 `@faapi/agent` 重建实例（`buildLlmChannel`，specifier 变量拼接避免主包静态依赖）。不可解析时 `console.warn` 留痕、`taskCtx.llm` 为 `undefined`，任务照常执行（降级已记入 `fallback.md`）；llms 未配置时不触发加载。使用语义见 `@faapi/agent` 的 lightComplete.md
 - 返回值必须可结构化克隆（纯数据）；不可克隆视为执行错误
 
 ## 边界取舍（文档必须显眼）

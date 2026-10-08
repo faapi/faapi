@@ -3,6 +3,7 @@ import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { TaskRegistry } from '../task/taskRegistry';
 import { createTaskRegistry } from '../task/taskRegistry';
+import type { LlmComplete } from './llmTypes';
 import { subAgentToolName } from './subAgentToolName';
 
 /**
@@ -222,6 +223,38 @@ export function createAgentHandleStore(): AgentHandleStore {
   };
 }
 
+// ─── LLM 补全通道 store ──────────────────────────────────────────────
+
+/**
+ * 轻量 LLM 补全通道 store（由 `@faapi/agent` 插件注册）
+ *
+ * 与 AgentHandleStore 同形态（app 实例级、随 app 生命周期），差异：channel 与
+ * 请求上下文无关——存实例本身而非工厂。handler 的 `llm` 注入参数与任务执行
+ * 上下文（进程内路径）读取；插件未加载时为空（注入 `undefined`）。
+ */
+export interface LlmChannelStore {
+  /** 注册 channel（null 清理）；二次注册覆盖 */
+  register(channel: LlmComplete | null): void;
+  /** channel 已注册时返回实例，未注册返回 undefined */
+  get(): LlmComplete | undefined;
+  clear(): void;
+}
+
+export function createLlmChannelStore(): LlmChannelStore {
+  let current: LlmComplete | null = null;
+  return {
+    register(channel) {
+      current = channel;
+    },
+    get() {
+      return current ?? undefined;
+    },
+    clear() {
+      current = null;
+    },
+  };
+}
+
 // ─── Task handle 工厂 ────────────────────────────────────────────────
 
 /** task 客户端工厂函数（由 createAppBase 注册，返回 TaskClient 门面） */
@@ -261,6 +294,8 @@ export interface AppRegistries {
   task: TaskRegistry;
   agentHandle: AgentHandleStore;
   taskHandle: TaskHandleStore;
+  /** 轻量 LLM 补全通道（`@faapi/agent` 插件注册；未加载插件时为空） */
+  llm: LlmChannelStore;
 }
 
 /**
@@ -330,7 +365,8 @@ export function createAppRegistries(): AppRegistries {
   const task = createTaskRegistry();
   const agentHandle = createAgentHandleStore();
   const taskHandle = createTaskHandleStore();
-  return { tool, agent, skill, task, agentHandle, taskHandle };
+  const llm = createLlmChannelStore();
+  return { tool, agent, skill, task, agentHandle, taskHandle, llm };
 }
 
 /**

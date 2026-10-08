@@ -283,6 +283,10 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     config,
     resourcesDir,
     registries: createTaskRegistriesView(registries),
+    // 轻量补全通道：进程内路径经 store 惰性读取（插件注册后的活引用）；
+    // 隔离路径传 agent.llms 纯数据快照（worker 内重建）
+    llm: registries.llm,
+    llms: config?.agent?.llms,
     driver: taskDriver,
     onFailed: config?.task?.onFailed,
   });
@@ -466,6 +470,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       registries.task.clear();
       registries.agentHandle.clear();
       registries.taskHandle.clear();
+      registries.llm.clear();
       // 解绑全局 readResource 读取根（onClose 已执行完，业务清理阶段仍可读资源）
       setActiveResourcesDir(null);
 

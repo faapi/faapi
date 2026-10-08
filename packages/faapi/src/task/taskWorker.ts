@@ -3,6 +3,7 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { TaskRegistriesSnapshot } from './taskTypes';
 import type { WorkerEntryData } from './workerEntry';
+import type { LlmConfig } from '../config/configTypes';
 import type { LogEntry, LogLevel } from '../logger/loggerTypes';
 
 /**
@@ -86,6 +87,12 @@ export interface TaskWorkerOptions {
    * taskCtx.registries）——语义层从 `TaskRegistriesView` 生成，缺省为空视图
    */
   registries?: TaskRegistriesSnapshot;
+  /**
+   * `agent.llms` 纯数据快照（postMessage 结构化克隆传入，worker 内动态加载
+   * `@faapi/agent` 重建轻量补全通道注入 taskCtx.llm）——缺省不传，worker 内
+   * taskCtx.llm 为 undefined
+   */
+  llms?: Record<string, LlmConfig>;
   /**
    * 任务日志配置（纯数据，postMessage 传入，worker 内联重建日志器注入 taskCtx.log；
    * 缺省时 taskCtx.log 为 undefined）：scope/fields 与进程内路径一致（`task:<name>`
@@ -287,6 +294,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
           job: taskCtx.job,
         },
         registries: options.registries,
+        llms: options.llms,
         log: options.log,
       });
     } catch (err) {

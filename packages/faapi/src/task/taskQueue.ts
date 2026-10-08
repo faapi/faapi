@@ -188,6 +188,9 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             job: { id: job.id, name: job.name, attempt: job.attempt },
           },
           registries: snapshotRegistries(),
+          // agent.llms 纯数据快照随 workerData 下发，worker 内动态加载 @faapi/agent
+          // 重建轻量补全通道（taskCtx.llm）——llms 未配置时不传
+          llms: deps.llms,
           // 日志配置随 workerData 下发（纯数据），worker 内联重建 taskCtx.log，
           // 条目回传宿主走统一管道（scope/fields 与进程内路径一致）
           log: {
@@ -217,6 +220,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
           registries: registriesView,
+          // 轻量补全通道惰性读取（插件晚于队列构造注册，执行时刻取值才可见）
+          llm: deps.llm?.get(),
           log: createLogger(`task:${job.name}`, {
             fields: { jobId: job.id, task: job.name, attempt: job.attempt },
           }),

@@ -47,6 +47,7 @@ import {
 } from '@faapi/faapi';
 import { Agent, type AgentRuntimeConfig } from './agent';
 import { createToolSchemaResolver } from './toolSchemaResolver';
+import { createLightComplete } from './lightComplete';
 import type { LLMProvider } from './provider';
 import { createProvider } from './provider';
 
@@ -98,6 +99,11 @@ const agentPlugin: FaapiPlugin = {
       }
       providers.set(name, createProvider(llmConfig));
     }
+
+    // 轻量补全通道注册到 registries.llm——handler 的 `llm` 注入参数与任务执行上下文
+    // （taskCtx.llm，进程内路径）读取；与 agent 循环共享同一 providers 单例
+    // （llms 未配置时通道照常注册，调用时报 AgentError 提示配置缺失）
+    ctx.registries.llm.register(createLightComplete({ llms, providers }));
 
     // 全局 agent 运行时配置覆盖
     const runtimeConfig: AgentRuntimeConfig = {

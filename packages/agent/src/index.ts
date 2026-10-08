@@ -25,6 +25,7 @@ export {
   createProvider,
   AgentAbortError,
   LLMProviderError,
+  LLMTimeoutError,
   type LLMProvider,
   type LLMMessage,
   type LLMToolCall,
@@ -38,6 +39,11 @@ export {
 
 // OpenAI 兼容 provider 实现（Phase 3.2）
 export { createOpenAIProvider } from './providers/openai';
+
+// 轻量 LLM 补全通道（agent 循环之外的一次性补全出口，详见 lightComplete.md）
+export { createLightComplete } from './lightComplete';
+// 规范类型主包持有（TaskContext 等主包类型引用），此处 re-export 供业务方统一标注
+export type { LlmComplete, LlmCompleteOptions } from '@faapi/faapi';
 
 // ReAct 循环引擎（Phase 3.3）
 export {

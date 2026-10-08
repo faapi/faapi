@@ -1,5 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import type { TaskRegistriesSnapshot } from './taskTypes';
+import type { LlmComplete } from '../injection/llmTypes';
+import type { LlmConfig } from '../config/configTypes';
 import type { LogEntry, LogLevel } from '../logger/loggerTypes';
 
 /**
@@ -124,6 +126,42 @@ export function serializeError(err: unknown): SerializedWorkerError {
 const LOG_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
 /**
+ * worker 内重建轻量 LLM 补全通道（隔离任务路径）
+ *
+ * channel 是函数闭包不可跨线程；`agent.llms` 是纯数据——postMessage 传入后在本
+ * 函数内动态加载 `@faapi/agent` 重建实例（与 task.ts 内 import '@faapi/agent'
+ * 同一解析来源，业务方安装即可用）。specifier 变量拼接避免主包静态依赖
+ * `@faapi/agent`（与 loadTaskDriver 加载驱动子包同策略）。
+ *
+ * 降级路径（已记入 fallback.md）：`@faapi/agent` 未安装/不可解析时 `console.warn`
+ * 留痕并返回 `undefined`——taskCtx.llm 为 undefined，任务自身决定报错或旁路；
+ * llms 未配置时不触发加载。
+ */
+export async function buildLlmChannel(
+  llms?: Record<string, LlmConfig>,
+): Promise<LlmComplete | undefined> {
+  if (!llms || Object.keys(llms).length === 0) return undefined;
+  const specifier = '@faapi/' + 'agent';
+  try {
+    const mod = (await import(/* @vite-ignore */ specifier)) as {
+      createLightComplete?: (deps: { llms: Record<string, LlmConfig> }) => LlmComplete;
+    };
+    if (typeof mod.createLightComplete !== 'function') {
+      console.warn(
+        '[faapi] @faapi/agent resolved but does not export createLightComplete() — taskCtx.llm unavailable (check package version)',
+      );
+      return undefined;
+    }
+    return mod.createLightComplete({ llms });
+  } catch {
+    console.warn(
+      '[faapi] agent.llms is configured but @faapi/agent is not resolvable in the task worker — install @faapi/agent to enable taskCtx.llm (task execution continues)',
+    );
+    return undefined;
+  }
+}
+
+/**
  * 任务日志器：级别预过滤（level 为 undefined 时不过滤——宿主文件管道默认全量）+
  * scope/fields 组装，条目作为纯数据经 `{ type: 'log' }` 消息回传宿主、由宿主统一
  * sink 输出（语义与主包 createLogger 对齐：child scope `:` 合并、调用处 fields
@@ -197,6 +235,7 @@ function bootstrap(): void {
       payload?: unknown;
       taskCtx?: Record<string, unknown>;
       registries?: TaskRegistriesSnapshot;
+      llms?: Record<string, LlmConfig>;
       log?: { level?: LogLevel; scope?: string; fields?: Record<string, unknown> };
     }) => {
       if (msg?.type === 'abort') {
@@ -228,10 +267,13 @@ function bootstrap(): void {
           const taskLog = msg.log
             ? createTaskLogger(msg.log.level, msg.log.scope, msg.log.fields)
             : undefined;
+          // 轻量补全通道：llms 快照在 worker 内重建（不可解析时 undefined，warn 留痕）
+          const llm = await buildLlmChannel(msg.llms);
           const result = await run(payload, {
             ...taskCtx,
             signal: controller!.signal,
             registries,
+            llm,
             progress,
             log: taskLog,
           });

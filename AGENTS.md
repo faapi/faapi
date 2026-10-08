@@ -425,6 +425,8 @@ export default {
   // agent 自身 config.maxTurns / config.model 优先于全局配置
   // 无 defaultAgent / defaultLlm——agent.run(input, { agent, model }) 每次调用
   // 显式指定 agent 名与 model/provider（agent 元数据 config.model 可作缺省 key）
+  // llms 同源服务两条通道：agent 循环（agent.run）+ 轻量一次性补全（handler `llm`
+  // 注入参数 / taskCtx.llm，详见 @faapi/agent 的 lightComplete.md）——项目零新增配置
   agent: {
     // LLM provider 配置（嵌套级联：key 是 provider 名，models 挂在该 provider 下）
     // llms 可选——未配置时插件照常注册（外部 provider 模式），handler 需通过
@@ -669,6 +671,7 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 | `agent` | `AgentHandle`（由 `@faapi/agent` 插件注册的工厂 `getAgentHandle(ctx)` 注入，含可调用 `run`/`stream`/`asTool`；无默认 agent——`run`/`stream` 每次显式传 `{ agent, model }`）；插件未注册时返回 `undefined` | `GET(agent)` |
 | `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
+| `llm` | 轻量 LLM 补全通道 `LlmComplete`（`@faapi/agent` 插件注册到 `registries.llm`，与 agent 循环共享 `agent.llms` 同源 providers。一次性补全官方出口——字符串进字符串出，复用 provider 重试引擎，默认 60s 超时 + `LLMTimeoutError`/`status` 错误分型 + `onFailure`/`fallback` 失败语义（可降级不可静默），model key 解析与 `agent.run` 同规则；详见 `packages/agent/src/lightComplete.md`）；插件未加载时 `undefined` | `POST(llm: LlmComplete)` |
 | `tasks` | 任务队列客户端 `TaskClient`（`enqueue(name, payload)` / `list()`），与 `ctx.tasks` / `app.tasks` 指向同一 app 实例队列 | `POST(tasks)` |
 | `log` | 请求级日志器（与 `ctx.log` 同一实例，scope `http`，自动携带 `requestId`/`method`/`path` 字段，详见 5.5.4） | `GET(log)` |
 
@@ -786,6 +789,7 @@ it('GET 返回分页数据', async () => {
 - **任务定义（文件约定）**：`src/tasks/<name>/task.ts`，导出 `task` 元信息对象（`concurrency` / `retries` / `timeoutMs` / `graceMs` / `cron`，均可选；meta 值必须是纯字面量——数字字段支持下划线分隔，`cron` 为引号字符串；表达式/动态值不被零 import 扫描识别，声明了但无法识别时扫描期 `console.warn` 后忽略，详见 `packages/faapi/src/task/scanTasks.md`；`graceMs` 为取消宽限期毫秒数，仅声明 `timeoutMs` 的隔离任务生效，默认 5s）+ `run(payload, taskCtx)`；`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`）
 - **超时取消真终止（worker 隔离执行）**：任务声明 `task.timeoutMs` 后在独立 worker 线程执行，超时两段式取消——先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀，判定超时即执行真正终止（Node 主线程无法强杀协程，进程内"不再等待"式超时是假取消）。任务记录新增 `cancelled` 状态：被框架终止（超时终止/停机取消）记 `cancelled`，与 run 自身失败的 `failed` 分流。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、`taskCtx.config` 为可克隆纯数据快照。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。详见 `packages/faapi/src/task/taskWorker.md`
 - **任务侧注册表只读视图（TaskContext.registries）**：两条执行路径均注入 `taskCtx.registries`（agent/tool/skill 元数据的只读查询视图，不含 hydrate/clear 写接口），任务内组装/调用 agent 不再依赖 `getApp()`——注册表为 app 实例级，全局访问器读的是 app 启动从不水合的默认实例，`getApp()` 在隔离 worker 内也不可用（globalThis 独立），任务侧曾没有任何注册表访问路径。进程内传活引用（`createTaskRegistriesView`）；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath 完整元数据 + tools + skills）postMessage 传入、worker 内重建视图——**快照语义**：视图反映派发时刻的注册表，执行中途 reload/DB skill 变更不影响当次执行。详见 `packages/faapi/src/task/taskTypes.md`
+- **任务侧轻量补全通道（TaskContext.llm）**：两条执行路径均注入 `taskCtx.llm`（`@faapi/agent` 插件加载且 `agent.llms` 可解析时；一次性 LLM 补全官方出口，见 5.7 `llm` 注入行与 `packages/agent/src/lightComplete.md`）。进程内从 `registries.llm` store 惰性读取（插件晚于队列构造注册）；隔离路径传 `agent.llms` 纯数据快照、worker 内动态加载 `@faapi/agent` 重建（不可解析时 warn 留痕、`llm` 为 `undefined`，降级已记入 `fallback.md`）——工具循环仍走 registries.agent 组装 Agent，`llm` 只承接一次性补全
 - **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle 钩子的 `{ tasks }` 全部指向同一 app 实例 TaskClient；cron（croner）到点自动入队空 payload，复用同一队列与执行模型
 - **幂等投递（dedupId）**：`enqueue` 可选幂等键——同键任务在队列系统保留期内不重复入队（重复投递返回已存在任务 id）。pgboss 映射 send 自定义 id（要求 UUID，驱动内 SHA-1 确定性映射）；bullmq 映射 jobId。**cron 投递自动携带 `cron:<任务名>:<计划触发时刻>` 键**——多 worker 实例同窗只入队一份（依赖实例时钟同步），解决多实例 cron 重复投递
 - **失败钩子**：`config.task.onFailed({ task, jobId, attempt, willRetry, cancelled, error })`——每次执行失败/取消后触发（含将重试的失败），用于告警/死信上报等副作用；自身抛错被忽略

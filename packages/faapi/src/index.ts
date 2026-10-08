@@ -56,8 +56,11 @@ export type {
   AgentHandleStore,
   AgentHandleFactory,
   TaskRegistriesView,
+  LlmChannelStore,
 } from './injection/registries';
 export { createAppRegistries, createTaskRegistriesView } from './injection/registries';
+// 轻量 LLM 补全通道规范类型（实现在 @faapi/agent 的 createLightComplete，见其 lightComplete.md）
+export type { LlmComplete, LlmCompleteOptions } from './injection/llmTypes';
 // 任务子系统（队列式异步任务，详见 src/task/README.md）
 export type {
   FaapiTaskMeta,

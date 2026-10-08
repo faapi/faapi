@@ -21,12 +21,16 @@
 | `rawQuery` / `rawParams` / `rawBody` | 同步从 ctx 同名字段取值（恒原始，管线永不覆盖） | 见 `getBuiltinInjectionValue` |
 | `agents` | 同步从 [agentRegistry](./agentRegistry.md) 取值 | `AgentCore[]`（所有已注册 agent 的 LLM 可见元数据，合并文件型 + DB skill） |
 | `agent` | 调 [agentHandle](./agentHandle.md) 工厂 `getAgentHandle(ctx)` 取值 | `AgentHandle` 实例（`@faapi/agent` 插件未注册时返回 `undefined`） |
+| `tasks` | 读 `registries.taskHandle` 工厂 | `TaskClient`（无 app 编排时 `undefined`） |
+| `llm` | 读 `registries.llm` store（`get()` 无参——channel 与请求上下文无关） | `LlmComplete` 轻量补全通道（`@faapi/agent` 插件未加载时 `undefined`） |
 
 `agent` / `agents` 注入的行为：
 - `agents` → `listAgents()` —— 注入所有 agent LLM 可见元数据列表（`AgentCore[]`），handler 可遍历查询可用 agent
 - `agent` → `getAgentHandle(ctx)` —— 通过 [agentHandle](./agentHandle.md) 工厂机制注入 `AgentHandle`（含可调用 `run`/`stream`/`asTool`）
 
 `@faapi/agent` 插件在 setup 时调 `registerAgentHandleFactory` 注册工厂,工厂在每次请求时构造 [Agent](../../agent/src/agent.md) 实例作为 `AgentHandle` 返回。未注册工厂时返回 `undefined`。
+
+`llm` 注入（轻量补全通道）的行为：插件 setup 时调 `ctx.registries.llm.register(...)` 注册 [createLightComplete](../../agent/src/lightComplete.md) 构建的通道实例（与 agent 循环共享 providers 单例），注入值恒为同一实例（无按请求构造）。使用方式与失败语义见 `@faapi/agent` 的 lightComplete.md；类型 [llmTypes](./llmTypes.md) 主包持有。
 
 ## 注入优先级
 

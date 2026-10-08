@@ -3,7 +3,9 @@ import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
 import type { TaskRegistry } from './taskRegistry';
 import type { TaskDriver } from './driverTypes';
 import type { TaskWorkerRunner } from './taskWorker';
-import type { TaskRegistriesView } from '../injection/registries';
+import type { TaskRegistriesView, LlmChannelStore } from '../injection/registries';
+import type { LlmComplete } from '../injection/llmTypes';
+import type { LlmConfig } from '../config/configTypes';
 import type { Logger } from '../logger/loggerTypes';
 
 /**
@@ -141,6 +143,16 @@ export interface TaskContext {
    * 隔离执行时条目经 postMessage 回传宿主输出，fields 需可结构化克隆。
    */
   log?: Logger;
+  /**
+   * 轻量 LLM 补全通道（可选字段；`@faapi/agent` 插件加载且 `agent.llms` 可解析时注入）
+   *
+   * 进程内执行为 `registries.llm` 的活引用（与 agent 循环共享 providers 单例）；
+   * 隔离执行为 worker 内按 `agent.llms` 纯数据快照重建的实例（`@faapi/agent`
+   * 不可解析时为 `undefined`，warn 留痕不中断执行）。
+   * 一次性补全（分类/蒸馏/摘要等）用此通道，不必在任务内组装 agent；
+   * 工具循环场景仍走 registries.agent 组装 Agent。详见 `@faapi/agent` 的 lightComplete.md。
+   */
+  llm?: LlmComplete;
 }
 
 /**
@@ -228,6 +240,17 @@ export interface TaskQueueDeps {
    * TaskContext.registries；缺省为空视图（直接构造队列的测试/嵌入场景）
    */
   registries?: TaskRegistriesView;
+  /**
+   * 轻量 LLM 补全通道 store（AppRegistries.llm）——进程内执行路径在任务执行时刻
+   * 惰性读取（插件晚于队列构造注册，构造期快照会漏）；缺省 taskCtx.llm 恒 undefined
+   */
+  llm?: LlmChannelStore;
+  /**
+   * `agent.llms` 纯数据快照——隔离执行路径经 postMessage 传入 worker，worker 内
+   * 动态加载 `@faapi/agent` 重建补全通道（纯数据可结构化克隆）。缺省不传入
+   * （worker 内 taskCtx.llm 为 undefined）
+   */
+  llms?: Record<string, LlmConfig>;
   /**
    * 队列驱动（必填）：`loadTaskDriver` 解析结果（pgboss/bullmq 子包驱动）
    * 或自定义 TaskDriver 实例；无任务清单时由 createAppBase 传入 idleTaskDriver

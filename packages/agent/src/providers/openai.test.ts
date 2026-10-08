@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createOpenAIProvider, LLMProviderError } from './openai';
+import { createOpenAIProvider, LLMProviderError, LLMTimeoutError } from './openai';
 import { AgentAbortError } from '../provider';
 import type { LLMMessage, LLMToolDefinition } from '../provider';
 import type { LlmConfig } from '@faapi/faapi';
@@ -1222,5 +1222,101 @@ describe('createOpenAIProvider', () => {
       provider.complete({ messages: [{ role: 'user', content: 'hi' }] }),
     ).rejects.toMatchObject({ name: 'LLMProviderError', status: 429 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('超时错误类型为 LLMTimeoutError（LLMProviderError 子类，可编程区分超时与网络错误）', async () => {
+    fetchMock.mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+          );
+        }),
+    );
+    const provider = createOpenAIProvider({ ...baseConfig, timeoutMs: 30, maxRetries: 0 });
+
+    const err = await provider
+      .complete({ messages: [{ role: 'user', content: 'hi' }] })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LLMTimeoutError);
+    expect(err).toBeInstanceOf(LLMProviderError);
+    expect((err as LLMTimeoutError).status).toBeUndefined();
+  });
+
+  it('request.timeoutMs 覆盖 config.timeoutMs（错误 message 含覆盖值）', async () => {
+    fetchMock.mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+          );
+        }),
+    );
+    const provider = createOpenAIProvider({ ...baseConfig, timeoutMs: 60_000, maxRetries: 0 });
+
+    await expect(
+      provider.complete({ messages: [{ role: 'user', content: 'hi' }], timeoutMs: 1234 }),
+    ).rejects.toThrow(/timed out after 1234ms/);
+  });
+
+  it('request.maxRetries 覆盖 config.maxRetries（config 0 + request 1 → 重试 1 次）', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+      )
+      .mockResolvedValueOnce(jsonResponse(openaiResponse({ content: 'ok' })));
+    const provider = createOpenAIProvider({ ...baseConfig, maxRetries: 0 });
+
+    const res = await provider.complete({
+      messages: [{ role: 'user', content: 'hi' }],
+      maxRetries: 1,
+    });
+    expect(res.message.content).toBe('ok');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('request.maxRetries 负数归一为 0', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+    );
+    const provider = createOpenAIProvider({ ...baseConfig, maxRetries: 5 });
+
+    await expect(
+      provider.complete({ messages: [{ role: 'user', content: 'hi' }], maxRetries: -2 }),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('complete 响应携带 attempts（实际 HTTP 尝试次数）：首次成功 = 1', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(openaiResponse({ content: 'ok' })));
+    const provider = createOpenAIProvider(baseConfig);
+
+    const res = await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.attempts).toBe(1);
+  });
+
+  it('complete 响应携带 attempts：一次重试后成功 = 2', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+      )
+      .mockResolvedValueOnce(jsonResponse(openaiResponse({ content: 'ok' })));
+    const provider = createOpenAIProvider(baseConfig);
+
+    const res = await provider.complete({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(res.attempts).toBe(2);
+  });
+
+  it('重试耗尽抛出的错误携带 attempts（总尝试次数 = 1 + maxRetries）', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('rate limited', { status: 429, headers: { 'Retry-After': '0' } }),
+    );
+    const provider = createOpenAIProvider({ ...baseConfig, maxRetries: 2 });
+
+    const err = await provider
+      .complete({ messages: [{ role: 'user', content: 'hi' }] })
+      .catch((e: LLMProviderError) => e);
+    expect(err).toBeInstanceOf(LLMProviderError);
+    expect((err as LLMProviderError).attempts).toBe(3);
   });
 });

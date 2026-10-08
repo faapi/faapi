@@ -115,6 +115,26 @@ describe('@faapi/agent plugin', () => {
     vi.clearAllMocks();
   });
 
+  describe('setup() — llm 轻量补全通道注册', () => {
+    it('llms 已配置：channel 注册到 registries.llm，complete 走 providers 同源实例', async () => {
+      const ctx = makeCtx(fullAgentConfig);
+      plugin.setup(ctx);
+      const channel = ctx.registries.llm.get();
+      expect(channel).toBeDefined();
+      expect(typeof channel!.complete).toBe('function');
+      // 与 agent 循环同一 providers 实例（mock createProvider 的返回）
+      await expect(channel!.complete('x', { model: 'openai' })).resolves.toBe('ok');
+    });
+
+    it('llms 未配置：channel 仍注册，调用时报 AgentError（无 provider 可解析）', async () => {
+      const ctx = makeCtx();
+      plugin.setup(ctx);
+      const channel = ctx.registries.llm.get();
+      expect(channel).toBeDefined();
+      await expect(channel!.complete('x')).rejects.toThrow(AgentError);
+    });
+  });
+
   describe('setup() — 完整配置', () => {
     it('调 ctx.registries.agentHandle.register 注册工厂（app 实例，非全局）', () => {
       const ctx = makeCtx(fullAgentConfig);

@@ -39,3 +39,10 @@ DDD 规范要求：确有必须降级的场景（显式抛错会让业务完全�
 
 
 
+
+## 隔离任务的 taskCtx.llm 在 @faapi/agent 不可解析时降级为 undefined（workerEntry.buildLlmChannel）
+
+- **场景**：任务声明 `timeoutMs` 走隔离 worker 执行，`agent.llms` 已配置，但业务方项目未安装 `@faapi/agent`（peer 依赖，可选插件）——worker 内动态加载 `@faapi/agent` 失败。
+- **为什么必须降**：channel 是函数闭包不可跨线程，worker 内只能按 `agent.llms` 纯数据快照重建实例，重建依赖动态加载 `@faapi/agent`；若显式抛错，未安装该可选插件的项目（仅用 agent 循环之外的其他能力、或 llms 配置残留）所有隔离任务将完全不可用，与「插件可选」的既有边界冲突。
+- **降级后的实际行为**：`console.warn` 留痕（非静默，含安装指引），`taskCtx.llm` 为 `undefined`，任务照常执行——任务侧按既有惯例自行判空（与 handler `agent` 参数在插件未加载时注入 `undefined` 同语义）；进程内执行路径不受影响（store 未注册时同样 `undefined`）。
+- **恢复条件**：业务方安装 `@faapi/agent`（已在 plugins 声明即已安装，通常无需动作）后重新构建，worker 内重建成功，`taskCtx.llm` 恢复注入。

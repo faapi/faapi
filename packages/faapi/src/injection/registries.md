@@ -1,6 +1,6 @@
 # registries
 
-一句话概括：app 级注册表集合——tool / agent / skill / agentHandle 四张表的实例化实现，每个 app 持有独立一套，随 app 创建与销毁。
+一句话概括：app 级注册表集合——tool / agent / skill / agentHandle / taskHandle / llm 六张表的实例化实现，每个 app 持有独立一套，随 app 创建与销毁。
 
 ## 为什么需要
 
@@ -16,6 +16,7 @@
 - `createAppBase`：创建 `AppRegistries` → 水合 faapi-tools.js / faapi-agents.js 到实例 → 经 `FaapiContext.registries` / `PluginContext.registries` / `LifecycleContext.registries` 传递
 - 业务方 plugin 在 `lifecycle.onReady(ctx)` 中经 `ctx.registries.skill` 灌入 DB skill（推荐路径，与 app 生命周期绑定）
 - `@faapi/agent` 插件经 `ctx.registries.agentHandle.register(...)` 注册工厂，deps 读同套实例
+- `@faapi/agent` 插件经 `ctx.registries.llm.register(...)` 注册轻量补全通道（`LlmChannelStore`，存实例本身而非工厂——channel 与请求上下文无关），handler 的 `llm` 注入参数与任务执行上下文（进程内 `taskCtx.llm`）读取
 
 ## 默认实例与全局函数
 
@@ -27,8 +28,11 @@
 
 `createTaskRegistriesView(registries)` 把 AppRegistries 投影为**只读视图**（agent 的 get/getEntry/list/asTool/resolve* + tool/skill 的 get/list），注入任务执行上下文（`TaskContext.registries`）——任务执行侧（进程内或隔离 worker）不在 handler 请求链路上，拿不到 `FaapiContext.registries`；`getApp()` 在隔离线程内也不可用（worker globalThis 独立）。视图刻意不暴露 `hydrate`/`clear` 写接口：任务不是注册表的所有者。隔离路径经 `TaskRegistriesSnapshot` 纯数据快照跨线程、worker 内重建视图（详见 `../task/taskTypes.md`）。
 
+轻量补全通道不走该视图：`TaskContext.llm` 由任务队列从 `AppRegistries.llm` 单独接线（进程内惰性读 store；隔离路径传 `agent.llms` 纯数据快照、worker 内重建）。
+
 ## 相关模块
 
 - `toolRegistry.ts` / `agentRegistry.ts` / `skillRegistry.ts` / `agentHandle.ts` - 默认实例便捷访问器（委托层）
+- `llmTypes.ts` - 轻量补全通道规范类型（`LlmComplete` / `LlmCompleteOptions`，实现在 `@faapi/agent`）
 - `../cli/createAppCore.md` - 创建与水合时机
 - `agentRegistry.md` - 与 skillRegistry 的隔离约定（实例化后不变）

@@ -10,9 +10,17 @@ import {
   createAgentHandleStore,
   createTaskHandleStore,
   createTaskRegistriesView,
+  createLlmChannelStore,
 } from '../injection/registries';
 import { createTaskRegistry } from './taskRegistry';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
+
+// buildLlmChannel 的 @faapi/agent 动态加载 mock（主线程模块图；真实 worker 线程
+// 不经 vitest 解析，走仓库内不可解析的真实降级路径）
+const mockLlmChannel = vi.hoisted(() => ({ complete: async () => 'ok' }));
+vi.mock('@faapi/agent', () => ({
+  createLightComplete: () => mockLlmChannel,
+}));
 
 /**
  * taskWorker 真实 worker 线程集成测试：
@@ -323,6 +331,7 @@ describe('runTaskInWorker', () => {
       task: createTaskRegistry(),
       agentHandle: createAgentHandleStore(),
       taskHandle: createTaskHandleStore(),
+      llm: createLlmChannelStore(),
     });
     // 与 taskQueue.snapshotRegistries 同构的快照生成
     const snapshot = {
@@ -765,5 +774,62 @@ describe('runTaskInWorker - taskCtx.log 日志桥', () => {
       timeoutMs: 5000,
     });
     expect(result).toEqual({ hasLog: false });
+  });
+
+  // ─── taskCtx.llm 轻量补全通道（隔离路径） ───────────────────
+
+  it('传入 llms：llms 纯数据随 run 消息下发（仓库内 @faapi/agent 不可解析 → taskCtx.llm undefined，不中断执行）', async () => {
+    const modulePath = writeTaskModule(
+      'llm-absent',
+      `export function run(_payload, taskCtx) {
+        return {
+          hasLlm: taskCtx.llm !== undefined,
+          llmsRideAlong: true,
+        };
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      llms: { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } },
+    });
+    // 仓库内主包不依赖 @faapi/agent（业务方安装后才可解析）——降级路径：
+    // warn 留痕 + taskCtx.llm undefined，任务照常执行（fallback.md 已留痕）
+    expect(result).toEqual({ hasLlm: false, llmsRideAlong: true });
+  });
+
+  it('未传 llms：worker 不尝试加载 @faapi/agent，taskCtx.llm 为 undefined', async () => {
+    const modulePath = writeTaskModule(
+      'llm-no-config',
+      `export function run(_payload, taskCtx) {
+        return { hasLlm: taskCtx.llm !== undefined };
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({ hasLlm: false });
+  });
+});
+
+// ─── buildLlmChannel（workerEntry 纯函数，主线程单测） ───────────
+
+describe('buildLlmChannel', () => {
+  it('@faapi/agent 可解析：用 llms 构建轻量补全通道', async () => {
+    const { buildLlmChannel } = await import('./workerEntry');
+    const llms = { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } };
+    const channel = await buildLlmChannel(llms);
+    expect(channel).toBe(mockLlmChannel);
+  });
+
+  it('llms 未配置：不触发动态 import，返回 undefined', async () => {
+    const { buildLlmChannel } = await import('./workerEntry');
+    const channel = await buildLlmChannel(undefined);
+    expect(channel).toBeUndefined();
   });
 });

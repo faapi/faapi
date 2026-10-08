@@ -69,6 +69,10 @@ function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?:
     // 任务子系统：注入 TaskClient（入队/查询）；未注册工厂（无 app 编排）时 undefined
     case 'tasks':
       return ctx.registries ? ctx.registries.taskHandle.get(ctx) : undefined;
+    // 轻量 LLM 补全通道：@faapi/agent 插件注册到 registries.llm；与请求上下文无关，
+    // get 无参。插件未加载（或编程式直调 ctx 无 registries）时 undefined
+    case 'llm':
+      return ctx.registries ? ctx.registries.llm.get() : undefined;
     // 请求级日志器：与 ctx.log 同一实例（scope http，自动带 requestId/method/path 字段）
     case 'log':
       return ctx.log;

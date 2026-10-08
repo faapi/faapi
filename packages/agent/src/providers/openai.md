@@ -99,7 +99,11 @@ OpenAI → `LLMMessage`（响应解析）：
 - `tool_calls[].function.arguments` JSON.parse 失败 → 抛 `LLMProviderError("Invalid tool arguments JSON: <raw>")`
 - SSE chunk JSON 解析失败 → 抛 `LLMProviderError("Invalid SSE chunk: <raw>")`
 
-`LLMProviderError` 含 `status` 字段（HTTP 状态码，网络错误为 `undefined`）+ `body` 字段（响应体摘要）。
+`LLMProviderError` 含 `status` 字段（HTTP 状态码，网络错误为 `undefined`）+ `body` 字段（响应体摘要）。超时错误为其子类 `LLMTimeoutError`——`instanceof` 可编程区分「超时」与「网络错误」（两者 status 均为 `undefined`，仅靠 message 无法区分）。
+
+`complete` 的响应携带 `attempts`（实际 HTTP 尝试次数，≥1 含失败尝试；重试耗尽抛出的错误对象同样回填 `attempts`）——供失败钩子/日志观测重试消耗。
+
+请求级覆盖：`request.timeoutMs` / `request.maxRetries` 优先于 `LlmConfig` 同名字段（调用级覆盖，均缺省回落 config）——轻量补全通道（[lightComplete](../lightComplete.md)）按调用声明超时/重试即经此通路。
 
 ## 相关模块
 

@@ -38,6 +38,15 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 详见 `src/logger/logger.md`。
 
+## TaskContext.llm（轻量 LLM 补全通道）
+
+`TaskContext.llm?: LlmComplete` 为可选字段（`@faapi/agent` 插件加载且 `agent.llms` 可解析时注入）：一次性 LLM 补全（分类/蒸馏/摘要/改写等）的官方出口——复用 `agent.llms` 同源配置与 provider 重试引擎，失败钩子/降级内建，详见 `@faapi/agent` 的 lightComplete.md。两条路径：
+
+- **进程内路径**：任务执行时刻从 `registries.llm` store 惰性读取（插件晚于队列构造注册，构造期快照会漏）——与 agent 循环共享同一 providers 单例
+- **隔离路径**（声明 `timeoutMs`）：channel 是函数闭包不可跨线程——`agent.llms` 纯数据快照（`TaskQueueDeps.llms`，可结构化克隆）随派发下发，worker 内动态加载 `@faapi/agent` 重建实例（`workerEntry.buildLlmChannel`，specifier 变量拼接、与 `loadTaskDriver` 加载驱动子包同策略）。`@faapi/agent` 不可解析时 warn 留痕、`taskCtx.llm` 为 `undefined`，任务照常执行（降级已记入项目根 `fallback.md`）
+
+工具循环场景仍走 `registries.agent` 组装 `Agent`（见下节）——`llm` 只承接一次性补全，两者互补。
+
 ## TaskContext.resourcesDir（已删除）
 
 `TaskContext.resourcesDir` 数据字段已删除——任务读静态文件统一走主包免传参 `readResource`（相对路径 + 只能读 resources 内文件，详见 [readResource.md](../utils/readResource.md)）：

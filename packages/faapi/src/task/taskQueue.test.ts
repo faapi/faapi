@@ -3,6 +3,8 @@ import { createTaskQueue } from './taskQueue';
 import { createTaskRegistry } from './taskRegistry';
 import { TaskCancelledError } from './taskWorker';
 import { createAppRegistries, createTaskRegistriesView } from '../injection/registries';
+import type { LlmChannelStore } from '../injection/registries';
+import type { LlmComplete } from '../injection/llmTypes';
 import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
 import type { TaskContext, TaskModule } from './taskTypes';
 
@@ -935,6 +937,100 @@ describe('createTaskQueue', () => {
     expect(runIsolated.mock.calls[0]![0]).toMatchObject({
       registries: { agents: [], tools: [], skills: [] },
     });
+    await queue.stop();
+  });
+
+  // ─── taskCtx.llm 轻量补全通道注入 ─────────────────────────
+
+  it('进程内 taskCtx.llm 注入：deps.llm store 惰性读取（执行时刻取值，插件后注册也可见）', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => ({
+      llmTag: (taskCtx.llm as (LlmComplete & { tag: string }) | undefined)?.tag ?? 'none',
+    }));
+    const fake = makeFakeDriver();
+    const deps = makeDeps({ hello: { run } });
+    let channel: (LlmComplete & { tag: string }) | undefined;
+    const llmStore: LlmChannelStore = {
+      register: (c) => {
+        channel = (c ?? undefined) as (LlmComplete & { tag: string }) | undefined;
+      },
+      get: () => channel,
+      clear: () => {
+        channel = undefined;
+      },
+    };
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      llm: llmStore,
+    });
+    queue.start();
+
+    // 插件未注册时执行 → undefined
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    expect(run).toHaveResolvedWith({ llmTag: 'none' });
+
+    // 插件注册后再执行 → 同一 channel 可见（惰性读取，构造期不快照）
+    llmStore.register({ tag: 'plugin' } as LlmComplete & { tag: string });
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    expect(run).toHaveResolvedWith({ llmTag: 'plugin' });
+    await queue.stop();
+  });
+
+  it('deps.llm 缺省：进程内 taskCtx.llm 为 undefined，不抛错', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: { llm?: unknown }) => ({
+      hasLlm: taskCtx.llm !== undefined,
+    }));
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    expect(run).toHaveResolvedWith({ hasLlm: false });
+    await queue.stop();
+  });
+
+  it('隔离路径：deps.llms 随 workerData 语义转发给 runIsolated，进程内不受影响', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (opts: { llms?: unknown }) => opts.llms ?? null);
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 }]);
+    const llms = { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } };
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      llms,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await fake.dispatch('heavy', {}, 1);
+    expect(runIsolated.mock.calls[0]![0]).toMatchObject({ llms });
+    await queue.stop();
+  });
+
+  it('隔离路径未配 llms：runIsolated 收到 undefined（worker 内 taskCtx.llm 为 undefined）', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (opts: { llms?: unknown }) => opts.llms ?? null);
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 }]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await fake.dispatch('heavy', {}, 1);
+    expect(runIsolated.mock.calls[0]![0]).toMatchObject({ llms: undefined });
     await queue.stop();
   });
 });

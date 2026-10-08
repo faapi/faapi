@@ -62,6 +62,8 @@ PluginContext { config.agent, rootDir }
    （llms 可选——未配置时 providers 为空 Map,进入「外部 provider 模式」,照常注册工厂）
 3. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
 4. registerAgentHandleFactory(() => new Agent({ providers, llms, rootDir, config, ...accessors }))
+5. ctx.registries.llm.register(createLightComplete({ llms, providers }))——轻量补全通道
+   （与 agent 循环共享同一 providers 单例；llms 未配置时照常注册,调用时报 AgentError）
 ```
 
 无默认 agent / 默认 provider——`agent.run/stream` 每次调用显式传 `options.agent` +

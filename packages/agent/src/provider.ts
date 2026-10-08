@@ -101,10 +101,22 @@ export interface LLMCompleteRequest {
   /** 最大生成 token 数 */
   maxTokens?: number;
   /**
+   * 本次请求的超时（毫秒，调用级覆盖）
+   *
+   * 缺省回落 `LlmConfig.timeoutMs`，两者皆未设置时无超时。
+   * 超时触发抛 `LLMTimeoutError`（计入重试，与 429/5xx/网络错误同策略）。
+   */
+  timeoutMs?: number;
+  /**
+   * 本次请求的重试上限（调用级覆盖）
+   *
+   * 缺省回落 `LlmConfig.maxRetries`（默认 2）。仅 429/5xx/网络错误/超时计入重试。
+   */
+  maxRetries?: number;
+  /**
    * 取消信号（透传到底层 HTTP 请求）
    *
-   * abort 时请求中断并抛 `AgentAbortError`；与 `LlmConfig.timeoutMs` 的
-   * 超时信号组合生效（任一触发即中断）。
+   * abort 时请求中断并抛 `AgentAbortError`；与超时信号组合生效（任一触发即中断）。
    */
   signal?: AbortSignal;
 }
@@ -155,6 +167,12 @@ export interface LLMResponse {
   stopReason: LLMStopReason;
   /** token 用量（部分 provider 不返回） */
   usage?: LLMUsage;
+  /**
+   * 实际发起的 HTTP 尝试次数（≥1，含失败尝试）
+   *
+   * 供失败钩子/日志观测重试消耗；provider 未提供时视为 1。
+   */
+  attempts?: number;
 }
 
 /**
@@ -211,11 +229,12 @@ export interface LLMProvider {
  * LLM Provider 错误
  *
  * 由具体 provider 抛出,包含 HTTP 状态码（网络错误为 `undefined`）和响应体摘要。
- * 业务方可通过 `instanceof LLMProviderError` 区分 LLM 错误与其他错误。
+ * 业务方可通过 `instanceof LLMProviderError` 区分 LLM 错误与其他错误；
+ * 超时错误为其子类 {@link LLMTimeoutError}（可编程区分超时与网络错误）。
  *
  * 重新从 [./providers/openai](./providers/openai.md) 导出,便于业务方从此模块统一捕获。
  */
-export { LLMProviderError } from './providers/openai';
+export { LLMProviderError, LLMTimeoutError } from './providers/openai';
 
 /**
  * 按 `config.provider` 路由到对应的 LLM 适配器
