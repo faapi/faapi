@@ -6,7 +6,7 @@ import { createAppRegistries, createTaskRegistriesView } from '../injection/regi
 import type { LlmChannelStore } from '../injection/registries';
 import type { LlmComplete } from '../injection/llmTypes';
 import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
-import type { IsolatedTaskContext, TaskContext, TaskModule } from './taskTypes';
+import type { IsolatedTaskContext, TaskContext, TaskEvent, TaskModule } from './taskTypes';
 
 interface EnqueueCall {
   name: string;
@@ -422,6 +422,248 @@ describe('createTaskQueue', () => {
     const second = queue.list('hello').find((j) => j.attempts === 2);
     expect(second).toMatchObject({ status: 'done' });
     expect(second?.progress).toBeUndefined();
+    await queue.stop();
+  });
+
+  // ── 任务事件（taskCtx.emit / subscribe / listEvents，契约见 taskEvents.md）──
+
+  it('进程内 taskCtx.emit 落事件缓冲：listEvents 按 seq 升序返回，字段齐全', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.({ kind: 'stage', at: 'start' });
+      taskCtx.emit?.({ kind: 'stage', at: 'end' });
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const { id } = await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    const events = queue.listEvents('hello');
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      task: 'hello',
+      jobId: id,
+      attempt: 1,
+      seq: 1,
+      data: { kind: 'stage', at: 'start' },
+    });
+    expect(events[1]).toMatchObject({ seq: 2, data: { kind: 'stage', at: 'end' } });
+    expect(typeof events[0]!.at).toBe('number');
+    await queue.stop();
+  });
+
+  it('subscribe 实时回调（emit 落账后同步触发）；退订后不再回调；订阅前历史不回放', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('tick');
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    // 订阅前的一次执行：历史可查，但不回放给后续订阅者
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    expect(queue.listEvents('hello')).toHaveLength(1);
+
+    const seen: TaskEvent[] = [];
+    const unsubscribe = queue.subscribe('hello', (e) => seen.push(e));
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ task: 'hello', seq: 1, data: 'tick' });
+
+    unsubscribe();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(seen).toHaveLength(1);
+    await queue.stop();
+  });
+
+  it('终态后 emit 被忽略：不落账、不触发订阅（与 progress 终态口径一致）', async () => {
+    let lateEmit: ((data: unknown) => void) | undefined;
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('in-run');
+      lateEmit = taskCtx.emit;
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(queue.listEvents('hello')).toHaveLength(1);
+    expect(() => lateEmit?.('after-done')).not.toThrow();
+    expect(queue.listEvents('hello')).toHaveLength(1);
+    await queue.stop();
+  });
+
+  it('重试不清事件：同 job attempt 2 的事件追加，seq 跨 attempt 连续，attempt 字段区分', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.(`attempt-${taskCtx.job.attempt}`);
+      if (taskCtx.job.attempt === 1) throw new Error('boom');
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await expect(fake.dispatch('hello', {}, 1)).rejects.toThrow('boom');
+    await fake.dispatch('hello', {}, 2);
+    const events = queue.listEvents('hello');
+    expect(events.map((e) => [e.attempt, e.seq, e.data])).toEqual([
+      [1, 1, 'attempt-1'],
+      [2, 2, 'attempt-2'],
+    ]);
+    await queue.stop();
+  });
+
+  it('subscribe 按 name 过滤；handler 抛错 console.error 留痕，不影响任务与其他订阅者', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('tick');
+      return 'ok';
+    });
+    const deps = makeDeps({ a: { run }, b: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const seenB: TaskEvent[] = [];
+    queue.subscribe('a', () => {
+      throw new Error('subscriber blew up');
+    });
+    queue.subscribe('a', () => seenB.push({} as TaskEvent)); // 同名第二订阅者不受影响
+    const seenOther: TaskEvent[] = [];
+    queue.subscribe('b', (e) => seenOther.push(e));
+
+    await queue.enqueue('a');
+    await fake.dispatch('a', {});
+    expect(seenB).toHaveLength(1); // handler 抛错后其余订阅者照常回调
+    expect(queue.listEvents('a')).toHaveLength(1); // 任务执行与落账不受影响
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('subscribe'), expect.any(Error));
+
+    await queue.enqueue('b');
+    await fake.dispatch('b', {});
+    expect(seenOther).toHaveLength(1); // name 过滤：b 的事件只给 b 的订阅者
+    errSpy.mockRestore();
+    await queue.stop();
+  });
+
+  it('listEvents(name, { jobId }) 收窄到单次执行', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('tick');
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const first = await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    const second = await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(queue.listEvents('hello')).toHaveLength(2);
+    const onlyFirst = queue.listEvents('hello', { jobId: first.id });
+    expect(onlyFirst).toHaveLength(1);
+    expect(onlyFirst[0]).toMatchObject({ jobId: first.id });
+    expect(queue.listEvents('hello', { jobId: second.id })).toHaveLength(1);
+    expect(queue.listEvents('other')).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('单执行事件超上限（1000）丢最旧，seq 不回退', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      for (let i = 1; i <= 1002; i++) taskCtx.emit?.(i);
+      return 'ok';
+    });
+    const deps = makeDeps({ chatty: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('chatty');
+    await fake.dispatch('chatty', {});
+    const events = queue.listEvents('chatty');
+    expect(events).toHaveLength(1000);
+    expect(events[0]).toMatchObject({ seq: 3, data: 3 }); // 最旧两条被淘汰
+    expect(events.at(-1)).toMatchObject({ seq: 1002, data: 1002 });
+    await queue.stop();
+  });
+
+  it('全局事件上限（10000）按 job 首次发射序整体淘汰最旧执行的事件缓冲', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      for (let i = 1; i <= 1000; i++) taskCtx.emit?.(i);
+      return 'ok';
+    });
+    const deps = makeDeps({ bulk: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const ids: string[] = [];
+    for (let i = 0; i < 11; i++) {
+      const { id } = await queue.enqueue('bulk');
+      ids.push(id);
+      await fake.dispatch('bulk', {});
+    }
+    // 11 个执行 × 1000 条 > 全局上限：最早的执行整体淘汰（seq 计数不回退）
+    expect(queue.listEvents('bulk', { jobId: ids[0] })).toHaveLength(0);
+    expect(queue.listEvents('bulk', { jobId: ids[1] })).toHaveLength(1000);
+    expect(queue.listEvents('bulk')).toHaveLength(10_000);
+    await queue.stop();
+  });
+
+  it('记录终态淘汰时事件一并清理（生命周期与任务记录绑定）', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('tick');
+      return 'ok';
+    });
+    const deps = makeDeps({ bulk: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const first = await queue.enqueue('bulk');
+    await fake.dispatch('bulk', {});
+    expect(queue.listEvents('bulk', { jobId: first.id })).toHaveLength(1);
+    for (let i = 0; i < 1001; i++) {
+      await queue.enqueue('bulk');
+      await fake.dispatch('bulk', {});
+    }
+    // 记录被终态上限淘汰 → 其事件缓冲随之清理
+    expect(queue.list('bulk')).toHaveLength(1000);
+    expect(queue.list('bulk').find((j) => j.id === first.id)).toBeUndefined();
+    expect(queue.listEvents('bulk', { jobId: first.id })).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('隔离路径：runIsolated 的 onEvent 回调落同一事件缓冲并扇出订阅者（两路径口径一致）', async () => {
+    const runIsolated = vi.fn(async (opts: { onEvent?: (value: unknown) => void }) => {
+      opts.onEvent?.('from-worker-1');
+      opts.onEvent?.('from-worker-2');
+      return 'from-worker';
+    });
+    const fake = makeFakeDriver();
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 3000 }]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({ run: vi.fn() }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    const { id } = await queue.enqueue('heavy');
+    const seen: TaskEvent[] = [];
+    queue.subscribe('heavy', (e) => seen.push(e));
+    await fake.dispatch('heavy', {});
+    const events = queue.listEvents('heavy', { jobId: id });
+    expect(events.map((e) => e.data)).toEqual(['from-worker-1', 'from-worker-2']);
+    expect(events.map((e) => e.seq)).toEqual([1, 2]);
+    expect(seen.map((e) => e.data)).toEqual(['from-worker-1', 'from-worker-2']);
     await queue.stop();
   });
 

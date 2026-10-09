@@ -68,6 +68,7 @@ export type {
   TaskMetadata,
   TaskJob,
   TaskJobStatus,
+  TaskEvent,
   IsolatedTaskContext,
   TaskContext,
   TaskModule,

@@ -7,6 +7,7 @@ import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { TaskDriverJob } from './driverTypes';
 import type {
   TaskContext,
+  TaskEvent,
   TaskGroupOnFailure,
   TaskGroupOutcome,
   TaskGroupSnapshot,
@@ -30,12 +31,14 @@ const GROUP_MEMBER_DEDUP = (groupId: string, index: number): string =>
   `faapi-group:${groupId}:${index}`;
 const GROUP_COMPLETION_DEDUP = (groupId: string): string => `faapi-group:${groupId}:complete`;
 
-/** 隔离任务 taskCtx.tasks 代理允许回传宿主的方法（TaskClient 全集） */
+/** 隔离任务 taskCtx.tasks 代理允许回传宿主的方法（纯数据方法全集；subscribe 为
+ * 回调签名不可跨线程，隔离路径由 worker 侧代理显式拒绝，宿主侧白名单同样不放行） */
 const TASK_CLIENT_METHODS: ReadonlySet<string> = new Set([
   'enqueue',
   'enqueueGroup',
   'list',
   'listQueued',
+  'listEvents',
   'cancel',
   'retry',
   'getGroup',
@@ -47,6 +50,14 @@ const TASK_CLIENT_METHODS: ReadonlySet<string> = new Set([
  * `listQueued` 承担——驱动实现 `TaskDriver.list` 时）
  */
 const MAX_FINISHED_RECORDS = 1_000;
+
+/**
+ * 任务事件两级保留上限（taskEvents.md）：单执行缓冲超限丢最旧；全局超限按 job
+ * 首次发射序整体淘汰最旧执行的事件缓冲（seq 计数器保留不回退）。事件生命周期
+ * 与任务记录绑定（记录淘汰时事件一并清理）。
+ */
+const MAX_EVENTS_PER_JOB = 1_000;
+const MAX_EVENTS_TOTAL = 10_000;
 
 /**
  * 任务队列语义层
@@ -72,6 +83,15 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   const moduleCache = new Map<string, TaskModule>();
   /** payload schema 缓存（name → schema 或 undefined 表示无 schema） */
   const schemaCache = new Map<string, unknown>();
+  /** 任务事件缓冲（jobId → seq 升序事件；生命周期与任务记录绑定） */
+  const events = new Map<string, TaskEvent[]>();
+  /** 事件 seq 计数（jobId → 已发射数；跨 attempt 连续，独立于缓冲存活——缓冲被
+   * 全局上限整体淘汰后 seq 不回退） */
+  const eventSeq = new Map<string, number>();
+  /** 事件订阅者（任务名 → handler 集合；进程内存，随队列实例销毁） */
+  const subscribers = new Map<string, Set<(event: TaskEvent) => void>>();
+  /** 全局事件条数（淘汰护栏计数器） */
+  let totalEvents = 0;
 
   let started = false;
   let stopped = false;
@@ -97,6 +117,63 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         records.delete(id);
         finishedCount--;
         toEvict--;
+        // 事件生命周期与任务记录绑定：记录淘汰时事件缓冲与 seq 计数一并清理
+        const buffer = events.get(id);
+        if (buffer) {
+          totalEvents -= buffer.length;
+          events.delete(id);
+        }
+        eventSeq.delete(id);
+      }
+    }
+  }
+
+  /**
+   * 事件落账（两条执行路径共用）：seq 递增 → 构造 TaskEvent 入缓冲（单执行上限
+   * 丢最旧）→ 全局上限按 job 首次发射序整体淘汰 → 同步扇出订阅者（按任务名匹配；
+   * handler 抛错 console.error 留痕——副作用回调不破坏任务执行，与 onFailed 同口径）。
+   * 仅 running 状态调用（调用方守卫，与 progress 同口径）。
+   */
+  function appendEvent(record: TaskJob, data: unknown): void {
+    const seq = (eventSeq.get(record.id) ?? 0) + 1;
+    eventSeq.set(record.id, seq);
+    const event: TaskEvent = {
+      task: record.name,
+      jobId: record.id,
+      attempt: record.attempts,
+      seq,
+      at: Date.now(),
+      data,
+    };
+    let buffer = events.get(record.id);
+    if (!buffer) {
+      buffer = [];
+      events.set(record.id, buffer);
+    }
+    buffer.push(event);
+    totalEvents++;
+    if (buffer.length > MAX_EVENTS_PER_JOB) {
+      buffer.shift();
+      totalEvents--;
+    }
+    if (totalEvents > MAX_EVENTS_TOTAL) {
+      // 按 job 首次发射序（Map 插入序）整体淘汰最旧执行的事件缓冲，seq 计数保留
+      for (const [jobId, jobBuffer] of events) {
+        if (totalEvents <= MAX_EVENTS_TOTAL) break;
+        totalEvents -= jobBuffer.length;
+        events.delete(jobId);
+      }
+    }
+    const handlers = subscribers.get(record.name);
+    if (!handlers) return;
+    for (const handler of handlers) {
+      try {
+        handler(event);
+      } catch (err) {
+        console.error(
+          `[faapi] task event subscriber threw for "${record.name}" (job ${record.id}):`,
+          err,
+        );
       }
     }
   }
@@ -307,6 +384,11 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           onProgress: (value) => {
             if (record.status === 'running') record.progress = value;
           },
+          // 隔离路径事件回传：与进程内 emit 同一落账通道（仅 running 采纳；宽限期内
+          // 的消息在 taskWorker 消息循环即被丢弃——取消判定即终局，与 progress 同口径）
+          onEvent: (value) => {
+            if (record.status === 'running') appendEvent(record, value);
+          },
           onLog: writeLogEntry,
           // 隔离路径的 taskCtx.tasks 为 postMessage RPC 代理——宿主侧按方法名
           // 分派到队列本体（与 ctx.tasks / app.tasks 同一实例），结果/错误按 seq 回传
@@ -343,6 +425,10 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           }),
           progress: (value) => {
             if (record.status === 'running') record.progress = value;
+          },
+          // 事件出口：与本进程事件缓冲 + 订阅扇出同一落账通道（仅 running 采纳）
+          emit: (data) => {
+            if (record.status === 'running') appendEvent(record, data);
           },
         };
         result = await mod.run(job.payload, taskCtx);
@@ -492,6 +578,34 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     async getGroup(groupId) {
       assertGroupSupport();
       return driver.groups!.get(groupId);
+    },
+
+    subscribe(name: string, handler: (event: TaskEvent) => void): () => void {
+      let handlers = subscribers.get(name);
+      if (!handlers) {
+        handlers = new Set();
+        subscribers.set(name, handlers);
+      }
+      handlers.add(handler);
+      return () => {
+        const set = subscribers.get(name);
+        if (!set) return;
+        set.delete(handler);
+        if (set.size === 0) subscribers.delete(name);
+      };
+    },
+
+    listEvents(name: string, opts?: { jobId?: string }): TaskEvent[] {
+      const result: TaskEvent[] = [];
+      for (const [jobId, buffer] of events) {
+        if (opts?.jobId !== undefined && jobId !== opts.jobId) continue;
+        for (const event of buffer) {
+          if (event.task !== name) continue;
+          result.push(event);
+        }
+      }
+      // 序：单执行内 seq 升序（缓冲序）；跨执行按 job 首次发射序（Map 迭代序）
+      return result;
     },
 
     list(name?: string): TaskJob[] {

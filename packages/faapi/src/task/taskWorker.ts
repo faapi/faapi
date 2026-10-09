@@ -108,6 +108,12 @@ export interface TaskWorkerOptions {
    */
   onProgress?: (value: unknown) => void;
   /**
+   * 事件回调：worker 内 `taskCtx.emit(data)` 的值经 `{ type: 'event' }` 消息回传
+   * 宿主（语义层落事件缓冲 + 订阅扇出，见 taskEvents.md）；不传则事件消息被忽略。
+   * 宽限期（取消判定后）到达的事件不采纳（超时判定即终局，与 progress 同口径）
+   */
+  onEvent?: (value: unknown) => void;
+  /**
    * 日志回调：worker 内 taskCtx.log 的条目经 `{ type: 'log' }` 消息回传宿主，
    * 由语义层接 writeLogEntry 走统一管道（自定义 sink 同样覆盖隔离任务）；
    * 不传则日志条目被忽略。宽限期（取消判定后）到达的条目不采纳（超时判定即终局）
@@ -302,6 +308,8 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
           finish(() => reject(reviveError(msg.error)));
         } else if (msg?.type === 'progress') {
           options.onProgress?.(msg.value);
+        } else if (msg?.type === 'event') {
+          options.onEvent?.(msg.value);
         } else if (msg?.type === 'log') {
           options.onLog?.(msg.entry!);
         }

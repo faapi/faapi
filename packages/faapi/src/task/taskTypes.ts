@@ -150,6 +150,26 @@ export interface TaskJob {
 }
 
 /**
+ * 任务事件记录（`taskCtx.emit(data)` 落账后的宿主侧统一形态）
+ *
+ * 完整契约（订阅/查询/保留边界/取消口径）见 taskEvents.md。
+ */
+export interface TaskEvent {
+  /** 任务名 */
+  task: string;
+  /** 任务执行 id（TaskJob.id） */
+  jobId: string;
+  /** 第几次执行（含重试，从 1 起） */
+  attempt: number;
+  /** 事件序号：单任务执行内从 1 起单调递增，跨 attempt 连续（重试不清零——过程历史） */
+  seq: number;
+  /** 宿主侧落账时间戳（毫秒） */
+  at: number;
+  /** 业务事件数据（emit 入参原样透传，形状是业务知识，框架不规定不校验） */
+  data: unknown;
+}
+
+/**
  * 隔离执行跨线程传递的注册表快照（纯数据，结构化克隆安全）
  *
  * 注册表对象含函数闭包不可 postMessage；元数据本身是纯数据——语义层从
@@ -202,6 +222,14 @@ export interface TaskContext {
    */
   progress?: (value: unknown) => void;
   /**
+   * 任务事件出口（可选）：执行中发射过程事件（agent 流式 chunk、阶段标记等），
+   * 落本进程事件缓冲并实时扇出订阅者（`TaskClient.subscribe` / `listEvents` 消费）。
+   * 仅 running 状态生效，终态后调用被忽略（与 progress 同口径）。
+   * 与 progress 的差异：progress 是单值覆盖槽（派发清空），事件是过程历史
+   * （seq 跨 attempt 连续、重试不清）。完整契约见 taskEvents.md。
+   */
+  emit?: (data: unknown) => void;
+  /**
    * 任务级日志器（可选字段；框架注入，直接构造 TaskContext 的测试/自定义执行器
    * 可不传）——scope `task:<name>`，字段自动携带 jobId/task/attempt，直写
    * `config.log` 全局管道（详见 logger/logger.md）。
@@ -228,6 +256,8 @@ export interface TaskContext {
  * - log 条目经 postMessage 回传宿主统一输出（fields 须可结构化克隆，
  *   不可克隆按执行错误处理）
  * - progress 值经 postMessage 回传（须可结构化克隆，不可克隆按执行错误处理）
+ * - emit 事件值经 postMessage 回传（须可结构化克隆，不可克隆按执行错误处理；
+ *   取消判定后到达的事件不采纳——与 progress 同口径）
  * - 模块级状态每次执行独立；取消为两段式真终止（abort 宽限 → terminate 硬杀）
  */
 export interface IsolatedTaskContext {
@@ -253,6 +283,13 @@ export interface IsolatedTaskContext {
    * （宽限期内）到达的上报忽略。
    */
   progress?: (value: unknown) => void;
+  /**
+   * 任务事件出口（可选）：值经 postMessage 回传宿主落事件缓冲并扇出订阅者
+   * （`TaskClient.subscribe` / `listEvents` 消费）——**值必须可结构化克隆**，
+   * 不可克隆按执行错误处理（与 progress 同口径）。仅 running 状态生效；取消
+   * 判定后（宽限期内）到达的事件不采纳。完整契约见 taskEvents.md。
+   */
+  emit?: (data: unknown) => void;
   /**
    * 任务级日志器（可选字段；框架注入）——scope `task:<name>`，条目经 postMessage
    * 回传宿主走 `config.log` 统一管道；**fields 须可结构化克隆**（不可克隆按
@@ -354,6 +391,22 @@ export interface TaskClient {
    * @throws 驱动未实现组记账（TaskDriver.groups 缺失）
    */
   getGroup(groupId: string): Promise<TaskGroupSnapshot | undefined>;
+  /**
+   * 任务事件实时订阅（本进程）：该任务名后续每次 `taskCtx.emit` 落账后同步回调
+   * （匹配所有执行/所有 attempt）。**不回放订阅前历史**（补历史用 listEvents）；
+   * 返回退订函数。handler 抛错 console.error 留痕——不影响任务执行与其他订阅者。
+   *
+   * **仅宿主侧可用**：隔离任务 `taskCtx.tasks.subscribe` 显式抛错（回调函数不可
+   * 结构化克隆跨线程）；进程内任务为活引用可直调，但订阅面向管理面/桥接。
+   * 完整契约见 taskEvents.md。
+   */
+  subscribe(name: string, handler: (event: TaskEvent) => void): () => void;
+  /**
+   * 任务事件查询（本进程有界保留）：按任务名过滤，`opts.jobId` 收窄到单次执行，
+   * seq 升序返回。事件生命周期与任务记录绑定（记录终态淘汰时事件一并清理），
+   * 驱动无关（本进程内存观测面，不持久化、不跨实例）。完整契约见 taskEvents.md。
+   */
+  listEvents(name: string, opts?: { jobId?: string }): TaskEvent[];
 }
 
 /**

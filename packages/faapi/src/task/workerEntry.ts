@@ -266,8 +266,19 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
       list: (name) => call('list', [name]) as unknown as ReturnType<TaskClient['list']>,
       listQueued: (name) =>
         call('listQueued', [name]) as unknown as ReturnType<TaskClient['listQueued']>,
+      listEvents: (name, opts) =>
+        call('listEvents', [name, opts]) as unknown as ReturnType<TaskClient['listEvents']>,
       cancel: (name, id) => call('cancel', [name, id]) as ReturnType<TaskClient['cancel']>,
       retry: (name, id) => call('retry', [name, id]) as ReturnType<TaskClient['retry']>,
+      // 订阅是回调签名（handler 与退订函数都不可结构化克隆）——隔离任务显式拒绝，
+      // 不发 RPC（宿主侧白名单同样不放行）；事件消费在宿主侧订阅或经 listEvents 查询
+      subscribe: () => {
+        throw new Error(
+          '[faapi] TaskClient.subscribe is not available in the isolated task context — ' +
+            'event subscription is host-side only (callbacks cannot cross the worker ' +
+            'boundary). Subscribe on the host queue, or query history via listEvents.',
+        );
+      },
     },
     handleMessage: (msg) => {
       if (msg?.type !== 'tasks-result') return false;
@@ -351,6 +362,21 @@ function bootstrap(): void {
           }
           const registries = buildRegistriesView(msg.registries);
           const progress = (value: unknown) => parentPort?.postMessage({ type: 'progress', value });
+          // 事件出口：值经 { type: 'event' } 消息回传宿主落事件缓冲（宿主侧仅 running
+          // 采纳 + 宽限期不采纳）。值不可克隆时任务显式失败（与 log fields 同口径，
+          // 不静默丢事件）——错误信息含修复指引
+          const emit = (data: unknown) => {
+            try {
+              parentPort?.postMessage({ type: 'event', value: data });
+            } catch (err) {
+              throw new Error(
+                `task event data is not cloneable across the worker boundary: ` +
+                  `${err instanceof Error ? err.message : String(err)}. ` +
+                  'Keep event data plain data (strings / numbers / plain objects).',
+                { cause: err },
+              );
+            }
+          };
           const taskLog = msg.log
             ? createTaskLogger(msg.log.level, msg.log.scope, msg.log.fields)
             : undefined;
@@ -363,6 +389,7 @@ function bootstrap(): void {
             registries,
             llm,
             progress,
+            emit,
             log: taskLog,
           });
           parentPort?.postMessage({ type: 'done', result });

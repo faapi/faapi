@@ -326,6 +326,97 @@ describe('runTaskInWorker', () => {
     expect(onProgress).not.toHaveBeenCalled();
   });
 
+  it('过程事件：taskCtx.emit 的值经 onEvent 按序回传宿主，不影响结果', async () => {
+    const modulePath = writeTaskModule(
+      'events',
+      `export async function run(_payload, taskCtx) {
+         taskCtx.emit({ kind: 'stage', at: 'start' });
+         taskCtx.emit({ kind: 'stage', at: 'end' });
+         return 'ok';
+       }`,
+    );
+    const eventValues: unknown[] = [];
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      onEvent: (value) => eventValues.push(value),
+      timeoutMs: 5000,
+    });
+    expect(result).toBe('ok');
+    expect(eventValues).toEqual([
+      { kind: 'stage', at: 'start' },
+      { kind: 'stage', at: 'end' },
+    ]);
+  });
+
+  it('不调用 emit：onEvent 不触发，行为与无事件任务一致', async () => {
+    const modulePath = writeTaskModule('no-events', `export function run() { return 'ok'; }`);
+    const onEvent = vi.fn();
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      onEvent,
+      timeoutMs: 5000,
+    });
+    expect(result).toBe('ok');
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('emit 值不可克隆：任务显式失败（错误信息含克隆指引），不静默丢事件', async () => {
+    const modulePath = writeTaskModule(
+      'uncloneable-event',
+      `export function run(_payload, taskCtx) {
+         taskCtx.emit({ fn: () => 1 });
+         return 'unreachable';
+       }`,
+    );
+    await expect(
+      runTaskInWorker({
+        taskModulePath: modulePath,
+        payload: {},
+        taskCtx: baseCtx,
+        onEvent: () => {},
+        timeoutMs: 5000,
+      }),
+    ).rejects.toThrow(/task event data is not cloneable/);
+  });
+
+  it('taskCtx.tasks 代理：listEvents 经 RPC 回宿主；subscribe 显式拒绝（回调不可跨线程）', async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const modulePath = writeTaskModule(
+      'tasks-proxy-events',
+      `export async function run(payload, taskCtx) {
+         const events = await taskCtx.tasks.listEvents('heavy', { jobId: 'j-1' });
+         let subscribeError = '';
+         try {
+           taskCtx.tasks.subscribe('heavy', () => {});
+         } catch (err) {
+           subscribeError = err.message;
+         }
+         return { events, subscribeError };
+       }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      onTasksCall: async (method, args) => {
+        calls.push({ method, args });
+        if (method === 'listEvents')
+          return [{ task: 'heavy', jobId: 'j-1', attempt: 1, seq: 1, at: 1, data: 'x' }];
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    expect(result).toEqual({
+      events: [{ task: 'heavy', jobId: 'j-1', attempt: 1, seq: 1, at: 1, data: 'x' }],
+      subscribeError: expect.stringContaining('subscribe is not available'),
+    });
+    expect(calls.map((c) => c.method)).toEqual(['listEvents']);
+  });
+
   it('externalSignal 派发时已 aborted：快速失败，不创建 worker（任务不执行）', async () => {
     const markerPath = path.join(dir, 'ran.txt');
     const modulePath = writeTaskModule(

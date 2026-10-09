@@ -59,6 +59,8 @@ describe('configTypes', () => {
         retry: async () => {},
         enqueueGroup: async () => ({ groupId: 'test', jobs: [] }),
         getGroup: async () => undefined,
+        subscribe: () => () => {},
+        listEvents: () => [],
       },
     };
     expect(ctx.rootDir).toBe('/app');

@@ -29,6 +29,12 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 `progress` 不做持久化（驱动侧无此概念）、不参与重试恢复——每次派发清空上一轮的 progress，本轮执行重新写入（终态后调用被忽略）；值必须可结构化克隆（隔离路径经 postMessage，不可克隆按执行错误处理）。不调用 `progress` 的任务零开销，`TaskJob.progress` 不出现。
 
+## TaskContext.emit / TaskClient.subscribe / listEvents（任务事件）
+
+`TaskContext.emit? / IsolatedTaskContext.emit?: (data: unknown) => void` 为可选能力：任务执行中发射过程事件（agent 流式 chunk、阶段标记等），宿主侧有界保留并支持实时订阅（`TaskClient.subscribe`）与查询（`TaskClient.listEvents`）。仅 `running` 状态生效（终态后调用被忽略，与 progress 同口径）；隔离路径值经 `{ type: 'event' }` 消息回传宿主——值须可结构化克隆（不可克隆按执行错误处理）。
+
+事件类型 `TaskEvent`（task/jobId/attempt/seq/at/data）、订阅与查询契约、保留边界（本进程有界内存）、取消/重试口径的**单点契约见 [taskEvents.md](./taskEvents.md)**。
+
 ## TaskContext / IsolatedTaskContext（两条执行路径显式分开）
 
 进程内与隔离执行的行为差异是实质性的，两个上下文类型**显式分开**，由任务 meta 是否声明 `timeoutMs` 决定路径；业务按路径标注 ctx 类型，边界编译期可见：
@@ -40,6 +46,7 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 | `llm` | `registries.llm` 活引用（共享 providers 单例） | worker 内按 `agent.llms` 快照重建；llms 配置但不可解析 → 任务显式失败 |
 | `log` | 直写 `config.log` 管道 | postMessage 回传宿主输出——**fields 须可结构化克隆**（不可克隆按执行错误处理） |
 | `progress` | 直写任务记录 | postMessage 回传——**值须可结构化克隆**（不可克隆按执行错误处理） |
+| `emit` | 直写本进程事件缓冲 + 订阅扇出 | postMessage 回传——**值须可结构化克隆**（不可克隆按执行错误处理），宽限期内不采纳 |
 | `tasks` | 活引用（与 `ctx.tasks` / `app.tasks` 同一 app 实例队列） | 代理对象——全方法经 postMessage RPC 回传宿主执行，**参数与返回值须可结构化克隆**（不可克隆按执行错误处理） |
 | 模块级状态 | 跨执行共享 | 每次执行独立 |
 | 取消 | 协作式（监听 signal 自行退出） | 两段式真终止（abort 宽限 → terminate 硬杀） |
