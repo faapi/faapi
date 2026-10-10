@@ -209,6 +209,39 @@ it('WS /api/chat 收到 onOpen 消息', async () => {
 
 详见 [wsTestClient.md](./wsTestClient.md)。
 
+### createAgentTestHarness（agent 流程测试）
+
+agent 流程测试（真 reactLoop + 真工具 + 假 LLM）的官方设施——测试进程内扫描 agent/tool 源码、水合出与生产同接口的注册表视图、出可拼装 `AgentDeps` 的 loader 桥接，对位 HTTP 层的 `createTestServer`：
+
+```ts
+import { createAgentTestHarness } from '@faapi/faapi/testing';
+import { Agent, createScriptLLM } from '@faapi/agent';
+
+const h = await createAgentTestHarness({ rootDir: process.cwd() });
+afterAll(() => h.close());
+
+const llm = createScriptLLM([
+  { toolCalls: [{ name: 'weather_getWeather', arguments: { city: '北京' } }] },
+  { content: '北京晴' },
+]);
+const agent = new Agent({
+  providers: new Map(), llms: {}, rootDir: process.cwd(),
+  getAgent: h.registries.agent.getAgent,
+  getAgentEntry: h.registries.agent.getAgentEntry,
+  getTool: h.registries.tool.get,
+  resolveAgentTools: h.registries.agent.resolveAgentTools,
+  resolveSubAgents: h.registries.agent.resolveSubAgents,
+  loadToolModule: h.loadToolModule,
+});
+const result = await agent.run('北京天气', { agent: 'researcher', provider: llm });
+```
+
+- 不依赖 build 产物（现场编译 tool 源码闭包到临时目录，`close()` 清理）、不建 app（单进程单 app 零占用）
+- `schemaMode: 'generated'` 现场生成 zod.js 并按生产口径校验（`resolveToolSchema` / `resolveAgentInputSchema` 由 harness 提供）；默认 `free-form` 放行为自由 schema
+- `createScriptLLM` 脚本假 LLM 由 `@faapi/agent` 提供（按序回放回合、快照请求、用尽即抛）
+
+详见 [agentTestHarness.md](./agentTestHarness.md) 与 `@faapi/agent` 的 `scriptLlm.md`。
+
 ### 何时用 createTestServer / 何时用 createProdApp
 
 | 场景 | 推荐方式 |
@@ -225,6 +258,7 @@ it('WS /api/chat 收到 onOpen 消息', async () => {
 - [runtime/invokeHandler.ts](./runtime/invokeHandler.ts) - 调用 handler + 中间件调度（内部调用 toResponse 转换返回值）
 - [testServer.ts](./testServer.ts) - `createTestServer` E2E 测试服务器
 - [wsTestClient.ts](./wsTestClient.ts) - `connectWs` + `MessageQueue` WS 测试客户端
+- [agentTestHarness.ts](./agentTestHarness.ts) - `createAgentTestHarness` agent 流程测试设施
 - [injection/injectParams.ts](./injection/injectParams.ts) - 参数注入实现
 - [middleware/middlewareTypes.ts](./middleware/middlewareTypes.ts) - 中间件类型
 - [middleware/injectorTypes.ts](./middleware/injectorTypes.ts) - 注入器类型

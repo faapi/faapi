@@ -69,7 +69,7 @@ AST 提取层的单 agent 校验（systemPrompt 必填、字面量提取失败�
 
 | 导出 | 说明 |
 | --- | --- |
-| `generateAgentArtifacts(agents, rootDir, dist)` | 主入口：AST 增强 + 序列化 + 写入 `faapi-agents.js`，返回 `AgentMetadata[]` |
+| `generateAgentArtifacts(agents, rootDir, dist, options?)` | 主入口：AST 增强 + 序列化 + 写入 `faapi-agents.js`，返回 `AgentMetadata[]`；`options.skipSchema` 跳过 zod.js 生成（仅测试设施 free-form 模式——不提供 schema 解析器时产物不会被读取，dev/build 管线不传） |
 | `serializeAgents(agents, dist?)` | 序列化 `AgentMetadata[]` → `SerializedAgentRecord[]`（filePath 转产物形式） |
 | `hydrateAgents(manifest)` | 水合 `SerializedAgentRecord[]` → `AgentMetadata[]`（undefined 字段兜底） |
 | `writeAgentsModule(manifest, outputPath)` | 写入 `faapi-agents.js` ESM 模块 |
@@ -84,7 +84,7 @@ AST 提取层的单 agent 校验（systemPrompt 必填、字面量提取失败�
 | 元数据字段 | name/functionName/description/inputTypeName | name/description/systemPrompt/tools/agents/model/maxTurns/inputDescription/inputTypeName |
 | 清单产物 | `faapi-tools.js`（导出 `tools`） | `faapi-agents.js`（导出 `agents`） |
 | zod.js 生成 | 每个 handler.ts 一个 `zod.js`（coerce=false） | 仅声明 `Input` 的 agent 生成（同管线复用，coerce=false） |
-| zod.js 时机 | dev 按需（`skipSchema`）/ prod 全量 | dev/prod 一致全量（agent 数量小，声明了但缺失即产物异常） |
+| zod.js 时机 | dev 按需（`skipSchema`）/ prod 全量 | dev/prod 一致全量（agent 数量小，声明了但缺失即产物异常）；`options.skipSchema` 仅供不入产物的测试设施 free-form 模式使用 |
 | 运行时加载 | `loadToolModule`（按 functionName 提取函数） | 无（声明式 agent，config 字段在清单中） |
 
 ## 相关模块

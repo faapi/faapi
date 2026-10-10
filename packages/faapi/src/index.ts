@@ -130,6 +130,9 @@ export {
 // 动态加载器（dev 按需编译模式需 rootDir,prod 模式直接 import 产物）
 export { loadToolModule } from './loader/loadToolModule';
 export { loadToolSchema, getToolSchemaPath } from './loader/loadToolSchema';
+// tool schema 解析工厂（zod.js → JSON Schema + safeParse 校验）——@faapi/agent 插件
+// setup / 任务内组装 Agent / 测试设施 createAgentTestHarness 共用的装配实现
+export { createToolSchemaResolver, type ToolSchemaResolution } from './loader/toolSchemaResolver';
 
 // agent handle 工厂注册（Phase 3.5）——@faapi/agent 插件 setup 时注册,
 // injectParams 在 agent 参数注入时调工厂获取 AgentHandle

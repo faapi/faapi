@@ -33,9 +33,15 @@ function getDist(): string {
 }
 
 /**
- * 计算 tool 的 zod.js 绝对路径（纯路径计算，无 fs 访问）
+ * 解析产物目录（显式 dist 优先，缺省走全局解析）
  *
- * 与 [loadToolSchema](./loadToolSchema.ts) 内部使用的路径逻辑同源（共享 `getDist()`），
+ * 显式传入 `dist`（如测试设施的临时产物目录）时不读 dev on demand / `FAAPI_DIST`
+ * 全局状态——与 dev/prod 生产路径的默认行为互不干扰。
+ */
+function resolveDist(explicitDist?: string): string {
+  return explicitDist ?? getDist();
+}
+
 /**
  * zod.js 定位的最小来源结构——`ToolMetadata` 与 `AgentMetadata`（派发入参 schema
  * 声明场景）均满足，加载器无需感知来源差异
@@ -50,15 +56,16 @@ export interface SchemaSourceRef {
 /**
  * 计算 zod.js 的绝对路径（纯路径计算，无 fs 访问）
  *
- * 与 [loadToolSchema](./loadToolSchema.ts) 内部使用的路径逻辑同源（共享 `getDist()`），
+ * 与 [loadToolSchema](./loadToolSchema.ts) 内部使用的路径逻辑同源，
  * 供 `@faapi/agent` 的跨请求 schema 缓存用作缓存键 + mtime 校验目标。
  *
  * @param ref schema 来源元数据（tool / agent 均可，含 `filePath`）
  * @param rootDir 项目根目录（`ref.filePath` 是相对路径时拼接）
+ * @param dist 产物目录（可选；缺省走 dev on demand / `FAAPI_DIST` 全局解析）
  */
-export function getToolSchemaPath(ref: SchemaSourceRef, rootDir?: string): string {
-  const dist = getDist();
-  return getRuntimeToolSchemaPath(ref.filePath, dist, rootDir ?? process.cwd());
+export function getToolSchemaPath(ref: SchemaSourceRef, rootDir?: string, dist?: string): string {
+  const resolvedDist = resolveDist(dist);
+  return getRuntimeToolSchemaPath(ref.filePath, resolvedDist, rootDir ?? process.cwd());
 }
 
 /**
@@ -77,16 +84,19 @@ export function getToolSchemaPath(ref: SchemaSourceRef, rootDir?: string): strin
  *
  * @param ref schema 来源元数据（tool / agent 均可，含 `filePath` + `inputTypeName`）
  * @param rootDir 项目根目录（用于计算 zod.js 绝对路径，`ref.filePath` 是相对路径时拼接）
+ * @param dist 产物目录（可选；缺省走 dev on demand / `FAAPI_DIST` 全局解析——
+ *        测试设施传显式 dist 指向临时产物目录）
  */
 export async function loadToolSchema(
   ref: SchemaSourceRef,
   rootDir?: string,
+  dist?: string,
 ): Promise<ToolSchemaModule | undefined> {
   // 无 inputTypeName → 无 zod.js
   if (!ref.inputTypeName) return undefined;
 
   const schemaName = `${ref.inputTypeName}Schema`;
-  const zodPath = getToolSchemaPath(ref, rootDir);
+  const zodPath = getToolSchemaPath(ref, rootDir, dist);
 
   // zod.js 文件不存在 → 返回 undefined（schema 可选）
   if (!existsSync(zodPath)) return undefined;

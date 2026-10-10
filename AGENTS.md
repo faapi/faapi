@@ -781,6 +781,8 @@ it('GET 返回分页数据', async () => {
 
 `invokeHandler(handler, ctx, body?, middlewares?, injectors?)` 支持传入中间件链和注入器，可测试鉴权拦截、依赖注入等场景。不走 schema 校验（zod.js 由 build 生成）；如需测试完整请求链路（含 schema、全局中间件），用 `createProdApp` + `app.inject()`（需先 `faapi build`）。
 
+agent 流程测试（真 reactLoop + 真工具 + 假 LLM）走 `@faapi/faapi/testing` 的 `createAgentTestHarness`——测试进程内扫描 agent/tool 源码，水合与生产同接口的注册表视图 + loader 桥接（对位 `createTestServer`：不依赖 build 产物、不建 app、单进程单 app 零占用）；假 LLM 用 `@faapi/agent` 的 `createScriptLLM`（按序回放回合、快照请求、用尽即抛）。`schemaMode: 'generated'` 时现场生成 zod.js 并按生产口径校验入参。详见 `src/testing.md` 与 `src/agentTestHarness.md`。
+
 详见 `src/testing.md`。
 
 ### 5.11 队列式任务子系统（src/task/）

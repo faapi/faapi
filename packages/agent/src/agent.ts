@@ -7,6 +7,7 @@ import type {
   LlmConfig,
   ToolMetadata,
   ToolModule,
+  ToolSchemaResolution,
 } from '@faapi/faapi';
 import type { AgentRunOptions } from './agentHandle';
 import { createProvider } from './provider';
@@ -21,6 +22,10 @@ import {
   type SubAgentToolResult,
 } from './reactLoop';
 import type { AgentTraceEvent } from './trace';
+
+// schema 解析结果契约主包持有（loader 域，见 faapi 的 toolSchemaResolver.md），
+// 此处 re-export 保持 `import type { ToolSchemaResolution } from '@faapi/agent'` 导入路径不变
+export type { ToolSchemaResolution } from '@faapi/faapi';
 
 /**
  * Agent 类——按 `agent.name` 查找元数据、组装 tool 列表、提供 `run` / `stream` / `asTool`
@@ -335,20 +340,9 @@ interface AgentCallContext {
 }
 
 /**
- * tool schema 解析结果
- *
- * 由 Phase 3.5 的注入器实现，提供 JSON Schema（给 LLM）和校验函数（给执行前校验）。
- * - `jsonSchema` —— 发给 LLM 作为 tool 参数描述
- * - `validate` —— 执行前校验 LLM 返回的参数，失败时返回 `{ error }` 回传 LLM 重试
+ * tool schema 解析结果（`ToolSchemaResolution`）已下沉主包 loader 域
+ * （`@faapi/faapi` 的 toolSchemaResolver），上方 re-export 保持导入路径兼容。
  */
-export interface ToolSchemaResolution {
-  /** tool 参数的 JSON Schema（发给 LLM） */
-  jsonSchema: Record<string, unknown>;
-  /** 执行前校验函数（成功返回 coerce 后的 value，失败返回 error） */
-  validate: (
-    input: Record<string, unknown>,
-  ) => { ok: true; value: Record<string, unknown> } | { ok: false; error: string };
-}
 
 /**
  * Agent 运行时依赖（依赖注入）

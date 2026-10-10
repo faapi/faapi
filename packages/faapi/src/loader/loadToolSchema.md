@@ -21,8 +21,10 @@ faapi 核心不依赖 zod（zod 是 peerDep），因此 `loadToolSchema` 返回 
 
 | 函数 | 说明 |
 | --- | --- |
-| `loadToolSchema(ref, rootDir?)` | 动态加载 zod.js，返回 `{ schema, schemaName } \| undefined` |
-| `getToolSchemaPath(ref, rootDir?)` | 计算 zod.js 绝对路径（纯路径计算，无 fs 访问；与 `loadToolSchema` 内部逻辑同源，共享 `getDist()`） |
+| `loadToolSchema(ref, rootDir?, dist?)` | 动态加载 zod.js，返回 `{ schema, schemaName } \| undefined` |
+| `getToolSchemaPath(ref, rootDir?, dist?)` | 计算 zod.js 绝对路径（纯路径计算，无 fs 访问；与 `loadToolSchema` 内部逻辑同源） |
+
+`dist` 参数可选（缺省走 dev on demand / `FAAPI_DIST` 全局解析）：显式传入时不读全局状态——测试设施 [agentTestHarness](../agentTestHarness.md) 的 `generated` 模式传临时产物目录，与同进程的生产路径互不干扰。
 
 参数 `ref` 取最小结构 `{ filePath: string; inputTypeName?: string }`——zod.js 定位的全部所需。tool 元数据（`ToolMetadata`）与 agent 完整元数据（`AgentMetadata`）均满足（结构化参数，两者无需相互 cast）。
 

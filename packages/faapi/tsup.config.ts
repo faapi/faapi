@@ -16,7 +16,8 @@ export default defineConfig([
     splitting: false,
     sourcemap: true,
     platform: 'node',
-    external: ['node:*', 'typescript'],
+    // zod 是 peerDependency（toolSchemaResolver 运行时 import,与业务方 zod.js 产物共享同一实例,inline 会分裂成双实例）
+    external: ['node:*', 'typescript', 'zod'],
   },
   // CLI 入口：打包 CLI 专用依赖，输出到 dist/cli/
   {

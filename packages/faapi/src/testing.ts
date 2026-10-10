@@ -29,3 +29,10 @@ export {
   type WsTestClient,
   type WsTestClientOptions,
 } from './wsTestClient';
+
+// agent 流程测试设施（真注册表 + 真 loader + 假 LLM 配方，对位 createTestServer）
+export {
+  createAgentTestHarness,
+  type AgentTestHarness,
+  type AgentTestHarnessOptions,
+} from './agentTestHarness';

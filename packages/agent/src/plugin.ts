@@ -41,12 +41,12 @@
 
 import {
   loadToolModule,
+  createToolSchemaResolver,
   type FaapiPlugin,
   type PluginContext,
   type AgentConfig,
 } from '@faapi/faapi';
 import { Agent, type AgentRuntimeConfig } from './agent';
-import { createToolSchemaResolver } from './toolSchemaResolver';
 import { createLightComplete } from './lightComplete';
 import type { LLMProvider } from './provider';
 import { createProvider } from './provider';

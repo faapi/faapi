@@ -13,6 +13,15 @@ vi.mock('@faapi/faapi', async (importOriginal) => {
   return {
     ...actual,
     loadToolModule: vi.fn(),
+  };
+});
+
+// createToolSchemaResolver 已下沉主包 loader 域，其内部经深路径 import
+// loadToolSchema——mock 需指向该模块本体（getToolSchemaPath 是纯路径计算，保持真实）
+vi.mock('@faapi/faapi/src/loader/loadToolSchema', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@faapi/faapi/src/loader/loadToolSchema')>();
+  return {
+    ...actual,
     loadToolSchema: vi.fn(),
   };
 });
@@ -46,9 +55,8 @@ import { createProvider, type LLMProvider } from './provider';
 import { Agent, AgentError } from './agent';
 import type { AgentHandle } from './agentHandle';
 import { z } from 'zod';
+import { loadToolSchema, getToolSchemaPath } from '@faapi/faapi/src/loader/loadToolSchema';
 import {
-  loadToolSchema,
-  getToolSchemaPath,
   type AgentConfig,
   type PluginContext,
   type AgentCore,
@@ -371,7 +379,7 @@ describe('@faapi/agent plugin', () => {
       const agent = factory!(makeReqCtx()) as AgentHandle;
       await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
 
-      expect(loadToolSchema).toHaveBeenCalledWith(testTool, '/project');
+      expect(loadToolSchema).toHaveBeenCalledWith(testTool, '/project', undefined);
     });
 
     it('loadToolSchema 返回 undefined 时不报错（用自由 schema）', async () => {
@@ -382,7 +390,7 @@ describe('@faapi/agent plugin', () => {
       const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.content).toBe('ok');
-      expect(loadToolSchema).toHaveBeenCalledWith(testTool, '/project');
+      expect(loadToolSchema).toHaveBeenCalledWith(testTool, '/project', undefined);
     });
   });
 

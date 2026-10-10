@@ -174,26 +174,32 @@ function validateAgentList(metadata: AgentMetadata[]): void {
  * **zod.js 生成与 tool/task 复用同一共享管线**（[generateZodArtifacts](./generateZodArtifacts.md)），
  * 类型提取**复用步骤 1 已创建的 Program**（零额外解析成本）。
  *
- * **dev/prod 同路径全量生成**，不引入 tool 式 `skipSchema` 按需模式：agent 数量级小
+ * **dev/prod 同路径全量生成**，不引入 tool 式按需生成：agent 数量级小
  * （十位数）且 Program 已复用，全量生成的边际成本可忽略；而「声明了 `Input` 但 zod.js
  * 缺失」若走按需生成，运行时无法区分「尚未生成」与「产物损坏」，schema 会静默退回
  * 单字段模式——全量生成让该场景只剩产物异常一种可能，`@faapi/agent` 侧对它显式抛错
  * （见 `@faapi/agent` 的 agent.md「派发入参 schema 声明」）。
  *
+ * `options.skipSchema`（可选，默认 false）：跳过 zod.js 生成，仅供不入产物的测试设施
+ * （`createAgentTestHarness` 的 `free-form` 模式）使用——该模式不提供 schema 解析器，
+ * 生成的 zod.js 不会被任何路径读取，生成纯属浪费。dev/build 管线不传此选项（语义：
+ * 声明了 `Input` 即必须有产物，「跳过生成」在产物流水线上是静默降级）。
+ *
  * 与 [generateToolArtifacts](./generateToolArtifacts.md) 的差异：
- * - zod.js 仅对声明 `Input` 的 agent 生成（未声明保持单字段 `input` 交接单模式），
- *   dev/prod 一致全量（无 `skipSchema` 选项）
+ * - zod.js 仅对声明 `Input` 的 agent 生成（未声明保持单字段 `input` 交接单模式）
  * - 文件名常量为 `faapi-agents.js`，导出 `agents` 而非 `tools`
  *
  * @param agents scanAgents 产出的 AgentManifest[]（仅路径推导字段）
  * @param rootDir 项目根目录
  * @param dist 产物目录（`.faapi` 或 `dist`）
+ * @param options.skipSchema 跳过 zod.js 生成（仅测试设施 free-form 模式使用）
  * @returns AST 增强后的 AgentMetadata[]（供调用方日志/调试）
  */
 export async function generateAgentArtifacts(
   agents: AgentManifestList,
   rootDir: string,
   dist: string,
+  options?: { skipSchema?: boolean },
 ): Promise<AgentMetadata[]> {
   // 1. AST 增强：对每个 manifest 调 extractAgentMetadata（批量共享 Program）
   const metadata: AgentMetadata[] = [];
@@ -224,7 +230,10 @@ export async function generateAgentArtifacts(
   await writeAgentsModule(serialized, agentsPath);
 
   // 4. 声明 Input 的 agent 生成 zod.js（复用步骤 1 的 Program，零额外解析成本）
-  await generateAgentZodArtifacts(metadata, programByFile, rootDir, dist);
+  //    skipSchema：仅测试设施 free-form 模式（不提供 schema 解析器，产物不会被读取）
+  if (!options?.skipSchema) {
+    await generateAgentZodArtifacts(metadata, programByFile, rootDir, dist);
+  }
 
   return metadata;
 }

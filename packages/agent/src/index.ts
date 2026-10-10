@@ -42,6 +42,8 @@ export { createOpenAIProvider } from './providers/openai';
 
 // 轻量 LLM 补全通道（agent 循环之外的一次性补全出口，详见 lightComplete.md）
 export { createLightComplete } from './lightComplete';
+// 脚本假 LLM（agent 流程测试的确定性 provider，详见 scriptLlm.md）
+export { createScriptLLM, type ScriptTurn, type ScriptedLLM } from './scriptLlm';
 // 规范类型主包持有（TaskContext 等主包类型引用），此处 re-export 供业务方统一标注
 export type { LlmComplete, LlmCompleteOptions } from '@faapi/faapi';
 
@@ -83,8 +85,10 @@ export {
 } from './agent';
 
 // schema 解析工厂——任务内组装 AgentDeps.resolveToolSchema / resolveAgentInputSchema 的官方入口
-// （同一实例服务 tool input 与 sub-agent 派发入参,参数为最小结构 SchemaSourceRef）
-export { createToolSchemaResolver, type SchemaSourceRef } from './toolSchemaResolver';
+// （同一实例服务 tool input 与 sub-agent 派发入参,参数为最小结构 SchemaSourceRef）。
+// 实现下沉主包 loader 域（zod peer 同源 + 测试设施 createAgentTestHarness 共用）,
+// 此处 re-export 保持 `from '@faapi/agent'` 导入路径不变
+export { createToolSchemaResolver, type SchemaSourceRef } from '@faapi/faapi';
 
 // AgentHandle 接口 + AgentRunOptions（Phase 3.5）——handler 的 agent 参数类型,Agent 满足此接口
 export { type AgentHandle, type AgentRunOptions } from './agentHandle';
