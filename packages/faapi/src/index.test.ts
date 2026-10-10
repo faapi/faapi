@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { createLogger, configureLogging, flushLogging } from './index';
+import {
+  createLogger,
+  configureLogging,
+  flushLogging,
+  createRunHub,
+  RunConflictError,
+} from './index';
 
 /**
  * 主入口公开导出防回归（src/index.ts）
@@ -19,5 +25,21 @@ describe('主入口公开导出（logger）', () => {
   it('flushLogging 无文件管道时 resolve（no-op，不在宿主目录产生副作用）', async () => {
     configureLogging(undefined);
     await expect(flushLogging()).resolves.toBeUndefined();
+  });
+});
+
+describe('主入口公开导出（runHub）', () => {
+  it('createRunHub 可调用、RunConflictError 为类导出', () => {
+    expect(typeof createRunHub).toBe('function');
+    expect(typeof RunConflictError).toBe('function');
+  });
+
+  it('createRunHub 产物具备完整 hub API 形状', () => {
+    const hub = createRunHub<string>();
+    expect(typeof hub.start).toBe('function');
+    expect(typeof hub.subscribe).toBe('function');
+    expect(typeof hub.publishExternal).toBe('function');
+    expect(typeof hub.abort).toBe('function');
+    expect(typeof hub.isActive).toBe('function');
   });
 });

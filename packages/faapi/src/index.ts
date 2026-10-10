@@ -178,3 +178,16 @@ export { createProdApp, type ProdApp } from './cli/createProdApp';
 export { createApp, type App, type CreateAppOptions } from './cli/createApp';
 export { getApp } from './cli/createAppCore';
 export type { InjectOptions, InjectResponse } from './cli/createAppCore';
+
+// runHub——交互式 run 传输中枢（run 与 HTTP 解耦 + 订阅式消费，详见 src/runhub/runHub.md）
+export { createRunHub, RunConflictError } from './runhub/runHub';
+export type {
+  RunHub,
+  RunHubOptions,
+  RunHubEvent,
+  RunHubPersistence,
+  RunHandle,
+  RunReplayPolicy,
+  RunSubscribeOptions,
+  RunSubscription,
+} from './runhub/runHub';

@@ -74,8 +74,8 @@ dev 模式：`faapi dev` 编译 + 调 `createDevApp()` + watcher（调 `app.relo
 ### 5.2 包结构
 
 ```
-@faapi/faapi           核心包：API 路由、中间件、注入、校验、AST 能力公开导出
-@faapi/agent           agent 运行时：LLM 驱动的声明式 ReAct 循环（provider 抽象 / agent-as-tool / sub-agent 协作 / tracing / deps 装配工厂 createAgentDeps / 测试假体 createScriptLLM），peer 依赖主包
+@faapi/faapi           核心包：API 路由、中间件、注入、校验、AST 能力公开导出；runHub 传输中枢（createRunHub——交互式 run 与 HTTP 解耦 + 订阅式消费，详见 src/runhub/runHub.md）
+@faapi/agent           agent 运行时：LLM 驱动的声明式 ReAct 循环（provider 抽象 / agent-as-tool / sub-agent 协作 / tracing / deps 装配工厂 createAgentDeps / 测试假体 createScriptLLM / 历史压缩策略位 historyCompactor + 滚动摘要现货组件 createRollingSummaryCompactor），peer 依赖主包
 @faapi/mcp             MCP Server SDK：纯手写 MCP 协议（Streamable HTTP transport），不依赖 @modelcontextprotocol/sdk
 @faapi/schema          扩展包：路由 schema 生成 + 通过 MCP 协议暴露给 AI 助手（基于 @faapi/mcp）
 @faapi/next            Next.js 集成：faapi 与 Next.js 单进程单端口（/api/* 走 faapi，其余路径走 Next）

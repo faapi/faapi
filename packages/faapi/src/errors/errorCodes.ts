@@ -4,6 +4,7 @@ export const METHOD_NOT_ALLOWED = 'METHOD_NOT_ALLOWED';
 export const INTERNAL_ERROR = 'INTERNAL_ERROR';
 export const MODULE_LOAD_ERROR = 'MODULE_LOAD_ERROR';
 export const PAYLOAD_TOO_LARGE = 'PAYLOAD_TOO_LARGE';
+export const RUN_CONFLICT = 'RUN_CONFLICT';
 
 export type ErrorCode =
   | typeof VALIDATION_ERROR
@@ -11,4 +12,5 @@ export type ErrorCode =
   | typeof METHOD_NOT_ALLOWED
   | typeof INTERNAL_ERROR
   | typeof MODULE_LOAD_ERROR
-  | typeof PAYLOAD_TOO_LARGE;
+  | typeof PAYLOAD_TOO_LARGE
+  | typeof RUN_CONFLICT;

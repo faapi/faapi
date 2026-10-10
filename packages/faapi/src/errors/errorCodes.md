@@ -16,6 +16,7 @@
 | `PAYLOAD_TOO_LARGE` | `'PAYLOAD_TOO_LARGE'` | `PayloadTooLargeError` | 413 |
 | `INTERNAL_ERROR` | `'INTERNAL_ERROR'` | `InternalError` / 未知错误兜底 | 500 |
 | `MODULE_LOAD_ERROR` | `'MODULE_LOAD_ERROR'` | `ModuleLoadError` | 500 |
+| `RUN_CONFLICT` | `'RUN_CONFLICT'` | `RunConflictError`（`src/runhub/runHub.ts`） | 409 |
 
 `ErrorCode` 类型为上述常量值的联合类型，确保类型安全。
 
