@@ -103,6 +103,9 @@ export {
   type ToolSchemaResolution,
 } from './agent';
 
+// 执行作用域（getAgentScope）——run/stream 全链的只读上下文，详见 agentScope.md
+export { getAgentScope, type AgentScope } from './agentScope';
+
 // schema 解析工厂——任务内组装 AgentDeps.resolveToolSchema / resolveAgentInputSchema 的官方入口
 // （同一实例服务 tool input 与 sub-agent 派发入参,参数为最小结构 SchemaSourceRef）。
 // 实现下沉主包 loader 域（zod peer 同源 + 测试设施 createAgentTestHarness 共用）,

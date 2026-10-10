@@ -11,6 +11,7 @@ import type {
 } from '@faapi/faapi';
 import type { AgentRunOptions } from './agentHandle';
 import { AgentError, AgentRecursionError, AgentToolTimeoutError } from './agentErrors';
+import { runWithAgentScope } from './agentScope';
 import type { HistoryCompactor } from './historyCompaction';
 import { createProvider } from './provider';
 import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
@@ -482,11 +483,16 @@ export class Agent {
    * @throws {Error} provider.complete 抛错时立即传播
    */
   async run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult> {
-    const config = await this.buildLoopConfig(input, options);
-    const result = await reactLoop(input, config);
+    const { agentName, config } = await this.buildLoopConfig(input, options);
+    // 执行作用域挂载（详见 [agentScope](./agentScope.md)）：整条 reactLoop promise 链在
+    // 当前 agent 作用域内——ALS 随 promise 传播，同轮 Promise.all 并发派发的每个分支
+    // 各自继承；sub 换栈经 executeSubAgent → subAgent.run/stream 统一发生
+    const result = await runWithAgentScope({ agentName, depth: this.depth }, () =>
+      reactLoop(input, config),
+    );
     // reactLoop 不知 agent 名,在此填充顶层 trace.agentName（sub-agent 调本方法时也走此路径）
     if (result.trace) {
-      result.trace.agentName = options?.agent ?? '';
+      result.trace.agentName = agentName;
     }
     return result;
   }
@@ -507,8 +513,24 @@ export class Agent {
    * @throws {Error} provider.stream 抛错时立即传播
    */
   async *stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk> {
-    const config = await this.buildLoopConfig(input, options);
-    yield* reactLoopStream(input, config);
+    const { agentName, config } = await this.buildLoopConfig(input, options);
+    // 执行作用域挂载（详见 [agentScope](./agentScope.md)）。ALS 语义：async generator
+    // 体内不捕获创建时上下文——体内段落随消费方每次 next() 的上下文执行。因此逐次在
+    // 作用域内驱动内层迭代器（等价 yield*，背压保持：仅消费方拉动时推进），chunk 原样
+    // 转发；sub 换栈经 executeSubAgent → subAgent.stream 同一机制发生
+    const iterator = reactLoopStream(input, config)[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        const { value, done } = await runWithAgentScope({ agentName, depth: this.depth }, () =>
+          iterator.next(),
+        );
+        if (done) return;
+        yield value;
+      }
+    } finally {
+      // 消费方提前 break / 抛错时对位 yield* 的迭代器收尾语义
+      await iterator.return?.();
+    }
   }
 
   /**
@@ -554,7 +576,7 @@ export class Agent {
   }
 
   /**
-   * 组装 ReactLoopConfig
+   * 组装 ReactLoopConfig + 有效 agent 名（执行作用域 / trace.agentName 填充共用）
    *
    * 1. 解析有效 agent 名：`options.agent`（必须显式传——无默认 agent,不传抛 AgentError）
    * 2. 查 agent 元数据（未注册抛 AgentError）——用 `getAgent` 拿 AgentCore
@@ -609,7 +631,7 @@ export class Agent {
   private async buildLoopConfig(
     input: string | undefined,
     options?: AgentRunOptions,
-  ): Promise<ReactLoopConfig> {
+  ): Promise<{ agentName: string; config: ReactLoopConfig }> {
     // 输入守卫：全新对话必须有 input,续跑必须有 messages（空 input + messages = 纯续跑）
     if (!input && !options?.messages?.length) {
       throw new AgentError(
@@ -665,20 +687,23 @@ export class Agent {
     const systemPrompt = await this.resolveSystemPrompt(agentName, meta);
 
     return {
-      provider,
-      systemPrompt,
-      model,
-      temperature: options?.temperature,
-      maxTokens: options?.maxTokens,
-      maxTurns: meta.maxTurns ?? this.deps.config?.maxTurns,
-      maxHistoryTokens: this.deps.config?.maxHistoryTokens,
-      historyCompactor: this.deps.config?.historyCompactor,
-      tools,
-      signal: options?.signal,
-      messages: options?.messages,
-      enableTracing,
-      executeTool: async (name, args, deltaEmitter) =>
-        this.executeTool(name, args, callCtx, deltaEmitter),
+      agentName,
+      config: {
+        provider,
+        systemPrompt,
+        model,
+        temperature: options?.temperature,
+        maxTokens: options?.maxTokens,
+        maxTurns: meta.maxTurns ?? this.deps.config?.maxTurns,
+        maxHistoryTokens: this.deps.config?.maxHistoryTokens,
+        historyCompactor: this.deps.config?.historyCompactor,
+        tools,
+        signal: options?.signal,
+        messages: options?.messages,
+        enableTracing,
+        executeTool: async (name, args, deltaEmitter) =>
+          this.executeTool(name, args, callCtx, deltaEmitter),
+      },
     };
   }
 

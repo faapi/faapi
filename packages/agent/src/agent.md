@@ -79,8 +79,8 @@ class Agent {
 }
 ```
 
-- `run(input?, options?)` —— 组装 `ReactLoopConfig`（应用 `options` 覆盖）→ 调 `reactLoop(input, config)` → 填充 `result.trace.agentName = options.agent`（reactLoop 不知 agent 名）
-- `stream(input?, options?)` —— 组装 config（应用 `options` 覆盖）→ 调 `reactLoopStream(input, config)`（流式 chunk 含 `traceEvent`,不含顶层 `AgentTrace`,无需事后填 agentName）
+- `run(input?, options?)` —— 组装 `ReactLoopConfig`（应用 `options` 覆盖）→ 调 `reactLoop(input, config)` → 填充 `result.trace.agentName = options.agent`（reactLoop 不知 agent 名）。入口挂载执行作用域（[agentScope](./agentScope.md)）：整条循环 promise 链在当前 agent 作用域内，tool 内部经 `getAgentScope()` 只读
+- `stream(input?, options?)` —— 组装 config（应用 `options` 覆盖）→ 调 `reactLoopStream(input, config)`（流式 chunk 含 `traceEvent`,不含顶层 `AgentTrace`,无需事后填 agentName）。同样挂载执行作用域——ALS 的 async generator 语义（体内上下文随消费方 `next()` 走）决定了实现是逐次在作用域内驱动内层迭代器，见 [agentScope.md](./agentScope.md)「实现要点」
 - `asTool(name)` —— 把指定 agent 包装为 `AgentToolDescriptor`（`kind: 'agent'` / `name: 'agent-<name>'`,经 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 生成 / `metadata`）;未注册返回 `undefined`
 
 `input` 可选（续跑场景不传新输入）：`input` 与 `options.messages` 都为空时抛 `AgentError`；
@@ -416,6 +416,7 @@ asTool(name: string): AgentToolDescriptor | undefined {
 ## 相关模块
 
 - [reactLoop](./reactLoop.md) —— Phase 3.3,Agent 的 `run`/`stream` 委托给它
+- [agentScope](./agentScope.md) —— 执行作用域（`getAgentScope`）,挂载点在 `Agent.run`/`stream` 入口,sub 换栈经 executeSubAgent 委托链统一发生
 - [trace](./trace.md) —— Tracing 类型与文档（`AgentTrace` / `AgentTraceEvent` / `TracingToolResult`）,Agent 类是其「接线层」（填 agentName + 包装 sub-agent 返回值）
 - [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」—— `SubAgentToolResult` 的上卷语义与边界
 - [provider](./provider.md) —— Phase 3.2,Agent 构造时持有 `providers` Map（由 plugin 从 `config.agent.llms` 遍历调 `createProvider` 创建）
