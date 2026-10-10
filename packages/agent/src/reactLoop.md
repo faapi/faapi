@@ -123,7 +123,11 @@ export interface SubAgentToolResult {
 - **本地历史不丢**：裁剪只作用于每轮发给 LLM 的消息副本，`messages` 本体与 trace 的 `inputSnapshot` 完整性不受影响（`inputSnapshot` 记录的是实际发送的裁剪后消息）
 - 非流式与流式两条循环行为一致
 
-取舍：被裁掉的旧轮组不生成摘要（compaction 属后续能力）——需要保留长期上下文的场景应在 tool 内控制返回体积，或用 `maxTurns` 控制总轮数。
+取舍：被裁掉的旧轮组默认不生成摘要——需要摘要式压缩的场景接 `historyCompactor` 策略位（见 [historyCompaction.md](./historyCompaction.md)），或用可选现货组件 [`createRollingSummaryCompactor`](./rollingSummary.md) 做「会话级持久折叠 + 注入」。
+
+### 历史压缩策略位（`historyCompactor`）
+
+`ReactLoopConfig.historyCompactor` / `AgentRuntimeConfig.historyCompactor`（子代理共享根 deps 全树生效）声明时，超预算且存在轮组的轮次改调业务策略（整体替换现行截断），仅作用于发送副本。输出不变量（头部保留 / tool 配对完整 / 至少一轮组）由框架强制守卫，违反抛 `AgentError`——策略自由度以不变量为界。缺省不声明时逐字节保持上述截断行为。完整契约见 [historyCompaction.md](./historyCompaction.md)。
 
 ### `maxAgentDepth` 防护
 

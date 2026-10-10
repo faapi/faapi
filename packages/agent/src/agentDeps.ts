@@ -45,7 +45,7 @@ export interface CreateAgentDepsOptions {
    * （外部 provider 模式——`agent.run(input, { provider })` 每次显式注入）
    */
   llms?: Record<string, LlmConfig>;
-  /** 全局 agent 运行时配置（maxTurns / maxAgentDepth / maxHistoryTokens / 三鉴权钩子） */
+  /** 全局 agent 运行时配置（maxTurns / maxAgentDepth / maxHistoryTokens / historyCompactor / 三鉴权钩子） */
   config?: AgentRuntimeConfig;
   /**
    * 差异项覆盖（浅合并，最后应用、优先级最高）——装饰钩子 / schema 富化 /

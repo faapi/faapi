@@ -8,6 +8,7 @@ import type {
   LLMToolDefinition,
   LLMUsage,
 } from './provider';
+import { assertCompactedHistory, type HistoryCompactor } from './historyCompaction';
 import {
   isTracingToolResult,
   type AgentTrace,
@@ -141,6 +142,14 @@ export interface ReactLoopConfig {
    * 消息副本，本地 `messages` 与 trace 不受影响。详见 reactLoop.md 的历史裁剪章节。
    */
   maxHistoryTokens?: number;
+  /**
+   * 历史超预算时的压缩策略（缺省 = 现行截断,逐字节现状,见 [historyCompaction.md](./historyCompaction.md)）
+   *
+   * 接在现行「按轮组从最旧裁起」的同一位置:仅当超预算且存在轮组时调用,
+   * 仅作用于发送副本（`result.messages` 与续跑源不受影响）。输出不变量
+   * （头部保留 / tool 配对 / 至少一轮组）由框架强制守卫,违反抛 `AgentError`。
+   */
+  historyCompactor?: HistoryCompactor;
   /**
    * 初始对话历史（续跑 / 多轮对话）
    *
@@ -399,6 +408,32 @@ export function trimHistory(messages: LLMMessage[], maxTokens: number): LLMMessa
   return [...head, ...kept.flat()];
 }
 
+/**
+ * 每轮发给 LLM 的消息解析（历史裁剪 / 历史压缩策略位的统一接缝）
+ *
+ * - 未设置 maxHistoryTokens：原样
+ * - 声明 historyCompactor 且超预算且有轮组：调用策略 + 不变量守卫
+ *   （仅发送副本——本地 messages 不受影响）
+ * - 其余（未超预算 / 无轮组 / 未声明策略）：现行 trimHistory 截断（缺省=现状）
+ */
+async function resolveOutgoingMessages(
+  messages: LLMMessage[],
+  config: ReactLoopConfig,
+): Promise<LLMMessage[]> {
+  const budget = config.maxHistoryTokens;
+  if (!budget) return messages;
+  const estimatedTokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+  if (
+    config.historyCompactor &&
+    estimatedTokens > budget &&
+    messages.some((m) => m.role === 'assistant')
+  ) {
+    const compacted = await config.historyCompactor({ messages, estimatedTokens, budget });
+    return assertCompactedHistory(messages, compacted);
+  }
+  return trimHistory(messages, budget);
+}
+
 function buildRequestExtras(config: ReactLoopConfig) {
   return {
     tools: config.tools,
@@ -470,10 +505,8 @@ export async function reactLoop(
     loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
-    // 历史裁剪（maxHistoryTokens）：只作用于发给 LLM 的消息副本，本地 messages 不变
-    const outgoing = config.maxHistoryTokens
-      ? trimHistory(messages, config.maxHistoryTokens)
-      : messages;
+    // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变
+    const outgoing = await resolveOutgoingMessages(messages, config);
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
     const inputSnapshot = enableTracing ? [...outgoing] : undefined;
     // 执行中取消由 provider 请求中断传播——附上断点历史重抛（不含未完成的 assistant 消息，
@@ -711,10 +744,8 @@ export async function* reactLoopStream(
     loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
-    // 历史裁剪（maxHistoryTokens）：只作用于发给 LLM 的消息副本，本地 messages 不变
-    const outgoing = config.maxHistoryTokens
-      ? trimHistory(messages, config.maxHistoryTokens)
-      : messages;
+    // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变
+    const outgoing = await resolveOutgoingMessages(messages, config);
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
     const inputSnapshot = enableTracing ? [...outgoing] : undefined;
     let turnContent = '';

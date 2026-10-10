@@ -10,6 +10,8 @@ import type {
   ToolSchemaResolution,
 } from '@faapi/faapi';
 import type { AgentRunOptions } from './agentHandle';
+import { AgentError, AgentRecursionError, AgentToolTimeoutError } from './agentErrors';
+import type { HistoryCompactor } from './historyCompaction';
 import { createProvider } from './provider';
 import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
@@ -250,6 +252,12 @@ export interface AgentRuntimeConfig {
   /** 发送给 LLM 的历史 token 预算（近似估算,未设置 = 不裁剪）——透传 reactLoop,见 reactLoop.md 历史裁剪章节 */
   maxHistoryTokens?: number;
   /**
+   * 历史超预算时的压缩策略（缺省 = 现行截断,逐字节现状）——透传 reactLoop,
+   * 仅在发送副本上调用、仅超预算且有轮组时调用;输出不变量由框架强制守卫。
+   * 详见 [historyCompaction.md](./historyCompaction.md)。
+   */
+  historyCompactor?: HistoryCompactor;
+  /**
    * 单次 tool 执行的超时毫秒数（未设置 = 不限时）。超时抛 `AgentToolTimeoutError`,
    * 被 reactLoop 按既有 tool 错误路径回传 LLM（LLM 可决定重试或换路）——挂死的
    * tool handler（如无超时的内部 fetch）此前会让整个 run 永久挂起,且 run 的
@@ -420,54 +428,10 @@ export interface AgentDeps {
   resolveSystemPrompt?: (agentName: string, meta: AgentCore, base: string) => Promise<string>;
 }
 
-/**
- * Agent 系统级错误
- *
- * agent 未注册等不可恢复错误时抛出（调用方负责捕获）。
- * sub-agent 递归超限用 {@link AgentRecursionError}。
- */
-export class AgentError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AgentError';
-  }
-}
-
-/**
- * sub-agent 递归超 `maxAgentDepth` 时抛出
- *
- * 被 [reactLoop](./reactLoop.md) catch 后错误消息回传 LLM，LLM 可据此调整策略。
- */
-/** tool 执行超时（toolTimeoutMs）——被 reactLoop catch 后回传 LLM,不终止整个 run */
-export class AgentToolTimeoutError extends AgentError {
-  /** 超时的 tool 名 */
-  readonly toolName: string;
-  /** 配置的超时毫秒数 */
-  readonly timeoutMs: number;
-
-  constructor(toolName: string, timeoutMs: number) {
-    super(`Tool "${toolName}" timed out after ${timeoutMs}ms`);
-    this.name = 'AgentToolTimeoutError';
-    this.toolName = toolName;
-    this.timeoutMs = timeoutMs;
-  }
-}
-
-export class AgentRecursionError extends AgentError {
-  /** 配置的 maxAgentDepth 值 */
-  readonly maxDepth: number;
-  /** 当前递归深度（超出 maxDepth） */
-  readonly currentDepth: number;
-
-  constructor(maxDepth: number, currentDepth: number) {
-    super(
-      `Agent recursion depth exceeded: current depth ${currentDepth} > maxAgentDepth ${maxDepth}`,
-    );
-    this.name = 'AgentRecursionError';
-    this.maxDepth = maxDepth;
-    this.currentDepth = currentDepth;
-  }
-}
+// Agent 系统级错误家族持有于 agentErrors.ts（reactLoop 的历史压缩守卫需要抛
+// AgentError,独立模块解开 reactLoop ↔ agent 循环依赖）;此处 re-export 保持
+// `from './agent'` 导入路径不变
+export { AgentError, AgentRecursionError, AgentToolTimeoutError } from './agentErrors';
 
 /**
  * faapi Agent
@@ -708,6 +672,7 @@ export class Agent {
       maxTokens: options?.maxTokens,
       maxTurns: meta.maxTurns ?? this.deps.config?.maxTurns,
       maxHistoryTokens: this.deps.config?.maxHistoryTokens,
+      historyCompactor: this.deps.config?.historyCompactor,
       tools,
       signal: options?.signal,
       messages: options?.messages,

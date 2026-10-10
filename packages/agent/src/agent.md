@@ -112,6 +112,8 @@ class Agent {
 | `temperature` | `options.temperature` | — | `LlmConfig.temperature`（provider 级透传） |
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（provider 级透传） |
 | `maxTurns` | — | `meta.maxTurns` | `AgentRuntimeConfig.maxTurns` |
+| `maxHistoryTokens` | — | — | `AgentRuntimeConfig.maxHistoryTokens`（未设置 = 不裁剪） |
+| `historyCompactor` | — | — | `AgentRuntimeConfig.historyCompactor`（缺省 = 现行截断；子代理共享根 deps 全树生效，见 [historyCompaction.md](./historyCompaction.md)） |
 | `enableTracing` | `options.enableTracing` | — | `AgentRuntimeConfig.enableTracing`（默认 `false`） |
 
 `options.model` 是字符串 key,解析规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
