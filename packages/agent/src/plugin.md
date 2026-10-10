@@ -76,26 +76,14 @@ PluginContext { config.agent, rootDir }
 工厂每次请求时被 `injectParams` 调用,构造一个新的 [Agent](./agent.md) 实例：
 
 ```ts
-// setup 内创建一次，工厂内复用（避免每次请求重建闭包）
-const resolveSchema = createToolSchemaResolver({ rootDir });
+// setup 时经官方装配工厂构造一次（createAgentDeps，见 agentDeps.md——插件 setup /
+// 任务内组装 / 自组装单一实现）：providers Map 与 schema 解析器缓存随 deps
+// 生命周期跨请求复用
+const baseDeps = createAgentDeps({ registries, rootDir, llms, config: runtimeConfig });
 
-registerAgentHandleFactory(() => {
-  return new Agent({
-    providers,                   // 闭包捕获（setup 时创建,Map<providerKey, LLMProvider>;llms 未配置时为空 Map）
-    llms,                        // 闭包捕获（agentConfig.llms ?? {},供 Agent 按名查找 LlmConfig）
-    rootDir,                     // 闭包捕获（ctx.rootDir）
-    config: runtimeConfig,      // 闭包捕获（maxTurns / maxAgentDepth + authHooks 三钩子）
-    ctx,                         // 工厂入参——捕获请求上下文（authHooks ctx 传递链，完整 FaapiContext）
-    getAgent,                    // 从 @faapi/faapi import（单例模块）
-    getAgentEntry,               // 从 @faapi/faapi import（用于加载 handler.js 执行 run 函数）
-    getTool,
-    resolveAgentTools,
-    resolveSubAgents,
-    loadToolModule: (filePath, functionName) =>
-      loadToolModule(filePath, functionName, rootDir),  // 包装注入 rootDir
-    resolveToolSchema: resolveSchema,       // 常规 tool schema（setup 内创建,工厂内复用）
-    resolveAgentInputSchema: resolveSchema, // sub-agent 派发入参 schema（同一实例,缓存共享）
-  });
+registerAgentHandleFactory((ctx) => {
+  // 请求回调只叠加每请求差异项（ctx 透传链：authHooks 与 tool handler 第二参数）
+  return new Agent({ ...baseDeps, ctx });
 });
 ```
 
@@ -127,13 +115,14 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 
 ### resolveToolSchema / resolveAgentInputSchema 实现
 
-setup 调用 [createToolSchemaResolver](./toolSchemaResolver.md)（传 `ctx.rootDir`）创建闭包级 resolver——`loadToolSchema` 加载 zod.js → `z.toJSONSchema` 生成 JSON Schema + `safeParse` 校验函数，带 mtime 跨请求缓存（dev reload 自愈 / 并发去重）。**同一实例注入两个 deps**：`resolveToolSchema`（常规 tool input）与 `resolveAgentInputSchema`（sub-agent 派发入参，[agent.md](./agent.md)「派发入参 schema 声明」）——resolver 参数取最小结构 `{ filePath, inputTypeName? }`，tool 与 agent 元数据均满足，缓存按 zod.js 路径天然分流。实现细节与行为约定见该文档，此处不重复。
+装配（`createAgentDeps`）内部调用 [createToolSchemaResolver](./toolSchemaResolver.md)（传 `ctx.rootDir`）创建 deps 闭包级 resolver——`loadToolSchema` 加载 zod.js → `z.toJSONSchema` 生成 JSON Schema + `safeParse` 校验函数，带 mtime 跨请求缓存（dev reload 自愈 / 并发去重）。**同一实例注入两个 deps**：`resolveToolSchema`（常规 tool input）与 `resolveAgentInputSchema`（sub-agent 派发入参，[agent.md](./agent.md)「派发入参 schema 声明」）——resolver 参数取最小结构 `{ filePath, inputTypeName? }`，tool 与 agent 元数据均满足，缓存按 zod.js 路径天然分流。实现细节与行为约定见该文档，此处不重复。
 
 ## 相关模块
 
 - [agent](./agent.md) —— Agent 类,工厂返回的实例
 - [agentHandle](./agentHandle.md) —— AgentHandle 接口,Agent 满足此接口
-- [toolSchemaResolver](./toolSchemaResolver.md) —— createToolSchemaResolver 工厂,setup 内创建 resolver
+- [toolSchemaResolver](./toolSchemaResolver.md) —— createToolSchemaResolver 工厂,装配内部创建 resolver
+- [agentDeps](./agentDeps.md) —— deps 装配工厂（插件 setup 的装配出口）
 - [provider](./provider.md) —— LLM provider 抽象 + createProvider 工厂
 - faapi 核心 [agentHandle 工厂](../../faapi/src/injection/agentHandle.md) —— registerAgentHandleFactory / getAgentHandle
 - faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) / [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— 注册表访问器

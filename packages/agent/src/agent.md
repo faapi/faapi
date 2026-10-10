@@ -155,18 +155,23 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
 | 向后兼容 | 未声明钩子 = 逐字节现状；编程式组装在 deps 上直接注入 |
 | 与 `systemPromptFile` 关系 | 声明继续为真：框架照常解析 base，应用在其上叠加——注册表视图保持诚实，无需剥除声明 |
 
-`meta` 为该 agent 的 `AgentCore`（只读参考，钩子内改写不回写注册表）。框架工厂路径（`@faapi/agent` 插件）暂不透传此钩子——需要装饰的场景走编程式组装（`new Agent(deps)`）：
+`meta` 为该 agent 的 `AgentCore`（只读参考，钩子内改写不回写注册表）。框架工厂路径（`@faapi/agent` 插件）暂不透传此钩子——需要装饰的场景走编程式组装，deps 装配用官方工厂 `createAgentDeps`（[agentDeps.md](./agentDeps.md)，插件 setup / 任务内组装 / 自组装单一实现），差异项经 `overrides` 叠加：
 
 ```ts
-import { Agent } from '@faapi/agent';
+import { Agent, createAgentDeps } from '@faapi/agent';
 
-const agent = new Agent({
-  ...deps,
-  resolveSystemPrompt: async (name, _meta, base) => {
-    const protocol = await loadProtocolBlock(name); // 应用层装饰：共享协议块 / 条件块 / DB 运行时层
-    return `${base}\n\n${protocol}`;
-  },
-});
+const agent = new Agent(
+  createAgentDeps({
+    registries: ctx.registries,
+    llms,
+    overrides: {
+      resolveSystemPrompt: async (name, _meta, base) => {
+        const protocol = await loadProtocolBlock(name); // 应用层装饰：共享协议块 / 条件块 / DB 运行时层
+        return `${base}\n\n${protocol}`;
+      },
+    },
+  }),
+);
 ```
 
 ### sub-agent 派发工具命名（subAgentToolName）

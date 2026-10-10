@@ -44,6 +44,13 @@ export { createOpenAIProvider } from './providers/openai';
 export { createLightComplete } from './lightComplete';
 // 脚本假 LLM（agent 流程测试的确定性 provider，详见 scriptLlm.md）
 export { createScriptLLM, type ScriptTurn, type ScriptedLLM } from './scriptLlm';
+
+// AgentDeps 装配工厂（插件 setup / 任务内组装 / 自组装单一实现，详见 agentDeps.md）
+export {
+  createAgentDeps,
+  type CreateAgentDepsOptions,
+  type AgentDepsRegistries,
+} from './agentDeps';
 // 规范类型主包持有（TaskContext 等主包类型引用），此处 re-export 供业务方统一标注
 export type { LlmComplete, LlmCompleteOptions } from '@faapi/faapi';
 

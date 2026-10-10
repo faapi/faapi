@@ -22,7 +22,7 @@
  * ```
  *
  * 插件 setup 时：
- * 1. 遍历 `config.agent.llms`（可选）→ 每项调 `createProvider` → `Map<providerKey, LLMProvider>`
+ * 1. `createAgentDeps` 装配 deps（llms 可选 → 逐项 createProvider → providers Map）
  * 2. 读 `config.agent.maxTurns` / `maxAgentDepth`
  * 3. 从 `@faapi/faapi` import 注册表/加载器访问器（getAgent / getTool / resolveAgentTools /
  *    resolveSubAgents / loadToolModule）,tool schema 解析用
@@ -39,17 +39,10 @@
  * 详见 [plugin.md](./plugin.md)。
  */
 
-import {
-  loadToolModule,
-  createToolSchemaResolver,
-  type FaapiPlugin,
-  type PluginContext,
-  type AgentConfig,
-} from '@faapi/faapi';
+import { type FaapiPlugin, type PluginContext, type AgentConfig } from '@faapi/faapi';
 import { Agent, type AgentRuntimeConfig } from './agent';
+import { createAgentDeps } from './agentDeps';
 import { createLightComplete } from './lightComplete';
-import type { LLMProvider } from './provider';
-import { createProvider } from './provider';
 
 /**
  * 从 PluginContext.config 读取 agent 配置
@@ -85,25 +78,16 @@ const agentPlugin: FaapiPlugin = {
       );
     }
 
-    // 创建 LLM provider 实例 Map（key 是 provider 名,来自 config.agent.llms）
-    // 单例,所有请求共享;每个 provider 实例对应一个 LlmConfig
-    // 无默认 provider——每次 agent.run/stream 调用经 options.model / options.provider 显式解析
-    const providers = new Map<string, LLMProvider>();
+    // 空 apiKey 照常注册（部分网关/本地模型场景无需 key），但启动日志显性提示——
+    // 否则「key 未配置」延迟到首次 LLM 调用才暴露为上游 401，且错误文案来自上游，难排查。
+    // （providers 实例由下方 createAgentDeps 创建，此处只做配置检查）
     for (const [name, llmConfig] of Object.entries(llms)) {
-      // 空 apiKey 照常注册（部分网关/本地模型场景无需 key），但启动日志显性提示——
-      // 否则「key 未配置」延迟到首次 LLM 调用才暴露为上游 401，且错误文案来自上游，难排查
       if (!llmConfig.apiKey || llmConfig.apiKey.trim() === '') {
         console.warn(
           `! @faapi/agent: config.agent.llms.${name}.apiKey is empty, requests to this provider will omit Authorization header (upstream likely returns 401)`,
         );
       }
-      providers.set(name, createProvider(llmConfig));
     }
-
-    // 轻量补全通道注册到 registries.llm——handler 的 `llm` 注入参数与任务执行上下文
-    // （taskCtx.llm，进程内路径）读取；与 agent 循环共享同一 providers 单例
-    // （llms 未配置时通道照常注册，调用时报 AgentError 提示配置缺失）
-    ctx.registries.llm.register(createLightComplete({ llms, providers }));
 
     // 全局 agent 运行时配置覆盖
     const runtimeConfig: AgentRuntimeConfig = {
@@ -117,11 +101,20 @@ const agentPlugin: FaapiPlugin = {
     };
 
     const rootDir = ctx.rootDir;
-    // schema 解析器（setup 闭包级缓存——root + sub-agent 共享）
-    // 实现与行为约定见 [toolSchemaResolver.md](./toolSchemaResolver.md)
-    // 同一实例注入两个 deps：resolveToolSchema（常规 tool input）+
-    // resolveAgentInputSchema（sub-agent 派发入参,声明 Input 的富 schema 模式）
-    const resolveSchema = createToolSchemaResolver({ rootDir });
+    // deps 装配走官方工厂（与任务内组装/自组装单一实现）：setup 时装配一次——
+    // providers Map 与 schema 解析器缓存随 deps 生命周期跨请求复用；
+    // 请求回调只叠加每请求差异项（ctx 透传链）
+    const baseDeps = createAgentDeps({
+      registries,
+      rootDir,
+      llms,
+      config: runtimeConfig,
+    });
+
+    // 轻量补全通道注册到 registries.llm——handler 的 `llm` 注入参数与任务执行上下文
+    // （taskCtx.llm，进程内路径）读取；与 agent 循环共享同一 providers 单例
+    // （llms 未配置时通道照常注册，调用时报 AgentError 提示配置缺失）
+    ctx.registries.llm.register(createLightComplete({ llms, providers: baseDeps.providers }));
 
     // 注册 agent handle 工厂——每次请求时构造 Agent 实例
     // Agent 构造轻量（仅存 deps）,实际 LLM 调用在 run/stream 时才发生
@@ -129,27 +122,7 @@ const agentPlugin: FaapiPlugin = {
     // 多 app 同进程互不覆盖；deps 读同套实例注册表（createAppBase 已水合）
     // systemPromptFile 读取走主包免传参 readResource（读取根 app 启动时已绑定）
     ctx.registries.agentHandle.register((ctx) => {
-      return new Agent({
-        providers,
-        llms,
-        rootDir,
-        config: runtimeConfig,
-        // ctx 传递链（authHooks）：捕获请求上下文,tool handler / sub-agent /
-        // 鉴权钩子均可读取中间件塞入的身份信息（ctx.user / ctx.workspace 等）
-        ctx,
-        // 注册表访问器——app 实例（PluginContext.registries），非全局单例
-        // getAgent 返回 AgentCore(LLM-facing);getAgentEntry 返回 AgentMetadata(含 filePath,声明文件定位)
-        getAgent: registries.agent.getAgent,
-        getAgentEntry: registries.agent.getAgentEntry,
-        getTool: registries.tool.get,
-        resolveAgentTools: registries.agent.resolveAgentTools,
-        resolveSubAgents: registries.agent.resolveSubAgents,
-        // 加载器包装：注入 rootDir 用于 dev 按需编译模式
-        loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, rootDir),
-        // schema 解析（zod.js → JSON Schema + safeParse 校验）——tool 与 agent 入参共用
-        resolveToolSchema: resolveSchema,
-        resolveAgentInputSchema: resolveSchema,
-      });
+      return new Agent({ ...baseDeps, ctx });
     });
 
     console.log(

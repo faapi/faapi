@@ -16,25 +16,24 @@ resolver 参数取最小结构 `{ filePath, inputTypeName? }`（zod.js 定位的
 - **插件 setup**：`@faapi/agent` 插件内部同样用本工厂（传 `ctx.rootDir`），插件与任务侧单一实现，不出现适配漂移
 - **测试设施**：`createAgentTestHarness` 的 `generated` 模式（传显式 `dist` 指向临时产物目录）
 
+任务内组装 agent 时无需手拼 deps——官方装配工厂 `createAgentDeps`（`@faapi/agent`，见其 agentDeps.md）内部已用本工厂接好 `resolveToolSchema` / `resolveAgentInputSchema`（同一实例，tool 与派发入参共用缓存）：
+
 ```ts
 // src/tasks/log-analysis/task.ts
-import { Agent } from '@faapi/agent';
-import { createToolSchemaResolver } from '@faapi/agent'; // 或 from '@faapi/faapi'
-import { loadToolModule, loadAgentModule } from '@faapi/faapi';
-
-const resolveSchema = createToolSchemaResolver(); // rootDir 缺省 process.cwd()
+import { Agent, createAgentDeps } from '@faapi/agent';
 
 export async function run(payload, taskCtx) {
-  const agent = new Agent({
-    providers, llms, rootDir: process.cwd(),
-    getAgent: taskCtx.registries.agent.getAgent,
-    /* ...其余 deps... */
-    resolveToolSchema: resolveSchema,
-    resolveAgentInputSchema: resolveSchema, // 同一实例——tool 与 agent 入参共用缓存
-  });
+  const agent = new Agent(
+    createAgentDeps({
+      registries: taskCtx.registries, // 只读视图直传
+      llms,                           // 缺省空——外部 provider 模式经 run options.provider 注入
+    }),
+  );
   return agent.run(payload.input, { agent: 'log-analyzer', provider });
 }
 ```
+
+需要富化/装饰等业务差异时经 `overrides` 覆盖对应 deps 字段；只有完全脱离工厂的深度定制才直拼 deps（此时 `resolveToolSchema` / `resolveAgentInputSchema` 仍建议用本工厂产出）。
 
 ## 行为约定
 
