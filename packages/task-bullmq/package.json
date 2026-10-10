@@ -1,6 +1,6 @@
 {
   "name": "@faapi/task-bullmq",
-  "version": "6.35.0",
+  "version": "6.36.0",
   "description": "BullMQ task queue driver for faapi — persistent queue on Redis",
   "type": "module",
   "main": "./src/index.ts",
