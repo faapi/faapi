@@ -192,6 +192,7 @@ function createDeps(opts: {
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   resolveAgentInputSchemaImpl?: (agent: AgentMetadata) => Promise<ToolSchemaResolution | undefined>;
+  resolveSystemPromptImpl?: (name: string, meta: AgentCore, base: string) => Promise<string>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
 }): AgentDeps {
   const toolsByName = new Map<string, ToolMetadata>();
@@ -230,6 +231,7 @@ function createDeps(opts: {
     resolveAgentInputSchema: opts.resolveAgentInputSchemaImpl
       ? (agent) => opts.resolveAgentInputSchemaImpl!(agent)
       : undefined,
+    resolveSystemPrompt: opts.resolveSystemPromptImpl,
   };
 }
 
@@ -410,6 +412,205 @@ describe('Agent', () => {
       for (const m of result.messages) {
         expect(m).not.toHaveProperty('reasoning_content');
       }
+    });
+  });
+
+  describe('resolveSystemPrompt 装饰钩子', () => {
+    /** 创建临时 resources 目录并绑定读取根（免传参 readResource 依赖进程级绑定） */
+    function useResourcesDir(files: Record<string, string>): () => void {
+      const resDir = join(
+        tmpdir(),
+        `faapi-agent-sphook-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      for (const [rel, content] of Object.entries(files)) {
+        const abs = join(resDir, rel);
+        mkdirSync(join(abs, '..'), { recursive: true });
+        writeFileSync(abs, content, 'utf-8');
+      }
+      setActiveResourcesDir(resDir);
+      return () => {
+        setActiveResourcesDir(null);
+        rmSync(resDir, { recursive: true, force: true });
+      };
+    }
+
+    it('阴性对照：无钩子时内联字面量与文件内容原样透传（逐字节现状）', async () => {
+      const cleanup = useResourcesDir({ 'prompts/review.md': 'from-file' });
+      try {
+        const { provider, completeCalls } = createMockProvider([
+          llmResponse({ content: 'ok', stopReason: 'stop' }),
+          llmResponse({ content: 'ok', stopReason: 'stop' }),
+        ]);
+        const agent = new Agent(
+          createDeps({
+            provider,
+            agent: agentMeta({ systemPrompt: 'inline-literal' }),
+          }),
+        );
+
+        await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+        expect(completeCalls.mock.calls[0][0].messages[0]).toEqual({
+          role: 'system',
+          content: 'inline-literal',
+        });
+
+        // 文件 base：同一配方（无钩子）下原样透传
+        const fileDeps = createDeps({
+          provider,
+          agent: agentMeta({ systemPromptFile: 'prompts/review.md' }),
+        });
+        await new Agent(fileDeps).run('hi', { agent: 'researcher', model: 'gpt-4o' });
+        expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
+          role: 'system',
+          content: 'from-file',
+        });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('装饰内联 base：钩子收 (agentName, meta, base)，返回值即最终 system 消息', async () => {
+      const meta = agentMeta({ systemPrompt: 'base-prompt' });
+      const hook = vi.fn(async (_name: string, _meta: AgentCore, base: string) => {
+        return `decorated(${base})`;
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(createDeps({ provider, agent: meta, resolveSystemPromptImpl: hook }));
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(hook).toHaveBeenCalledWith('researcher', meta, 'base-prompt');
+      expect(completeCalls.mock.calls[0][0].messages[0]).toEqual({
+        role: 'system',
+        content: 'decorated(base-prompt)',
+      });
+    });
+
+    it('装饰文件 base：钩子收到 systemPromptFile 文件内容作为 base', async () => {
+      const cleanup = useResourcesDir({ 'prompts/review.md': 'file-base' });
+      try {
+        const hook = vi.fn(async (_name: string, _meta: AgentCore, base: string) => {
+          return `${base} + protocol`;
+        });
+        const { provider, completeCalls } = createMockProvider([
+          llmResponse({ content: 'ok', stopReason: 'stop' }),
+        ]);
+        const agent = new Agent(
+          createDeps({
+            provider,
+            agent: agentMeta({ systemPromptFile: 'prompts/review.md' }),
+            resolveSystemPromptImpl: hook,
+          }),
+        );
+
+        await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+        expect(hook).toHaveBeenCalledWith('researcher', expect.anything(), 'file-base');
+        expect(completeCalls.mock.calls[0][0].messages[0]).toEqual({
+          role: 'system',
+          content: 'file-base + protocol',
+        });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('全树覆盖：主控与派发 sub-agent 的 system 消息均被装饰（一次注入,无需双包装）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+      const hook = vi.fn(
+        async (name: string, _meta: AgentCore, base: string) => `${base} [+${name}]`,
+      );
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'master-base', agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          resolveSystemPromptImpl: hook,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(result.content).toBe('final');
+      // 主控两次请求（轮1 + 轮2）均用装饰后的 system；子循环一次请求用装饰后的 sub base
+      expect(completeCalls.mock.calls[0][0].messages[0].content).toBe('master-base [+researcher]');
+      expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('sub-base [+writer]');
+      expect(completeCalls.mock.calls[2][0].messages[0].content).toBe('master-base [+researcher]');
+      // 钩子每次 run / 每次派发各一次：主控 run 一次 + 子代理派发一次（父轮2 复用同一次 run 的 config）
+      expect(hook).toHaveBeenCalledTimes(2);
+    });
+
+    it('base 不可读：systemPromptFile 缺失仍抛 AgentError，钩子不被调用', async () => {
+      const cleanup = useResourcesDir({});
+      try {
+        const hook = vi.fn(async (_name: string, _meta: AgentCore, base: string) => base);
+        const { provider } = createMockProvider([
+          llmResponse({ content: 'ok', stopReason: 'stop' }),
+        ]);
+        const agent = new Agent(
+          createDeps({
+            provider,
+            agent: agentMeta({ systemPromptFile: 'prompts/missing.md' }),
+            resolveSystemPromptImpl: hook,
+          }),
+        );
+
+        await expect(agent.run('hi', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrow(
+          AgentError,
+        );
+        expect(hook).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('钩子抛错原样上抛：run 以既有错误路径失败，不被静默吞掉', async () => {
+      const hook = vi.fn(async () => {
+        throw new Error('decorator exploded');
+      });
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveSystemPromptImpl: hook,
+        }),
+      );
+
+      await expect(agent.run('hi', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrow(
+        'decorator exploded',
+      );
+    });
+
+    it('新鲜度：每次 run / 每次派发各调用一次（与现行文件直读同款）', async () => {
+      const hook = vi.fn(async (_name: string, _meta: AgentCore, base: string) => base);
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveSystemPromptImpl: hook,
+        }),
+      );
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls).toHaveBeenCalledTimes(2);
+      expect(hook).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -28,7 +28,7 @@ Agent 类把这些「胶水」逻辑集中在一处,reactLoop 保持纯函数。
 
 | 类型 | 说明 |
 | --- | --- |
-| `AgentDeps` | Agent 运行时依赖（providers Map + llms + rootDir + config + 请求上下文透传 ctx + 注册表/加载器访问器 + 可选 schema 解析器；无默认 provider / 默认 agent 名——每次调用显式指定） |
+| `AgentDeps` | Agent 运行时依赖（providers Map + llms + rootDir + config + 请求上下文透传 ctx + 注册表/加载器访问器 + 可选 schema 解析器 / systemPrompt 装饰钩子；无默认 provider / 默认 agent 名——每次调用显式指定） |
 | `AgentRuntimeConfig` | 全局 agent 配置覆盖（maxTurns / maxAgentDepth / enableTracing） |
 | `ToolSchemaResolution` | tool schema 解析结果（jsonSchema 给 LLM + validate 给执行前校验） |
 | `AgentRecursionError` | sub-agent 递归超 `maxAgentDepth` 时抛出 |
@@ -54,6 +54,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | `loadToolModule(...)` | [loadToolModule](../../faapi/src/loader/loadToolModule.md) | 动态 import tool handler |
 | `resolveToolSchema?(tool)` | Phase 3.5 实现 | tool input 的 JSON Schema + 校验函数（基于 `zod.js` + `z.toJSONSchema`） |
 | `resolveAgentInputSchema?(agent)` | 同上（同一 resolver 实例） | sub-agent 派发入参 schema 解析（`AgentMetadata` 的 `inputTypeName` → zod.js → JSON Schema + 校验函数），见「派发入参 schema 声明」；未提供时派发一律走单字段 `input` 模式（编程式组装的向后兼容） |
+| `resolveSystemPrompt?(name, meta, base)` | —（应用组装层注入） | systemPrompt 装饰钩子：包装框架解析好的 base（内联字面量 / `systemPromptFile` 文件内容），返回值即最终 system 消息。见「resolveSystemPrompt 装饰钩子」 |
 
 ### `AgentDeps.ctx`（请求上下文透传）
 
@@ -136,6 +137,37 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
 - 错误语义：读取失败（读取根未绑定 / 文件不存在 / 越界）→ 抛 `AgentError`
   （带 agent 名与文件路径），不静默降级为空提示词
 - 路径基准为产物 resources 目录（读取经主包免传参 `readResource`，详见 [copyResources](../../faapi/src/cli/copyResources.md)）
+
+### resolveSystemPrompt 装饰钩子（base + 应用装饰）
+
+`AgentDeps.resolveSystemPrompt?: (agentName, meta, base) => Promise<string>`——systemPrompt 的解析 seam：框架解析好 base（语义与现状完全一致）后调用钩子，**返回值即最终 system 消息**。未声明钩子 = 原样返回 base——逐字节现状。
+
+为什么需要：组装层要在框架解析结果之上叠加应用层装饰（共享协议块 / 条件块 / DB 运行时层）——「base + 装饰」是通用形状（A/B 文案、租户注入、按用户个性化）。没有这个 seam，应用只能「包装 `getAgent` / `resolveSubAgents` 访问器 + 组装期预读 prompt 文件建快照 + 从包装视图剥除 `systemPromptFile` 声明」三件套机械：同步闭包约束（访问器是同步签名，读文件只能前移到组装期）、防双拼靠纪律（须同时包装两个访问器才盖住主控 + 子代理树，漏一处即静默漏拼）、注册表视图不诚实（拼装后必须剥掉 `systemPromptFile` 声明，否则框架直读文件绕过全部拼装）。工具面已有 `resolveToolSchema` / `resolveAgentInputSchema` / authHooks 一整排接缝，提示词是最后一个没有的 LLM-facing 面。
+
+语义细则：
+
+| 项 | 语义 |
+| --- | --- |
+| base 解析顺序 | 与现状一致：`systemPromptFile` 优先直读，失败抛 `AgentError`（钩子不被调用）；内联缺省 `''`（reactLoop 按 truthy 处理，与缺省 undefined 行为一致——不插 system 消息） |
+| 错误传播 | 钩子抛错原样上抛，走 run / stream 既有错误链；不吞不降级 |
+| 调用时机 | 每次 run / stream、每次 sub-agent 派发各一次（`buildLoopConfig` 内，与现行文件直读同款新鲜度——dev 改 prompt 文件立即生效） |
+| 子代理传导 | `executeSubAgent` 以同一 deps 构造子 Agent——一次注入覆盖主控与全部可达子代理，无需应用双包装 |
+| 向后兼容 | 未声明钩子 = 逐字节现状；编程式组装在 deps 上直接注入 |
+| 与 `systemPromptFile` 关系 | 声明继续为真：框架照常解析 base，应用在其上叠加——注册表视图保持诚实，无需剥除声明 |
+
+`meta` 为该 agent 的 `AgentCore`（只读参考，钩子内改写不回写注册表）。框架工厂路径（`@faapi/agent` 插件）暂不透传此钩子——需要装饰的场景走编程式组装（`new Agent(deps)`）：
+
+```ts
+import { Agent } from '@faapi/agent';
+
+const agent = new Agent({
+  ...deps,
+  resolveSystemPrompt: async (name, _meta, base) => {
+    const protocol = await loadProtocolBlock(name); // 应用层装饰：共享协议块 / 条件块 / DB 运行时层
+    return `${base}\n\n${protocol}`;
+  },
+});
+```
 
 ### sub-agent 派发工具命名（subAgentToolName）
 

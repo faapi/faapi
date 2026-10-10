@@ -407,6 +407,23 @@ export interface AgentDeps {
    * 未提供时派发一律走单字段 `input` 模式（编程式组装的向后兼容）。
    */
   resolveAgentInputSchema?: (agent: AgentMetadata) => Promise<ToolSchemaResolution | undefined>;
+  /**
+   * systemPrompt 装饰钩子（可选,缺省 = 原样返回 base——现状行为）
+   *
+   * 框架解析好 base systemPrompt（内联 `systemPrompt` 字面量,或 `systemPromptFile`
+   * 文件内容,解析语义与现状一致）后调用,返回值即最终 system 消息——组装层在框架
+   * 解析结果之上叠加应用层装饰（共享协议块 / 条件块 / DB 运行时层）的正当接缝,
+   * 替代「包装访问器 + 预读文件建快照 + 剥除 systemPromptFile 声明」三件套机械。
+   *
+   * - 每次 run / stream、每次 sub-agent 派发各调用一次（与现行文件直读同款新鲜度——
+   *   dev 改 prompt 文件立即生效）
+   * - `meta` 为该 agent 的 `AgentCore`（只读参考,改写不回写注册表）
+   * - 抛错原样上抛,走 run / stream 既有错误链（不吞不降级）
+   * - sub-agent 递归复用同一 deps——一次注入覆盖主控与全部可达子代理,无需双包装
+   * - base 不可读（`systemPromptFile` 缺失 / 越界 / 读取根未绑定）仍抛 `AgentError`,
+   *   钩子不被调用
+   */
+  resolveSystemPrompt?: (agentName: string, meta: AgentCore, base: string) => Promise<string>;
 }
 
 /**
@@ -713,19 +730,30 @@ export class Agent {
    * 防护内建；读取根在 app 启动时绑定、隔离 worker 由 wrapper 播种，见主包
    * utils/readResource.md）。构建期已保证 systemPrompt 与 systemPromptFile 二选一
    * ——读取失败（未绑定 / 文件缺失 / 越界）抛 `AgentError`，不静默降级。
+   *
+   * `deps.resolveSystemPrompt` 已接线时在 base 之上调用装饰钩子,返回值即最终
+   * system 消息——每次 run / 派发新鲜调用,子代理经同一 deps 全树生效;未接线时
+   * 原样返回 base（逐字节现状）。reactLoop 对 systemPrompt 按 truthy 处理,
+   * 内联缺省 `''` 与缺省 undefined 行为一致（不插 system 消息）。
    */
   private async resolveSystemPrompt(agentName: string, meta: AgentCore): Promise<string> {
-    if (!meta.systemPromptFile) return meta.systemPrompt as string;
-
-    try {
-      return await readResource(meta.systemPromptFile, 'utf-8');
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw new AgentError(
-        `Agent "${agentName}" systemPromptFile read failed: ${meta.systemPromptFile} (${reason}) — ` +
-          'the file must exist under the runtime resources dir (src/resources/, copied into the dist by dev/build)',
-      );
+    let base: string;
+    if (!meta.systemPromptFile) {
+      base = meta.systemPrompt ?? '';
+    } else {
+      try {
+        base = await readResource(meta.systemPromptFile, 'utf-8');
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new AgentError(
+          `Agent "${agentName}" systemPromptFile read failed: ${meta.systemPromptFile} (${reason}) — ` +
+            'the file must exist under the runtime resources dir (src/resources/, copied into the dist by dev/build)',
+        );
+      }
     }
+    return this.deps.resolveSystemPrompt
+      ? this.deps.resolveSystemPrompt(agentName, meta, base)
+      : base;
   }
 
   /**
