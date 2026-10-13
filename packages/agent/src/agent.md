@@ -55,6 +55,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | `resolveToolSchema?(tool)` | Phase 3.5 实现 | tool input 的 JSON Schema + 校验函数（基于 `zod.js` + `z.toJSONSchema`） |
 | `resolveAgentInputSchema?(agent)` | 同上（同一 resolver 实例） | sub-agent 派发入参 schema 解析（`AgentMetadata` 的 `inputTypeName` → zod.js → JSON Schema + 校验函数），见「派发入参 schema 声明」；未提供时派发一律走单字段 `input` 模式（编程式组装的向后兼容） |
 | `resolveSystemPrompt?(name, meta, base)` | —（应用组装层注入） | systemPrompt 装饰钩子：包装框架解析好的 base（内联字面量 / `systemPromptFile` 文件内容），返回值即最终 system 消息。见「resolveSystemPrompt 装饰钩子」 |
+| `resolveSubAgentContext?(subName, args, ctx)` | —（应用组装层注入） | 派发上下文钩子：`executeSubAgent` 派发边界按派发参数异步供数，返回值由框架追加进子代理 system 消息。见「resolveSubAgentContext 派发上下文钩子」 |
 
 ### `AgentDeps.ctx`（请求上下文透传）
 
@@ -170,6 +171,45 @@ const agent = new Agent(
       resolveSystemPrompt: async (name, _meta, base) => {
         const protocol = await loadProtocolBlock(name); // 应用层装饰：共享协议块 / 条件块 / DB 运行时层
         return `${base}\n\n${protocol}`;
+      },
+    },
+  }),
+);
+```
+
+### resolveSubAgentContext 派发上下文钩子（按派发参数供数）
+
+`AgentDeps.resolveSubAgentContext?: (subName, args, ctx) => Promise<string | undefined>`——sub-agent 派发边界的供数 seam：`executeSubAgent` 在派发入参校验通过后调用钩子，**返回值由框架追加进子代理最终 system 消息**（`resolveSystemPrompt` 链路结果之后，`\n\n` 分隔；`undefined` / 空串跳过）。未声明钩子 = 现状逐字节。
+
+为什么需要：既有钩子「参数与异步能力错位」——`resolveSystemPrompt` 异步但只见 agent 身份不见派发参数（签名 `(agentName, meta, base)`），`beforeToolCall` 收得到派发 args 但是同步守卫。「按本次派发参数异步取数并送达子代理」（如按 `novelId`/`chapterNo` 服务端查库把数据快照注入子代理 systemPrompt，子代理冷启动即见写作依据，省掉自己调工具读的数轮）无缝可走。业务侧原本只能自建「同步暂存-异步消费」桥接（同步钩子推帧 + 装饰钩子消费），帧配对歧义靠纪律兜底——本钩子把该模式框架化。
+
+语义细则：
+
+| 项 | 语义 |
+| --- | --- |
+| 调用时机 | 仅 `executeSubAgent` 内、派发入参校验通过之后、子循环启动之前调用——`args` 已是 coerce 后的可信值；根调用（`run`/`stream` 顶层）不触发 |
+| 参数 | `subName` 是**真实 agent 名**（非 `agent-<name>` 派发名——与 `beforeToolCall` / `afterToolCall` 收派发名不同，业务按 agent 名路由供数逻辑）；`args` 为校验后的派发入参；`ctx` 为 `deps.ctx` 请求上下文透传（与鉴权钩子同款） |
+| 追加语义 | 返回值**追加**不替换——子代理最终 system 消息 = `resolveSystemPrompt` 链路结果 + `\n\n` + 钩子产出。业务不碰 base，与 `resolveSystemPrompt` 装饰职责正交（装饰决定整条消息，本钩子只贡献末尾上下文块） |
+| 跳过规则 | 返回 `undefined` 或空串不追加（不产生空块 / 前导分隔符）；子代理 base 为空串时最终 system 即钩子产出 |
+| 实例隔离 | 每次派发构造独立子 Agent 实例、产出注入该实例——同轮 `Promise.all` 并行派发各自注入，无交叉污染 |
+| 错误传播 | 抛错原样上抛，被 reactLoop per-tool catch 回传主控 LLM（与 `AgentRecursionError` 同路径——主控可调整派发参数重试），不吞不降级 |
+| 树级传导 | deps 全树共享——主控一次注入覆盖全部可达派发层级（含 sub-sub 孙代理） |
+| 流式一致 | 流式 / 非流式父循环同一接线（钩子调用先于两分支分流），子代理 system 消息一致 |
+
+使用示例（编程式组装 / 自组装 `overrides`）：
+
+```ts
+import { Agent, createAgentDeps } from '@faapi/agent';
+
+const agent = new Agent(
+  createAgentDeps({
+    registries: ctx.registries,
+    llms,
+    overrides: {
+      resolveSubAgentContext: async (subName, args, ctx) => {
+        if (subName !== 'chapter-writer') return undefined; // 按真实 agent 名路由
+        const snapshot = await buildContextPacket(args.novelId, args.chapterNo, ctx?.currentUserId);
+        return snapshot; // 框架追加进子代理 system 消息，业务不碰 base
       },
     },
   }),
@@ -292,6 +332,10 @@ if (entry?.inputTypeName && deps.resolveAgentInputSchema) {
   callArgs = v.value ?? args;
 }
 
+// 派发上下文钩子:校验通过后异步供数,产出注入本实例（buildLoopConfig 追加进
+// 子代理 system 消息）;undefined/空串跳过,抛错原样上抛（per-tool catch 回传 LLM）
+subAgent.subAgentContextBlock = await deps.resolveSubAgentContext?.(subName, callArgs, deps.ctx);
+
 // 默认 reactLoop:继承父调用的 provider,sub 的 model 用其元数据声明（未声明沿用父 model）
 const subMeta = deps.getAgent(subName);
 const result = await subAgent.run(
@@ -316,6 +360,7 @@ return {
 
 - **`maxAgentDepth`**：默认 3。depth 从 1（根）开始,sub-agent 为 2、3...,超出抛 `AgentRecursionError`
 - **派发入参校验（富 schema 模式）**：sub 元数据声明 `inputTypeName`（handler.ts 顶层 `Input` 导出,见「派发入参 schema 声明」）且 `deps.resolveAgentInputSchema` 已接线时,执行前 `validate(args)`——失败返回 `{ error }` 回灌主控 LLM 重试（与常规 tool 校验失败同语义,不进入子循环）;通过后以 coerce 后的 value 继续传导。解析结果 `undefined`（声明了但 zod.js 缺失/损坏）抛 `AgentError` 显式失败。resolver 未接线（编程式组装/测试）或未声明 `Input` 时跳过校验,行为与历史版本一致
+- **派发上下文钩子**：`deps.resolveSubAgentContext` 已接线时,校验通过后以 `(subName, args, ctx)` 调用（args 为 coerce 后值）,返回值注入本子 Agent 实例——子循环 `buildLoopConfig` 在 `resolveSystemPrompt` 结果之后以 `\n\n` 追加为最终 system 消息（见「resolveSubAgentContext 派发上下文钩子」）。未接线 / 返回 `undefined` / 空串时逐字节现状
 - **`getAgentEntry` vs `getAgent`**：`getAgentEntry` 返回 `AgentMetadata`（含 `filePath` + `inputTypeName`）,`getAgent` 返回 `AgentCore`。两者都仅查文件 registry,不 fallback 到 skillRegistry（skill 与 agent 职责正交不耦合,skill 不参与 sub-agent 递归）。sub-agent 必须是文件型 agent,skill 不被 `agents` 列表自动引用
 - **默认 reactLoop + provider 继承**：sub-agent 统一走默认循环,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）附在 `SubAgentToolResult` 的 `trace` 字段返回给 reactLoop,reactLoop 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`usage` / `turns` 字段始终携带（子循环整树口径,reactLoop 上卷进父 run 台账,详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）。`usage` / `turns` 缺省（如 provider 不返回用量）时 reactLoop 跳过对应累加
 

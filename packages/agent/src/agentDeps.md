@@ -14,7 +14,7 @@
 ## 使用场景
 
 - **任务内组装 agent**（主要场景）：`src/tasks/<name>/task.ts` 中 `new Agent(createAgentDeps({ registries: taskCtx.registries, llms, rootDir }))`——任务数据经 payload 显式传入，鉴权身份经 `ctx` 窄对象透传（框架契约：`AgentDeps.ctx` 为 `Partial<FaapiContext>` 纯透传）
-- **自组装单点**：业务组装工厂（如 writer 的 `buildAppAgent`）用 `overrides` 叠加差异项——`resolveSystemPrompt` 装饰、schema 富化包装、config 覆盖——访问器拼装不再复刻
+- **自组装单点**：业务组装工厂（如 writer 的 `buildAppAgent`）用 `overrides` 叠加差异项——`resolveSystemPrompt` 装饰、`resolveSubAgentContext` 派发上下文供数、schema 富化包装、config 覆盖——访问器拼装不再复刻
 - **插件 setup**：`@faapi/agent` 插件内部同样经本工厂装配（与任务侧单一实现，不出现适配漂移）
 - **测试设施**：`createAgentTestHarness` 的 `registries` + `loadToolModule` 可经 `overrides` 接进同一装配（harness 自带桥接形态与此工厂同构）
 
@@ -105,6 +105,7 @@ export function buildAppAgent(ctx: FaapiContext): Agent {
     config: AGENT_RUNTIME.config,
     overrides: {
       resolveSystemPrompt: createSystemPromptResolver(),        // 业务提示词装饰
+      resolveSubAgentContext: createSubAgentContextResolver(),  // 派发边界按参数供数（见 agent.md「resolveSubAgentContext 派发上下文钩子」）
       resolveToolSchema: enrichToolSchemas(ctx.rootDir),        // 业务 schema 富化
     },
   });

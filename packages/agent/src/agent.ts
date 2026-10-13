@@ -427,6 +427,30 @@ export interface AgentDeps {
    *   钩子不被调用
    */
   resolveSystemPrompt?: (agentName: string, meta: AgentCore, base: string) => Promise<string>;
+  /**
+   * sub-agent 派发上下文钩子（可选,缺省 = 不追加——现状行为）
+   *
+   * `executeSubAgent` 在派发入参校验通过后调用,返回值由框架**追加**进子代理最终
+   * system 消息（`resolveSystemPrompt` 链路结果之后,`\n\n` 分隔;`undefined`/空串
+   * 跳过）——「按本次派发参数异步取数并送达子代理」的正当接缝（如按业务 id 服务端
+   * 查库,把数据快照注入子代理 systemPrompt,子代理冷启动即见依据）。
+   *
+   * - `subName` 是真实 agent 名（非 `agent-<name>` 派发名——与 `beforeToolCall` /
+   *   `afterToolCall` 收派发名不同）
+   * - `args` 为派发入参（富 schema 模式下是校验 coerce 后的 value）;根调用不触发
+   * - `ctx` 为 `deps.ctx` 请求上下文透传（与鉴权钩子同款）
+   * - 每次派发构造独立子 Agent 实例、产出注入该实例——同轮并行派发各自注入,无交叉
+   * - 抛错原样上抛,被 reactLoop per-tool catch 回传主控 LLM（不吞不降级）
+   * - deps 全树共享——一次注入覆盖全部可达派发层级（含 sub-sub）;流式 / 非流式
+   *   父循环同一接线
+   *
+   * 详见 [agent.md](./agent.md)「resolveSubAgentContext 派发上下文钩子」。
+   */
+  resolveSubAgentContext?: (
+    subName: string,
+    args: Record<string, unknown>,
+    ctx: Partial<FaapiContext> | undefined,
+  ) => Promise<string | undefined>;
 }
 
 // Agent 系统级错误家族持有于 agentErrors.ts（reactLoop 的历史压缩守卫需要抛
@@ -453,6 +477,17 @@ export class Agent {
    * 实例级缓存：sub-agent 各有独立 cache（tool 集合可能不同）。
    */
   private readonly schemaCache = new Map<string, ToolSchemaResolution | undefined>();
+
+  /**
+   * 派发上下文块（父侧 `executeSubAgent` 注入,仅本次派发的子循环生效）
+   *
+   * `executeSubAgent` 调用 `deps.resolveSubAgentContext` 后把产出赋到**本实例**——
+   * `buildLoopConfig` 在 `resolveSystemPrompt` 结果之后以 `\n\n` 追加为最终 system
+   * 消息。实例级字段:每次派发构造独立子 Agent 实例,同轮并行派发各自注入无交叉;
+   * 根 Agent（编程式 `run`/`stream` 直调）恒为 `undefined`,逐字节现状。
+   * 详见 [agent.md](./agent.md)「resolveSubAgentContext 派发上下文钩子」。
+   */
+  private subAgentContextBlock: string | undefined;
 
   /**
    * @param deps 运行时依赖（访问器 + providers Map + llms + config）
@@ -682,15 +717,20 @@ export class Agent {
 
     // systemPromptFile：每次 run 读文件内容作为 systemPrompt（不走缓存——dev 改
     // prompt 文件经 watcher 增量复制后立即生效，无需 reload）。读取经主包免传参
-    // readResource（读取根 app 启动时绑定、隔离 worker 播种），越界/缺失显式抛
-    // AgentError,不静默降级为空提示词
+    // readResource（读取根在 app 启动时绑定、隔离 worker 播种），越界/缺失显式抛
+    // AgentError,不静默降级为空提示词。派发上下文块（resolveSubAgentContext 产出,
+    // 父侧 executeSubAgent 注入本实例）在其后以 \n\n 追加——undefined/空串跳过,
+    // 详见 agent.md「resolveSubAgentContext 派发上下文钩子」
     const systemPrompt = await this.resolveSystemPrompt(agentName, meta);
+    const finalSystemPrompt = this.subAgentContextBlock
+      ? [systemPrompt, this.subAgentContextBlock].filter(Boolean).join('\n\n')
+      : systemPrompt;
 
     return {
       agentName,
       config: {
         provider,
-        systemPrompt,
+        systemPrompt: finalSystemPrompt,
         model,
         temperature: options?.temperature,
         maxTokens: options?.maxTokens,
@@ -1055,6 +1095,20 @@ export class Agent {
       model: subMeta?.model ?? callCtx.model,
       enableTracing: callCtx.enableTracing,
     };
+
+    // 派发上下文钩子（resolveSubAgentContext,见 agent.md 同名章节）：args 已过校验
+    // （可信）,此处异步供数并把产出注入**本子 Agent 实例**——子循环 buildLoopConfig
+    // 在 resolveSystemPrompt 结果之后以 \n\n 追加为最终 system 消息。undefined/空串
+    // 跳过（buildLoopConfig 侧判）;抛错原样上抛,被 reactLoop per-tool catch 回传主控
+    // LLM。调用先于流式/非流式分支分流——两分支同一接线。每次派发独立子 Agent 实例,
+    // 同轮并行派发各自注入无交叉
+    if (this.deps.resolveSubAgentContext) {
+      subAgent.subAgentContextBlock = await this.deps.resolveSubAgentContext(
+        subName,
+        args,
+        this.deps.ctx,
+      );
+    }
 
     // 流式父循环（deltaEmitter 存在）：子循环也跑流式,嵌套循环的 deltaContent /
     // deltaReasoning 经 emitter 实时冒泡为父流的 subagentDelta chunk（reasoning 仅

@@ -193,6 +193,11 @@ function createDeps(opts: {
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   resolveAgentInputSchemaImpl?: (agent: AgentMetadata) => Promise<ToolSchemaResolution | undefined>;
   resolveSystemPromptImpl?: (name: string, meta: AgentCore, base: string) => Promise<string>;
+  resolveSubAgentContextImpl?: (
+    subName: string,
+    args: Record<string, unknown>,
+    ctx: Partial<FaapiContext> | undefined,
+  ) => Promise<string | undefined>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
 }): AgentDeps {
   const toolsByName = new Map<string, ToolMetadata>();
@@ -232,6 +237,7 @@ function createDeps(opts: {
       ? (agent) => opts.resolveAgentInputSchemaImpl!(agent)
       : undefined,
     resolveSystemPrompt: opts.resolveSystemPromptImpl,
+    resolveSubAgentContext: opts.resolveSubAgentContextImpl,
   };
 }
 
@@ -611,6 +617,342 @@ describe('Agent', () => {
 
       expect(completeCalls).toHaveBeenCalledTimes(2);
       expect(hook).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('resolveSubAgentContext 派发上下文钩子', () => {
+    /** 派发 writer 的三响应序列（主控轮1 → 子循环 → 主控轮2） */
+    function dispatchResponses(args: Record<string, unknown> = { input: '查' }) {
+      return [
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', args)],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ];
+    }
+
+    it('阴性对照：未接线时派发逐字节现状（子代理 system 为 base 原样）', async () => {
+      const { provider, completeCalls } = createMockProvider(dispatchResponses());
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
+        role: 'system',
+        content: 'sub-base',
+      });
+    });
+
+    it('接线后追加：子代理 system = base + \\n\\n + 产出；钩子收（真实 agent 名, args, ctx）', async () => {
+      const hook = vi.fn(
+        async (
+          subName: string,
+          args: Record<string, unknown>,
+          ctx: Partial<FaapiContext> | undefined,
+        ) => `ctx[${subName}:${JSON.stringify(args)}:${ctx?.currentUserId}]`,
+      );
+      const { provider, completeCalls } = createMockProvider(dispatchResponses());
+      const agent = new Agent(
+        createDeps({
+          provider,
+          ctx: { currentUserId: 42 },
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          resolveSubAgentContextImpl: hook,
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // subName 是真实 agent 名（非派发名 agent-writer）；args 为派发入参；ctx 为 deps.ctx
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(hook).toHaveBeenCalledWith('writer', { input: '查' }, { currentUserId: 42 });
+      // 追加不替换：base 在前、产出在后、\n\n 分隔
+      expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
+        role: 'system',
+        content: 'sub-base\n\nctx[writer:{"input":"查"}:42]',
+      });
+      // 根调用不触发钩子（主控无 systemPrompt，不插 system 消息，首条为 user）
+      expect(completeCalls.mock.calls[0][0].messages[0].role).not.toBe('system');
+    });
+
+    it('与 resolveSystemPrompt 职责正交：最终 system = 装饰结果 + \\n\\n + 上下文块', async () => {
+      const { provider, completeCalls } = createMockProvider(dispatchResponses());
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          resolveSystemPromptImpl: async (_name, _meta, base) => `decorated(${base})`,
+          resolveSubAgentContextImpl: async () => 'snapshot-block',
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls.mock.calls[1][0].messages[0].content).toBe(
+        'decorated(sub-base)\n\nsnapshot-block',
+      );
+    });
+
+    it('返回 undefined / 空串跳过：不产生空块与尾部分隔符，system 与 base 一致', async () => {
+      const hook = vi.fn(async (subName: string) => (subName === 'writer' ? '' : undefined));
+      const { provider, completeCalls } = createMockProvider(dispatchResponses());
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          resolveSubAgentContextImpl: hook,
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
+        role: 'system',
+        content: 'sub-base',
+      });
+    });
+
+    it('空 base：子代理无 systemPrompt 时最终 system 即钩子产出', async () => {
+      const { provider, completeCalls } = createMockProvider(dispatchResponses());
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer' })],
+          resolveSubAgentContextImpl: async () => 'only-block',
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
+        role: 'system',
+        content: 'only-block',
+      });
+    });
+
+    it('富 schema 校验失败 → 钩子不被调用，error 回灌主控', async () => {
+      const hook = vi.fn(async () => 'should-not-inject');
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { novelId: 'n1' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'parent-final', stopReason: 'stop' }),
+      ]);
+      const writer = {
+        core: agentMeta({ name: 'writer' }),
+        entry: agentEntry({ name: 'writer', inputTypeName: 'Input' }),
+      };
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+          resolveAgentInputSchemaImpl: async () => ({
+            jsonSchema: { type: 'object' },
+            validate: () => ({ ok: false, error: 'chapterId is required' }),
+          }),
+          resolveSubAgentContextImpl: hook,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(result.content).toBe('parent-final');
+      expect(hook).not.toHaveBeenCalled();
+      const toolMsg = completeCalls.mock.calls[1][0].messages.find(
+        (m: LLMMessage) => m.role === 'tool',
+      );
+      expect(toolMsg!.content).toMatch(/chapterId is required/);
+    });
+
+    it('钩子抛错：走 per-tool 错误链回灌主控 LLM，run 不崩', async () => {
+      const hook = vi.fn(async () => {
+        throw new Error('context exploded');
+      });
+      // 抛错路径没有子循环请求——主控轮1（派发）+ 主控轮2（消费错误回灌）两响应
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          resolveSubAgentContextImpl: hook,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // run 正常收尾，错误作为 tool 结果回传主控 LLM（不吞不降级、不冒泡为 run 失败）
+      expect(result.content).toBe('final');
+      expect(hook).toHaveBeenCalledTimes(1);
+      const toolMsg = completeCalls.mock.calls[1][0].messages.find(
+        (m: LLMMessage) => m.role === 'tool',
+      );
+      expect(toolMsg!.content).toMatch(/context exploded/);
+    });
+
+    it('同轮并行派发：各自实例各自注入，无交叉污染', async () => {
+      const writer = agentMeta({ name: 'writer', systemPrompt: 'w-base' });
+      const reviewer = agentMeta({ name: 'reviewer', systemPrompt: 'r-base' });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [
+            toolCall('c1', 'agent-writer', { input: '写' }),
+            toolCall('c2', 'agent-reviewer', { input: '审' }),
+          ],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'w', stopReason: 'stop' }),
+        llmResponse({ content: 'r', stopReason: 'stop' }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer', 'reviewer'] }),
+          subAgents: [writer, reviewer],
+          resolveSubAgentContextImpl: async (subName, args) =>
+            `${subName}:${(args as { input: string }).input}`,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(result.content).toBe('final');
+      // 两个子循环请求（索引 1、2）的 system 各自注入各自产出——顺序无关断言
+      const subContents = completeCalls.mock.calls
+        .slice(1, 3)
+        .map((c) => c[0].messages[0].content)
+        .sort();
+      expect(subContents).toEqual(['r-base\n\nreviewer:审', 'w-base\n\nwriter:写']);
+    });
+
+    it('sub-sub 孙代理传导：每层派发各自调用（writer 派发一次 + 孙派发一次）', async () => {
+      const writer = agentMeta({ name: 'writer', systemPrompt: 'w-base', agents: ['grandchild'] });
+      const grandchild = agentMeta({ name: 'grandchild', systemPrompt: 'g-base' });
+      const { provider, completeCalls } = createMockProvider([
+        // 主控轮1 → writer 轮1 → 孙循环 → writer 轮2 → 主控轮2
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: 'w-args' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({
+          toolCalls: [toolCall('d1', 'agent-grandchild', { input: 'g-args' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'grandchild-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'writer-final', stopReason: 'stop' }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+      const deps = createDeps({
+        provider,
+        agent: agentMeta({ agents: ['writer'] }),
+        subAgents: [writer, grandchild],
+        resolveSubAgentContextImpl: async (subName, args) =>
+          `${subName}:${(args as { input: string }).input}`,
+      });
+      // createDeps 默认只挂根的 sub-agents——覆盖为两层解析（与两层嵌套冒泡测试同款）
+      deps.resolveSubAgents = (name: string) =>
+        name === 'researcher' ? [writer] : name === 'writer' ? [grandchild] : [];
+      const agent = new Agent(deps);
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(result.content).toBe('final');
+      // call 1 = writer 子循环、call 2 = 孙循环：各自 base + 各自产出
+      expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('w-base\n\nwriter:w-args');
+      expect(completeCalls.mock.calls[2][0].messages[0].content).toBe(
+        'g-base\n\ngrandchild:g-args',
+      );
+    });
+
+    it('单字段 input 模式与富 schema coerce 后 args 均按实际派发入参传钩子', async () => {
+      const writer = {
+        core: agentMeta({ name: 'writer' }),
+        entry: agentEntry({ name: 'writer', inputTypeName: 'Input' }),
+      };
+      const hook = vi.fn(async (_subName: string, args: Record<string, unknown>) =>
+        typeof args.chapterId === 'number' ? 'coerced' : 'raw',
+      );
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { novelId: 'n1', chapterId: '3' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'sub', stopReason: 'stop' }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [writer.core],
+          subAgentEntries: [writer.entry],
+          resolveAgentInputSchemaImpl: async () => ({
+            jsonSchema: { type: 'object' },
+            validate: () => ({ ok: true, value: { novelId: 'n1', chapterId: 3 } }),
+          }),
+          resolveSubAgentContextImpl: hook,
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 钩子收到的是 coerce 后的 value（chapterId 已是 number），注入发生在子循环 system
+      expect(hook).toHaveBeenCalledWith('writer', { novelId: 'n1', chapterId: 3 }, undefined);
+      expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('coerced');
+    });
+
+    it('流式父循环同款接线：子代理 system 同样被追加', async () => {
+      const { provider, streamCalls } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
+            finishReason: 'tool_calls',
+          },
+        ],
+        [{ deltaContent: '子内容', finishReason: 'stop' }],
+        [{ deltaContent: 'final', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          resolveSubAgentContextImpl: async () => 'stream-block',
+        }),
+      );
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
+      // 子循环请求（第 2 次 stream 调用）的 system 已追加
+      const childRequest = streamCalls.mock.calls[1][0];
+      expect(childRequest.messages[0]).toEqual({
+        role: 'system',
+        content: 'sub-base\n\nstream-block',
+      });
     });
   });
 
