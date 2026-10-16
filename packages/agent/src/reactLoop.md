@@ -25,7 +25,7 @@
 | --- | --- |
 | `ToolExecutor` | tool 执行函数 `(name, args) => Promise<unknown>`，由 Agent 类提供 |
 | `ReactLoopConfig` | 循环配置（provider + systemPrompt + tools + executeTool + maxTurns + model 等） |
-| `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage）；`usage` / `turns` 为整树口径（见「usage 与 turns 的整树口径」章节） |
+| `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage + traceId + trace）；`usage` / `turns` 为整树口径（见「usage 与 turns 的整树口径」章节）；`traceId` 由 Agent 层填充（循环不感知,见 [traceId.md](./traceId.md)） |
 | `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + done）；`done.usage` / `done.turns` 同整树口径 |
 | `SubAgentToolResult` | sub-agent tool 的结构化返回值（`{ __subAgent: true, result, usage?, turns?, trace? }`），reactLoop 识别后上卷用量、剥壳回传（见「usage 与 turns 的整树口径」章节） |
 | `ReactLoopError` | 系统级错误（maxTurns 超限，携带中断时 messages 供续跑），tool 执行错误不抛此类型 |
@@ -164,7 +164,7 @@ interface ReactLoopStreamChunk {
   /** tool 执行完成（含结果，供 UI 展示） */
   toolResult?: { name: string; result: string };
   /** 循环结束（最终结果） */
-  done?: { content: string; reasoning?: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage };
+  done?: { content: string; reasoning?: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage; traceId?: string };
 }
 ```
 

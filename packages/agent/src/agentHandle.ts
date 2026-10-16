@@ -115,6 +115,16 @@ export interface AgentRunOptions {
    */
   enableTracing?: boolean;
   /**
+   * 层级追踪 ID(详见 @faapi/agent 的 [traceId](./traceId.md) 文档)
+   *
+   * 显式指定本次调用的完整 traceId——优先级最高,`config.agent.traceId: false`
+   * 时也生效。根调用传业务关联 ID(如 `ctx.requestId`)可把 agent 调用树挂到
+   * HTTP 请求链路;不传时自动生成(12 位十六进制段)。
+   *
+   * sub-agent 派发由框架内部续拼(父完整 ID + '.' + 新段),业务方无需关心。
+   */
+  traceId?: string;
+  /**
    * 初始对话历史（续跑 / 多轮对话）
    *
    * 提供时以其为基础,agent 的 systemPrompt 缺失时自动补齐；`input` 非空时追加为

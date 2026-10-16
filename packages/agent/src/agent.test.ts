@@ -24,6 +24,7 @@ import type {
   LLMToolDefinition,
   LLMToolCall,
 } from './provider';
+import type { SubAgentCallEvent } from './trace';
 
 // 任务侧鉴权字段增强（declare module 声明合并）——与业务方 src/tasks/** 的用法同构：
 // 窄 ctx 携带增强字段直传 AgentDeps.ctx（Partial<FaapiContext>），免 as 断言
@@ -215,7 +216,11 @@ function createDeps(opts: {
     providers,
     llms,
     rootDir: '/project',
-    config: opts.config,
+    // 未显式传 config 的用例钉住 traceId: false——大量用例对 system 消息做
+    // 逐字节断言（「逐字节现状」阴性对照），而 traceId 默认开启会在 system 末尾
+    // 追加注入块。traceId 自身的默认开启/注入/链式行为由「traceId 追踪标识」
+    // describe 全量覆盖；传了 config 的用例不钉（该用例自管）
+    config: opts.config ?? { traceId: false },
     ctx: opts.ctx,
     getAgent: (name) =>
       name === opts.agent.name ? opts.agent : opts.subAgents?.find((a) => a.name === name),
@@ -2079,6 +2084,208 @@ describe('Agent', () => {
       expect(reasoning).toEqual(['思考中']);
       const done = chunks.find((c) => c.done !== undefined);
       expect(done!.done!.reasoning).toBe('思考中');
+    });
+  });
+
+  describe('traceId 追踪标识', () => {
+    it('run 自动生成 traceId:注入 system 末尾单行块,结果与 trace 携带同一 ID', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          config: { enableTracing: true },
+        }),
+      );
+
+      const result = await agent.run('hi', { agent: 'researcher' });
+
+      expect(result.traceId).toMatch(/^[0-9a-f]{12}$/);
+      const sys = completeCalls.mock.calls[0][0].messages[0];
+      expect(sys.role).toBe('system');
+      const [base, block] = sys.content.split('\n\n');
+      expect(base).toBe('You are helpful');
+      expect(block).toBe(
+        `[trace] trace_id=${result.traceId} (internal observability id — do not mention it in your reply, and do not let it affect your answer)`,
+      );
+      expect(result.trace!.traceId).toBe(result.traceId);
+    });
+
+    it('options.traceId 显式指定:原样作为本次 ID 并注入（优先级最高）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+        }),
+      );
+
+      const result = await agent.run('hi', { agent: 'researcher', traceId: 'req-42' });
+
+      expect(result.traceId).toBe('req-42');
+      expect(completeCalls.mock.calls[0][0].messages[0].content).toContain('trace_id=req-42');
+    });
+
+    it('config.traceId:false:不生成不注入,system 逐字节现状', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          config: { traceId: false },
+        }),
+      );
+
+      const result = await agent.run('hi', { agent: 'researcher' });
+
+      expect(result.traceId).toBeUndefined();
+      expect(completeCalls.mock.calls[0][0].messages[0].content).toBe('You are helpful');
+    });
+
+    it('全局关闭但 options.traceId 显式传:显式优先生效', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          config: { traceId: false },
+        }),
+      );
+
+      const result = await agent.run('hi', { agent: 'researcher', traceId: 'x1' });
+
+      expect(result.traceId).toBe('x1');
+      expect(completeCalls.mock.calls[0][0].messages[0].content).toContain('trace_id=x1');
+    });
+
+    it('sub-agent 链式:子 ID = 父完整ID.新段,子请求 system 与 sub-trace 一致', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '写' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'parent-final', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ name: 'researcher', systemPrompt: 'P', agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'S' })],
+          subAgentEntries: [agentEntry({ name: 'writer' })],
+          config: { enableTracing: true },
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(result.traceId).toMatch(/^[0-9a-f]{12}$/);
+      const childSys = completeCalls.mock.calls[1][0].messages[0];
+      expect(childSys.role).toBe('system');
+      expect(childSys.content.startsWith('S\n\n[trace] trace_id=')).toBe(true);
+      const childId = childSys.content.match(/trace_id=([0-9a-f.]+)/)![1];
+      expect(childId.startsWith(`${result.traceId}.`)).toBe(true);
+      expect(childId.split('.')).toHaveLength(2);
+      const subEvent = result.trace!.events.find(
+        (e): e is SubAgentCallEvent => e.type === 'subagent_call',
+      );
+      expect(subEvent!.trace.traceId).toBe(childId);
+    });
+
+    it('stream:done chunk 携带 traceId,system 消息同样注入', async () => {
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'Hello' }, { finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          // helper 对未传 config 的用例钉 traceId:false,此处显式开启（默认开启同码路径）
+          config: { traceId: true },
+        }),
+      );
+
+      const chunks = await collect(agent.stream('hi', { agent: 'researcher' }));
+
+      const done = chunks.find((c) => c.done !== undefined)!.done!;
+      expect(done.traceId).toMatch(/^[0-9a-f]{12}$/);
+      const sys = streamCalls.mock.calls[0][0].messages[0];
+      expect(sys.content).toContain(`trace_id=${done.traceId}`);
+      expect(sys.content.startsWith('You are helpful\n\n[trace] trace_id=')).toBe(true);
+    });
+
+    it('空 systemPrompt:不注入（不凭空多出 system 消息）,结果仍携带 traceId', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ model: 'gpt-4o' }),
+          // helper 对未传 config 的用例钉 traceId:false,此处显式开启（默认开启同码路径）
+          config: { traceId: true },
+        }),
+      );
+
+      const result = await agent.run('hi', { agent: 'researcher' });
+
+      expect(result.traceId).toMatch(/^[0-9a-f]{12}$/);
+      const messages: LLMMessage[] = completeCalls.mock.calls[0][0].messages;
+      expect(messages.some((m) => m.role === 'system')).toBe(false);
+    });
+
+    it('续跑历史自带 system:历史不改写不重复注入,结果生成新 traceId', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          // helper 对未传 config 的用例钉 traceId:false,此处显式开启（默认开启同码路径）
+          config: { traceId: true },
+        }),
+      );
+
+      const result = await agent.run(undefined, {
+        agent: 'researcher',
+        messages: [
+          { role: 'system', content: 'old system' },
+          { role: 'user', content: 'hi' },
+        ],
+      });
+
+      expect(result.traceId).toMatch(/^[0-9a-f]{12}$/);
+      const messages: LLMMessage[] = completeCalls.mock.calls[0][0].messages;
+      const sys = messages.find((m) => m.role === 'system');
+      expect(sys!.content).toBe('old system');
+    });
+
+    it('config.traceIdTemplate 自定义:{traceId} 占位符替换', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          config: { traceIdTemplate: 'T={traceId}' },
+        }),
+      );
+
+      const result = await agent.run('hi', { agent: 'researcher' });
+
+      expect(completeCalls.mock.calls[0][0].messages[0].content).toBe(
+        `You are helpful\n\nT=${result.traceId}`,
+      );
     });
   });
 

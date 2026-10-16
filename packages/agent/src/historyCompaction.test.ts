@@ -336,6 +336,9 @@ describe('historyCompactor 子代理传导', () => {
     const config: AgentRuntimeConfig = {
       maxHistoryTokens: 200,
       historyCompactor: compactor,
+      // 本用例对 system 消息头部做精确断言,钉住 traceId（其默认注入块与本用例无关,
+      // 见 agent.test.ts createDeps 同款约定;traceId 行为见 agent.test.ts 专属 describe）
+      traceId: false,
     };
     const deps: AgentDeps = {
       providers: new Map([['openai', provider]]),

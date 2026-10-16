@@ -127,6 +127,13 @@ interface AgentRunOptions {
    * 配对不完整时抛 `AgentError`。
    */
   messages?: LLMMessage[];
+  /**
+   * 层级追踪 ID（详见 [traceId.md](./traceId.md)）——显式指定本次调用的完整 traceId,
+   * 优先级最高（`config.agent.traceId: false` 时也生效）。根调用可传业务关联 ID
+   * （如 `ctx.requestId`）；不传时自动生成（12 位十六进制段）。
+   * sub-agent 派发由框架内部链式续拼（父完整 ID + '.' + 新段）。
+   */
+  traceId?: string;
 }
 
 interface AgentHandle {
@@ -154,6 +161,7 @@ interface AgentHandle {
 | `temperature` | `options.temperature` | model 级 `models[m].temperature` | provider 级 `LlmConfig.temperature` |
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（全局透传） |
 | `maxTurns` | — | `meta.maxTurns`（agent 元数据） | `AgentRuntimeConfig.maxTurns`（全局） |
+| `traceId` | `options.traceId`（显式指定,全局关闭也生效） | — | 自动生成段（`config.agent.traceId` 默认 `true`;显式 `false` 整体关闭） |
 
 > `provider` / `temperature` / `maxTokens` 没有「agent 元数据」层——agent handler 的 `config` 块只提取 `systemPrompt` / `model` / `maxTurns` / `tools` / `agents`,不提取 provider/temperature/maxTokens。
 

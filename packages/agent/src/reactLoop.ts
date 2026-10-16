@@ -202,6 +202,14 @@ export interface ReactLoopResult {
    * 详见 [trace.md](./trace.md)。
    */
   trace?: AgentTrace;
+  /**
+   * 层级追踪 ID（详见 [traceId.md](./traceId.md)）
+   *
+   * Agent 层在循环返回后填充（reactLoop 不感知——traceId 是 agent 调用概念,
+   * 非循环概念）;`config.agent.traceId: false` 且未显式传 `options.traceId` 时
+   * `undefined`。流式路径经 `done` chunk 携带（同字段语义）。
+   */
+  traceId?: string;
 }
 
 /**
@@ -244,6 +252,8 @@ export interface ReactLoopStreamChunk {
     stopReason: LLMStopReason;
     /** 整树口径（全部 llm_call 之和），与 ReactLoopResult.usage 一致 */
     usage?: LLMUsage;
+    /** 层级追踪 ID（Agent 层填充,与 ReactLoopResult.traceId 同语义,见 traceId.md） */
+    traceId?: string;
   };
 }
 

@@ -27,10 +27,17 @@ vi.mock('@faapi/faapi/src/loader/loadToolSchema', async (importOriginal) => {
 });
 
 // ─── Mock ./provider 避免 real HTTP ──────────────────
+// completeRequests 经 vi.hoisted 跨 mock 边界共享——配置映射用例断言 Agent 实际发给
+// provider 的 system 消息（traceId 开关/模板经 plugin → AgentRuntimeConfig 生效）
+const { completeRequests } = vi.hoisted(() => ({
+  completeRequests: [] as { messages: unknown[] }[],
+}));
+
 vi.mock('./provider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./provider')>();
   const mockProvider = {
-    async complete() {
+    async complete(request: { messages: unknown[] }) {
+      completeRequests.push(request);
       return {
         message: { role: 'assistant' as const, content: 'ok' },
         stopReason: 'stop' as const,
@@ -192,6 +199,35 @@ describe('@faapi/agent plugin', () => {
       const h1 = factory!(makeReqCtx());
       const h2 = factory!(makeReqCtx());
       expect(h1).not.toBe(h2);
+    });
+
+    it('config.agent.traceId:false 映射 AgentRuntimeConfig——run 的 system 消息无 trace 注入块', async () => {
+      completeRequests.length = 0;
+      const factory = setupAndCaptureFactory(makeCtx({ ...fullAgentConfig, traceId: false }));
+      const agent = factory!(makeReqCtx()) as Agent;
+
+      const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('ok');
+      expect(result.traceId).toBeUndefined();
+      expect(completeRequests[0]!.messages[0]).toEqual({
+        role: 'system',
+        content: 'you are a researcher',
+      });
+    });
+
+    it('config.agent.traceIdTemplate 映射 AgentRuntimeConfig——run 的 system 消息用自定义文案', async () => {
+      completeRequests.length = 0;
+      const factory = setupAndCaptureFactory(
+        makeCtx({ ...fullAgentConfig, traceIdTemplate: 'T={traceId}' }),
+      );
+      const agent = factory!(makeReqCtx()) as Agent;
+
+      const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.traceId).toMatch(/^[0-9a-f]{12}$/);
+      expect(completeRequests[0]!.messages[0]).toEqual({
+        role: 'system',
+        content: `you are a researcher\n\nT=${result.traceId}`,
+      });
     });
   });
 

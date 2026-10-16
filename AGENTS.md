@@ -453,6 +453,12 @@ export default {
     // enableTracing: true,                      // 开启 tracing（默认 false——opt-in，不开启零开销）。
                                                  //   开启时 agent.run()/stream() 返回 result.trace / chunk.traceEvent,
                                                  //   详见 @faapi/agent 的 trace.md
+    // traceId: true,                            // 层级追踪 ID（默认 true——自动生成）。
+                                                 //   每次 run/stream 生成 12 位十六进制段，sub-agent 链式续拼
+                                                 //   （父完整ID.子段），注入 system prompt 末尾并在结果暴露
+                                                 //   （result.traceId / done.traceId / trace.traceId）；
+                                                 //   traceIdTemplate 自定义注入文案（须含 {traceId} 占位符）。
+                                                 //   详见 @faapi/agent 的 traceId.md
     // 鉴权钩子（authHooks，详见 @faapi/agent 的 authHooks.md）：
     //   beforeToolCall——所有 tool + sub-agent 执行前的守卫（agent- 前缀为 sub-agent，
     //   派发工具名经主包 subAgentToolName 生成，前缀常量 SUB_AGENT_TOOL_PREFIX）。

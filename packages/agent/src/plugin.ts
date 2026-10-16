@@ -94,6 +94,9 @@ const agentPlugin: FaapiPlugin = {
       maxTurns: agentConfig?.maxTurns,
       maxAgentDepth: agentConfig?.maxAgentDepth,
       maxHistoryTokens: agentConfig?.maxHistoryTokens,
+      // traceId 层级追踪（见 ./traceId.md）——默认开启,显式 false 整体关闭
+      traceId: agentConfig?.traceId,
+      traceIdTemplate: agentConfig?.traceIdTemplate,
       // 鉴权钩子（authHooks,见 ./authHooks.md）——业务方在 config.agent 声明
       beforeToolCall: agentConfig?.beforeToolCall,
       afterToolCall: agentConfig?.afterToolCall,
