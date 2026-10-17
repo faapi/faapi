@@ -207,6 +207,37 @@ describe('createPgBossDriver 组记账', () => {
     expect(fakeBosses()[0]!.sent[0]!.data).toEqual({ to: 'a@b.c' });
   });
 
+  it('enqueue 带链键：载荷包装存储、不登记成员表；work/findJobs 还原 chainKey', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('chains', { seg: 1 }, { chainKey: 'c:1' });
+    const boss = fakeBosses()[0]!;
+    expect(boss.sent[0]!.data).toEqual({ __faapiChain: 'c:1', __faapiPayload: { seg: 1 } });
+    expect(boss.sqls.find((s) => SQL_IS.memberInsert(s.text))).toBeUndefined();
+
+    // work 交付还原 chainKey
+    const process = vi.fn(async () => 'ok');
+    await driver.startWorker('chains', { concurrency: 1, process });
+    await boss.workHandlers
+      .at(-1)!
+      .handler([
+        { id: 'j1', data: { __faapiChain: 'c:1', __faapiPayload: { seg: 1 } }, retryCount: 0 },
+      ]);
+    expect(process).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'j1', payload: { seg: 1 }, chainKey: 'c:1' }),
+    );
+
+    // findJobs 记录还原 chainKey
+    boss.findJobs.mockResolvedValue([
+      rawJob({
+        id: 'j1',
+        state: 'created',
+        data: { __faapiChain: 'c:1', __faapiPayload: { seg: 1 } },
+      }),
+    ]);
+    const records = await driver.list!({ name: 'chains' });
+    expect(records[0]).toMatchObject({ id: 'j1', payload: { seg: 1 }, chainKey: 'c:1' });
+  });
+
   it('work 交付从载荷包装还原业务 payload 与 groupId', async () => {
     const driver = createPgBossDriver();
     const process = vi.fn(async () => 'ok');

@@ -144,6 +144,8 @@ export interface TaskJob {
   progress?: unknown;
   /** 所属任务组（组投递的成员任务携带；非组任务无此字段） */
   groupId?: string;
+  /** 所属链（链式投递的任务携带；chainKey 键控单飞语义见 taskChain.md） */
+  chainKey?: string;
   createdAt: number;
   /** 计划执行时间戳（重试/延迟任务与 createdAt 不同） */
   runAt?: number;
@@ -333,6 +335,31 @@ export interface TaskClient {
     payload?: unknown,
     opts?: { delayMs?: number; dedupId?: string },
   ): Promise<{ id: string }>;
+  /**
+   * 链式投递：chainKey 键控单飞（同键至多一条活跃任务），无活跃才入队（完整
+   * 语义见 taskChain.md）
+   *
+   * - opts.chainKey 必填非空字符串——业务关联键（如 `deconstruct:<novelId>`），
+   *   活跃查证按键过滤，不依赖 payload 形状
+   * - 活跃（pending/running/retry）同键任务存在 → 不投，返回活跃任务现状；
+   *   无活跃 → 入队（dedupId 框架托管 `faapi-chain:<chainKey>:<时间戳>`，终态后
+   *   可重投），返回新任务 id
+   * - opts.excludeJobId：活跃查证时跳过的 job id——任务执行路径（taskCtx.tasks）
+   *   自动注入为调用方自身（任务内自续投不被自身 running 态挡住），非任务上下文
+   *   调用无需手传
+   *
+   * @returns enqueued=false 时附带活跃任务 jobId/status；enqueued=true 时附带新任务 id
+   * @throws 任务不存在 / chainKey 缺失或空白 / 队列已停止 / payload 校验失败
+   *   （ValidationError）/ 驱动未实现 TaskDriver.list（活跃查证能力边界，
+   *   与 listQueued 同口径）
+   */
+  enqueueChain(
+    name: string,
+    payload?: unknown,
+    opts?: { chainKey: string; delayMs?: number; excludeJobId?: string },
+  ): Promise<
+    { enqueued: true; id: string } | { enqueued: false; jobId: string; status: TaskJobStatus }
+  >;
   /** 任务记录快照（可按任务名过滤）——本进程内存活记录，不含其他实例/重启前历史 */
   list(name?: string): TaskJob[];
   /**

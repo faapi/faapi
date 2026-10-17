@@ -10,7 +10,7 @@ import type {
   TaskDriverJob,
   TaskDriverProcess,
 } from './driverTypes';
-import type { TaskGroupSnapshot, TaskModule } from './taskTypes';
+import type { TaskClient, TaskGroupSnapshot, TaskModule } from './taskTypes';
 
 /**
  * 任务组语义层测试：组投递门面（全量校验前置 / 幂等重投 / 能力边界）与
@@ -611,12 +611,13 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
 });
 
 describe('taskCtx.tasks（任务侧客户端）', () => {
-  it('进程内任务的 taskCtx.tasks 即队列本体：任务内扇出经其入队', async () => {
-    let seenTasks: unknown;
+  it('进程内任务的 taskCtx.tasks 委托队列本体：任务内扇出经其入队（enqueue 同一驱动通道）', async () => {
+    let fanoutEnqueued = false;
     const deps = makeDeps({
       fanout: {
-        run: vi.fn(async (_payload: unknown, taskCtx: { tasks?: unknown }) => {
-          seenTasks = taskCtx.tasks;
+        run: vi.fn(async (_payload: unknown, taskCtx: { tasks: TaskClient }) => {
+          await taskCtx.tasks.enqueue('chunks', {});
+          fanoutEnqueued = true;
           return 'ok';
         }),
       },
@@ -635,7 +636,9 @@ describe('taskCtx.tasks（任务侧客户端）', () => {
       attempt: 1,
       signal: new AbortController().signal,
     });
-    expect(seenTasks).toBe(queue);
+    expect(fanoutEnqueued).toBe(true);
+    // 入队经 taskCtx.tasks 与经队列本体同一通道（驱动 enqueues 收到 chunks 投递）
+    expect(fake.enqueues.some((e) => e.name === 'chunks')).toBe(true);
     await queue.stop();
   });
 });

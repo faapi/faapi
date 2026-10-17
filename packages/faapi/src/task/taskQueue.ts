@@ -6,6 +6,7 @@ import { createLogger, getEffectiveLogLevel, writeLogEntry } from '../logger/log
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { TaskDriverJob } from './driverTypes';
 import type {
+  TaskClient,
   TaskContext,
   TaskEvent,
   TaskGroupOnFailure,
@@ -31,10 +32,25 @@ const GROUP_MEMBER_DEDUP = (groupId: string, index: number): string =>
   `faapi-group:${groupId}:${index}`;
 const GROUP_COMPLETION_DEDUP = (groupId: string): string => `faapi-group:${groupId}:complete`;
 
+/**
+ * 链式投递幂等键（taskChain.md，框架独占管理）：时间戳后缀保证终态后可重投
+ * （固定键在队列保留期内占坑会被 DO NOTHING 误挡续投）；同毫秒同键重复投递
+ * 命中同一任务（dedup 语义，至多一份）
+ */
+const CHAIN_DEDUP = (chainKey: string, at: number): string => `faapi-chain:${chainKey}:${at}`;
+
+/**
+ * 链式活跃查证快照容量（driver.list 按 createdAt 降序截断）：同任务名历史记录
+ * 积压超限时最旧的活跃任务可能不在快照内而漏判——建议配合队列侧保留策略清理
+ * 终态记录（边界声明见 taskChain.md「记账与原子性边界」）
+ */
+const CHAIN_SCAN_LIMIT = 200;
+
 /** 隔离任务 taskCtx.tasks 代理允许回传宿主的方法（纯数据方法全集；subscribe 为
  * 回调签名不可跨线程，隔离路径由 worker 侧代理显式拒绝，宿主侧白名单同样不放行） */
 const TASK_CLIENT_METHODS: ReadonlySet<string> = new Set([
   'enqueue',
+  'enqueueChain',
   'enqueueGroup',
   'list',
   'listQueued',
@@ -345,6 +361,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       createdAt: Date.now(),
     };
     if (job.groupId !== undefined) record.groupId = job.groupId;
+    if (job.chainKey !== undefined) record.chainKey = job.chainKey;
     record.attempts = job.attempt;
     transitionStatus(record, 'running');
     // 派发清空上一轮的进度（本轮执行经 taskCtx.progress 重新写入）
@@ -391,15 +408,25 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           },
           onLog: writeLogEntry,
           // 隔离路径的 taskCtx.tasks 为 postMessage RPC 代理——宿主侧按方法名
-          // 分派到队列本体（与 ctx.tasks / app.tasks 同一实例），结果/错误按 seq 回传
+          // 分派到队列本体（与 ctx.tasks / app.tasks 同一实例），结果/错误按 seq 回传；
+          // 链式投递注入调用方自身 job id（与进程内 scoped 客户端同语义——任务内
+          // 自续投的活跃查证排除自身）
           onTasksCall: async (method, args) => {
             if (!TASK_CLIENT_METHODS.has(method)) {
               throw new Error(`[faapi] Unknown task client method "${method}"`);
             }
+            let callArgs = args;
+            if (method === 'enqueueChain') {
+              callArgs = [...args];
+              callArgs[2] = {
+                ...((callArgs[2] as Record<string, unknown> | undefined) ?? {}),
+                excludeJobId: job.id,
+              };
+            }
             const fn = (queue as unknown as Record<string, (...a: unknown[]) => unknown>)[
               method
             ] as (...a: unknown[]) => unknown;
-            return fn.apply(queue, args);
+            return fn.apply(queue, callArgs);
           },
         });
       } else {
@@ -413,8 +440,9 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         }
         const taskCtx: TaskContext = {
           signal: job.signal,
-          // 活引用：与 ctx.tasks / app.tasks 同一 app 实例队列
-          tasks: queue,
+          // 执行作用域客户端：委托队列本体（与 ctx.tasks / app.tasks 同一 app 实例），
+          // 链式投递自动注入调用方自身 job id（enqueueChain 排除自身）
+          tasks: createScopedTaskClient(job.id),
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
           registries: registriesView,
@@ -486,7 +514,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   async function enqueueCore(
     name: string,
     payload: unknown,
-    opts?: { delayMs?: number; dedupId?: string; groupId?: string },
+    opts?: { delayMs?: number; dedupId?: string; groupId?: string; chainKey?: string },
   ): Promise<string> {
     if (stopped) {
       throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
@@ -503,6 +531,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       timeoutMs: meta.timeoutMs,
       graceMs: meta.graceMs,
       ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
+      ...(opts?.chainKey !== undefined ? { chainKey: opts.chainKey } : {}),
     });
     // driver.enqueue 可能已同步触发派发——runJob 已写入
     // running/done 记录时不要用 pending 覆盖
@@ -514,11 +543,73 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         status: 'pending',
         attempts: 0,
         ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
+        ...(opts?.chainKey !== undefined ? { chainKey: opts.chainKey } : {}),
         createdAt: Date.now(),
         ...(opts?.delayMs ? { runAt: Date.now() + opts.delayMs } : {}),
       });
     }
     return id;
+  }
+
+  /**
+   * 持久化队列视图与本进程记录的合并快照（listQueued 门面与链式活跃查证共用）：
+   * 驱动记录按 id 合并本进程观测（本进程优先——attempts/status/result/error 更实时）。
+   * 驱动未实现 TaskDriver.list 显式抛错（与 listQueued 同口径，不降级）。
+   */
+  async function listQueuedRecords(name: string | undefined, limit: number): Promise<TaskJob[]> {
+    if (!driver.list) {
+      throw new Error(
+        "[faapi] Task driver does not support listing queued tasks (TaskDriver.list is not implemented). Use the queue system's own management tools, or see driverTypes.md for per-driver capability.",
+      );
+    }
+    const queued = await driver.list({ name, limit });
+    const merged = new Map<string, TaskJob>();
+    for (const record of queued) {
+      // name 过滤语义层兜底（不依赖驱动实现的过滤正确性）
+      if (name !== undefined && record.name !== name) continue;
+      merged.set(record.id, {
+        id: record.id,
+        name: record.name,
+        payload: record.payload,
+        status: record.status,
+        attempts: record.attempts,
+        createdAt: record.createdAt,
+        ...(record.groupId !== undefined ? { groupId: record.groupId } : {}),
+        ...(record.chainKey !== undefined ? { chainKey: record.chainKey } : {}),
+        ...(record.result !== undefined ? { result: record.result } : {}),
+        ...(record.error !== undefined ? { error: record.error } : {}),
+        ...(record.runAt !== undefined ? { runAt: record.runAt } : {}),
+      });
+    }
+    // 本进程执行记录优先（attempts/status/result/error 更实时），覆盖驱动侧同 id 记录
+    for (const local of records.values()) {
+      if (name !== undefined && local.name !== name) continue;
+      merged.set(local.id, { ...local });
+    }
+    return [...merged.values()];
+  }
+
+  /**
+   * 任务执行作用域的 TaskClient 包装：enqueueChain 自动注入调用方自身 job id
+   * （活跃查证排除自身——任务体内自续投不被自身 running 态挡住，手写
+   * `j.id !== 当前job.id` 的样板与漏写断链风险由本约定消除）。与队列本体的差异
+   * 仅在链式投递的调用方身份注入，其余方法直委托（同一 app 实例队列语义不变）。
+   */
+  function createScopedTaskClient(jobId: string): TaskClient {
+    return {
+      enqueue: (name, payload, opts) => queue.enqueue(name, payload, opts),
+      // opts 为 undefined 时 chainKey 守卫先抛错（注入无观察差异），不额外兜底
+      enqueueChain: (name, payload, opts) =>
+        queue.enqueueChain(name, payload, opts && { ...opts, excludeJobId: jobId }),
+      list: (name) => queue.list(name),
+      listQueued: (name) => queue.listQueued(name),
+      cancel: (name, id) => queue.cancel(name, id),
+      retry: (name, id) => queue.retry(name, id),
+      enqueueGroup: (name, payloads, opts) => queue.enqueueGroup(name, payloads, opts),
+      getGroup: (groupId) => queue.getGroup(groupId),
+      subscribe: (name, handler) => queue.subscribe(name, handler),
+      listEvents: (name, opts) => queue.listEvents(name, opts),
+    };
   }
 
   const queue: TaskQueue = {
@@ -528,6 +619,37 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         dedupId: opts?.dedupId,
       });
       return { id };
+    },
+
+    async enqueueChain(name, payload = {}, opts) {
+      if (stopped) {
+        throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
+      }
+      const chainKey = opts?.chainKey;
+      if (typeof chainKey !== 'string' || chainKey.trim() === '') {
+        throw new Error(
+          '[faapi] enqueueChain requires a non-empty chainKey (business correlation key, ' +
+            'e.g. "deconstruct:<novelId>") — keyed single-flight semantics need it to identify ' +
+            'the active task. See taskChain.md.',
+        );
+      }
+      assertKnownTask(name);
+      // 活跃查证（快照非事务，边界见 taskChain.md）：同键活跃（排除调用方自身）
+      // 存在则不投递返回现状
+      const snapshot = await listQueuedRecords(name, CHAIN_SCAN_LIMIT);
+      const excludeJobId = opts?.excludeJobId;
+      const active = snapshot.find(
+        (j) => j.chainKey === chainKey && !TERMINAL_STATUSES.has(j.status) && j.id !== excludeJobId,
+      );
+      if (active) {
+        return { enqueued: false, jobId: active.id, status: active.status };
+      }
+      const id = await enqueueCore(name, payload, {
+        delayMs: opts?.delayMs,
+        dedupId: CHAIN_DEDUP(chainKey, Date.now()),
+        chainKey,
+      });
+      return { enqueued: true, id };
     },
 
     async enqueueGroup(name, payloads, opts) {
@@ -618,35 +740,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     },
 
     async listQueued(name?: string): Promise<TaskJob[]> {
-      if (!driver.list) {
-        throw new Error(
-          "[faapi] Task driver does not support listing queued tasks (TaskDriver.list is not implemented). Use the queue system's own management tools, or see driverTypes.md for per-driver capability.",
-        );
-      }
-      const queued = await driver.list({ name, limit: 50 });
-      const merged = new Map<string, TaskJob>();
-      for (const record of queued) {
-        // name 过滤语义层兜底（不依赖驱动实现的过滤正确性）
-        if (name !== undefined && record.name !== name) continue;
-        merged.set(record.id, {
-          id: record.id,
-          name: record.name,
-          payload: record.payload,
-          status: record.status,
-          attempts: record.attempts,
-          createdAt: record.createdAt,
-          ...(record.groupId !== undefined ? { groupId: record.groupId } : {}),
-          ...(record.result !== undefined ? { result: record.result } : {}),
-          ...(record.error !== undefined ? { error: record.error } : {}),
-          ...(record.runAt !== undefined ? { runAt: record.runAt } : {}),
-        });
-      }
-      // 本进程执行记录优先（attempts/status/result/error 更实时），覆盖驱动侧同 id 记录
-      for (const local of records.values()) {
-        if (name !== undefined && local.name !== name) continue;
-        merged.set(local.id, { ...local });
-      }
-      return [...merged.values()];
+      return listQueuedRecords(name, 50);
     },
 
     async cancel(name: string, id: string): Promise<void> {

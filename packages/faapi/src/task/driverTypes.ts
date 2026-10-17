@@ -29,6 +29,8 @@ export interface TaskDriverJob {
   signal: AbortSignal;
   /** 所属任务组（组投递的成员任务携带；驱动在交付时从组标识载体还原） */
   groupId?: string;
+  /** 所属链（链式投递的任务携带；驱动在交付时从链键载体还原） */
+  chainKey?: string;
 }
 
 /** 语义层交给驱动层的执行函数（抛错 = 失败，由驱动按入队时的 retries 重试） */
@@ -54,6 +56,8 @@ export interface TaskDriverRecord {
   error?: string;
   /** 所属任务组（组投递的成员任务携带；驱动从组标识载体还原后返回） */
   groupId?: string;
+  /** 所属链（链式投递的任务携带；驱动从链键载体还原后返回） */
+  chainKey?: string;
   createdAt: number;
   /** 计划执行时间戳（延迟任务） */
   runAt?: number;
@@ -91,6 +95,12 @@ export interface TaskDriver {
        * `TaskDriverJob.groupId` / `TaskDriverRecord.groupId`
        */
       groupId?: string;
+      /**
+       * 所属链（链式投递携带，可选）——驱动以此把链键随任务持久化（载体同组标识，
+       * 载荷包装形态），交付/查询时还原为 `TaskDriverJob.chainKey` /
+       * `TaskDriverRecord.chainKey`
+       */
+      chainKey?: string;
     },
   ): Promise<string>;
   /**

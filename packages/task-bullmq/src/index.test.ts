@@ -207,6 +207,39 @@ describe('createBullMQDriver 组记账', () => {
     expect(records[1]!.groupId).toBeUndefined();
   });
 
+  it('enqueue 带链键：载荷包装存储、不登记成员 hash；work/getJobs 还原 chainKey', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    await driver.enqueue('chains', { seg: 1 }, { chainKey: 'c:1' });
+    const queue = h.fakeQueues.find((q) => q.name === 'chains')!;
+    expect(queue.adds[0]!.data).toEqual({ __faapiChain: 'c:1', __faapiPayload: { seg: 1 } });
+    expect(h.fakeRedis.hashes.has('faapi:group-members:c:1')).toBe(false);
+
+    // work 交付还原 chainKey
+    const process = vi.fn(async () => 'ok');
+    await driver.startWorker('chains', { concurrency: 1, process });
+    const worker = h.fakeWorkers.at(-1)!;
+    await worker.handler({
+      id: 'j1',
+      data: { __faapiChain: 'c:1', __faapiPayload: { seg: 1 } },
+      attemptsStarted: 1,
+    });
+    expect(process).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'j1', payload: { seg: 1 }, chainKey: 'c:1' }),
+    );
+
+    // getJobs 记录还原 chainKey
+    queue.store.set('waiting', [
+      {
+        id: 'j2',
+        name: 'chains',
+        data: { __faapiChain: 'c:1', __faapiPayload: { seg: 1 } },
+        timestamp: 1700000000000,
+      },
+    ]);
+    const records = await driver.list!({ name: 'chains' });
+    expect(records[0]).toMatchObject({ id: 'j2', payload: { seg: 1 }, chainKey: 'c:1' });
+  });
+
   it('settle：Lua 原子计账调用（keys + jobId + outcome），返回行解析为快照 + isLast', async () => {
     const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
     const groups = driver.groups!;

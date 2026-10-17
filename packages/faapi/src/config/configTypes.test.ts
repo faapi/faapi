@@ -53,6 +53,7 @@ describe('configTypes', () => {
       registries: {} as import('../injection/registries').AppRegistries,
       tasks: {
         enqueue: async () => ({ id: 'test' }),
+        enqueueChain: async () => ({ enqueued: true, id: 'test' }),
         list: () => [],
         listQueued: async () => [],
         cancel: async () => {},

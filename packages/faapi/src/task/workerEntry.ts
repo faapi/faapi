@@ -260,6 +260,9 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
     proxy: {
       enqueue: (name, payload, opts) =>
         call('enqueue', [name, payload, opts]) as ReturnType<TaskClient['enqueue']>,
+      // 链式投递：excludeJobId 由宿主侧分派注入（调用方自身），worker 侧原样透传
+      enqueueChain: (name, payload, opts) =>
+        call('enqueueChain', [name, payload, opts]) as ReturnType<TaskClient['enqueueChain']>,
       enqueueGroup: (name, payloads, opts) =>
         call('enqueueGroup', [name, payloads, opts]) as ReturnType<TaskClient['enqueueGroup']>,
       getGroup: (groupId) => call('getGroup', [groupId]) as ReturnType<TaskClient['getGroup']>,

@@ -39,33 +39,48 @@ export interface BullMQDriverOptions {
 const DEFAULT_KEEP_AGE_SECONDS = 7 * 24 * 3600;
 
 /**
- * 成员组标识的载荷包装（组投递成员的传输载体）
+ * 框架元数据的载荷包装（组标识 / 链键的传输载体）
  *
- * BullMQ 的 job 除 data（payload）外无任意元数据字段，组标识随载荷一起存储：
- * `enqueue(opts.groupId)` 时包装、worker 交付 / getJobs 查询时还原。仅组任务包装
- * （存量行为不变）；包装对业务不可见，`TaskDriverRecord.payload` 恒为业务原始
- * payload。业务 payload 恰为该形状（两保留键 + 无其他键）会被误解包——保留键为
- * 框架命名空间，业务 payload 不应占用。
+ * BullMQ 的 job 除 data（payload）外无任意元数据字段，组标识/链键随载荷一起存储：
+ * `enqueue(opts.groupId / opts.chainKey)` 时包装、worker 交付 / getJobs 查询时还原。
+ * 仅组任务或链任务包装（存量行为不变）；包装对业务不可见，`TaskDriverRecord.payload`
+ * 恒为业务原始 payload。业务 payload 恰为该形状（保留键 + 无其他键）会被误解包——
+ * 保留键为框架命名空间，业务 payload 不应占用。
  */
 const GROUP_KEY = '__faapiGroup';
+const CHAIN_KEY = '__faapiChain';
 const PAYLOAD_KEY = '__faapiPayload';
 
-function wrapGroupPayload(groupId: string, payload: unknown): object {
-  return { [GROUP_KEY]: groupId, [PAYLOAD_KEY]: payload };
+/** 框架元数据包装（组/链标识载体）：仅组任务或链任务包装（存量行为不变） */
+function wrapMetaPayload(meta: { groupId?: string; chainKey?: string }, payload: unknown): object {
+  return {
+    ...(meta.groupId !== undefined ? { [GROUP_KEY]: meta.groupId } : {}),
+    ...(meta.chainKey !== undefined ? { [CHAIN_KEY]: meta.chainKey } : {}),
+    [PAYLOAD_KEY]: payload,
+  };
 }
 
-function unwrapGroupPayload(data: unknown): { payload: unknown; groupId?: string } {
-  if (
-    data !== null &&
-    typeof data === 'object' &&
-    !Array.isArray(data) &&
-    (data as Record<string, unknown>)[GROUP_KEY] !== undefined &&
-    typeof (data as Record<string, unknown>)[GROUP_KEY] === 'string' &&
-    (data as Record<string, unknown>)[PAYLOAD_KEY] !== undefined &&
-    Object.keys(data as Record<string, unknown>).length === 2
-  ) {
+function unwrapMetaPayload(data: unknown): {
+  payload: unknown;
+  groupId?: string;
+  chainKey?: string;
+} {
+  if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
     const wrapped = data as Record<string, unknown>;
-    return { payload: wrapped[PAYLOAD_KEY], groupId: wrapped[GROUP_KEY] as string };
+    const hasGroup = typeof wrapped[GROUP_KEY] === 'string';
+    const hasChain = typeof wrapped[CHAIN_KEY] === 'string';
+    const metaCount = (hasGroup ? 1 : 0) + (hasChain ? 1 : 0);
+    if (
+      metaCount > 0 &&
+      wrapped[PAYLOAD_KEY] !== undefined &&
+      Object.keys(wrapped).length === metaCount + 1
+    ) {
+      return {
+        payload: wrapped[PAYLOAD_KEY],
+        ...(hasGroup ? { groupId: wrapped[GROUP_KEY] as string } : {}),
+        ...(hasChain ? { chainKey: wrapped[CHAIN_KEY] as string } : {}),
+      };
+    }
   }
   return { payload: data };
 }
@@ -358,10 +373,13 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
       }
       const queue = getQueue(name);
+      const meta = { groupId: opts?.groupId, chainKey: opts?.chainKey };
       const job = await queue.add(
         name,
-        // 组投递成员以载荷包装携带组标识（交付时还原，业务 payload 不变）
-        opts?.groupId !== undefined ? wrapGroupPayload(opts.groupId, payload) : payload,
+        // 组投递成员 / 链式任务以载荷包装携带组/链标识（交付时还原，业务 payload 不变）
+        meta.groupId !== undefined || meta.chainKey !== undefined
+          ? wrapMetaPayload(meta, payload)
+          : payload,
         {
           // BullMQ attempts 含首次执行，retries 是额外重试次数
           attempts: (opts?.retries ?? 0) + 1,
@@ -398,8 +416,8 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           // attemptsStarted 由 BullMQ 维护（首次执行为 1，重试递增，跨实例/重启准确）——
           // 进程内自计数会内存泄漏且多实例/重启后失真
           const attempt = job.attemptsStarted;
-          // 组投递成员：从载荷包装还原业务 payload 与组标识（语义层据此记账）
-          const { payload, groupId } = unwrapGroupPayload(job.data);
+          // 组投递成员 / 链式任务：从载荷包装还原业务 payload 与组/链标识（语义层据此记账/查证）
+          const { payload, groupId, chainKey } = unwrapMetaPayload(job.data);
           // 信号由驱动自管：stop 超时 abort（BullMQ 自身不提供执行中任务的取消能力）
           const controller = new AbortController();
           inflight.set(id, controller);
@@ -411,6 +429,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
               attempt,
               signal: controller.signal,
               ...(groupId !== undefined ? { groupId } : {}),
+              ...(chainKey !== undefined ? { chainKey } : {}),
             });
           } finally {
             inflight.delete(id);
@@ -479,8 +498,8 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           const jobs = await queue.getJobs(types, 0, limit - 1);
           for (const job of jobs) {
             if (!job) continue;
-            // 组投递成员：从载荷包装还原业务 payload 与组标识（记录对业务不可见包装）
-            const { payload, groupId } = unwrapGroupPayload(job.data);
+            // 组投递成员 / 链式任务：从载荷包装还原业务 payload 与组/链标识（记录对业务不可见包装）
+            const { payload, groupId, chainKey } = unwrapMetaPayload(job.data);
             records.push({
               id: job.id ?? '',
               name: job.name,
@@ -492,6 +511,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
                 : {}),
               ...(job.failedReason ? { error: job.failedReason } : {}),
               ...(groupId !== undefined ? { groupId } : {}),
+              ...(chainKey !== undefined ? { chainKey } : {}),
               createdAt: job.timestamp,
               ...(job.processedOn ? { runAt: job.processedOn } : {}),
             });
