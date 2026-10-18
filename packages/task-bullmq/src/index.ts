@@ -4,8 +4,11 @@ import type {
   TaskDriverGroupOps,
   TaskDriverProcess,
   TaskDriverRecord,
+  TaskDriverTaskStateOps,
   TaskGroupSnapshot,
   TaskJobStatus,
+  TaskResumeState,
+  TaskStateEntry,
 } from '@faapi/faapi';
 import {
   Queue,
@@ -39,23 +42,29 @@ export interface BullMQDriverOptions {
 const DEFAULT_KEEP_AGE_SECONDS = 7 * 24 * 3600;
 
 /**
- * 框架元数据的载荷包装（组标识 / 链键的传输载体）
+ * 框架元数据的载荷包装（组标识 / 链键 / 挂起激活的传输载体）
  *
- * BullMQ 的 job 除 data（payload）外无任意元数据字段，组标识/链键随载荷一起存储：
- * `enqueue(opts.groupId / opts.chainKey)` 时包装、worker 交付 / getJobs 查询时还原。
- * 仅组任务或链任务包装（存量行为不变）；包装对业务不可见，`TaskDriverRecord.payload`
- * 恒为业务原始 payload。业务 payload 恰为该形状（保留键 + 无其他键）会被误解包——
- * 保留键为框架命名空间，业务 payload 不应占用。
+ * BullMQ 的 job 除 data（payload）外无任意元数据字段，组标识/链键/激活上下文随
+ * 载荷一起存储：`enqueue(opts.groupId / opts.chainKey / opts.resumeState)` 时包装、
+ * worker 交付 / getJobs 查询时还原。仅带元数据的任务包装（存量行为不变）；包装对
+ * 业务不可见，`TaskDriverRecord.payload` 恒为业务原始 payload。业务 payload 恰为
+ * 该形状（保留键 + 无其他键）会被误解包——保留键为框架命名空间，业务 payload
+ * 不应占用。
  */
 const GROUP_KEY = '__faapiGroup';
 const CHAIN_KEY = '__faapiChain';
+const RESUME_KEY = '__faapiResume';
 const PAYLOAD_KEY = '__faapiPayload';
 
-/** 框架元数据包装（组/链标识载体）：仅组任务或链任务包装（存量行为不变） */
-function wrapMetaPayload(meta: { groupId?: string; chainKey?: string }, payload: unknown): object {
+/** 框架元数据包装（组/链/挂起激活载体）：仅带元数据的任务包装（存量行为不变） */
+function wrapMetaPayload(
+  meta: { groupId?: string; chainKey?: string; resumeState?: unknown },
+  payload: unknown,
+): object {
   return {
     ...(meta.groupId !== undefined ? { [GROUP_KEY]: meta.groupId } : {}),
     ...(meta.chainKey !== undefined ? { [CHAIN_KEY]: meta.chainKey } : {}),
+    ...(meta.resumeState !== undefined ? { [RESUME_KEY]: meta.resumeState } : {}),
     [PAYLOAD_KEY]: payload,
   };
 }
@@ -64,12 +73,17 @@ function unwrapMetaPayload(data: unknown): {
   payload: unknown;
   groupId?: string;
   chainKey?: string;
+  resumeState?: unknown;
 } {
   if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
     const wrapped = data as Record<string, unknown>;
     const hasGroup = typeof wrapped[GROUP_KEY] === 'string';
     const hasChain = typeof wrapped[CHAIN_KEY] === 'string';
-    const metaCount = (hasGroup ? 1 : 0) + (hasChain ? 1 : 0);
+    const hasResume =
+      typeof wrapped[RESUME_KEY] === 'object' &&
+      wrapped[RESUME_KEY] !== null &&
+      !Array.isArray(wrapped[RESUME_KEY]);
+    const metaCount = (hasGroup ? 1 : 0) + (hasChain ? 1 : 0) + (hasResume ? 1 : 0);
     if (
       metaCount > 0 &&
       wrapped[PAYLOAD_KEY] !== undefined &&
@@ -79,6 +93,7 @@ function unwrapMetaPayload(data: unknown): {
         payload: wrapped[PAYLOAD_KEY],
         ...(hasGroup ? { groupId: wrapped[GROUP_KEY] as string } : {}),
         ...(hasChain ? { chainKey: wrapped[CHAIN_KEY] as string } : {}),
+        ...(hasResume ? { resumeState: wrapped[RESUME_KEY] } : {}),
       };
     }
   }
@@ -259,6 +274,37 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
   }
 
   /**
+   * 挂起信封存储（TaskDriver.taskState）——一个 Redis hash（`<prefix>:task-states`，
+   * jobId → 信封 JSON），经 `Queue.client` 复用驱动连接（不加新连接）。信封跨实例/
+   * 重启正确；resume 读出即删、未激活的挂起信封常驻（量级 = 挂起中任务数），
+   * 业务方按保留策略自行清理。
+   */
+  const taskStatesKey = () => `${prefix}:task-states`;
+
+  function createTaskStateOps(): TaskDriverTaskStateOps {
+    return {
+      async set(jobId, entry) {
+        const c = await groupClient();
+        await c.hset(taskStatesKey(), { [jobId]: JSON.stringify(entry) });
+      },
+      async get(jobId) {
+        const c = await groupClient();
+        const raw = await c.hget(taskStatesKey(), jobId);
+        return raw ? (JSON.parse(raw) as TaskStateEntry) : undefined;
+      },
+      async delete(jobId) {
+        const c = await groupClient();
+        await c.hdel(taskStatesKey(), jobId);
+      },
+      async list() {
+        const c = await groupClient();
+        const all = await c.hgetall(taskStatesKey());
+        return Object.values(all).map((raw) => JSON.parse(raw) as TaskStateEntry);
+      },
+    };
+  }
+
+  /**
    * 组记账实现（TaskDriver.groups）——经 backend.client 的 defineCommand/runCommand
    * （BullMQ 类型化 Lua 扩展口）计账。落定幂等由成员行状态守卫承载，成员翻转 +
    * 计数递增在 Lua 内原子；记账状态持久化在 Redis，跨实例/重启正确。
@@ -373,11 +419,15 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
       }
       const queue = getQueue(name);
-      const meta = { groupId: opts?.groupId, chainKey: opts?.chainKey };
+      const meta = {
+        groupId: opts?.groupId,
+        chainKey: opts?.chainKey,
+        resumeState: opts?.resumeState,
+      };
       const job = await queue.add(
         name,
         // 组投递成员 / 链式任务以载荷包装携带组/链标识（交付时还原，业务 payload 不变）
-        meta.groupId !== undefined || meta.chainKey !== undefined
+        meta.groupId !== undefined || meta.chainKey !== undefined || meta.resumeState !== undefined
           ? wrapMetaPayload(meta, payload)
           : payload,
         {
@@ -416,8 +466,8 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           // attemptsStarted 由 BullMQ 维护（首次执行为 1，重试递增，跨实例/重启准确）——
           // 进程内自计数会内存泄漏且多实例/重启后失真
           const attempt = job.attemptsStarted;
-          // 组投递成员 / 链式任务：从载荷包装还原业务 payload 与组/链标识（语义层据此记账/查证）
-          const { payload, groupId, chainKey } = unwrapMetaPayload(job.data);
+          // 组投递成员 / 链式任务 / 激活重投：从载荷包装还原业务 payload 与元数据
+          const { payload, groupId, chainKey, resumeState } = unwrapMetaPayload(job.data);
           // 信号由驱动自管：stop 超时 abort（BullMQ 自身不提供执行中任务的取消能力）
           const controller = new AbortController();
           inflight.set(id, controller);
@@ -430,6 +480,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
               signal: controller.signal,
               ...(groupId !== undefined ? { groupId } : {}),
               ...(chainKey !== undefined ? { chainKey } : {}),
+              ...(resumeState !== undefined ? { resumeState: resumeState as TaskResumeState } : {}),
             });
           } finally {
             inflight.delete(id);
@@ -546,5 +597,6 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
     },
 
     groups: createGroupOps(),
+    taskState: createTaskStateOps(),
   };
 }

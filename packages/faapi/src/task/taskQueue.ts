@@ -4,7 +4,7 @@ import { runTaskInWorker, TaskCancelledError } from './taskWorker';
 import { createEmptyTaskRegistriesView } from '../injection/registries';
 import { createLogger, getEffectiveLogLevel, writeLogEntry } from '../logger/logger';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
-import type { TaskDriverJob } from './driverTypes';
+import type { TaskDriverJob, TaskResumeState } from './driverTypes';
 import type {
   TaskClient,
   TaskContext,
@@ -52,6 +52,7 @@ const TASK_CLIENT_METHODS: ReadonlySet<string> = new Set([
   'enqueue',
   'enqueueChain',
   'enqueueGroup',
+  'resume',
   'list',
   'listQueued',
   'listEvents',
@@ -372,6 +373,10 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     // willRetry 按任务 meta.retries 推算——failed/cancelled 但驱动还会重试时不算落定
     const willRetry = job.attempt <= (meta.retries ?? 0);
 
+    // 挂起标记：taskCtx.suspend 被调用后置位——run 正常返回时按 suspended 落账
+    // （不记 result、组记账不落定——挂起不是终态，激活后的执行完成时才落定）
+    let suspended = false;
+
     try {
       let result: unknown;
       if (meta.timeoutMs !== undefined && meta.timeoutMs > 0) {
@@ -458,8 +463,38 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           emit: (data) => {
             if (record.status === 'running') appendEvent(record, data);
           },
+          // 任务挂起：state 连同原 payload 以信封持久化到驱动 taskState 存储
+          // （跨实例/重启正确），落账由完成分支按 suspended 标记执行。
+          // 仅进程内路径可用（隔离上下文无此字段——worker 无宿主队列访问）；
+          // 驱动未实现 taskState 能力显式抛错。activations 保留进入本次执行时的值
+          //（首挂 0；激活重投的执行再挂时保留原计数，resume 时递增）
+          suspend: async (state?: unknown) => {
+            if (!driver.taskState) {
+              throw new Error(
+                '[faapi] Task driver does not support suspend/resume (TaskDriver.taskState is not implemented). ' +
+                  'Suspend/resume requires a driver that persists the state envelope — see taskSuspend.md / driverTypes.md.',
+              );
+            }
+            await driver.taskState.set(job.id, {
+              jobId: job.id,
+              task: job.name,
+              payload: job.payload,
+              state,
+              suspendedAt: Date.now(),
+              activations: job.resumeState?.activations ?? 0,
+            });
+            suspended = true;
+          },
+          // 挂起/激活上下文：首跑 undefined；激活重投的执行经驱动载体还原回传
+          ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
         };
         result = await mod.run(job.payload, taskCtx);
+      }
+      if (suspended) {
+        // 挂起落账：非终态（内存护栏不淘汰、单飞活跃判定涵盖），不记 result、
+        // 不落组账——驱动照常 complete 队列 job，语义层记录覆盖观测
+        transitionStatus(record, 'suspended');
+        return undefined;
       }
       transitionStatus(record, 'done');
       record.result = result;
@@ -514,7 +549,13 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   async function enqueueCore(
     name: string,
     payload: unknown,
-    opts?: { delayMs?: number; dedupId?: string; groupId?: string; chainKey?: string },
+    opts?: {
+      delayMs?: number;
+      dedupId?: string;
+      groupId?: string;
+      chainKey?: string;
+      resumeState?: TaskResumeState;
+    },
   ): Promise<string> {
     if (stopped) {
       throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
@@ -532,6 +573,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       graceMs: meta.graceMs,
       ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
       ...(opts?.chainKey !== undefined ? { chainKey: opts.chainKey } : {}),
+      ...(opts?.resumeState !== undefined ? { resumeState: opts.resumeState } : {}),
     });
     // driver.enqueue 可能已同步触发派发——runJob 已写入
     // running/done 记录时不要用 pending 覆盖
@@ -607,6 +649,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       retry: (name, id) => queue.retry(name, id),
       enqueueGroup: (name, payloads, opts) => queue.enqueueGroup(name, payloads, opts),
       getGroup: (groupId) => queue.getGroup(groupId),
+      resume: (name, jobId, opts) => queue.resume(name, jobId, opts),
       subscribe: (name, handler) => queue.subscribe(name, handler),
       listEvents: (name, opts) => queue.listEvents(name, opts),
     };
@@ -650,6 +693,49 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         chainKey,
       });
       return { enqueued: true, id };
+    },
+
+    async resume(name, jobId, opts) {
+      if (stopped) {
+        throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
+      }
+      assertKnownTask(name);
+      if (!driver.taskState) {
+        throw new Error(
+          '[faapi] Task driver does not support suspend/resume (TaskDriver.taskState is not implemented). ' +
+            'Suspend/resume requires a driver that persists the state envelope — see taskSuspend.md / driverTypes.md.',
+        );
+      }
+      const record = records.get(jobId);
+      if (!record || record.name !== name) {
+        throw new Error(
+          `[faapi] Task job "${jobId}" not found for task "${name}" — suspended jobs are listed via list()/listQueued().`,
+        );
+      }
+      if (record.status !== 'suspended') {
+        throw new Error(
+          `[faapi] Task job "${jobId}" is not suspended (status: ${record.status}) — resume only applies to suspended jobs (activate with resume, see taskSuspend.md).`,
+        );
+      }
+      const entry = await driver.taskState.get(jobId);
+      if (!entry) {
+        throw new Error(
+          `[faapi] Suspended task "${jobId}" has no state envelope — the envelope is the source of truth for resume (original payload + suspended state). It may have been consumed by a concurrent resume or deleted.`,
+        );
+      }
+      // 读出即删：state 转移到新执行（未激活的挂起信封保留供重启水合）
+      await driver.taskState.delete(jobId);
+      const id = await enqueueCore(name, entry.payload, {
+        resumeState: {
+          state: entry.state,
+          ...(opts?.inject !== undefined ? { inject: opts.inject } : {}),
+          activations: entry.activations + 1,
+        },
+      });
+      // 原挂起记录转 done（该挂起周期已终结，新执行为独立任务记录）
+      transitionStatus(record, 'done');
+      evictFinishedRecords();
+      return { id };
     },
 
     async enqueueGroup(name, payloads, opts) {
@@ -749,8 +835,16 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           '[faapi] Task driver does not support cancelling tasks (TaskDriver.cancel is not implemented).',
         );
       }
-      await driver.cancel(name, id);
       const record = records.get(id);
+      // suspended 任务无活跃队列 job（执行体已释放、队列 job 已 complete）——
+      // 挂起的线人工掐死：删信封 + 记录转 cancelled，不触达驱动取消
+      if (record?.status === 'suspended') {
+        if (driver.taskState) await driver.taskState.delete(id);
+        transitionStatus(record, 'cancelled');
+        evictFinishedRecords();
+        return;
+      }
+      await driver.cancel(name, id);
       if (record) {
         transitionStatus(record, 'cancelled');
         evictFinishedRecords();
@@ -763,6 +857,12 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       if (!driver.retry) {
         throw new Error(
           '[faapi] Task driver does not support retrying tasks (TaskDriver.retry is not implemented).',
+        );
+      }
+      const suspendedRecord = records.get(id);
+      if (suspendedRecord?.status === 'suspended') {
+        throw new Error(
+          `[faapi] Task job "${id}" is suspended — retry does not apply; activate it with resume() (see taskSuspend.md).`,
         );
       }
       await driver.retry(name, id);
@@ -788,6 +888,21 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       }
       if (started) return;
       started = true;
+      // 重启水合：从驱动信封重建 suspended 记录（观测面跨重启闭环，激活不依赖
+      // 记住重启前的进程）。幂等：已存在的记录不覆盖
+      if (driver.taskState) {
+        for (const entry of await driver.taskState.list()) {
+          if (records.has(entry.jobId)) continue;
+          records.set(entry.jobId, {
+            id: entry.jobId,
+            name: entry.task,
+            payload: entry.payload,
+            status: 'suspended',
+            attempts: 0,
+            createdAt: entry.suspendedAt,
+          });
+        }
+      }
       await startWorkers();
     },
 

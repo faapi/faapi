@@ -51,6 +51,12 @@ const h = vi.hoisted(() => {
       }
       return [];
     },
+    hget: async (key: string, field: string) => fakeRedis.hashes.get(key)?.[field],
+    hdel: async (key: string, field: string) => {
+      const h0 = fakeRedis.hashes.get(key) ?? {};
+      delete h0[field];
+      fakeRedis.hashes.set(key, h0);
+    },
     hset: async (key: string, data: Record<string, string | number>) => {
       const h0 = fakeRedis.hashes.get(key) ?? {};
       const entries = Object.entries(data).map(([f, v]) => [f, String(v)] as const);
@@ -597,5 +603,63 @@ describe('createBullMQDriver', () => {
     await driver.enqueue('mail', { to: 'x' }, { dedupId: 'order-confirm:1' });
     const queue = h.fakeQueues.find((q) => q.name === 'mail')!;
     expect(queue.adds[0]!.opts).toMatchObject({ jobId: 'order-confirm:1' });
+  });
+});
+
+describe('createBullMQDriver 挂起信封（taskState）', () => {
+  it('set/get/delete/list 往返（task-states hash，JSON 信封）', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const states = driver.taskState!;
+    const entry = {
+      jobId: 'j1',
+      task: 'planner',
+      payload: { step: 1 },
+      state: { plan: 'a' },
+      suspendedAt: 1700000000000,
+      activations: 0,
+    };
+    await states.set('j1', entry);
+    expect(h.fakeRedis.hashes.get('faapi:task-states')).toEqual({
+      j1: JSON.stringify(entry),
+    });
+    const got = await states.get('j1');
+    expect(got).toEqual(entry);
+    expect((await states.list()).map((e) => e.jobId)).toEqual(['j1']);
+    await states.delete('j1');
+    expect(h.fakeRedis.hashes.get('faapi:task-states')).toEqual({});
+  });
+
+  it('resumeState 载荷包装：enqueue 包装存储、work 交付还原', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    await driver.enqueue(
+      'planner',
+      { step: 1 },
+      {
+        resumeState: { state: { plan: 'a' }, inject: { go: true }, activations: 1 },
+      },
+    );
+    const queue = h.fakeQueues.find((q) => q.name === 'planner')!;
+    expect(queue.adds[0]!.data).toEqual({
+      __faapiResume: { state: { plan: 'a' }, inject: { go: true }, activations: 1 },
+      __faapiPayload: { step: 1 },
+    });
+
+    const process = vi.fn(async () => 'ok');
+    await driver.startWorker('planner', { concurrency: 1, process });
+    const worker = h.fakeWorkers.at(-1)!;
+    await worker.handler({
+      id: 'j1',
+      data: {
+        __faapiResume: { state: { plan: 'a' }, inject: { go: true }, activations: 1 },
+        __faapiPayload: { step: 1 },
+      },
+      attemptsStarted: 1,
+    });
+    expect(process).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { step: 1 },
+        resumeState: { state: { plan: 'a' }, inject: { go: true }, activations: 1 },
+      }),
+    );
   });
 });

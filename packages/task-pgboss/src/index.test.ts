@@ -902,3 +902,87 @@ describe('list（v12 findJobs 批量列出）', () => {
     expect(boss.findJobs.mock.calls[0]![0]).toBe('digest');
   });
 });
+
+describe('createPgBossDriver 挂起信封（taskState）', () => {
+  const stateRow = (over: Record<string, unknown> = {}) => ({
+    job_id: 'j1',
+    task: 'planner',
+    payload: { step: 1 },
+    state: { plan: 'a' },
+    suspended_at: new Date(1700000000000),
+    activations: 0,
+    ...over,
+  });
+
+  it('set 走 INSERT ON CONFLICT；get/delete/list 按 job_id 计账', async () => {
+    const driver = createPgBossDriver();
+    const states = driver.taskState!;
+    await states.set('j1', {
+      jobId: 'j1',
+      task: 'planner',
+      payload: { step: 1 },
+      state: { plan: 'a' },
+      suspendedAt: 1700000000000,
+      activations: 0,
+    }); // 首操作触发 ensureBoss + 建表
+    const boss = fakeBosses()[0]!;
+
+    const setSql = boss.sqls.find((s) => s.text.includes('INSERT INTO faapi_task_states'))!;
+    expect(setSql.values).toEqual(['j1', 'planner', { step: 1 }, { plan: 'a' }, 0]);
+
+    boss.sqlHandler = (t) =>
+      t.includes('FROM faapi_task_states WHERE job_id') ? [stateRow()] : [];
+    const entry = await states.get('j1');
+    expect(entry).toMatchObject({
+      jobId: 'j1',
+      task: 'planner',
+      payload: { step: 1 },
+      state: { plan: 'a' },
+      suspendedAt: 1700000000000,
+      activations: 0,
+    });
+
+    boss.sqlHandler = (t) => (t.includes('FROM faapi_task_states ORDER BY') ? [stateRow()] : []);
+    expect((await states.list()).map((e) => e.jobId)).toEqual(['j1']);
+
+    await states.delete('j1');
+    expect(boss.sqls.find((s) => s.text.includes('DELETE FROM faapi_task_states'))!.values).toEqual(
+      ['j1'],
+    );
+  });
+
+  it('resumeState 载荷包装：enqueue 包装存储、work 交付还原', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue(
+      'planner',
+      { step: 1 },
+      {
+        resumeState: { state: { plan: 'a' }, inject: { go: true }, activations: 1 },
+      },
+    );
+    const boss = fakeBosses()[0]!;
+    expect(boss.sent[0]!.data).toEqual({
+      __faapiResume: { state: { plan: 'a' }, inject: { go: true }, activations: 1 },
+      __faapiPayload: { step: 1 },
+    });
+
+    const process = vi.fn(async () => 'ok');
+    await driver.startWorker('planner', { concurrency: 1, process });
+    await boss.workHandlers[0]!.handler([
+      {
+        id: 'j1',
+        data: {
+          __faapiResume: { state: { plan: 'a' }, inject: { go: true }, activations: 1 },
+          __faapiPayload: { step: 1 },
+        },
+        retryCount: 0,
+      },
+    ]);
+    expect(process).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { step: 1 },
+        resumeState: { state: { plan: 'a' }, inject: { go: true }, activations: 1 },
+      }),
+    );
+  });
+});

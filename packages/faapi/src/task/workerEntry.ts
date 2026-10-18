@@ -265,6 +265,10 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
         call('enqueueChain', [name, payload, opts]) as ReturnType<TaskClient['enqueueChain']>,
       enqueueGroup: (name, payloads, opts) =>
         call('enqueueGroup', [name, payloads, opts]) as ReturnType<TaskClient['enqueueGroup']>,
+      // 激活：挂起语义仅进程内路径（worker 无 taskCtx.suspend），但 TaskClient
+      // 类型完整性要求代理实现——宿主侧走完整 resume 通道
+      resume: (name, jobId, opts) =>
+        call('resume', [name, jobId, opts]) as ReturnType<TaskClient['resume']>,
       getGroup: (groupId) => call('getGroup', [groupId]) as ReturnType<TaskClient['getGroup']>,
       list: (name) => call('list', [name]) as unknown as ReturnType<TaskClient['list']>,
       listQueued: (name) =>

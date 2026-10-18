@@ -54,6 +54,7 @@ describe('configTypes', () => {
       tasks: {
         enqueue: async () => ({ id: 'test' }),
         enqueueChain: async () => ({ enqueued: true, id: 'test' }),
+        resume: async () => ({ id: 'test' }),
         list: () => [],
         listQueued: async () => [],
         cancel: async () => {},

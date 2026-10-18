@@ -76,8 +76,17 @@ export interface TaskMetadata {
  *
  * cancelled = 执行被框架终止（超时两段式取消 / 停机取消），区别于 run 自身抛错的 failed；
  * 驱动重试时记录回到 running 继续流转。
+ * suspended = 任务挂起等激活（`taskCtx.suspend` 暂存状态后执行体已释放，非终态
+ * 也不在跑——计入单飞活跃判定，激活用 `tasks.resume`，见 taskSuspend.md）。
  */
-export type TaskJobStatus = 'pending' | 'running' | 'retry' | 'done' | 'failed' | 'cancelled';
+export type TaskJobStatus =
+  | 'pending'
+  | 'running'
+  | 'retry'
+  | 'suspended'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
 
 /**
  * 组内成员落定的终态（TaskJobStatus 的终态子集——落定 = 最终终态，
@@ -231,6 +240,21 @@ export interface TaskContext {
    * （seq 跨 attempt 连续、重试不清）。完整契约见 taskEvents.md。
    */
   emit?: (data: unknown) => void;
+  /**
+   * 任务挂起（可选）：暂存状态并释放执行体——state 连同原 payload 以信封持久化
+   * 到驱动 `taskState` 存储，任务记录转 `suspended`，run 正常返回（驱动照常
+   * complete）。挂起后本任务的后续代码仍执行到 return，但结果不入 `result`、
+   * 组记账不落定。激活用 `tasks.resume`（state 经 `taskCtx.resumed` 回传）。
+   * 仅进程内路径可用（隔离上下文无此字段）；驱动未实现 `TaskDriver.taskState`
+   * 时显式抛错。完整语义见 taskSuspend.md。
+   */
+  suspend?: (state?: unknown) => Promise<void>;
+  /**
+   * 挂起/激活上下文（可选）：首跑为 `undefined`；经 `tasks.resume` 激活的执行
+   * 携带 `{ state, inject?, activations }`——`state` 为挂起时暂存值，`inject` 为
+   * 本次激活注入的附加数据，`activations` 为第几次激活（从 1 起）。
+   */
+  resumed?: { state?: unknown; inject?: unknown; activations: number };
   /**
    * 任务级日志器（可选字段；框架注入，直接构造 TaskContext 的测试/自定义执行器
    * 可不传）——scope `task:<name>`，字段自动携带 jobId/task/attempt，直写
@@ -418,6 +442,18 @@ export interface TaskClient {
    * @throws 驱动未实现组记账（TaskDriver.groups 缺失）
    */
   getGroup(groupId: string): Promise<TaskGroupSnapshot | undefined>;
+  /**
+   * 激活挂起的任务：读取挂起信封（原 payload + state）→ 删除信封 → 以原 payload
+   * 重新入队（新执行周期：attempt 从 1 重新计数）→ 续跑执行经 `taskCtx.resumed`
+   * 拿到 `{ state, inject?, activations }`。原挂起记录转 done（该挂起周期终结）。
+   * 完整语义见 taskSuspend.md。
+   *
+   * @param opts.inject 本次激活注入的附加数据（审批意见等），随 `taskCtx.resumed` 回传
+   * @returns 新执行的任务 id
+   * @throws 任务不存在 / 任务非 suspended 状态 / 信封缺失 / 队列已停止 /
+   *   驱动未实现 TaskDriver.taskState
+   */
+  resume(name: string, jobId: string, opts?: { inject?: unknown }): Promise<{ id: string }>;
   /**
    * 任务事件实时订阅（本进程）：该任务名后续每次 `taskCtx.emit` 落账后同步回调
    * （匹配所有执行/所有 attempt）。**不回放订阅前历史**（补历史用 listEvents）；

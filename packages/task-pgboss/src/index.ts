@@ -5,7 +5,10 @@ import type {
   TaskDriverGroupOps,
   TaskDriverProcess,
   TaskDriverRecord,
+  TaskDriverTaskStateOps,
+  TaskResumeState,
   TaskGroupSnapshot,
+  TaskStateEntry,
 } from '@faapi/faapi';
 import { PgBoss } from 'pg-boss';
 import type { ConstructorOptions, SendOptions } from 'pg-boss';
@@ -34,23 +37,29 @@ export type PgBossDriverOptions = ConstructorOptions & {
 };
 
 /**
- * 框架元数据的载荷包装（组标识 / 链键的传输载体）
+ * 框架元数据的载荷包装（组标识 / 链键 / 挂起激活的传输载体）
  *
- * pg-boss 的 job 除 data（payload）外无任意元数据字段，组标识/链键随载荷一起存储：
- * `enqueue(opts.groupId / opts.chainKey)` 时包装、work 交付 / findJobs 查询时还原。
- * 仅组任务或链任务包装（存量行为不变）；包装对业务不可见，`TaskDriverRecord.payload`
- * 恒为业务原始 payload。业务 payload 恰为该形状（保留键 + 无其他键）会被误解包——
- * 保留键为框架命名空间，业务 payload 不应占用。
+ * pg-boss 的 job 除 data（payload）外无任意元数据字段，组标识/链键/激活上下文随
+ * 载荷一起存储：`enqueue(opts.groupId / opts.chainKey / opts.resumeState)` 时包装、
+ * work 交付 / findJobs 查询时还原。仅带元数据的任务包装（存量行为不变）；包装对
+ * 业务不可见，`TaskDriverRecord.payload` 恒为业务原始 payload。业务 payload 恰为
+ * 该形状（保留键 + 无其他键）会被误解包——保留键为框架命名空间，业务 payload
+ * 不应占用。
  */
 const GROUP_KEY = '__faapiGroup';
 const CHAIN_KEY = '__faapiChain';
+const RESUME_KEY = '__faapiResume';
 const PAYLOAD_KEY = '__faapiPayload';
 
-/** 框架元数据包装（组/链标识载体）：仅组任务或链任务包装（存量行为不变） */
-function wrapMetaPayload(meta: { groupId?: string; chainKey?: string }, payload: unknown): object {
+/** 框架元数据包装（组/链/挂起激活载体）：仅带元数据的任务包装（存量行为不变） */
+function wrapMetaPayload(
+  meta: { groupId?: string; chainKey?: string; resumeState?: unknown },
+  payload: unknown,
+): object {
   return {
     ...(meta.groupId !== undefined ? { [GROUP_KEY]: meta.groupId } : {}),
     ...(meta.chainKey !== undefined ? { [CHAIN_KEY]: meta.chainKey } : {}),
+    ...(meta.resumeState !== undefined ? { [RESUME_KEY]: meta.resumeState } : {}),
     [PAYLOAD_KEY]: payload,
   };
 }
@@ -59,12 +68,17 @@ function unwrapMetaPayload(data: unknown): {
   payload: unknown;
   groupId?: string;
   chainKey?: string;
+  resumeState?: unknown;
 } {
   if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
     const wrapped = data as Record<string, unknown>;
     const hasGroup = typeof wrapped[GROUP_KEY] === 'string';
     const hasChain = typeof wrapped[CHAIN_KEY] === 'string';
-    const metaCount = (hasGroup ? 1 : 0) + (hasChain ? 1 : 0);
+    const hasResume =
+      typeof wrapped[RESUME_KEY] === 'object' &&
+      wrapped[RESUME_KEY] !== null &&
+      !Array.isArray(wrapped[RESUME_KEY]);
+    const metaCount = (hasGroup ? 1 : 0) + (hasChain ? 1 : 0) + (hasResume ? 1 : 0);
     if (
       metaCount > 0 &&
       wrapped[PAYLOAD_KEY] !== undefined &&
@@ -74,6 +88,7 @@ function unwrapMetaPayload(data: unknown): {
         payload: wrapped[PAYLOAD_KEY],
         ...(hasGroup ? { groupId: wrapped[GROUP_KEY] as string } : {}),
         ...(hasChain ? { chainKey: wrapped[CHAIN_KEY] as string } : {}),
+        ...(hasResume ? { resumeState: wrapped[RESUME_KEY] } : {}),
       };
     }
   }
@@ -110,6 +125,37 @@ const GROUP_TABLES_SQL = [
 )`,
 ];
 
+/**
+ * 任务挂起信封表（同库自建，与 pg-boss 自身 schema 表无关）
+ *
+ * 信封 = 挂起任务的完整恢复载体（原 payload + 暂存 state + 激活计数），
+ * resume 重投与重启水合的数据源。resume 读出即删、cancel 掐死挂起线同删；
+ * 未激活的挂起信封常驻（量级 = 挂起中任务数），业务方按保留策略自行清理。
+ */
+const STATE_TABLES_SQL = [
+  `CREATE TABLE IF NOT EXISTS faapi_task_states (
+  job_id text PRIMARY KEY,
+  task text NOT NULL,
+  payload jsonb NOT NULL,
+  state jsonb,
+  suspended_at timestamptz NOT NULL DEFAULT now(),
+  activations integer NOT NULL DEFAULT 0
+)`,
+];
+
+/** 驱动存储行 → TaskStateEntry（snake_case → 契约；jsonb 列经 pg 驱动已解析） */
+function stateRowToEntry(row: Record<string, unknown>): TaskStateEntry {
+  return {
+    jobId: String(row.job_id),
+    task: String(row.task),
+    payload: row.payload,
+    ...(row.state !== null && row.state !== undefined ? { state: row.state } : {}),
+    suspendedAt: (row.suspended_at as Date).getTime(),
+    activations: Number(row.activations),
+  };
+}
+
+/** 挂起信封存储（TaskDriver.taskState）——经 boss.getDb().executeSql 计账 */
 /**
  * faapi 任务队列 pg-boss 驱动（PostgreSQL 持久化队列）
  *
@@ -181,6 +227,8 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
   let bossStarting: Promise<PgBoss> | null = null;
   /** 组记账表已确保（每进程一次 CREATE TABLE IF NOT EXISTS，之后短路） */
   let groupTablesEnsured = false;
+  /** 挂起信封表已确保（每进程一次，之后短路） */
+  let stateTablesEnsured = false;
 
   async function ensureGroupTables(b: PgBoss): Promise<void> {
     if (groupTablesEnsured) return;
@@ -189,6 +237,67 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
       await db.executeSql(sql, []);
     }
     groupTablesEnsured = true;
+  }
+
+  async function ensureStateTables(b: PgBoss): Promise<void> {
+    if (stateTablesEnsured) return;
+    const db = b.getDb();
+    for (const sql of STATE_TABLES_SQL) {
+      await db.executeSql(sql, []);
+    }
+    stateTablesEnsured = true;
+  }
+
+  /** 挂起信封存储（TaskDriver.taskState）——经 boss.getDb().executeSql 计账 */
+  function createTaskStateOps(getBoss: () => Promise<PgBoss>): TaskDriverTaskStateOps {
+    return {
+      async set(jobId, entry) {
+        const b = await getBoss();
+        await ensureStateTables(b);
+        await b.getDb().executeSql(
+          `INSERT INTO faapi_task_states (job_id, task, payload, state, suspended_at, activations)
+           VALUES ($1, $2, $3, $4, now(), $5)
+           ON CONFLICT (job_id) DO UPDATE
+             SET task = EXCLUDED.task, payload = EXCLUDED.payload, state = EXCLUDED.state,
+                 suspended_at = now(), activations = EXCLUDED.activations`,
+          [
+            jobId,
+            entry.task,
+            entry.payload as object,
+            (entry.state ?? null) as object,
+            entry.activations,
+          ],
+        );
+      },
+      async get(jobId) {
+        const b = await getBoss();
+        await ensureStateTables(b);
+        const result = await b
+          .getDb()
+          .executeSql(
+            `SELECT job_id, task, payload, state, suspended_at, activations FROM faapi_task_states WHERE job_id = $1`,
+            [jobId],
+          );
+        const row = result.rows[0] as Record<string, unknown> | undefined;
+        return row ? stateRowToEntry(row) : undefined;
+      },
+      async delete(jobId) {
+        const b = await getBoss();
+        await ensureStateTables(b);
+        await b.getDb().executeSql(`DELETE FROM faapi_task_states WHERE job_id = $1`, [jobId]);
+      },
+      async list() {
+        const b = await getBoss();
+        await ensureStateTables(b);
+        const result = await b
+          .getDb()
+          .executeSql(
+            `SELECT job_id, task, payload, state, suspended_at, activations FROM faapi_task_states ORDER BY suspended_at`,
+            [],
+          );
+        return (result.rows as Record<string, unknown>[]).map(stateRowToEntry);
+      },
+    };
   }
 
   /** 组行 → TaskGroupSnapshot（行字段 snake_case → 快照契约） */
@@ -450,11 +559,15 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
         ...(opts?.delayMs ? { startAfter: new Date(Date.now() + opts.delayMs) } : {}),
       };
       // pg-boss data 形参为 object——基础类型 payload（cron 空任务等）按 JSON 语义透传；
-      // 组投递成员 / 链式投递任务以载荷包装携带组/链标识（交付时还原，业务 payload 不变）
-      const meta = { groupId: opts?.groupId, chainKey: opts?.chainKey };
+      // 组投递成员 / 链式投递 / 挂起激活重投以载荷包装携带元数据（交付时还原，业务 payload 不变）
+      const meta = {
+        groupId: opts?.groupId,
+        chainKey: opts?.chainKey,
+        resumeState: opts?.resumeState,
+      };
       const id = await b.send(
         name,
-        meta.groupId !== undefined || meta.chainKey !== undefined
+        meta.groupId !== undefined || meta.chainKey !== undefined || meta.resumeState !== undefined
           ? wrapMetaPayload(meta, payload)
           : (payload as object),
         sendOptions,
@@ -498,8 +611,10 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
             jobs.map(async (job) => {
               // retryCount 从 0 起（首次执行为 0）→ faapi attempt 从 1 起
               const attempt = job.retryCount + 1;
-              // 组投递成员 / 链式任务：从载荷包装还原业务 payload 与组/链标识（语义层据此记账/查证）
-              const { payload, groupId, chainKey } = unwrapMetaPayload(job.data);
+              // 组投递成员 / 链式任务 / 激活重投：从载荷包装还原业务 payload 与元数据
+              const { payload, groupId, chainKey, resumeState } = unwrapMetaPayload(job.data);
+              // unwrap 按结构判定存在性，形状契约（TaskResumeState）由语义层与包装侧保证
+              const typedResumeState = resumeState as TaskResumeState | undefined;
               // 信号由驱动自管：stop 超时 abort（pg-boss 自身不提供执行中任务的取消能力）
               const controller = new AbortController();
               inflight.set(job.id, controller);
@@ -513,6 +628,7 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
                     signal: controller.signal,
                     ...(groupId !== undefined ? { groupId } : {}),
                     ...(chainKey !== undefined ? { chainKey } : {}),
+                    ...(typedResumeState !== undefined ? { resumeState: typedResumeState } : {}),
                   });
                 } catch (err) {
                   // fail 的 data 存 jsonb：传可序列化的错误摘要（原始 Error 序列化为 {} 丢信息）
@@ -686,5 +802,6 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
     },
 
     groups: createGroupOps(ensureBoss),
+    taskState: createTaskStateOps(ensureBoss),
   };
 }

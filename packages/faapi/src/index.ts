@@ -91,6 +91,9 @@ export type {
   TaskDriverGroupOps,
   TaskDriverGroupCreate,
   TaskDriverGroupSettleResult,
+  TaskDriverTaskStateOps,
+  TaskStateEntry,
+  TaskResumeState,
 } from './task/driverTypes';
 export { createTaskRegistry } from './task/taskRegistry';
 export { createTaskQueue } from './task/taskQueue';

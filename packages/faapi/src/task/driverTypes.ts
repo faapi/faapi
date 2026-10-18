@@ -31,6 +31,8 @@ export interface TaskDriverJob {
   groupId?: string;
   /** 所属链（链式投递的任务携带；驱动在交付时从链键载体还原） */
   chainKey?: string;
+  /** 挂起/激活上下文（激活重投的执行携带；驱动在交付时从挂起信封载体还原） */
+  resumeState?: TaskResumeState;
 }
 
 /** 语义层交给驱动层的执行函数（抛错 = 失败，由驱动按入队时的 retries 重试） */
@@ -101,6 +103,11 @@ export interface TaskDriver {
        * `TaskDriverRecord.chainKey`
        */
       chainKey?: string;
+      /**
+       * 挂起/激活上下文（激活重投携带，可选）——驱动以此随任务持久化（载体同
+       * 组标识，载荷包装形态），交付时还原为 `TaskDriverJob.resumeState`
+       */
+      resumeState?: TaskResumeState;
     },
   ): Promise<string>;
   /**
@@ -150,6 +157,54 @@ export interface TaskDriver {
    * - 记账状态持久化在驱动存储，跨实例/重启正确
    */
   groups?: TaskDriverGroupOps;
+  /**
+   * 任务挂起信封存储（可选能力，整对象实现——未实现时 `taskCtx.suspend` /
+   * `TaskClient.resume` 显式抛错）。语义与两内置驱动的存储映射见 taskSuspend.md。
+   *
+   * 实现约束：
+   * - 信封跨实例/重启正确（持久化在驱动存储，非进程内存）
+   * - `set` 对同 jobId 覆盖（同一任务可多次挂起，信封随之更新）
+   */
+  taskState?: TaskDriverTaskStateOps;
+}
+
+/** 挂起/激活上下文（激活重投时随执行传递，还原为 `taskCtx.resumed`） */
+export interface TaskResumeState {
+  /** 挂起时暂存的业务状态 */
+  state?: unknown;
+  /** 本次激活注入的附加数据（审批意见等） */
+  inject?: unknown;
+  /** 第几次激活（从 1 起，信封内递增） */
+  activations: number;
+}
+
+/** 挂起信封（驱动侧存储载体，resume 重投与重启水合的数据源） */
+export interface TaskStateEntry {
+  jobId: string;
+  /** 任务名 */
+  task: string;
+  /** 原始 payload（resume 重投用——重投不经业务重放） */
+  payload: unknown;
+  /** 业务暂存状态 */
+  state?: unknown;
+  /** 挂起时刻（毫秒） */
+  suspendedAt: number;
+  /** 已激活次数（resume 时 +1 写入新执行上下文） */
+  activations: number;
+}
+
+/**
+ * 任务挂起信封存储驱动能力（TaskDriver.taskState）
+ */
+export interface TaskDriverTaskStateOps {
+  /** 写入/覆盖信封（suspend 时调用） */
+  set(jobId: string, entry: TaskStateEntry): Promise<void>;
+  /** 读取信封；不存在返回 undefined */
+  get(jobId: string): Promise<TaskStateEntry | undefined>;
+  /** 删除信封（resume 读出即删 / cancel 掐死挂起线） */
+  delete(jobId: string): Promise<void>;
+  /** 全量信封（重启水合数据源——量级 = 挂起中任务数） */
+  list(): Promise<TaskStateEntry[]>;
 }
 
 /** 组记账 create 的声明（enqueueGroup 语义层透传） */
