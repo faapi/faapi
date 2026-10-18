@@ -26,7 +26,7 @@
 | `ToolExecutor` | tool 执行函数 `(name, args) => Promise<unknown>`，由 Agent 类提供 |
 | `ReactLoopConfig` | 循环配置（provider + systemPrompt + tools + executeTool + maxTurns + model 等） |
 | `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage + traceId + trace）；`usage` / `turns` 为整树口径（见「usage 与 turns 的整树口径」章节）；`traceId` 由 Agent 层填充（循环不感知,见 [traceId.md](./traceId.md)） |
-| `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + done）；`done.usage` / `done.turns` 同整树口径 |
+| `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + done）；`done.usage` / `done.turns` 同整树口径；`done.messages` 为最终完整历史（与非流式 `ReactLoopResult.messages` 同源对齐） |
 | `SubAgentToolResult` | sub-agent tool 的结构化返回值（`{ __subAgent: true, result, usage?, turns?, trace? }`），reactLoop 识别后上卷用量、剥壳回传（见「usage 与 turns 的整树口径」章节） |
 | `ReactLoopError` | 系统级错误（maxTurns 超限，携带中断时 messages 供续跑），tool 执行错误不抛此类型 |
 
@@ -54,7 +54,7 @@
    - 累积 `turnContent` / `turnReasoning`（当前轮的全部 token / 推理内容）
    - 终止 chunk（含 `finishReason`）：
      - `tool_calls` → yield 每个 `{ toolCall }`，执行 tool，yield `{ toolResult }`（`SubAgentToolResult` 先上卷 `usage` / `turns` 再剥壳，与非流式一致），继续循环
-     - `stop` / 其他 → yield `{ done: { content, reasoning, turns, stopReason, usage } }`（`usage` / `turns` 整树口径），return
+     - `stop` / 其他 → yield `{ done: { content, reasoning, turns, stopReason, usage, messages } }`（`usage` / `turns` 整树口径；`messages` 为最终完整历史，与非流式 `ReactLoopResult.messages` 同源），return
 3. 超出 `maxTurns` → 抛 `ReactLoopError`
 
 ### Tool 错误处理策略
@@ -163,8 +163,8 @@ interface ReactLoopStreamChunk {
   toolCall?: { name: string; arguments: Record<string, unknown> };
   /** tool 执行完成（含结果，供 UI 展示） */
   toolResult?: { name: string; result: string };
-  /** 循环结束（最终结果） */
-  done?: { content: string; reasoning?: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage; traceId?: string };
+  /** 循环结束（最终结果）；`messages` 为最终完整历史（含最终 assistant 消息，已剥离推理内容），与非流式 `ReactLoopResult.messages` 同源——流式消费方持久化后经 `config.messages` 续跑（挂起/恢复编排）不必走异常路径 */
+  done?: { content: string; reasoning?: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage; traceId?: string; messages: LLMMessage[] };
 }
 ```
 
@@ -238,6 +238,10 @@ thinking 模型（DeepSeek-R1 / Qwen-thinking / OpenAI o 系列等）在 `conten
 3. **`input` 追加**——`input` 非空字符串时追加为新的 `user` 消息（多轮对话场景）；`input` 为空（`undefined` / `''`）时纯续跑；两者都为空抛 `AgentError`
 4. **结构校验**——历史中 assistant 消息带 `tool_calls` 时，其后必须紧跟对应数量的 `tool` 结果消息（按 `tool_call_id` 配对），缺失抛 `AgentError`（早失败优于 LLM API 400 模糊报错——常见诱因是业务方持久化/反序列化时截断在轮组中间）
 5. **续跑历史同样受 `maxHistoryTokens` 裁剪**——发给 LLM 的副本按预算裁剪，本地历史不受影响
+
+### 正常收尾的历史导出（挂起/恢复编排）
+
+历史导出不只中断路径：非流式 `ReactLoopResult.messages`、流式 `done.messages` 均为**最终完整历史**（含最终 assistant 消息，已剥离推理内容，满足轮组原子性可直接续跑）。业务方的挂起/恢复编排（长任务分段：run 正常收尾即持久化历史，段间经任务队列续跑 `run(undefined, { messages })`）不需要制造异常来获取断点状态——run 正常结束本身就是一个合法挂起点。
 
 ### 续跑轮数重新计数
 

@@ -1500,6 +1500,70 @@ describe('Agent', () => {
     });
   });
 
+  describe('stream done.messages（流式收尾历史导出）', () => {
+    it('单轮直答：done.messages 与非流式 result.messages 同源一致', async () => {
+      const { provider: streamProvider } = createMockStreamProvider([
+        [{ deltaContent: 'final', finishReason: 'stop' }],
+      ]);
+      const streamAgent = new Agent(createDeps({ provider: streamProvider, agent: agentMeta() }));
+      const chunks = await collect(
+        streamAgent.stream('go', { agent: 'researcher', model: 'gpt-4o' }),
+      );
+      const done = chunks.at(-1)!.done!;
+
+      const { provider: completeProvider } = createMockProvider([
+        llmResponse({ content: 'final' }),
+      ]);
+      const runAgent = new Agent(createDeps({ provider: completeProvider, agent: agentMeta() }));
+      const result = await runAgent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 两形态同源：同一脚本输入下深度相等（含 system + user + 最终 assistant）
+      expect(done.messages).toEqual(result.messages);
+      expect(done.messages).toEqual([
+        { role: 'user', content: 'go' },
+        { role: 'assistant', content: 'final' },
+      ]);
+    });
+
+    it('多轮工具调用：done.messages 轮组完整（assistant.toolCalls 与 tool 结果配对，可直接续跑）', async () => {
+      const handler = vi.fn(async () => ({ temp: 25 }));
+      const { provider } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
+            finishReason: 'tool_calls',
+          },
+        ],
+        [{ deltaContent: '晴天 25 度', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: vi.fn(
+            async (_f, _fn): Promise<ToolModule> => ({
+              handler: handler as (...args: unknown[]) => unknown,
+              functionName: 'getWeather',
+            }),
+          ),
+        }),
+      );
+
+      const chunks = await collect(
+        agent.stream('weather?', { agent: 'researcher', model: 'gpt-4o' }),
+      );
+      const done = chunks.at(-1)!.done!;
+
+      // 轮组原子性（validateResumeHistory 可过的形状）：tool_calls 轮的 tool 结果紧随其后
+      expect(done.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+      expect(done.messages[1]!.tool_calls?.[0]!.id).toBe('c1');
+      expect(done.messages[2]!.tool_call_id).toBe('c1');
+      expect(done.messages.at(-1)).toEqual({ role: 'assistant', content: '晴天 25 度' });
+      expect(handler).toHaveBeenCalledWith({ city: '北京' }, undefined);
+    });
+  });
+
   describe('executeTool — sub-agent 递归', () => {
     it('sub-agent 走默认 reactLoop,非单字段 input 形状 stringify 兜底', async () => {
       // 父 provider 需与子不同——DI 复用父 provider 会冲突

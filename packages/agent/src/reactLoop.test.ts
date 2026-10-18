@@ -559,6 +559,10 @@ describe('reactLoopStream', () => {
         turns: 1,
         stopReason: 'stop',
         usage: undefined,
+        messages: [
+          { role: 'user', content: 'hi' },
+          { role: 'assistant', content: 'Hello world' },
+        ],
       });
     });
 
@@ -723,6 +727,13 @@ describe('reactLoopStream', () => {
         turns: 2,
         stopReason: 'stop',
         usage: undefined,
+        // 轮组完整：assistant.toolCalls 与 tool 结果配对，可直接经 config.messages 续跑
+        messages: [
+          { role: 'user', content: 'search foo' },
+          { role: 'assistant', content: '', tool_calls: [toolCall('c1', 'search', { q: 'foo' })] },
+          { role: 'tool', content: 'result-foo', tool_call_id: 'c1' },
+          { role: 'assistant', content: 'Found it' },
+        ],
       });
     });
 

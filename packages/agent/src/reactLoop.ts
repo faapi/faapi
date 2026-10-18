@@ -254,6 +254,13 @@ export interface ReactLoopStreamChunk {
     usage?: LLMUsage;
     /** 层级追踪 ID（Agent 层填充,与 ReactLoopResult.traceId 同语义,见 traceId.md） */
     traceId?: string;
+    /**
+     * 最终完整对话历史（含最终 assistant 消息，推理内容已剥离），与非流式
+     * `ReactLoopResult.messages` 同源对齐——流式消费方持久化后经
+     * `config.messages` 续跑（挂起/恢复编排），不必走异常路径取断点状态。
+     * 满足轮组原子性（assistant.toolCalls 与 tool 结果完整配对），可直接回传
+     */
+    messages: LLMMessage[];
   };
 }
 
@@ -849,11 +856,14 @@ export async function* reactLoopStream(
 
     // 非 tool_calls → 循环结束
     if (finishReason !== 'tool_calls' || !toolCalls) {
+      // 此刻 messages 已含最终 assistant 消息——与非流式 return 的历史同源
+      // （同一条本地数组），流式收尾导出供挂起/恢复编排持久化续跑
       const donePayload: NonNullable<ReactLoopStreamChunk['done']> = {
         content: turnContent,
         turns: loopTurns + subTurns,
         stopReason: finishReason ?? 'other',
         usage: totalUsage,
+        messages,
       };
       if (turnReasoning) {
         donePayload.reasoning = turnReasoning;
