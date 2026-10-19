@@ -5,6 +5,7 @@ import type { TaskMetadata } from './taskTypes';
 const meta = (name: string, extra: Partial<TaskMetadata> = {}): TaskMetadata => ({
   name,
   filePath: `dist/tasks/${name}/task.js`,
+  mode: 'inline',
   ...extra,
 });
 

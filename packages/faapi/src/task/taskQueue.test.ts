@@ -83,6 +83,7 @@ function makeDeps(modules: Record<string, TaskModule>, schemas: Record<string, u
     Object.keys(modules).map((name) => ({
       name,
       filePath: `dist/tasks/${name}/task.js`,
+      mode: 'inline' as const,
     })),
   );
   const loadTaskModule = vi.fn(async (filePath: string) => {
@@ -119,7 +120,9 @@ describe('createTaskQueue', () => {
 
   it('入队时把任务 meta 的 retries 透传给驱动', async () => {
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'mail', filePath: 'dist/tasks/mail/task.js', retries: 3 }]);
+    registry.hydrate([
+      { name: 'mail', filePath: 'dist/tasks/mail/task.js', mode: 'inline', retries: 3 },
+    ]);
     const fake = makeFakeDriver();
     const queue = createTaskQueue({
       registry,
@@ -261,8 +264,8 @@ describe('createTaskQueue', () => {
     const fake = makeFakeDriver();
     const registry = createTaskRegistry();
     registry.hydrate([
-      { name: 'a', filePath: 'dist/tasks/a/task.js', concurrency: 4 },
-      { name: 'b', filePath: 'dist/tasks/b/task.js' },
+      { name: 'a', filePath: 'dist/tasks/a/task.js', mode: 'inline', concurrency: 4 },
+      { name: 'b', filePath: 'dist/tasks/b/task.js', mode: 'inline' },
     ]);
     const queue = createTaskQueue({ ...deps, registry, driver: fake.driver });
     await queue.start();
@@ -645,7 +648,9 @@ describe('createTaskQueue', () => {
     });
     const fake = makeFakeDriver();
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 3000 }]);
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
+    ]);
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
@@ -715,12 +720,14 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('声明 timeoutMs 的任务走隔离执行器（runIsolated），进程内 run 不被调用', async () => {
+  it('mode: isolated 的任务走隔离执行器（runIsolated），进程内 run 不被调用', async () => {
     const run = vi.fn(async () => 'in-process');
     const fake = makeFakeDriver();
     const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 3000 }]);
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
+    ]);
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
@@ -752,13 +759,47 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
+  it('mode: isolated 但缺 timeoutMs（清单损坏/手写清单）时派发即显式抛错，不静默走进程内', async () => {
+    const run = vi.fn(async () => 'in-process');
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => 'from-worker');
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'broken', filePath: 'dist/tasks/broken/task.js', mode: 'isolated' }]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({ run }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('broken');
+    await expect(fake.dispatch('broken', {}, 1)).rejects.toThrow(/hydrated without timeoutMs/);
+    expect(runIsolated).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    await queue.stop();
+  });
+
   it('隔离执行透传 meta.graceMs（宽限期），未声明时不传', async () => {
     const fake = makeFakeDriver();
     const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
     const registry = createTaskRegistry();
     registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 1000, graceMs: 8000 },
-      { name: 'default', filePath: 'dist/tasks/default/task.js', timeoutMs: 1000 },
+      {
+        name: 'heavy',
+        filePath: 'dist/tasks/heavy/task.js',
+        mode: 'isolated',
+        timeoutMs: 1000,
+        graceMs: 8000,
+      },
+      {
+        name: 'default',
+        filePath: 'dist/tasks/default/task.js',
+        mode: 'isolated',
+        timeoutMs: 1000,
+      },
     ]);
     const queue = createTaskQueue({
       registry,
@@ -789,7 +830,9 @@ describe('createTaskQueue', () => {
       throw new Error('worker terminated');
     });
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 }]);
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
@@ -812,7 +855,9 @@ describe('createTaskQueue', () => {
       throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
     });
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 }]);
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
@@ -862,7 +907,7 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('未声明 timeoutMs 的任务走进程内路径，不触达 runIsolated', async () => {
+  it('mode: inline 的任务走进程内路径，不触达 runIsolated（执行路径由声明文件种类决定）', async () => {
     const run = vi.fn(async () => 'in-process');
     const fake = makeFakeDriver();
     const runIsolated = vi.fn(async () => 'from-worker');
@@ -1006,7 +1051,7 @@ describe('createTaskQueue', () => {
 
   it('onFailed：执行失败后触发，willRetry 按 meta.retries 推算', async () => {
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'flaky', filePath: 'd.js', retries: 2 }]);
+    registry.hydrate([{ name: 'flaky', filePath: 'd.js', mode: 'inline', retries: 2 }]);
     const onFailed = vi.fn(async () => {});
     const fake = makeFakeDriver();
     const queue = createTaskQueue({
@@ -1038,7 +1083,7 @@ describe('createTaskQueue', () => {
 
   it('onFailed：取消路径触发且 cancelled 为 true；自身抛错 console.error 留痕（不影响队列）', async () => {
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'd.js', timeoutMs: 100 }]);
+    registry.hydrate([{ name: 'heavy', filePath: 'd.js', mode: 'isolated', timeoutMs: 100 }]);
     const onFailed = vi.fn(async (_info: unknown) => {
       throw new Error('hook blew up');
     });
@@ -1137,7 +1182,9 @@ describe('createTaskQueue', () => {
     const fake = makeFakeDriver();
     const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 3000 }]);
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
+    ]);
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
@@ -1184,8 +1231,8 @@ describe('createTaskQueue', () => {
     const runIsolated = vi.fn(async (opts: { registries: unknown }) => opts.registries);
     const registry = createTaskRegistry();
     registry.hydrate([
-      { name: 'hello', filePath: 'dist/tasks/hello/task.js' },
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 },
+      { name: 'hello', filePath: 'dist/tasks/hello/task.js', mode: 'inline' },
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
     ]);
     const queue = createTaskQueue({
       registry,
@@ -1267,7 +1314,9 @@ describe('createTaskQueue', () => {
     const fake = makeFakeDriver();
     const runIsolated = vi.fn(async (opts: { llms?: unknown }) => opts.llms ?? null);
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 }]);
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
     const llms = { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } };
     const queue = createTaskQueue({
       registry,
@@ -1290,7 +1339,9 @@ describe('createTaskQueue', () => {
     const fake = makeFakeDriver();
     const runIsolated = vi.fn(async (opts: { llms?: unknown }) => opts.llms ?? null);
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'dist/tasks/heavy/task.js', timeoutMs: 100 }]);
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',

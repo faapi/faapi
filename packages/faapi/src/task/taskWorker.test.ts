@@ -993,3 +993,229 @@ describe('buildLlmChannel', () => {
     vi.resetModules();
   });
 });
+
+// ─── ctx.config / ctx.resumed 透传（run 消息 taskCtx 扩展） ───────────
+
+describe('runTaskInWorker · config/resumed 透传', () => {
+  it('taskCtx.config/resumed 随 run 消息进入 worker 内业务 ctx', async () => {
+    const modulePath = writeTaskModule(
+      'ctx-passthrough',
+      `export function run(_payload, taskCtx) {
+        return {
+          config: taskCtx.config,
+          resumed: taskCtx.resumed ?? null,
+        };
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: {
+        ...baseCtx,
+        config: { port: 3000, task: { driver: 'pgboss' } },
+        resumed: { state: { plan: 'draft' }, activations: 2 },
+      },
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({
+      config: { port: 3000, task: { driver: 'pgboss' } },
+      resumed: { state: { plan: 'draft' }, activations: 2 },
+    });
+  });
+
+  it('未传 config/resumed：worker 内两字段为 undefined（直接构造执行器的测试场景）', async () => {
+    const modulePath = writeTaskModule(
+      'ctx-absent',
+      `export function run(_payload, taskCtx) {
+        return { hasConfig: 'config' in taskCtx, hasResumed: 'resumed' in taskCtx };
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({ hasConfig: false, hasResumed: false });
+  });
+});
+
+// ─── taskCtx.suspend RPC（worker 内挂起回传宿主持久化） ───────────
+
+describe('runTaskInWorker · ctx.suspend RPC', () => {
+  it('onSuspend 成功：worker 内 await 完成，state 回传宿主，run 正常返回', async () => {
+    const received: unknown[] = [];
+    const modulePath = writeTaskModule(
+      'suspend-ok',
+      `export async function run(_payload, taskCtx) {
+        await taskCtx.suspend({ plan: 'draft' });
+        return 'after-suspend';
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      onSuspend: async (state) => {
+        received.push(state);
+      },
+    });
+    expect(result).toBe('after-suspend');
+    expect(received).toEqual([{ plan: 'draft' }]);
+  });
+
+  it('onSuspend 拒绝（驱动无 taskState 等）：错误原样回传 worker reject', async () => {
+    const modulePath = writeTaskModule(
+      'suspend-err',
+      `export async function run(_payload, taskCtx) {
+        try {
+          await taskCtx.suspend();
+          return { threw: false };
+        } catch (err) {
+          return { threw: true, message: err.message };
+        }
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      onSuspend: async () => {
+        throw new Error(
+          '[faapi] Task driver does not support suspend/resume (TaskDriver.taskState is not implemented).',
+        );
+      },
+    });
+    expect(result).toEqual({
+      threw: true,
+      message:
+        '[faapi] Task driver does not support suspend/resume (TaskDriver.taskState is not implemented).',
+    });
+  });
+
+  it('无 onSuspend handler：worker 内 reject（直接构造执行器的测试场景，与 tasks-call 同口径）', async () => {
+    const modulePath = writeTaskModule(
+      'suspend-no-handler',
+      `export async function run(_payload, taskCtx) {
+        try {
+          await taskCtx.suspend();
+          return { threw: false };
+        } catch (err) {
+          return { threw: true, message: err.message };
+        }
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    });
+    expect(result).toEqual({
+      threw: true,
+      message: expect.stringContaining('taskCtx.suspend is unavailable'),
+    });
+  });
+
+  it('state 不可克隆：worker 内抛克隆指引错误（与 emit/log 同口径，不发 RPC）', async () => {
+    const modulePath = writeTaskModule(
+      'suspend-uncloneable',
+      `export async function run(_payload, taskCtx) {
+        try {
+          await taskCtx.suspend({ fn: () => {} });
+          return { threw: false };
+        } catch (err) {
+          return { threw: true, message: err.message };
+        }
+      }`,
+    );
+    const onSuspend = vi.fn(async () => {});
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      onSuspend,
+    });
+    expect(onSuspend).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      threw: true,
+      message: expect.stringContaining('taskCtx.suspend state is not cloneable'),
+    });
+  });
+
+  it('宽限期内到达的 suspend 回传宿主处理（与 tasks-call 同口径），但超时判定即终局', async () => {
+    const received: unknown[] = [];
+    const modulePath = writeTaskModule(
+      'suspend-grace',
+      `export async function run(_payload, taskCtx) {
+        await new Promise((r) => setTimeout(r, 200));
+        await taskCtx.suspend({ late: true });
+        return 'done';
+      }`,
+    );
+    const err = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 50,
+      graceMs: 500,
+      onSuspend: async (state) => {
+        received.push(state);
+      },
+    }).then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: Error) => e,
+    );
+    expect(err).toBeInstanceOf(TaskCancelledError);
+    expect(received).toEqual([{ late: true }]);
+  });
+});
+
+// ─── buildSuspendChannel（workerEntry 纯函数，主线程单测） ───────────
+
+describe('buildSuspendChannel', () => {
+  it('suspend 发送 { type: suspend, seq, state }，suspend-result ok 回 resolve', async () => {
+    const { buildSuspendChannel } = await import('./workerEntry');
+    const sent: Array<Record<string, unknown>> = [];
+    const channel = buildSuspendChannel((msg) => sent.push(msg));
+    const p = channel.suspend({ a: 1 });
+    expect(sent).toEqual([{ type: 'suspend', seq: 1, state: { a: 1 } }]);
+    expect(channel.handleMessage({ type: 'suspend-result', seq: 1, ok: true })).toBe(true);
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it('suspend-result ok:false：reject 并保留错误 name/message', async () => {
+    const { buildSuspendChannel } = await import('./workerEntry');
+    const channel = buildSuspendChannel(() => {});
+    const p = channel.suspend();
+    channel.handleMessage({
+      type: 'suspend-result',
+      seq: 1,
+      ok: false,
+      error: { name: 'RangeError', message: 'nope', stack: undefined, props: {} },
+    });
+    await expect(p).rejects.toMatchObject({ name: 'RangeError', message: 'nope' });
+  });
+
+  it('未知/迟到 seq：handleMessage 消费但不影响挂起调用', async () => {
+    const { buildSuspendChannel } = await import('./workerEntry');
+    const channel = buildSuspendChannel(() => {});
+    expect(channel.handleMessage({ type: 'suspend-result', seq: 99, ok: true })).toBe(true);
+    expect(channel.handleMessage({ type: 'other' })).toBe(false);
+  });
+
+  it('state 不可克隆：send 抛错时 suspend 同步 reject 克隆指引（不发消息）', async () => {
+    const { buildSuspendChannel } = await import('./workerEntry');
+    const channel = buildSuspendChannel(() => {
+      throw new Error('() => {} could not be cloned.');
+    });
+    await expect(channel.suspend({ fn: () => {} })).rejects.toThrow(
+      /taskCtx\.suspend state is not cloneable/,
+    );
+  });
+});

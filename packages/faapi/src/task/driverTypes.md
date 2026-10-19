@@ -37,5 +37,5 @@
 
 - `src/task/loadTaskDriver.ts` — 按 config.task.driver 动态加载子包驱动
 - `src/task/idleTaskDriver.ts` — 无任务清单时的占位实现
-- `src/task/taskWorker.ts` — 隔离执行器（timeoutMs 任务的真终止能力）
+- `src/task/taskWorker.ts` — 隔离执行器（`worker.ts` 隔离任务的真终止能力）
 - `src/task/taskQueue.ts` — 语义层消费方

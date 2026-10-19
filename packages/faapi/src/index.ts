@@ -64,6 +64,7 @@ export type { LlmComplete, LlmCompleteOptions } from './injection/llmTypes';
 // 任务子系统（队列式异步任务，详见 src/task/README.md）
 export type {
   FaapiTaskMeta,
+  FaapiWorkerTaskMeta,
   TaskManifest,
   TaskMetadata,
   TaskJob,
@@ -72,6 +73,7 @@ export type {
   IsolatedTaskContext,
   TaskContext,
   TaskModule,
+  IsolatedTaskModule,
   TaskClient,
   TaskQueue,
   TaskRegistriesSnapshot,

@@ -265,8 +265,8 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
         call('enqueueChain', [name, payload, opts]) as ReturnType<TaskClient['enqueueChain']>,
       enqueueGroup: (name, payloads, opts) =>
         call('enqueueGroup', [name, payloads, opts]) as ReturnType<TaskClient['enqueueGroup']>,
-      // 激活：挂起语义仅进程内路径（worker 无 taskCtx.suspend），但 TaskClient
-      // 类型完整性要求代理实现——宿主侧走完整 resume 通道
+      // 激活：与进程内同语义（宿主侧走完整 resume 通道，信封读出即删）；
+      // worker 自身挂起走 taskCtx.suspend（独立 RPC 通道），此处是激活别人
       resume: (name, jobId, opts) =>
         call('resume', [name, jobId, opts]) as ReturnType<TaskClient['resume']>,
       getGroup: (groupId) => call('getGroup', [groupId]) as ReturnType<TaskClient['getGroup']>,
@@ -305,6 +305,65 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
 }
 
 /**
+ * 构建隔离任务 `taskCtx.suspend` 通道（workerEntry 纯函数，主线程可单测）
+ *
+ * 挂起经 `{ type: 'suspend', seq, state }` 消息 RPC 回传宿主执行信封持久化
+ * （与进程内路径共用同一写入，语义与进程内零差）；宿主以
+ * `{ type: 'suspend-result', seq, ok, error? }` 回传。state 不可克隆时发送端
+ * postMessage 同步抛错 → reject 克隆指引错误（与 emit/log 同口径，不发 RPC）；
+ * 宿主拒绝（驱动无 `taskState` 等）错误原样回传 reject。
+ */
+export function buildSuspendChannel(send: (msg: Record<string, unknown>) => void): {
+  /** worker 内挂起：await 直到宿主信封写入完成（run 返回后落账 suspended） */
+  suspend: (state?: unknown) => Promise<void>;
+  /** 处理 suspend-result 消息：命中返回 true（消息已消费），其余返回 false */
+  handleMessage: (msg: {
+    type?: string;
+    seq?: number;
+    ok?: boolean;
+    error?: { name?: string; message?: string; stack?: string; props?: Record<string, unknown> };
+  }) => boolean;
+} {
+  let seq = 0;
+  const pending = new Map<number, { resolve: () => void; reject: (err: Error) => void }>();
+  return {
+    suspend: (state?: unknown) =>
+      new Promise<void>((resolve, reject) => {
+        const id = ++seq;
+        pending.set(id, { resolve, reject });
+        try {
+          send({ type: 'suspend', seq: id, state });
+        } catch (err) {
+          pending.delete(id);
+          reject(
+            new Error(
+              `taskCtx.suspend state is not cloneable across the worker boundary: ` +
+                `${err instanceof Error ? err.message : String(err)}. ` +
+                'Keep the suspend state plain data (strings / numbers / plain objects).',
+              { cause: err },
+            ),
+          );
+        }
+      }),
+    handleMessage: (msg) => {
+      if (msg?.type !== 'suspend-result') return false;
+      const id = msg.seq;
+      if (id === undefined || !pending.has(id)) return true; // 迟到/未知 seq：消费掉
+      const entry = pending.get(id)!;
+      pending.delete(id);
+      if (msg.ok) {
+        entry.resolve();
+      } else {
+        const err = new Error(msg.error?.message ?? 'taskCtx.suspend failed');
+        if (msg.error?.name !== undefined) err.name = msg.error.name;
+        entry.reject(err);
+      }
+      return true;
+    },
+  };
+}
+
+/**
  * worker 侧 bootstrap：播种读取根 + 桥接 run 消息
  *
  * 仅在 worker 线程执行（主线程 import 本模块时 parentPort 为空，只取上面的纯
@@ -325,6 +384,9 @@ function bootstrap(): void {
 
   // taskCtx.tasks 代理：全方法经消息回传宿主（onTasksCall 分派到队列本体）
   const tasksProxy = buildTasksProxy((msg) => parentPort?.postMessage(msg));
+  // taskCtx.suspend 通道：挂起经消息回传宿主执行信封持久化（onSuspend 与进程内
+  // 路径共用同一写入）
+  const suspendChannel = buildSuspendChannel((msg) => parentPort?.postMessage(msg));
 
   let controller: AbortController | null = null;
   let modulePromise: Promise<{ run?: (payload: unknown, taskCtx: unknown) => unknown }> | null =
@@ -336,12 +398,18 @@ function bootstrap(): void {
       type?: string;
       reason?: string;
       payload?: unknown;
-      /** 隔离任务仅含 job——worker 线程不接收进程 config */
-      taskCtx?: { job?: { id: string; name: string; attempt: number } };
+      /** job + config 纯数据快照（collectConfigSnapshot 投影）+ resumed 挂起/激活上下文 */
+      taskCtx?: {
+        job?: { id: string; name: string; attempt: number };
+        config?: unknown;
+        resumed?: { state?: unknown; inject?: unknown; activations: number };
+      };
       registries?: TaskRegistriesSnapshot;
       llms?: Record<string, LlmConfig>;
       log?: { level?: LogLevel; scope?: string; fields?: Record<string, unknown> };
     }) => {
+      if (suspendChannel.handleMessage(msg as Parameters<typeof suspendChannel.handleMessage>[0]))
+        return;
       if (tasksProxy.handleMessage(msg as Parameters<typeof tasksProxy.handleMessage>[0])) return;
       if (msg?.type === 'abort') {
         controller?.abort(new Error(msg.reason));
@@ -393,10 +461,13 @@ function bootstrap(): void {
             ...taskCtx,
             signal: controller!.signal,
             tasks: tasksProxy.proxy,
+            ...(taskCtx?.config !== undefined ? { config: taskCtx.config } : {}),
             registries,
             llm,
             progress,
             emit,
+            ...(taskCtx?.resumed !== undefined ? { resumed: taskCtx.resumed } : {}),
+            suspend: suspendChannel.suspend,
             log: taskLog,
           });
           parentPort?.postMessage({ type: 'done', result });

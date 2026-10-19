@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { ValidationError } from '../errors/httpErrors';
 import { runTaskInWorker, TaskCancelledError } from './taskWorker';
+import { collectConfigSnapshot } from './configSnapshot';
 import { createEmptyTaskRegistriesView } from '../injection/registries';
 import { createLogger, getEffectiveLogLevel, writeLogEntry } from '../logger/logger';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
-import type { TaskDriverJob, TaskResumeState } from './driverTypes';
+import type { TaskDriver, TaskDriverJob, TaskResumeState, TaskStateEntry } from './driverTypes';
 import type {
   TaskClient,
   TaskContext,
@@ -75,6 +76,38 @@ const MAX_FINISHED_RECORDS = 1_000;
  */
 const MAX_EVENTS_PER_JOB = 1_000;
 const MAX_EVENTS_TOTAL = 10_000;
+
+/**
+ * 挂起信封持久化（suspend/resume 两路径共用的唯一写入点）
+ *
+ * 进程内 `taskCtx.suspend` 直调、隔离路径 `onSuspend`（worker RPC 回传宿主）
+ * 共用：state 连同原 payload 以信封持久化到驱动 `taskState` 存储（跨实例/重启
+ * 正确），调用方各自落 `suspended` 标记（完成分支据此转 suspended——不记 result、
+ * 组记账不落定）。驱动未实现 `TaskDriver.taskState` 显式抛错（能力边界，两路径
+ * 同口径——隔离路径错误经 RPC 原样回传 worker）。activations 保留进入本次执行时
+ * 的值（首挂 0；激活重投的执行再挂时保留原计数，resume 时递增）
+ */
+async function persistSuspendEnvelope(
+  driver: TaskDriver,
+  job: TaskDriverJob,
+  state?: unknown,
+): Promise<void> {
+  if (!driver.taskState) {
+    throw new Error(
+      '[faapi] Task driver does not support suspend/resume (TaskDriver.taskState is not implemented). ' +
+        'Suspend/resume requires a driver that persists the state envelope — see taskSuspend.md / driverTypes.md.',
+    );
+  }
+  const entry: TaskStateEntry = {
+    jobId: job.id,
+    task: job.name,
+    payload: job.payload,
+    state,
+    suspendedAt: Date.now(),
+    activations: job.resumeState?.activations ?? 0,
+  };
+  await driver.taskState.set(job.id, entry);
+}
 
 /**
  * 任务队列语义层
@@ -343,9 +376,9 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   /**
    * worker 执行函数（交给驱动调用的 process）：模块加载 + run 调用 + 任务记录更新
    *
-   * 按 meta.timeoutMs 分两条执行路径：
-   * - 声明 timeoutMs → 隔离执行器（独立 worker 线程，超时两段式取消真终止，见 taskWorker.md）
-   * - 未声明 → 进程内执行（零开销；卡住时框架只能不再等待）
+   * 按 meta.mode（声明文件种类）分两条执行路径：
+   * - isolated（worker.ts 声明）→ 隔离执行器（独立 worker 线程，超时两段式取消真终止，见 taskWorker.md）
+   * - inline（task.ts 声明）→ 进程内执行（零开销；卡住时框架只能不再等待）
    *
    * 抛错 = 本次失败，由驱动按 retries 决定重试；重试再次进入本函数（attempt 递增）。
    */
@@ -379,15 +412,27 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
 
     try {
       let result: unknown;
-      if (meta.timeoutMs !== undefined && meta.timeoutMs > 0) {
+      if (meta.mode === 'isolated') {
+        // 防御性校验：清单由 scanTasks 构建期保证 isolated 必有 timeoutMs，缺了说明
+        // 清单损坏/手写清单——派发即显式抛错，不静默走进程内路径
+        if (meta.timeoutMs === undefined || meta.timeoutMs <= 0) {
+          throw new Error(
+            `[faapi] Isolated task "${job.name}" (worker.ts) was hydrated without timeoutMs — ` +
+              'the task manifest is broken (regenerate it with faapi build/dev).',
+          );
+        }
         result = await (deps.runIsolated ?? runTaskInWorker)({
           taskModulePath: path.resolve(rootDir, meta.filePath),
           payload: job.payload,
           taskCtx: {
-            // 隔离任务不传 config：worker 线程不接收进程配置（config 含函数字段
-            // 不可结构化克隆，框架不做降级传递）——任务数据经 payload 显式传入
             resourcesDir: deps.resourcesDir,
             job: { id: job.id, name: job.name, attempt: job.attempt },
+            // config 纯数据快照随 run 消息下发（collectConfigSnapshot 投影——函数
+            // 值不进快照与 registries 快照同边界；非函数不可克隆值派发显式报错，
+            // 见 configSnapshot.md），worker 内 taskCtx.config 读取
+            config: collectConfigSnapshot(deps.config),
+            // 挂起/激活上下文透传（信封为纯数据；首跑不传）
+            ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
           },
           registries: snapshotRegistries(),
           // agent.llms 纯数据快照随 workerData 下发，worker 内动态加载 @faapi/agent
@@ -433,6 +478,14 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             ] as (...a: unknown[]) => unknown;
             return fn.apply(queue, callArgs);
           },
+          // 隔离路径挂起：worker 内 taskCtx.suspend 经 RPC 回传宿主执行同一信封
+          // 写入（与进程内 suspend 共用 persistSuspendEnvelope，语义零差——见
+          // taskSuspend.md），宿主写入完成后回传 worker 继续执行；成功后落
+          // suspended 标记（完成分支据此转 suspended）
+          onSuspend: async (state?: unknown) => {
+            await persistSuspendEnvelope(driver, job, state);
+            suspended = true;
+          },
         });
       } else {
         let mod = moduleCache.get(job.name);
@@ -463,26 +516,11 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           emit: (data) => {
             if (record.status === 'running') appendEvent(record, data);
           },
-          // 任务挂起：state 连同原 payload 以信封持久化到驱动 taskState 存储
-          // （跨实例/重启正确），落账由完成分支按 suspended 标记执行。
-          // 仅进程内路径可用（隔离上下文无此字段——worker 无宿主队列访问）；
-          // 驱动未实现 taskState 能力显式抛错。activations 保留进入本次执行时的值
-          //（首挂 0；激活重投的执行再挂时保留原计数，resume 时递增）
+          // 任务挂起：与隔离路径共用同一信封写入（persistSuspendEnvelope——语义
+          // 零差），落账由完成分支按 suspended 标记执行。驱动未实现 taskState
+          // 能力显式抛错（错误同步抛给 run，隔离路径经 RPC 原样回传）
           suspend: async (state?: unknown) => {
-            if (!driver.taskState) {
-              throw new Error(
-                '[faapi] Task driver does not support suspend/resume (TaskDriver.taskState is not implemented). ' +
-                  'Suspend/resume requires a driver that persists the state envelope — see taskSuspend.md / driverTypes.md.',
-              );
-            }
-            await driver.taskState.set(job.id, {
-              jobId: job.id,
-              task: job.name,
-              payload: job.payload,
-              state,
-              suspendedAt: Date.now(),
-              activations: job.resumeState?.activations ?? 0,
-            });
+            await persistSuspendEnvelope(driver, job, state);
             suspended = true;
           },
           // 挂起/激活上下文：首跑 undefined；激活重投的执行经驱动载体还原回传
@@ -567,8 +605,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       delayMs: opts?.delayMs,
       retries: meta.retries ?? 0,
       dedupId: opts?.dedupId,
-      // 执行硬限预算透传驱动（pgboss 映射 expireInSeconds）：未声明 timeoutMs 时
-      // 两字段为 undefined，驱动用自身兜底
+      // 执行硬限预算透传驱动（pgboss 映射 expireInSeconds）：仅隔离任务（worker.ts）
+      // 有 timeoutMs，进程内任务两字段为 undefined，驱动用自身兜底
       timeoutMs: meta.timeoutMs,
       graceMs: meta.graceMs,
       ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),

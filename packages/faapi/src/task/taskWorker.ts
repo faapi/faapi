@@ -72,6 +72,17 @@ export interface TaskWorkerOptions {
      */
     resourcesDir?: string;
     job: { id: string; name: string; attempt: number };
+    /**
+     * 进程配置的纯数据快照（语义层经 `collectConfigSnapshot` 投影后必传；
+     * 直接构造执行器的测试可不传——worker 内 taskCtx.config 为 undefined）。
+     * 函数值不进快照（宿主回调面不跨线程，见 configSnapshot.md）
+     */
+    config?: unknown;
+    /**
+     * 挂起/激活上下文（`tasks.resume` 重投时由语义层透传 `job.resumeState`
+     * ——信封为纯数据；首跑不传，worker 内 taskCtx.resumed 为 undefined）
+     */
+    resumed?: { state?: unknown; inject?: unknown; activations: number };
   };
   /** 单次执行超时（毫秒） */
   timeoutMs: number;
@@ -125,6 +136,13 @@ export interface TaskWorkerOptions {
    * 不传则 worker 内 taskCtx.tasks 的调用以错误拒绝（直接构造执行器的测试场景）
    */
   onTasksCall?: (method: string, args: unknown[]) => Promise<unknown>;
+  /**
+   * 挂起回调：worker 内 `taskCtx.suspend(state)` 经 `{ type: 'suspend' }` 消息
+   * 回传宿主执行信封持久化（与进程内路径共用同一写入，语义层注入并落账
+   * suspended）；不传则 worker 内 taskCtx.suspend 的调用以错误拒绝（直接构造
+   * 执行器的测试场景，与 onTasksCall 同口径）。回调拒绝时错误原样回传 reject
+   */
+  onSuspend?: (state?: unknown) => Promise<void>;
 }
 
 /** worker 错误回传负载（serializeError 的结构化克隆产物） */
@@ -228,6 +246,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         seq?: number;
         method?: string;
         args?: unknown[];
+        state?: unknown;
       }) => {
         // taskCtx.tasks RPC：worker 内代理调用回传宿主执行（结果/错误按 seq 回传）。
         // running/grace 两阶段都处理——run 在宽限期内仍可能 await 一次入队；settled
@@ -274,6 +293,48 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
             .then((value) => reply({ ok: true, value }))
             .catch((err: unknown) => {
               reply({
+                ok: false,
+                error: {
+                  name: err instanceof Error ? err.name : 'Error',
+                  message: err instanceof Error ? err.message : String(err),
+                  stack: err instanceof Error ? err.stack : undefined,
+                  props: {},
+                } satisfies SerializedWorkerError,
+              });
+            });
+          return;
+        }
+        if (msg?.type === 'suspend') {
+          // taskCtx.suspend RPC：worker 内挂起回传宿主执行信封持久化（与进程内
+          // 路径共用同一写入，成功/失败按 seq 回传）。running/grace 两阶段都处理
+          // （与 tasks-call 同口径——挂起调用随任务超时两段式取消一并终止）；
+          // settled 后 worker 已 terminate，不会再有消息
+          const { seq, state } = msg;
+          const replySuspend = (body: Record<string, unknown>) => {
+            try {
+              worker.postMessage({ type: 'suspend-result', seq, ...body });
+            } catch {
+              // 错误负载不可克隆（理论上不发生）——放弃回传，worker 侧随超时终止
+            }
+          };
+          if (!options.onSuspend) {
+            replySuspend({
+              ok: false,
+              error: {
+                name: 'Error',
+                message:
+                  'taskCtx.suspend is unavailable: no host handler was provided for this execution',
+                stack: undefined,
+                props: {},
+              } satisfies SerializedWorkerError,
+            });
+            return;
+          }
+          options
+            .onSuspend(state)
+            .then(() => replySuspend({ ok: true }))
+            .catch((err: unknown) => {
+              replySuspend({
                 ok: false,
                 error: {
                   name: err instanceof Error ? err.name : 'Error',
@@ -334,8 +395,9 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
       }
     });
 
-    // taskCtx 仅含 job（隔离任务无 config——worker 线程不接收进程配置）；
-    // registries 为纯数据快照（缺省 undefined → worker 内空视图）
+    // taskCtx 含 job + config 纯数据快照（collectConfigSnapshot 投影，函数值不进
+    // 快照，见 configSnapshot.md）+ resumed 挂起/激活上下文（resume 重投时透传，
+    // 信封为纯数据）；registries 为纯数据快照（缺省 undefined → worker 内空视图）
     // postMessage 不可克隆时按错误处理
     try {
       worker.postMessage({
@@ -343,6 +405,8 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         payload,
         taskCtx: {
           job: taskCtx.job,
+          ...(taskCtx.config !== undefined ? { config: taskCtx.config } : {}),
+          ...(taskCtx.resumed !== undefined ? { resumed: taskCtx.resumed } : {}),
         },
         registries: options.registries,
         llms: options.llms,

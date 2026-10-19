@@ -10,33 +10,47 @@ import type { FaapiContextConfig } from '../runtime/contextTypes';
 import type { Logger } from '../logger/loggerTypes';
 
 /**
- * 任务元信息（业务方在 task.ts 中 `export const task = {...}` 声明）
+ * 进程内任务元信息（业务方在 `src/tasks/<name>/task.ts` 中 `export const task = {...}` 声明）。
  *
- * 所有字段可选；未声明时由运行时使用默认值（concurrency=1、retries=0、无 cron）。
+ * 不收 `timeoutMs` / `graceMs`：执行路径由声明文件种类决定（task.ts 进程内 / worker.ts 隔离），
+ * 不再由超时字段隐式判定——进程内任务声明超时字段构建期报错（scanTasks 校验，附迁移指引）。
+ * 进程内 deadline 由业务自行 `Promise.race`。未声明字段时由运行时使用默认值
+ * （concurrency=1、retries=0、无 cron）。
  */
 export interface FaapiTaskMeta {
   /** 同名任务的最大并行执行数（默认 1） */
   concurrency?: number;
   /** 失败重试次数（默认 0——失败即 failed，不重试） */
   retries?: number;
+  /** cron 表达式（croner 语法，支持秒级）——到点自动入队空 payload */
+  cron?: string;
+}
+
+/**
+ * 隔离任务元信息（业务方在 `src/tasks/<name>/worker.ts` 中 `export const task = {...}` 声明）。
+ *
+ * 隔离任务在独立 worker 线程执行，具备真终止取消（见 taskWorker.ts 文档头）。
+ * `timeoutMs` 必填：隔离语义即"需要真取消的长任务"，执行预算显式声明。
+ *
+ * 所有声明字段与 FaapiTaskMeta 同款字面量约定（零 import 扫描，数字字段支持下划线分隔）。
+ */
+export interface FaapiWorkerTaskMeta {
   /**
-   * 单次执行超时（毫秒，最小 60000 即 1 分钟——低于阈值在扫描期报错）。声明后该
-   * 任务在独立 worker 线程执行，超时两段式取消（先 abort 信号宽限，未退出
-   * terminate 硬杀）——判定超时即执行真正终止。未声明走进程内执行（零开销）。
-   *
-   * 最小值的理由：声明 timeoutMs 的语义是"这是需要真取消的长任务"，一分钟内能
-   * 跑完的任务没必要声明超时（走进程内，需要 deadline 自行用 Promise.race 实现）；
-   * 且超时从派发起算、包含 worker 冷启动（线程创建 + 模块加载），过小的超时会在
-   * 任务做任何事之前就被取消。
+   * 执行超时（毫秒，必填，最小 60000 即 1 分钟、最大 82800000 即 23h——越界在扫描期报错）。
+   * 超时两段式取消（先 abort 信号宽限，未退出 terminate 硬杀）——判定超时即执行真正终止。
+   * 超时从派发起算，包含 worker 冷启动（线程创建 + 模块加载）。
    */
-  timeoutMs?: number;
+  timeoutMs: number;
   /**
-   * 取消宽限期（毫秒，仅声明 `timeoutMs` 的隔离任务生效）：两段式取消第一段
-   * 发出 abort 信号后等待任务自行退出的最长时间，超时未退出 `terminate()` 硬杀。
-   * 默认 5000（5s）；`0` 表示不留宽限期（判定取消即硬杀）。
-   * 未声明 `timeoutMs` 的任务无取消流程，本字段被忽略。
+   * 取消宽限期（毫秒，仅隔离任务生效）：两段式取消第一段发出 abort 信号后等待任务
+   * 自行退出的最长时间，超时未退出 `terminate()` 硬杀。默认 5000（5s）；`0` 表示不留
+   * 宽限期（判定取消即硬杀）。
    */
   graceMs?: number;
+  /** 同名任务的最大并行执行数（默认 1） */
+  concurrency?: number;
+  /** 失败重试次数（默认 0——失败即 failed，不重试） */
+  retries?: number;
   /** cron 表达式（croner 语法，支持秒级）——到点自动入队空 payload */
   cron?: string;
 }
@@ -47,12 +61,16 @@ export interface FaapiTaskMeta {
 export interface TaskManifest {
   /** 任务名：tasks/ 后目录路径段用 . 连接（如 `send-email`、`a.b`） */
   name: string;
-  /** 源码相对路径（`src/tasks/<dir>/task.ts`） */
+  /** 源码相对路径（`src/tasks/<dir>/task.ts` 或 `src/tasks/<dir>/worker.ts`） */
   filePath: string;
+  /** 执行模式：由声明文件种类决定（task.ts → inline，worker.ts → isolated） */
+  mode: 'inline' | 'isolated';
   cron?: string;
   concurrency?: number;
   retries?: number;
+  /** 隔离任务执行预算（FaapiWorkerTaskMeta 必填；进程内任务无此字段） */
   timeoutMs?: number;
+  /** 隔离任务取消宽限期 */
   graceMs?: number;
 }
 
@@ -61,11 +79,14 @@ export interface TaskManifest {
  */
 export interface TaskMetadata {
   name: string;
-  /** 产物路径（`<dist>/tasks/<dir>/task.js`），运行时 import 任务模块 */
+  /** 产物路径（`<dist>/tasks/<dir>/task.js` / `<dist>/tasks/<dir>/worker.js`），运行时 import 任务模块 */
   filePath: string;
+  /** 执行模式（清单序列化保留），运行时执行路径判据 */
+  mode: 'inline' | 'isolated';
   cron?: string;
   concurrency?: number;
   retries?: number;
+  /** 隔离任务执行预算（mode 为 isolated 时必有，scanTasks 构建期保证） */
   timeoutMs?: number;
   /** 取消宽限期（毫秒，仅隔离任务生效），未声明用框架默认 5s */
   graceMs?: number;
@@ -194,11 +215,13 @@ export interface TaskRegistriesSnapshot {
 }
 
 /**
- * 进程内任务的 run 第二参数（默认路径——任务未声明 `timeoutMs` 时）
+ * 进程内任务的 run 第二参数（`src/tasks/<name>/task.ts` 声明的任务）
  *
  * 与 {@link IsolatedTaskContext} 显式分开：两条执行路径的行为差异是实质性的
  * （config 有无、registries 活引用 vs 快照、模块级状态共享 vs 独立、取消语义），
- * 由任务 meta 是否声明 `timeoutMs` 决定——业务按路径标注对应类型，边界编译期可见。
+ * 由声明文件种类决定（task.ts 进程内 / worker.ts 隔离，见 {@link FaapiTaskMeta}）——
+ * 业务按路径标注对应类型，边界编译期可见；标注与文件种类不符构建期报错
+ * （generateTaskArtifacts AST 校验）。
  */
 export interface TaskContext {
   /** 优雅停机时对在跑任务 abort 的信号 */
@@ -214,9 +237,8 @@ export interface TaskContext {
    * 声明合并增强——与 handler `ctx.config` 同一类型、同一对象（活引用）。
    * 业务增强的类型字段全部可读，函数字段可调用（同进程）。
    *
-   * 仅进程内任务存在：隔离任务（声明 `timeoutMs`）的上下文类型
-   * {@link IsolatedTaskContext} 没有此字段——worker 线程不接收进程配置，
-   * 任务数据经 payload 显式传入。
+   * 隔离任务（`worker.ts` 声明）的 {@link IsolatedTaskContext.config} 为派发
+   * 时刻的纯数据快照（函数字段不进快照——宿主回调面不跨线程，见 configSnapshot.md）。
    */
   config: FaapiContextConfig;
   job: { id: string; name: string; attempt: number };
@@ -245,8 +267,8 @@ export interface TaskContext {
    * 到驱动 `taskState` 存储，任务记录转 `suspended`，run 正常返回（驱动照常
    * complete）。挂起后本任务的后续代码仍执行到 return，但结果不入 `result`、
    * 组记账不落定。激活用 `tasks.resume`（state 经 `taskCtx.resumed` 回传）。
-   * 仅进程内路径可用（隔离上下文无此字段）；驱动未实现 `TaskDriver.taskState`
-   * 时显式抛错。完整语义见 taskSuspend.md。
+   * 隔离任务（IsolatedTaskContext.suspend）语义零差——经 RPC 回传宿主执行同一
+   * 信封写入。驱动未实现 `TaskDriver.taskState` 时显式抛错。完整语义见 taskSuspend.md。
    */
   suspend?: (state?: unknown) => Promise<void>;
   /**
@@ -272,11 +294,13 @@ export interface TaskContext {
 }
 
 /**
- * 隔离任务的 run 第二参数（任务声明 `timeoutMs` 时——独立 worker 线程执行）
+ * 隔离任务的 run 第二参数（`src/tasks/<name>/worker.ts` 声明的任务——独立 worker 线程执行）
  *
  * 与进程内 {@link TaskContext} 显式分开，差异由隔离语义决定：
- * - **没有 config 字段**——进程配置不跨线程（config 含函数字段不可结构化克隆，
- *   框架不做降级传递）；任务数据经 payload 显式传入，`ctx.config` 是编译错误
+ * - config 为派发时刻的**纯数据快照**（collectConfigSnapshot 投影——函数值不进
+ *   快照（lifecycle 钩子/`task.onFailed`/log sink/middlewares 等宿主行为面不跨
+ *   线程，与 registries 快照同款边界），其余值 structuredClone 保真；含非函数
+ *   不可克隆值时派发显式报错列路径。见 configSnapshot.md）
  * - registries 为派发时刻的**快照**重建视图（执行中途 reload 不影响当次执行）
  * - llm 为 worker 内按 `agent.llms` 纯数据快照重建的实例
  * - log 条目经 postMessage 回传宿主统一输出（fields 须可结构化克隆，
@@ -284,6 +308,8 @@ export interface TaskContext {
  * - progress 值经 postMessage 回传（须可结构化克隆，不可克隆按执行错误处理）
  * - emit 事件值经 postMessage 回传（须可结构化克隆，不可克隆按执行错误处理；
  *   取消判定后到达的事件不采纳——与 progress 同口径）
+ * - suspend 经 RPC 回传宿主执行同一信封写入（语义与进程内零差，state 须可克隆）；
+ *   resumed 随 run 消息透传（信封为纯数据）
  * - 模块级状态每次执行独立；取消为两段式真终止（abort 宽限 → terminate 硬杀）
  */
 export interface IsolatedTaskContext {
@@ -297,6 +323,15 @@ export interface IsolatedTaskContext {
    */
   tasks: TaskClient;
   job: { id: string; name: string; attempt: number };
+  /**
+   * 进程配置的**纯数据快照**（必有；框架随 run 消息下发）——派发时刻由
+   * `collectConfigSnapshot` 投影：函数值（lifecycle 钩子/`task.onFailed`/log
+   * sink/middlewares 等宿主行为面）与 symbol 值不进快照（与 registries 快照
+   * 同款能力边界），其余值 structuredClone 保真（Date/Map/Set 原样）；含非函数
+   * 不可克隆值时任务派发即显式失败（错误列出路径）。读数据字段（端口/驱动选项/
+   * llms/业务自定义段）无需 payload 手工搬运。见 configSnapshot.md。
+   */
+  config: FaapiContextConfig;
   /**
    * app 注册表只读视图——**派发时刻的快照**在 worker 内重建（宿主生成
    * `TaskRegistriesSnapshot` 纯数据随 postMessage 传入），查询方法与活引用
@@ -317,6 +352,21 @@ export interface IsolatedTaskContext {
    */
   emit?: (data: unknown) => void;
   /**
+   * 任务挂起（可选）：与进程内 {@link TaskContext.suspend} **语义零差**——经
+   * `{ type: 'suspend' }` 消息 RPC 回传宿主执行同一信封写入（`driver.taskState`），
+   * 任务记录转 `suspended`、run 正常返回；宿主拒绝（驱动无 `taskState` 等）
+   * 错误原样 reject。**state 须可结构化克隆**（不可克隆按执行错误处理，与
+   * progress/log 同口径）；挂起的 RPC 调用随任务超时两段式取消一并终止。
+   * 完整语义见 taskSuspend.md。
+   */
+  suspend?: (state?: unknown) => Promise<void>;
+  /**
+   * 挂起/激活上下文（可选）：与进程内同语义——首跑为 `undefined`；经
+   * `tasks.resume` 激活的执行携带 `{ state, inject?, activations }`（信封为
+   * 纯数据，随 run 消息透传）。
+   */
+  resumed?: { state?: unknown; inject?: unknown; activations: number };
+  /**
    * 任务级日志器（可选字段；框架注入）——scope `task:<name>`，条目经 postMessage
    * 回传宿主走 `config.log` 统一管道；**fields 须可结构化克隆**（不可克隆按
    * 执行错误处理，与 progress 同语义）。
@@ -332,14 +382,24 @@ export interface IsolatedTaskContext {
 }
 
 /**
- * 任务模块形态（task.ts 编译产物中与执行相关的导出）
+ * 进程内任务模块形态（task.ts 编译产物中与执行相关的导出）
  *
- * run 第二参数按执行路径二选一：进程内 {@link TaskContext} / 隔离
- * {@link IsolatedTaskContext}——路径由任务 meta 是否声明 `timeoutMs` 决定，
- * 业务标注对应类型后差异编译期可见（隔离上下文无 config 字段，访问即编译错误）。
+ * run 第二参数类型为进程内 {@link TaskContext}；隔离任务（worker.ts 声明）的
+ * 模块形态见 {@link IsolatedTaskModule}——两种声明 API 的 run 签名分别对应，
+ * ctx 标注与文件种类不符构建期报错（generateTaskArtifacts AST 校验）。
  */
 export interface TaskModule {
-  run?: (payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => unknown;
+  run?: (payload: unknown, taskCtx: TaskContext) => unknown;
+}
+
+/**
+ * 隔离任务模块形态（worker.ts 编译产物中与执行相关的导出）
+ *
+ * run 第二参数类型为隔离 {@link IsolatedTaskContext}（config 为派发时刻纯数据
+ * 快照，见 configSnapshot.md），标注与文件种类不符构建期报错。
+ */
+export interface IsolatedTaskModule {
+  run?: (payload: unknown, taskCtx: IsolatedTaskContext) => unknown;
 }
 
 /**
@@ -527,8 +587,8 @@ export interface TaskQueueDeps {
   /** payload schema 加载器（默认：import 任务目录 zod.js，取首个 `*Schema` 导出） */
   loadPayloadSchema?: (filePath: string) => Promise<unknown>;
   /**
-   * 隔离执行器（默认 runTaskInWorker）——任务声明 timeoutMs 时由语义层调用，
-   * 独立 worker 线程执行 + 超时两段式取消；测试注入 spy 验证执行路径路由
+   * 隔离执行器（默认 runTaskInWorker）——任务 mode 为 isolated（worker.ts 声明）时
+   * 由语义层调用，独立 worker 线程执行 + 超时两段式取消；测试注入 spy 验证执行路径路由
    */
   runIsolated?: TaskWorkerRunner;
   /**

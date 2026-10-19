@@ -124,6 +124,7 @@ function makeDeps(modules: Record<string, TaskModule>) {
     Object.keys(modules).map((name) => ({
       name,
       filePath: `dist/tasks/${name}/task.js`,
+      mode: 'inline' as const,
     })),
   );
   const loadTaskModule = vi.fn(async (filePath: string) => {
@@ -185,8 +186,8 @@ describe('taskCtx.suspend（任务挂起）', () => {
   it('组员挂起：组记账不落定（挂起不是终态），激活后完成才落定', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() }, summary: { run: vi.fn() } });
     deps.registry.hydrate([
-      { name: 'chunks', filePath: 'dist/tasks/chunks/task.js' },
-      { name: 'summary', filePath: 'dist/tasks/summary/task.js' },
+      { name: 'chunks', filePath: 'dist/tasks/chunks/task.js', mode: 'inline' },
+      { name: 'summary', filePath: 'dist/tasks/summary/task.js', mode: 'inline' },
     ]);
     let suspendCalled = false;
     // chunks 首次执行挂起，激活后（第二次执行）正常完成
@@ -434,6 +435,149 @@ describe('suspended 与单飞/水合', () => {
     const res = await queue.resume('planner', 'd-old', { inject: { go: true } });
     expect(res).toEqual({ id: expect.any(String) });
     expect(fake.enqueues.at(-1)!.payload).toEqual({ step: 9 });
+    await queue.stop();
+  });
+});
+
+// ─── 隔离路径 suspend（RPC 回传宿主执行同一信封写入，语义与进程内零差） ───────────
+
+describe('隔离路径 suspend（worker.ts 声明的任务）', () => {
+  const ISOLATED = { mode: 'isolated' as const, timeoutMs: 3000 };
+
+  it('挂起：onSuspend 写同一信封（原 payload + state）、记录 suspended 不记 result；config 快照随 taskCtx 下发（函数剔除）', async () => {
+    const fake = makeFakeSuspendDriver();
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'planner', filePath: 'dist/tasks/planner/worker.js', ...ISOLATED }]);
+    const runIsolated = vi.fn(async (opts: { onSuspend?: (s?: unknown) => Promise<void> }) => {
+      await opts.onSuspend?.({ plan: 'draft' });
+      return 'ignored';
+    });
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: { port: 3000, hooks: { onFailed: () => {} } },
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    await queue.start();
+    await queue.enqueue('planner', { step: 1 });
+    await fake.workers.get('planner')!.process({
+      id: 'd-1',
+      name: 'planner',
+      payload: { step: 1 },
+      attempt: 1,
+      signal: new AbortController().signal,
+    } as TaskDriverJob);
+
+    const record = queue.list('planner').find((j) => j.id === 'd-1');
+    expect(record?.status).toBe('suspended');
+    expect(record?.result).toBeUndefined();
+    const entry = fake.states.get('d-1')!;
+    expect(entry).toMatchObject({
+      jobId: 'd-1',
+      task: 'planner',
+      payload: { step: 1 },
+      state: { plan: 'draft' },
+      activations: 0,
+    });
+    // config 纯数据快照：函数字段剔除，数据字段保真
+    const call = runIsolated.mock.calls[0]![0] as unknown as {
+      taskCtx: { config?: { port?: number; hooks?: Record<string, unknown> } };
+    };
+    expect(call.taskCtx.config).toEqual({ port: 3000, hooks: {} });
+    await queue.stop();
+  });
+
+  it('激活：resume 后再次派发，runIsolated 收到 taskCtx.resumed（state/inject/activations 透传）', async () => {
+    const fake = makeFakeSuspendDriver();
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'planner', filePath: 'dist/tasks/planner/worker.js', ...ISOLATED }]);
+    const captured: { resumed?: unknown } = {};
+    const runIsolated = vi.fn(
+      async (opts: {
+        taskCtx: { resumed?: unknown };
+        onSuspend?: (s?: unknown) => Promise<void>;
+      }) => {
+        captured.resumed = opts.taskCtx.resumed;
+        if (!opts.taskCtx.resumed) await opts.onSuspend?.({ plan: 'draft' });
+        return 'final';
+      },
+    );
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    await queue.start();
+    await queue.enqueue('planner', { step: 1 });
+    await fake.workers.get('planner')!.process({
+      id: 'd-1',
+      name: 'planner',
+      payload: { step: 1 },
+      attempt: 1,
+      signal: new AbortController().signal,
+    } as TaskDriverJob);
+    expect(captured.resumed).toBeUndefined(); // 首跑 undefined
+
+    await queue.resume('planner', 'd-1', { inject: { comment: 'LGTM' } });
+    const reEnqueue = fake.enqueues.at(-1)!;
+    expect(reEnqueue.opts?.resumeState).toEqual({
+      state: { plan: 'draft' },
+      inject: { comment: 'LGTM' },
+      activations: 1,
+    });
+    await fake.workers.get('planner')!.process({
+      id: 'd-2',
+      name: 'planner',
+      payload: { step: 1 },
+      attempt: 1,
+      signal: new AbortController().signal,
+      resumeState: reEnqueue.opts!.resumeState,
+    } as TaskDriverJob);
+    expect(captured.resumed).toEqual({
+      state: { plan: 'draft' },
+      inject: { comment: 'LGTM' },
+      activations: 1,
+    });
+    expect(queue.list('planner').find((j) => j.id === 'd-2')?.status).toBe('done');
+    await queue.stop();
+  });
+
+  it('驱动未实现 taskState：onSuspend 拒绝显式错误（与进程内同口径），任务失败', async () => {
+    const fake = makeFakeSuspendDriver({ withTaskState: false });
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'planner', filePath: 'dist/tasks/planner/worker.js', ...ISOLATED }]);
+    const runIsolated = vi.fn(async (opts: { onSuspend?: (s?: unknown) => Promise<void> }) => {
+      await opts.onSuspend?.();
+      return 'never';
+    });
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    await queue.start();
+    await queue.enqueue('planner');
+    await expect(
+      fake.workers.get('planner')!.process({
+        id: 'd-1',
+        name: 'planner',
+        payload: {},
+        attempt: 1,
+        signal: new AbortController().signal,
+      } as TaskDriverJob),
+    ).rejects.toThrow(/TaskDriver\.taskState is not implemented/);
+    expect(queue.list('planner')[0]).toMatchObject({ status: 'failed' });
     await queue.stop();
   });
 });

@@ -92,6 +92,7 @@ function makeDeps(modules: Record<string, TaskModule>) {
     Object.keys(modules).map((name) => ({
       name,
       filePath: `dist/tasks/${name}/task.js`,
+      mode: 'inline' as const,
     })),
   );
   const loadTaskModule = vi.fn(async (filePath: string) => {
@@ -357,7 +358,7 @@ describe('taskCtx.tasks 排除自身（隔离路径宿主注入）', () => {
     let captured: Parameters<TaskWorkerRunner>[0] | undefined;
     const deps = makeDeps({ chains: { run: vi.fn() } });
     deps.registry.hydrate([
-      { name: 'chains', filePath: 'dist/tasks/chains/task.js', timeoutMs: 60000 },
+      { name: 'chains', filePath: 'dist/tasks/chains/task.js', mode: 'isolated', timeoutMs: 60000 },
     ]);
     const runIsolated = vi.fn(async (opts: Parameters<TaskWorkerRunner>[0]) => {
       captured = opts;
