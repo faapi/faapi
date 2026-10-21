@@ -53,9 +53,9 @@ describe('extractAgentMetadata', () => {
       expect(result!.description).toBe('研究员 agent\n负责搜索和总结');
     });
 
-    it('提取带 @agent 标签的 JSDoc 首段描述', () => {
+    it('提取带 @see 标签的 JSDoc 首段描述', () => {
       const result = extract(
-        `/**\n * 研究员\n * @agent researcher\n */\nexport const config = { systemPrompt: 'x' };\n`,
+        `/**\n * 研究员\n * @see researcher\n */\nexport const config = { systemPrompt: 'x' };\n`,
       );
       expect(result).not.toBeNull();
       expect(result!.description).toBe('研究员');
@@ -69,7 +69,7 @@ describe('extractAgentMetadata', () => {
 
     it('JSDoc 只有标签无自由文本时 description 为 undefined', () => {
       const result = extract(
-        `/** @agent researcher */\nexport const config = { systemPrompt: 'x' };\n`,
+        `/** @see researcher */\nexport const config = { systemPrompt: 'x' };\n`,
       );
       expect(result).not.toBeNull();
       expect(result!.description).toBeUndefined();
@@ -84,62 +84,48 @@ describe('extractAgentMetadata', () => {
     });
   });
 
-  describe('@agent 覆盖名', () => {
-    it('提取 @agent 标签覆盖名', () => {
-      const result = extract(
-        `/** @agent super-researcher */\nexport const config = { systemPrompt: 'x' };\n`,
-      );
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('super-researcher');
+  describe('@agent 覆盖名已移除 → 迁移错误', () => {
+    it('@agent 标签有值 → 抛迁移错误（agent 名由目录路径推导）', () => {
+      expect(() =>
+        extract(`/** @agent super-researcher */\nexport const config = { systemPrompt: 'x' };\n`),
+      ).toThrow(/已移除/);
     });
 
-    it('提取带花括号的 @agent 标签值', () => {
-      const result = extract(
-        `/** @agent {super-researcher} */\nexport const config = { systemPrompt: 'x' };\n`,
-      );
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('super-researcher');
+    it('描述 + @agent 标签共存同样抛迁移错误（与描述提取无关）', () => {
+      expect(() =>
+        extract(
+          `/**\n * 研究员\n * @agent super-researcher\n */\nexport const config = { systemPrompt: 'x' };\n`,
+        ),
+      ).toThrow(/已移除/);
     });
 
-    it('描述 + @agent 标签共存', () => {
-      const result = extract(
-        `/**\n * 研究员\n * @agent super-researcher\n */\nexport const config = { systemPrompt: 'x' };\n`,
-      );
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('super-researcher');
-      expect(result!.description).toBe('研究员');
+    it('花括号包裹的 @agent 标签值同样抛迁移错误', () => {
+      expect(() =>
+        extract(`/** @agent {super-researcher} */\nexport const config = { systemPrompt: 'x' };\n`),
+      ).toThrow(/已移除/);
     });
 
-    it('无 @agent 标签时回退到 pathMeta.name', () => {
+    it('迁移错误含改名目录指引', () => {
+      try {
+        extract(`/** @agent super-researcher */\nexport const config = { systemPrompt: 'x' };\n`);
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(SchemaExtractionError);
+        expect((err as Error).message).toContain('删除 @agent JSDoc 标签');
+        expect((err as Error).message).toContain('改名目录');
+      }
+    });
+
+    it('无 @agent 标签时 name 为目录推导值', () => {
       const result = extract(`/** 研究员 */\nexport const config = { systemPrompt: 'x' };\n`);
       expect(result).not.toBeNull();
       expect(result!.name).toBe('researcher');
     });
 
-    it('@agent 标签无值时回退到 pathMeta.name', () => {
+    it('@agent 标签无值（裸标签）不构成残留，维持回退语义不报错', () => {
       const result = extract(`/** @agent */\nexport const config = { systemPrompt: 'x' };\n`);
       expect(result).not.toBeNull();
       expect(result!.name).toBe('researcher');
-    });
-
-    it('@agent 覆盖名含点 → 抛错（覆盖名进入派发工具名,须满足工具名字符集）', () => {
-      expect(() =>
-        extract(`/** @agent my.agent */\nexport const config = { systemPrompt: 'x' };\n`),
-      ).toThrow(/my\.agent/);
-    });
-
-    it('@agent 覆盖名含中文 → 抛错（独立用例——createProgram 按路径缓存,同用例二次写源码不生效）', () => {
-      expect(() =>
-        extract(`/** @agent 写作 */\nexport const config = { systemPrompt: 'x' };\n`),
-      ).toThrow(/写作/);
-    });
-
-    it('@agent 覆盖名允许工具名字符集内的下划线（无嵌套语义,_ 可用）', () => {
-      const result = extract(
-        `/** @agent super_researcher */\nexport const config = { systemPrompt: 'x' };\n`,
-      );
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('super_researcher');
     });
   });
 

@@ -75,4 +75,4 @@ env = NODE_ENV || 'development'
 
 - [cli/devCommand.ts](./devCommand.ts) - dev 命令，启动时兜底 `NODE_ENV=development` 后调 `loadEnv(rootDir)`
 - [cli/buildCommand.ts](./buildCommand.ts) - build 命令，生成 `main.js` 时注入 `NODE_ENV` 兜底 + `loadEnv` 调用
-- [config/loadConfig.ts](../config/loadConfig.ts) - 运行时配置加载（`faapi.config.ts` 中通过 `process.env.XXX` 读取 loadEnv 注入的变量）
+- [config/loadConfig.ts](../configs/loadConfig.ts) - 运行时配置加载（`faapi.config.ts` 中通过 `process.env.XXX` 读取 loadEnv 注入的变量）

@@ -93,7 +93,7 @@ registerAgentHandleFactory((ctx) => {
 
 ### 加载器 rootDir 包装
 
-[loadToolModule](../../faapi/src/loader/loadToolModule.md) 的第三个参数 `rootDir` 用于 dev 按需编译模式（Vite 风格）——确保产物存在再 import,避免污染 Vite SSR 内部状态。
+[loadToolModule](../../faapi/src/loaders/loadToolModule.md) 的第三个参数 `rootDir` 用于 dev 按需编译模式（Vite 风格）——确保产物存在再 import,避免污染 Vite SSR 内部状态。
 
 `AgentDeps.loadToolModule` 签名不含 `rootDir`（Agent 类不需要知道编译细节）,因此在 plugin 中包装注入：
 
@@ -126,4 +126,4 @@ loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionNam
 - [provider](./provider.md) —— LLM provider 抽象 + createProvider 工厂
 - faapi 核心 [agentHandle 工厂](../../faapi/src/injection/agentHandle.md) —— registerAgentHandleFactory / getAgentHandle
 - faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) / [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— 注册表访问器
-- faapi 核心 [loadToolModule](../../faapi/src/loader/loadToolModule.md) —— 动态加载器
+- faapi 核心 [loadToolModule](../../faapi/src/loaders/loadToolModule.md) —— 动态加载器

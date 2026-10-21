@@ -1,6 +1,6 @@
 # toolSchemaResolver（已下沉主包）
 
-一句话概括：`createToolSchemaResolver` 的实现已迁移到主包 loader 域（`@faapi/faapi` 的 [toolSchemaResolver](../../faapi/src/loader/toolSchemaResolver.md)），本包 re-export 保持 `import { createToolSchemaResolver } from '@faapi/agent'` 导入路径不变。
+一句话概括：`createToolSchemaResolver` 的实现已迁移到主包 loader 域（`@faapi/faapi` 的 [toolSchemaResolver](../../faapi/src/loaders/toolSchemaResolver.md)），本包 re-export 保持 `import { createToolSchemaResolver } from '@faapi/agent'` 导入路径不变。
 
 ## 为什么迁移
 
@@ -12,10 +12,10 @@
 ## 行为约定（迁移后不变）
 
 - 工厂签名扩展 `dist` 可选项（显式产物目录，缺省走 dev on demand / `FAAPI_DIST` 全局解析）——向后兼容
-- 完整行为契约（解析 / mtime 缓存 / 作用域 / dist 选项）见主包 [toolSchemaResolver.md](../../faapi/src/loader/toolSchemaResolver.md)
+- 完整行为契约（解析 / mtime 缓存 / 作用域 / dist 选项）见主包 [toolSchemaResolver.md](../../faapi/src/loaders/toolSchemaResolver.md)
 
 ## 相关模块
 
-- 主包 [toolSchemaResolver](../../faapi/src/loader/toolSchemaResolver.md) - 实现与契约单一来源
+- 主包 [toolSchemaResolver](../../faapi/src/loaders/toolSchemaResolver.md) - 实现与契约单一来源
 - [agent](./agent.md) - `AgentDeps.resolveToolSchema` / `resolveAgentInputSchema` 的消费方
 - [plugin](./plugin.md) - 插件 setup 的调用方

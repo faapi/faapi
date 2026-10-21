@@ -17,7 +17,7 @@ agent 层多个模块（扫描、生成产物、加载、注册表）共享同�
 
 | 字段 | 类型 | 用途 |
 |------|------|------|
-| `name` | `string` | agent 名（目录名，如 `researcher`）。对 LLM 可见。可被 `@agent` JSDoc 覆盖（见 [extractAgentMetadata](../ast/extractAgentMetadata.md)） |
+| `name` | `string` | agent 名（目录路径推导，如 `researcher`，嵌套段用 `_` 连接）。对 LLM 可见 |
 | `filePath` | `string` | 源码相对路径（如 `src/agents/researcher/handler.ts`），AST 提取需要 `.ts` |
 | `hasConfig` | `boolean` | 是否导出 `config` 块。`true` 时 AST 阶段提取 config 字段（systemPrompt / tools / agents / model / maxTurns） |
 

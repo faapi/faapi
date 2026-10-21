@@ -119,7 +119,7 @@ export interface ReactLoopConfig {
   tools?: LLMToolDefinition[];
   /** tool 执行函数（由 Agent 类提供，路由到常规 tool 或子 agent） */
   executeTool: ToolExecutor;
-  /** 最大对话轮数（默认 10，来自 [AgentConfig](../../faapi/src/config/configTypes.md).maxTurns） */
+  /** 最大对话轮数（默认 10，来自 [AgentConfig](../../faapi/src/configs/configTypes.md).maxTurns） */
   maxTurns?: number;
   /** 覆盖 LLM 模型名（来自 agent metadata 的 `model`） */
   model?: string;

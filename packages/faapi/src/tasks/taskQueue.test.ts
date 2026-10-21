@@ -1,0 +1,1360 @@
+import { describe, it, expect, vi } from 'vitest';
+import { createTaskQueue } from './taskQueue';
+import { createTaskRegistry } from './taskRegistry';
+import { TaskCancelledError } from './taskWorker';
+import { createAppRegistries, createTaskRegistriesView } from '../injection/registries';
+import type { LlmChannelStore } from '../injection/registries';
+import type { LlmComplete } from '../injection/llmTypes';
+import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
+import type { IsolatedTaskContext, TaskContext, TaskEvent, TaskModule } from './taskTypes';
+
+interface EnqueueCall {
+  name: string;
+  payload: unknown;
+  opts?: { delayMs?: number; retries?: number };
+}
+
+/**
+ * 可编程测试驱动：记录 enqueue/startWorker/stop 调用；process 由测试手动触发
+ * （存储/消费/重试/停机语义属驱动职责，真实驱动由子包适配测试覆盖）
+ */
+function makeFakeDriver(options: { syncDispatch?: boolean } = {}) {
+  const enqueues: EnqueueCall[] = [];
+  const workers = new Map<string, { concurrency: number; process: TaskDriverProcess }>();
+  const stopCalls: Array<number | undefined> = [];
+  let startWorkerCalls = 0;
+  let stopWorkersCalls = 0;
+  let lastId = '';
+  let seq = 0;
+
+  const dispatch = async (
+    name: string,
+    payload: unknown,
+    attempt = 1,
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
+    const worker = workers.get(name);
+    if (!worker) throw new Error(`no worker registered for "${name}"`);
+    const job: TaskDriverJob = {
+      id: lastId,
+      name,
+      payload,
+      attempt,
+      signal: signal ?? new AbortController().signal,
+    };
+    return worker.process(job);
+  };
+
+  const driver: TaskDriver = {
+    enqueue: async (name, payload, opts) => {
+      lastId = `d-${++seq}`;
+      enqueues.push({ name, payload, opts });
+      if (options.syncDispatch) await dispatch(name, payload);
+      return lastId;
+    },
+    startWorker: (name, opts) => {
+      startWorkerCalls += 1;
+      workers.set(name, opts);
+    },
+    stop: async (timeoutMs) => {
+      stopCalls.push(timeoutMs);
+    },
+    stopWorkers: async () => {
+      stopWorkersCalls += 1;
+    },
+  };
+
+  return {
+    driver,
+    enqueues,
+    workers,
+    stopCalls,
+    dispatch,
+    counts: { startWorker: () => startWorkerCalls, stopWorkers: () => stopWorkersCalls },
+  };
+}
+
+/** 恒通过的透传 schema（z.unknown() 产物形态）——测试任务默认带 Payload 声明 */
+const PASS_THROUGH_SCHEMA = { safeParse: (v: unknown) => ({ success: true, data: v }) };
+
+function makeDeps(modules: Record<string, TaskModule>, schemas: Record<string, unknown> = {}) {
+  const registry = createTaskRegistry();
+  registry.hydrate(
+    Object.keys(modules).map((name) => ({
+      name,
+      filePath: `dist/tasks/${name}/task.js`,
+      mode: 'inline' as const,
+    })),
+  );
+  const loadTaskModule = vi.fn(async (filePath: string) => {
+    const name = filePath.match(/tasks\/([^/]+)\/task\.js/)?.[1] ?? '';
+    return modules[name]!;
+  });
+  const loadPayloadSchema = vi.fn(async (filePath: string) => {
+    const name = filePath.match(/tasks\/([^/]+)\/task\.js/)?.[1] ?? '';
+    // 缺省透传 schema（构建期 Payload 声明必填后，运行时产物恒有 schema）
+    return schemas[name] ?? PASS_THROUGH_SCHEMA;
+  });
+  return { registry, rootDir: '/fake', config: {}, loadTaskModule, loadPayloadSchema };
+}
+
+describe('createTaskQueue', () => {
+  it('enqueue 校验后透传驱动（payload/retries/delayMs），返回驱动 id，记录 pending', async () => {
+    const run = vi.fn(async () => 'ok');
+    const zodLike = { safeParse: (v: unknown) => ({ success: true, data: v }) };
+    const deps = makeDeps({ mail: { run } }, { mail: zodLike });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+
+    const { id } = await queue.enqueue('mail', { to: 'a@b.c' }, { delayMs: 500 });
+    expect(id).toBe('d-1');
+    expect(fake.enqueues[0]).toEqual({
+      name: 'mail',
+      payload: { to: 'a@b.c' },
+      opts: { delayMs: 500, retries: 0 },
+    });
+    expect(queue.list('mail')[0]).toMatchObject({ id: 'd-1', status: 'pending' });
+    await queue.stop();
+  });
+
+  it('入队时把任务 meta 的 retries 透传给驱动', async () => {
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'mail', filePath: 'dist/tasks/mail/task.js', mode: 'inline', retries: 3 },
+    ]);
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      loadTaskModule: async () => ({ run: vi.fn() }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('mail', {});
+    expect(fake.enqueues[0]?.opts?.retries).toBe(3);
+    await queue.stop();
+  });
+
+  it('payload 校验失败抛 ValidationError 且不触达驱动', async () => {
+    const zodLike = {
+      safeParse: (_v: unknown) => ({
+        success: false,
+        error: { issues: [{ code: 'invalid_type', path: ['to'], message: 'Required' }] },
+      }),
+    };
+    const deps = makeDeps({ mail: { run: vi.fn() } }, { mail: zodLike });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await expect(queue.enqueue('mail', { wrong: 1 })).rejects.toThrow(/validation/i);
+    expect(fake.enqueues).toHaveLength(0);
+    expect(queue.list('mail')).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('Payload schema 缺失（zod.js 无产物）时 enqueue 抛错且不触达驱动——不静默放行', async () => {
+    const deps = makeDeps({ plain: { run: vi.fn() } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      config: {},
+      // 模拟产物缺失：构建期已强制 Payload 声明必填，运行时缺 schema 即产物不一致
+      loadPayloadSchema: async () => undefined,
+    });
+    queue.start();
+    await expect(queue.enqueue('plain', { anything: true })).rejects.toThrow(
+      /no valid payload schema/,
+    );
+    expect(fake.enqueues).toHaveLength(0);
+    expect(queue.list('plain')).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('入队不存在的任务抛错（含可用任务名）且不触达驱动', async () => {
+    const deps = makeDeps({ a: { run: vi.fn() } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await expect(queue.enqueue('nope', {})).rejects.toThrow(/nope.*a/s);
+    expect(fake.enqueues).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('驱动派发 process：执行 run、注入 TaskContext、记录 attempts/done/result', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: { job: { attempt: number } }) => ({
+      echoed: taskCtx.job.attempt,
+    }));
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      config: { db: 1 },
+      resourcesDir: '/proj/dist/resources',
+    });
+    queue.start();
+
+    await queue.enqueue('hello', { a: 1 });
+    await fake.dispatch('hello', { a: 1 }, 1);
+    expect(run).toHaveBeenCalledTimes(1);
+    const [payload, taskCtx] = run.mock.calls[0] as unknown as [
+      unknown,
+      {
+        signal: AbortSignal;
+        config: unknown;
+        job: { id: string; name: string; attempt: number };
+      },
+    ];
+    expect(payload).toEqual({ a: 1 });
+    expect(taskCtx.config).toEqual({ db: 1 });
+    // resourcesDir 数据字段已删除——读取统一走免传参 readResource（读取根由 app 绑定）
+    expect('resourcesDir' in taskCtx).toBe(false);
+    expect(taskCtx.signal).toBeInstanceOf(AbortSignal);
+    expect(taskCtx.job).toEqual({ id: 'd-1', name: 'hello', attempt: 1 });
+
+    const job = queue.list('hello')[0]!;
+    expect(job.status).toBe('done');
+    expect(job.result).toEqual({ echoed: 1 });
+    expect(job.attempts).toBe(1);
+    await queue.stop();
+  });
+
+  it('process 抛错记录 failed 并向上传播；驱动再次派发时 attempts 递增', async () => {
+    let calls = 0;
+    const run = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('boom');
+      return 'finally';
+    });
+    const deps = makeDeps({ flaky: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+
+    await queue.enqueue('flaky', {});
+    await expect(fake.dispatch('flaky', {}, 1)).rejects.toThrow('boom');
+    expect(queue.list('flaky')[0]).toMatchObject({ status: 'failed', attempts: 1, error: 'boom' });
+
+    // 驱动决定重试：再次派发（attempt 2）→ 记录回到 done
+    await fake.dispatch('flaky', {}, 2);
+    const job = queue.list('flaky')[0]!;
+    expect(job.status).toBe('done');
+    expect(job.attempts).toBe(2);
+    expect(job.result).toBe('finally');
+    await queue.stop();
+  });
+
+  it('任务模块缺失 run：process 抛错记 failed，不崩溃', async () => {
+    const deps = makeDeps({ empty: {} });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('empty');
+    await expect(fake.dispatch('empty', {})).rejects.toThrow(/no run export/i);
+    expect(queue.list('empty')[0]).toMatchObject({ status: 'failed' });
+    await queue.stop();
+  });
+
+  it('start 为注册表每个任务注册 worker（concurrency 透传，默认 1），幂等', async () => {
+    const deps = makeDeps({ a: { run: vi.fn() }, b: { run: vi.fn() } });
+    const fake = makeFakeDriver();
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'a', filePath: 'dist/tasks/a/task.js', mode: 'inline', concurrency: 4 },
+      { name: 'b', filePath: 'dist/tasks/b/task.js', mode: 'inline' },
+    ]);
+    const queue = createTaskQueue({ ...deps, registry, driver: fake.driver });
+    await queue.start();
+    await queue.start();
+    expect(fake.counts.startWorker()).toBe(2);
+    expect(fake.workers.get('a')?.concurrency).toBe(4);
+    expect(fake.workers.get('b')?.concurrency).toBe(1);
+    await queue.stop();
+  });
+
+  it('stop 透传 timeoutMs 给驱动；停止后 enqueue/start 抛错', async () => {
+    const deps = makeDeps({ a: { run: vi.fn() } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.stop(1234);
+    expect(fake.stopCalls).toEqual([1234]);
+    await expect(queue.enqueue('a', {})).rejects.toThrow(/stopped/i);
+    await expect(queue.start()).rejects.toThrow(/stopped/i);
+  });
+
+  it('reload 调 driver.stopWorkers 后按最新注册表重注册 worker', async () => {
+    const deps = makeDeps({ a: { run: vi.fn() } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    await queue.start();
+    await queue.reload();
+    expect(fake.counts.stopWorkers()).toBe(1);
+    expect(fake.counts.startWorker()).toBe(2); // start 一次 + reload 重注册一次
+    expect(fake.workers.has('a')).toBe(true);
+    await queue.stop();
+  });
+
+  it('invalidateModules 后 worker 派发重新加载任务模块', async () => {
+    const run = vi.fn(async () => 'ok');
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    queue.invalidateModules();
+    await fake.dispatch('hello', {}, 2);
+    expect(deps.loadTaskModule).toHaveBeenCalledTimes(2);
+    await queue.stop();
+  });
+
+  it('驱动 enqueue 同步派发时不覆盖已写入的执行记录', async () => {
+    const deps = makeDeps({ hello: { run: async () => 'sync' } });
+    const fake = makeFakeDriver({ syncDispatch: true });
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello', {});
+    expect(queue.list('hello')[0]).toMatchObject({ status: 'done', result: 'sync' });
+    await queue.stop();
+  });
+
+  it('进程内执行注入 taskCtx.log：scope task:<name>，字段带 jobId/task/attempt，走全局管道', async () => {
+    const { configureLogging } = await import('../loggers/logger');
+    const entries: Array<{
+      level: string;
+      message: string;
+      scope?: string;
+      fields?: Record<string, unknown>;
+    }> = [];
+    configureLogging({ sink: (e) => entries.push(e as never) });
+    try {
+      const run = vi.fn(
+        async (
+          _payload: unknown,
+          taskCtx: {
+            log?: {
+              info: (m: string) => void;
+              child: (s: string) => { debug: (m: string) => void };
+            };
+          },
+        ) => {
+          taskCtx.log!.info('settling');
+          taskCtx.log!.child('db').debug('cache miss');
+          return 'ok';
+        },
+      );
+      const deps = makeDeps({ mailer: { run } });
+      const fake = makeFakeDriver();
+      const queue = createTaskQueue({ ...deps, driver: fake.driver });
+      queue.start();
+      await queue.enqueue('mailer', {});
+      await fake.dispatch('mailer', {}, 1);
+      expect(run).toHaveBeenCalledTimes(1);
+      // 管道不配 level 时不过滤：info 与 child debug 全量进 sink
+      expect(entries).toHaveLength(2);
+      expect(entries[0].level).toBe('info');
+      expect(entries[0].message).toBe('settling');
+      expect(entries[0].scope).toBe('task:mailer');
+      expect(entries[0].fields).toEqual({ jobId: 'd-1', task: 'mailer', attempt: 1 });
+      expect(entries[1].level).toBe('debug');
+      expect(entries[1].scope).toBe('task:mailer:db');
+      await queue.stop();
+    } finally {
+      configureLogging(undefined);
+    }
+  });
+
+  it('进程内 taskCtx.log 受管道阈值过滤（显式 level: info 时 debug 不输出）', async () => {
+    const { configureLogging } = await import('../loggers/logger');
+    const entries: unknown[] = [];
+    configureLogging({ level: 'info', sink: (e) => entries.push(e) });
+    try {
+      const run = vi.fn(
+        async (
+          _payload: unknown,
+          taskCtx: { log?: { debug: (m: string) => void; info: (m: string) => void } },
+        ) => {
+          taskCtx.log!.debug('hidden');
+          taskCtx.log!.info('shown');
+        },
+      );
+      const deps = makeDeps({ mailer: { run } });
+      const fake = makeFakeDriver();
+      const queue = createTaskQueue({ ...deps, driver: fake.driver });
+      queue.start();
+      await queue.enqueue('mailer', {});
+      await fake.dispatch('mailer', {}, 1);
+      expect(entries).toHaveLength(1);
+      expect((entries[0] as { message: string }).message).toBe('shown');
+      await queue.stop();
+    } finally {
+      configureLogging(undefined);
+    }
+  });
+
+  it('进程内 taskCtx.progress 记入记录（list 可见），派发清空上一轮，终态后调用被忽略', async () => {
+    let lateProgress: ((value: unknown) => void) | undefined;
+    let calls = 0;
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      calls += 1;
+      if (calls === 1) {
+        taskCtx.progress?.({ pct: 30 });
+        taskCtx.progress?.({ pct: 60 });
+        lateProgress = taskCtx.progress;
+      }
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(queue.list('hello')[0]).toMatchObject({ status: 'done', progress: { pct: 60 } });
+    // 终态后调用被忽略：不抛错、记录不变
+    expect(() => lateProgress?.({ pct: 100 })).not.toThrow();
+    expect(queue.list('hello')[0]?.progress).toEqual({ pct: 60 });
+    // 重新派发清空上一轮 progress；本轮不调用则保持 undefined
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 2);
+    const second = queue.list('hello').find((j) => j.attempts === 2);
+    expect(second).toMatchObject({ status: 'done' });
+    expect(second?.progress).toBeUndefined();
+    await queue.stop();
+  });
+
+  // ── 任务事件（taskCtx.emit / subscribe / listEvents，契约见 taskEvents.md）──
+
+  it('进程内 taskCtx.emit 落事件缓冲：listEvents 按 seq 升序返回，字段齐全', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.({ kind: 'stage', at: 'start' });
+      taskCtx.emit?.({ kind: 'stage', at: 'end' });
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const { id } = await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    const events = queue.listEvents('hello');
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      task: 'hello',
+      jobId: id,
+      attempt: 1,
+      seq: 1,
+      data: { kind: 'stage', at: 'start' },
+    });
+    expect(events[1]).toMatchObject({ seq: 2, data: { kind: 'stage', at: 'end' } });
+    expect(typeof events[0]!.at).toBe('number');
+    await queue.stop();
+  });
+
+  it('subscribe 实时回调（emit 落账后同步触发）；退订后不再回调；订阅前历史不回放', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('tick');
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    // 订阅前的一次执行：历史可查，但不回放给后续订阅者
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    expect(queue.listEvents('hello')).toHaveLength(1);
+
+    const seen: TaskEvent[] = [];
+    const unsubscribe = queue.subscribe('hello', (e) => seen.push(e));
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ task: 'hello', seq: 1, data: 'tick' });
+
+    unsubscribe();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(seen).toHaveLength(1);
+    await queue.stop();
+  });
+
+  it('终态后 emit 被忽略：不落账、不触发订阅（与 progress 终态口径一致）', async () => {
+    let lateEmit: ((data: unknown) => void) | undefined;
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('in-run');
+      lateEmit = taskCtx.emit;
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(queue.listEvents('hello')).toHaveLength(1);
+    expect(() => lateEmit?.('after-done')).not.toThrow();
+    expect(queue.listEvents('hello')).toHaveLength(1);
+    await queue.stop();
+  });
+
+  it('重试不清事件：同 job attempt 2 的事件追加，seq 跨 attempt 连续，attempt 字段区分', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.(`attempt-${taskCtx.job.attempt}`);
+      if (taskCtx.job.attempt === 1) throw new Error('boom');
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await expect(fake.dispatch('hello', {}, 1)).rejects.toThrow('boom');
+    await fake.dispatch('hello', {}, 2);
+    const events = queue.listEvents('hello');
+    expect(events.map((e) => [e.attempt, e.seq, e.data])).toEqual([
+      [1, 1, 'attempt-1'],
+      [2, 2, 'attempt-2'],
+    ]);
+    await queue.stop();
+  });
+
+  it('subscribe 按 name 过滤；handler 抛错 console.error 留痕，不影响任务与其他订阅者', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('tick');
+      return 'ok';
+    });
+    const deps = makeDeps({ a: { run }, b: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const seenB: TaskEvent[] = [];
+    queue.subscribe('a', () => {
+      throw new Error('subscriber blew up');
+    });
+    queue.subscribe('a', () => seenB.push({} as TaskEvent)); // 同名第二订阅者不受影响
+    const seenOther: TaskEvent[] = [];
+    queue.subscribe('b', (e) => seenOther.push(e));
+
+    await queue.enqueue('a');
+    await fake.dispatch('a', {});
+    expect(seenB).toHaveLength(1); // handler 抛错后其余订阅者照常回调
+    expect(queue.listEvents('a')).toHaveLength(1); // 任务执行与落账不受影响
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('subscribe'), expect.any(Error));
+
+    await queue.enqueue('b');
+    await fake.dispatch('b', {});
+    expect(seenOther).toHaveLength(1); // name 过滤：b 的事件只给 b 的订阅者
+    errSpy.mockRestore();
+    await queue.stop();
+  });
+
+  it('listEvents(name, { jobId }) 收窄到单次执行', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('tick');
+      return 'ok';
+    });
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const first = await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    const second = await queue.enqueue('hello');
+    await fake.dispatch('hello', {});
+    expect(queue.listEvents('hello')).toHaveLength(2);
+    const onlyFirst = queue.listEvents('hello', { jobId: first.id });
+    expect(onlyFirst).toHaveLength(1);
+    expect(onlyFirst[0]).toMatchObject({ jobId: first.id });
+    expect(queue.listEvents('hello', { jobId: second.id })).toHaveLength(1);
+    expect(queue.listEvents('other')).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('单执行事件超上限（1000）丢最旧，seq 不回退', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      for (let i = 1; i <= 1002; i++) taskCtx.emit?.(i);
+      return 'ok';
+    });
+    const deps = makeDeps({ chatty: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('chatty');
+    await fake.dispatch('chatty', {});
+    const events = queue.listEvents('chatty');
+    expect(events).toHaveLength(1000);
+    expect(events[0]).toMatchObject({ seq: 3, data: 3 }); // 最旧两条被淘汰
+    expect(events.at(-1)).toMatchObject({ seq: 1002, data: 1002 });
+    await queue.stop();
+  });
+
+  it('全局事件上限（10000）按 job 首次发射序整体淘汰最旧执行的事件缓冲', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      for (let i = 1; i <= 1000; i++) taskCtx.emit?.(i);
+      return 'ok';
+    });
+    const deps = makeDeps({ bulk: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const ids: string[] = [];
+    for (let i = 0; i < 11; i++) {
+      const { id } = await queue.enqueue('bulk');
+      ids.push(id);
+      await fake.dispatch('bulk', {});
+    }
+    // 11 个执行 × 1000 条 > 全局上限：最早的执行整体淘汰（seq 计数不回退）
+    expect(queue.listEvents('bulk', { jobId: ids[0] })).toHaveLength(0);
+    expect(queue.listEvents('bulk', { jobId: ids[1] })).toHaveLength(1000);
+    expect(queue.listEvents('bulk')).toHaveLength(10_000);
+    await queue.stop();
+  });
+
+  it('记录终态淘汰时事件一并清理（生命周期与任务记录绑定）', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+      taskCtx.emit?.('tick');
+      return 'ok';
+    });
+    const deps = makeDeps({ bulk: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const first = await queue.enqueue('bulk');
+    await fake.dispatch('bulk', {});
+    expect(queue.listEvents('bulk', { jobId: first.id })).toHaveLength(1);
+    for (let i = 0; i < 1001; i++) {
+      await queue.enqueue('bulk');
+      await fake.dispatch('bulk', {});
+    }
+    // 记录被终态上限淘汰 → 其事件缓冲随之清理
+    expect(queue.list('bulk')).toHaveLength(1000);
+    expect(queue.list('bulk').find((j) => j.id === first.id)).toBeUndefined();
+    expect(queue.listEvents('bulk', { jobId: first.id })).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('隔离路径：runIsolated 的 onEvent 回调落同一事件缓冲并扇出订阅者（两路径口径一致）', async () => {
+    const runIsolated = vi.fn(async (opts: { onEvent?: (value: unknown) => void }) => {
+      opts.onEvent?.('from-worker-1');
+      opts.onEvent?.('from-worker-2');
+      return 'from-worker';
+    });
+    const fake = makeFakeDriver();
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({ run: vi.fn() }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    const { id } = await queue.enqueue('heavy');
+    const seen: TaskEvent[] = [];
+    queue.subscribe('heavy', (e) => seen.push(e));
+    await fake.dispatch('heavy', {});
+    const events = queue.listEvents('heavy', { jobId: id });
+    expect(events.map((e) => e.data)).toEqual(['from-worker-1', 'from-worker-2']);
+    expect(events.map((e) => e.seq)).toEqual([1, 2]);
+    expect(seen.map((e) => e.data)).toEqual(['from-worker-1', 'from-worker-2']);
+    await queue.stop();
+  });
+
+  it('终态记录超上限（1000）按最旧优先淘汰，pending 记录永不淘汰', async () => {
+    const run = vi.fn(async () => 'ok');
+    const deps = makeDeps({ bulk: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    const ids: string[] = [];
+    for (let i = 0; i < 1002; i++) {
+      const { id } = await queue.enqueue('bulk', { i });
+      ids.push(id);
+      await fake.dispatch('bulk', { i });
+    }
+    let list = queue.list('bulk');
+    expect(list).toHaveLength(1000);
+    expect(list.find((j) => j.id === ids[0])).toBeUndefined();
+    expect(list.find((j) => j.id === ids[1])).toBeUndefined();
+    expect(list.find((j) => j.id === ids[2])).toBeDefined();
+
+    // pending 记录不受终态上限影响
+    const pendingIds: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const { id } = await queue.enqueue('bulk', { pending: i });
+      pendingIds.push(id);
+    }
+    await queue.enqueue('bulk', { more: 1 });
+    await fake.dispatch('bulk', { more: 1 });
+    list = queue.list('bulk');
+    expect(list.filter((j) => j.status === 'pending')).toHaveLength(3);
+    for (const pid of pendingIds) {
+      expect(list.find((j) => j.id === pid)).toBeDefined();
+    }
+    await queue.stop();
+  });
+
+  it('list 不传 name 返回全部任务记录', async () => {
+    const deps = makeDeps({
+      a: { run: async () => 1 },
+      b: { run: async () => 2 },
+    });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('a');
+    await queue.enqueue('b');
+    expect(queue.list()).toHaveLength(2);
+    await queue.stop();
+  });
+
+  it('mode: isolated 的任务走隔离执行器（runIsolated），进程内 run 不被调用', async () => {
+    const run = vi.fn(async () => 'in-process');
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      resourcesDir: '/fake/dist/resources',
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({ run }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy', { a: 1 });
+    await fake.dispatch('heavy', { a: 1 }, 1);
+    expect(runIsolated).toHaveBeenCalledTimes(1);
+    const call = runIsolated.mock.calls[0]![0] as {
+      taskModulePath: string;
+      payload: unknown;
+      timeoutMs: number;
+      externalSignal: AbortSignal;
+      taskCtx: { resourcesDir?: string };
+    };
+    expect(call.taskModulePath).toContain('heavy');
+    expect(call.timeoutMs).toBe(3000);
+    expect(call.payload).toEqual({ a: 1 });
+    expect(call.externalSignal).toBeInstanceOf(AbortSignal);
+    expect(call.taskCtx.resourcesDir).toBe('/fake/dist/resources');
+    expect(run).not.toHaveBeenCalled();
+    expect(queue.list('heavy')[0]).toMatchObject({ status: 'done', result: 'from-worker' });
+    await queue.stop();
+  });
+
+  it('mode: isolated 但缺 timeoutMs（清单损坏/手写清单）时派发即显式抛错，不静默走进程内', async () => {
+    const run = vi.fn(async () => 'in-process');
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => 'from-worker');
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'broken', filePath: 'dist/tasks/broken/task.js', mode: 'isolated' }]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({ run }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('broken');
+    await expect(fake.dispatch('broken', {}, 1)).rejects.toThrow(/hydrated without timeoutMs/);
+    expect(runIsolated).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    await queue.stop();
+  });
+
+  it('隔离执行透传 meta.graceMs（宽限期），未声明时不传', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      {
+        name: 'heavy',
+        filePath: 'dist/tasks/heavy/task.js',
+        mode: 'isolated',
+        timeoutMs: 1000,
+        graceMs: 8000,
+      },
+      {
+        name: 'default',
+        filePath: 'dist/tasks/default/task.js',
+        mode: 'isolated',
+        timeoutMs: 1000,
+      },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await queue.enqueue('default');
+    await fake.dispatch('heavy', {});
+    await fake.dispatch('default', {});
+    const opts = runIsolated.mock.calls.map((call) => call[0]) as Array<{
+      taskModulePath: string;
+      graceMs?: number;
+    }>;
+    expect(opts.find((o) => o.taskModulePath.includes('heavy'))?.graceMs).toBe(8000);
+    expect(opts.find((o) => o.taskModulePath.includes('default'))?.graceMs).toBeUndefined();
+    await queue.stop();
+  });
+
+  it('隔离执行抛错：记 failed 并向上传播（驱动重试语义不变）', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => {
+      throw new Error('worker terminated');
+    });
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow('worker terminated');
+    expect(queue.list('heavy')[0]).toMatchObject({ status: 'failed', error: 'worker terminated' });
+    await queue.stop();
+  });
+
+  it('隔离执行抛 TaskCancelledError：记 cancelled（区别于 run 自身失败）', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => {
+      throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
+    });
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/timed out/);
+    expect(queue.list('heavy')[0]).toMatchObject({
+      status: 'cancelled',
+      error: 'Task "heavy" timed out after 100ms and was terminated',
+    });
+    await queue.stop();
+  });
+
+  it('停机取消：job.signal 已 abort 时执行终止记 cancelled（进程内路径）', async () => {
+    const run = vi.fn(async () => {
+      throw new Error('aborted mid-run');
+    });
+    const deps = makeDeps({ light: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('light');
+    const controller = new AbortController();
+    controller.abort(); // 停机超时后驱动 abort（任务收到 signal 退出）
+    await expect(fake.dispatch('light', {}, 1, controller.signal)).rejects.toThrow('aborted');
+    expect(queue.list('light')[0]).toMatchObject({ status: 'cancelled' });
+    await queue.stop();
+  });
+
+  it('signal 已 abort 但 run 正常完成：仍记 done（取消不覆盖成功执行）', async () => {
+    const run = vi.fn(async () => 'finished anyway');
+    const deps = makeDeps({ light: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('light');
+    const controller = new AbortController();
+    controller.abort();
+    await fake.dispatch('light', {}, 1, controller.signal);
+    expect(queue.list('light')[0]).toMatchObject({ status: 'done', result: 'finished anyway' });
+    await queue.stop();
+  });
+
+  it('mode: inline 的任务走进程内路径，不触达 runIsolated（执行路径由声明文件种类决定）', async () => {
+    const run = vi.fn(async () => 'in-process');
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => 'from-worker');
+    const deps = makeDeps({ light: { run } });
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+    });
+    queue.start();
+    await queue.enqueue('light');
+    await fake.dispatch('light', {}, 1);
+    expect(runIsolated).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(queue.list('light')[0]).toMatchObject({ status: 'done', result: 'in-process' });
+    await queue.stop();
+  });
+
+  it('listQueued：驱动持久化记录转换为本进程快照形状，并按 id 与本进程记录合并（本地优先）', async () => {
+    const deps = makeDeps({ a: { run: async () => 'local-result' } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: {
+        ...fake.driver,
+        list: async () => [
+          {
+            id: 'ext-1',
+            name: 'a',
+            payload: { from: 'driver' },
+            status: 'done' as const,
+            attempts: 1,
+            result: 'driver-result',
+            createdAt: 111,
+          },
+          {
+            id: 'ext-2',
+            name: 'a',
+            payload: {},
+            status: 'failed' as const,
+            attempts: 2,
+            error: 'driver error',
+            createdAt: 222,
+          },
+        ],
+      },
+    });
+    queue.start();
+    await queue.enqueue('a');
+    await fake.dispatch('a', {}, 1); // 本进程记录 d-1 → done
+
+    const queued = await queue.listQueued('a');
+    // 本进程记录覆盖驱动侧同 id 记录（attempts/result 以本地为准）
+    const local = queued.find((j) => j.id === 'd-1')!;
+    expect(local.status).toBe('done');
+    expect(local.result).toBe('local-result');
+    // 驱动侧独有记录原样转换
+    const ext = queued.find((j) => j.id === 'ext-1')!;
+    expect(ext).toMatchObject({ status: 'done', result: 'driver-result', createdAt: 111 });
+    expect(queued.find((j) => j.id === 'ext-2')).toMatchObject({
+      status: 'failed',
+      error: 'driver error',
+    });
+    // name 过滤生效（三条都是 a——用不存在过滤验证）
+    expect(await queue.listQueued('nonexistent')).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('listQueued：驱动未实现 list 时显式抛错（不静默回退快照）', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await expect(queue.listQueued()).rejects.toThrow(/does not support/);
+    await queue.stop();
+  });
+
+  it('cancel：透传驱动并更新本进程记录为 cancelled', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const cancelCalls: Array<{ name: string; id: string }> = [];
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: {
+        ...fake.driver,
+        cancel: async (name, id) => {
+          cancelCalls.push({ name, id });
+        },
+      },
+    });
+    queue.start();
+    const { id } = await queue.enqueue('a');
+    await queue.cancel('a', id);
+    expect(cancelCalls).toEqual([{ name: 'a', id }]);
+    expect(queue.list('a')[0]).toMatchObject({ status: 'cancelled' });
+    await queue.stop();
+  });
+
+  it('retry：透传驱动并把本进程记录回 pending 等待重新派发', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const retryCalls: Array<{ name: string; id: string }> = [];
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: {
+        ...fake.driver,
+        retry: async (name, id) => {
+          retryCalls.push({ name, id });
+        },
+      },
+    });
+    queue.start();
+    const { id } = await queue.enqueue('a');
+    await fake.dispatch('a', {}, 1); // 制造一条本进程记录（done）
+    expect(queue.list('a')[0]?.status).toBe('done');
+    await queue.retry('a', id);
+    expect(retryCalls).toEqual([{ name: 'a', id }]);
+    expect(queue.list('a')[0]).toMatchObject({ status: 'pending' });
+    await queue.stop();
+  });
+
+  it('cancel/retry：驱动未实现时显式抛错', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await expect(queue.cancel('a', 'x')).rejects.toThrow(/does not support/);
+    await expect(queue.retry('a', 'x')).rejects.toThrow(/does not support/);
+    await queue.stop();
+  });
+
+  it('enqueue 透传 dedupId 幂等键给驱动', async () => {
+    const deps = makeDeps({ a: { run: async () => 1 } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('a', {}, { dedupId: 'order-confirm:1' });
+    expect(fake.enqueues[0]?.opts).toMatchObject({ dedupId: 'order-confirm:1', retries: 0 });
+    await queue.stop();
+  });
+
+  it('onFailed：执行失败后触发，willRetry 按 meta.retries 推算', async () => {
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'flaky', filePath: 'd.js', mode: 'inline', retries: 2 }]);
+    const onFailed = vi.fn(async () => {});
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      onFailed,
+      loadTaskModule: async () => ({
+        run: async () => {
+          throw new Error('boom');
+        },
+      }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    const { id } = await queue.enqueue('flaky');
+    await expect(fake.dispatch('flaky', {}, 1)).rejects.toThrow('boom');
+    expect(onFailed).toHaveBeenCalledWith({
+      task: 'flaky',
+      jobId: id,
+      attempt: 1,
+      willRetry: true,
+      cancelled: false,
+      error: 'boom',
+    });
+    await queue.stop();
+  });
+
+  it('onFailed：取消路径触发且 cancelled 为 true；自身抛错 console.error 留痕（不影响队列）', async () => {
+    const registry = createTaskRegistry();
+    registry.hydrate([{ name: 'heavy', filePath: 'd.js', mode: 'isolated', timeoutMs: 100 }]);
+    const onFailed = vi.fn(async (_info: unknown) => {
+      throw new Error('hook blew up');
+    });
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async () => {
+      throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      onFailed,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/timed out/);
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    expect(onFailed.mock.calls[0]![0]).toMatchObject({
+      task: 'heavy',
+      attempt: 1,
+      willRetry: false,
+      cancelled: true,
+    });
+    // 钩子自身抛错不再静默：console.error 留痕
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('onFailed hook threw for "heavy"'),
+      expect.any(Error),
+    );
+    // 记录已写入，钩子抛错不影响队列
+    expect(queue.list('heavy')[0]).toMatchObject({ status: 'cancelled' });
+    errorSpy.mockRestore();
+    await queue.stop();
+  });
+
+  it('进程内执行注入注册表只读视图：run 的 taskCtx.registries 可查已水合元数据', async () => {
+    const appRegistries = createAppRegistries();
+    appRegistries.agent.hydrate([
+      { name: 'log-analyzer', filePath: 'dist/agents/log-analyzer/handler.js' },
+    ]);
+    appRegistries.tool.hydrate([
+      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
+    ]);
+    appRegistries.skill.hydrate([{ name: 'db-skill', systemPrompt: 's' }]);
+
+    const run = vi.fn(async (_payload: unknown, taskCtx: unknown) => taskCtx);
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      registries: createTaskRegistriesView(appRegistries),
+    });
+    queue.start();
+
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    const [, taskCtx] = run.mock.calls[0] as unknown as [
+      unknown,
+      {
+        registries: {
+          agent: { getAgent: (n: string) => unknown; listAgents: () => unknown[] };
+          tool: { get: (n: string) => unknown };
+          skill: { get: (n: string) => unknown };
+        };
+      },
+    ];
+    expect(taskCtx.registries.agent.getAgent('log-analyzer')).toMatchObject({
+      name: 'log-analyzer',
+    });
+    expect(taskCtx.registries.agent.listAgents()).toHaveLength(1);
+    expect(taskCtx.registries.tool.get('parse')).toMatchObject({ name: 'parse' });
+    expect(taskCtx.registries.skill.get('db-skill')).toMatchObject({ name: 'db-skill' });
+    await queue.stop();
+  });
+
+  it('隔离执行传注册表纯数据快照：runIsolated 收到 agents（完整元数据）/tools/skills', async () => {
+    const appRegistries = createAppRegistries();
+    appRegistries.agent.hydrate([
+      {
+        name: 'log-analyzer',
+        description: 'analyzer',
+        filePath: 'dist/agents/log-analyzer/handler.js',
+        systemPrompt: 'p',
+      },
+    ]);
+    appRegistries.tool.hydrate([
+      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
+    ]);
+    appRegistries.skill.hydrate([{ name: 'db-skill', systemPrompt: 's' }]);
+
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      registries: createTaskRegistriesView(appRegistries),
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await fake.dispatch('heavy', {}, 1);
+
+    const call = runIsolated.mock.calls[0]![0] as {
+      registries: {
+        agents: Array<{ name: string; filePath?: string; systemPrompt?: string }>;
+        tools: Array<{ name: string }>;
+        skills: Array<{ name: string }>;
+      };
+    };
+    // agents 为完整元数据快照（含 filePath，非仅 LLM 可见字段）
+    expect(call.registries.agents).toEqual([
+      {
+        name: 'log-analyzer',
+        description: 'analyzer',
+        filePath: 'dist/agents/log-analyzer/handler.js',
+        systemPrompt: 'p',
+      },
+    ]);
+    expect(call.registries.tools).toEqual([
+      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
+    ]);
+    expect(call.registries.skills).toEqual([{ name: 'db-skill', systemPrompt: 's' }]);
+    await queue.stop();
+  });
+
+  it('未传 registries 的 deps：两条路径均以空视图兜底（直接构造队列的测试场景不破坏）', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: unknown) => {
+      const r = (taskCtx as { registries: { agent: { listAgents: () => unknown[] } } }).registries;
+      return { agentCount: r.agent.listAgents().length };
+    });
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (opts: { registries: unknown }) => opts.registries);
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'hello', filePath: 'dist/tasks/hello/task.js', mode: 'inline' },
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({ run }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    // 空视图：查询可用且返回空（任务调用 listAgents() 得 0）
+    expect(run).toHaveResolvedWith({ agentCount: 0 });
+
+    await queue.enqueue('heavy');
+    await fake.dispatch('heavy', {}, 1);
+    expect(runIsolated.mock.calls[0]![0]).toMatchObject({
+      registries: { agents: [], tools: [], skills: [] },
+    });
+    await queue.stop();
+  });
+
+  // ─── taskCtx.llm 轻量补全通道注入 ─────────────────────────
+
+  it('进程内 taskCtx.llm 注入：deps.llm store 惰性读取（执行时刻取值，插件后注册也可见）', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => ({
+      llmTag: (taskCtx.llm as (LlmComplete & { tag: string }) | undefined)?.tag ?? 'none',
+    }));
+    const fake = makeFakeDriver();
+    const deps = makeDeps({ hello: { run } });
+    let channel: (LlmComplete & { tag: string }) | undefined;
+    const llmStore: LlmChannelStore = {
+      register: (c) => {
+        channel = (c ?? undefined) as (LlmComplete & { tag: string }) | undefined;
+      },
+      get: () => channel,
+      clear: () => {
+        channel = undefined;
+      },
+    };
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      llm: llmStore,
+    });
+    queue.start();
+
+    // 插件未注册时执行 → undefined
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    expect(run).toHaveResolvedWith({ llmTag: 'none' });
+
+    // 插件注册后再执行 → 同一 channel 可见（惰性读取，构造期不快照）
+    llmStore.register({ tag: 'plugin' } as LlmComplete & { tag: string });
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    expect(run).toHaveResolvedWith({ llmTag: 'plugin' });
+    await queue.stop();
+  });
+
+  it('deps.llm 缺省：进程内 taskCtx.llm 为 undefined，不抛错', async () => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: { llm?: unknown }) => ({
+      hasLlm: taskCtx.llm !== undefined,
+    }));
+    const deps = makeDeps({ hello: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+    await queue.enqueue('hello');
+    await fake.dispatch('hello', {}, 1);
+    expect(run).toHaveResolvedWith({ hasLlm: false });
+    await queue.stop();
+  });
+
+  it('隔离路径：deps.llms 随 workerData 语义转发给 runIsolated，进程内不受影响', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (opts: { llms?: unknown }) => opts.llms ?? null);
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
+    const llms = { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } };
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      llms,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await fake.dispatch('heavy', {}, 1);
+    expect(runIsolated.mock.calls[0]![0]).toMatchObject({ llms });
+    await queue.stop();
+  });
+
+  it('隔离路径未配 llms：runIsolated 收到 undefined（worker 内 taskCtx.llm 为 undefined）', async () => {
+    const fake = makeFakeDriver();
+    const runIsolated = vi.fn(async (opts: { llms?: unknown }) => opts.llms ?? null);
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
+    ]);
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy');
+    await fake.dispatch('heavy', {}, 1);
+    expect(runIsolated.mock.calls[0]![0]).toMatchObject({ llms: undefined });
+    await queue.stop();
+  });
+});

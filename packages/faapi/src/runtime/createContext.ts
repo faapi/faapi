@@ -1,8 +1,8 @@
 import type { FaapiContext, ResponseMeta, CookieOptions, FailOptions } from './contextTypes';
-import { markBufferedBody } from '../response/bufferedBody';
+import { markBufferedBody } from '../responses/bufferedBody';
 import { createSseWriter, type SseOptions, type SseWriter } from './sse';
-import { wrapOkResult, formatFailResponse, jsonOk } from '../response/responseFormatter';
-import { createLogger } from '../logger/logger';
+import { wrapOkResult, formatFailResponse, jsonOk } from '../responses/responseFormatter';
+import { createLogger } from '../loggers/logger';
 import { queryToObject } from '../utils/queryToObject';
 import { setActiveResourcesDir } from '../utils/readResource';
 
@@ -196,7 +196,7 @@ export function createContextFromUrl(
     /**
      * 显式包装成功响应(返回 Response,不会被自动包裹再次包装)
      *
-     * 实现委托给 [responseFormatter.wrapOkResult](../response/responseFormatter.ts),
+     * 实现委托给 [responseFormatter.wrapOkResult](../responses/responseFormatter.ts),
      * 与 handler `return data` 走的自动包裹路径共享同一套 ok 函数。
      *
      * 用 config.response.ok(或默认 (data) => ({ data })) 包裹 data 并返回 JSON Response。
@@ -212,7 +212,7 @@ export function createContextFromUrl(
     /**
      * 返回错误响应(对象形式参数,status 和 code 均可省略)
      *
-     * 实现委托给 [responseFormatter.formatFailResponse](../response/responseFormatter.ts),
+     * 实现委托给 [responseFormatter.formatFailResponse](../responses/responseFormatter.ts),
      * 与 formatErrorResponse(handler 抛错兜底)共享同一套 fail 函数,确保错误格式一致。
      *
      * - status 省略时 HTTP 状态码默认 500

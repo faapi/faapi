@@ -26,7 +26,7 @@
 
 ## 任务侧只读视图（TaskRegistriesView）
 
-`createTaskRegistriesView(registries)` 把 AppRegistries 投影为**只读视图**（agent 的 get/getEntry/list/asTool/resolve* + tool/skill 的 get/list），注入任务执行上下文（`TaskContext.registries`）——任务执行侧（进程内或隔离 worker）不在 handler 请求链路上，拿不到 `FaapiContext.registries`；`getApp()` 在隔离线程内也不可用（worker globalThis 独立）。视图刻意不暴露 `hydrate`/`clear` 写接口：任务不是注册表的所有者。隔离路径经 `TaskRegistriesSnapshot` 纯数据快照跨线程、worker 内重建视图（详见 `../task/taskTypes.md`）。
+`createTaskRegistriesView(registries)` 把 AppRegistries 投影为**只读视图**（agent 的 get/getEntry/list/asTool/resolve* + tool/skill 的 get/list），注入任务执行上下文（`TaskContext.registries`）——任务执行侧（进程内或隔离 worker）不在 handler 请求链路上，拿不到 `FaapiContext.registries`；`getApp()` 在隔离线程内也不可用（worker globalThis 独立）。视图刻意不暴露 `hydrate`/`clear` 写接口：任务不是注册表的所有者。隔离路径经 `TaskRegistriesSnapshot` 纯数据快照跨线程、worker 内重建视图（详见 `../tasks/taskTypes.md`）。
 
 轻量补全通道不走该视图：`TaskContext.llm` 由任务队列从 `AppRegistries.llm` 单独接线（进程内惰性读 store；隔离路径传 `agent.llms` 纯数据快照、worker 内重建）。
 

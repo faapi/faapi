@@ -3,13 +3,13 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { createServer } from './createServer';
 import { generateSchemaFiles } from '../cli/generateSchemaFiles';
-import { invalidateSchemaCache } from '../validator/validateInput';
+import { invalidateSchemaCache } from '../validators/validateInput';
 import type { Server } from 'node:http';
-import type { InjectorMap } from '../middleware/injectorTypes';
+import type { InjectorMap } from '../middlewares/injectorTypes';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.resolve(__dirname, '../../fixtures/api-basic');

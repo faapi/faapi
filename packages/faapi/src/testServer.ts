@@ -2,16 +2,16 @@ import type { Server } from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs/promises';
-import { scanRoutes } from './router/scanRoutes';
-import { sortRoutes } from './router/sortRoutes';
+import { scanRoutes } from './routers/scanRoutes';
+import { sortRoutes } from './routers/sortRoutes';
 import { generateSchemaFiles } from './cli/generateSchemaFiles';
-import { invalidateSchemaCache } from './validator/validateInput';
+import { invalidateSchemaCache } from './validators/validateInput';
 import { createServer } from './server/createServer';
-import type { RouteManifest, WsRouteManifest } from './router/routeTypes';
-import type { FaapiMiddleware } from './middleware/middlewareTypes';
-import type { InjectorMap } from './middleware/injectorTypes';
-import type { CorsOptions } from './middleware/cors';
-import type { HelmetOptions } from './middleware/helmet';
+import type { RouteManifest, WsRouteManifest } from './routers/routeTypes';
+import type { FaapiMiddleware } from './middlewares/middlewareTypes';
+import type { InjectorMap } from './middlewares/injectorTypes';
+import type { CorsOptions } from './middlewares/cors';
+import type { HelmetOptions } from './middlewares/helmet';
 import type { FaapiContext } from './runtime/contextTypes';
 
 /**

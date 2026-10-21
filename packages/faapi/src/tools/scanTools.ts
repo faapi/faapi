@@ -2,7 +2,7 @@ import fg from 'fast-glob';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { ToolManifestList } from './toolTypes';
-import { LLM_TOOL_NAME_PATTERN } from '../injection/subAgentToolName';
+import { DIR_SEGMENT_PATTERN, LLM_TOOL_NAME_PATTERN } from '../naming/nameRules';
 
 /**
  * tool 扫描 patterns（框架约定，非用户可配置项）
@@ -61,14 +61,6 @@ function extractToolExportsFromSource(source: string): Set<string> {
 }
 
 /**
- * tool 目录段合法字符——与 agent 目录段同规则（[scanAgents](../agents/scanAgents.ts)）：
- * LLM 工具名字符集（`[a-zA-Z0-9_-]`，OpenAI 兼容协议对 function.name 的硬约束）再排除
- * `_`——`_` 被 `/` 规范化独占为嵌套分隔符（段内出现会让「嵌套」与「段内下划线」不可
- * 区分），`.` 等其余字符进入 tool 名后会被强校验上游（DeepSeek / OpenAI 等）整单 400
- */
-const TOOL_DIR_SEGMENT_PATTERN = /^[a-zA-Z0-9-]+$/;
-
-/**
  * 从相对路径（已剥离前缀）提取命名空间
  *
  * weather/handler.ts → 'weather'
@@ -84,7 +76,7 @@ function extractNamespaceFromRelPath(relPath: string): string {
   if (!dirPath) return '';
   const segments = dirPath.split('/');
   for (const segment of segments) {
-    if (!TOOL_DIR_SEGMENT_PATTERN.test(segment)) {
+    if (!DIR_SEGMENT_PATTERN.test(segment)) {
       throw new Error(
         `Invalid tool directory segment "${segment}" in "tools/${relPath}": ` +
           `tool directory names allow a-z A-Z 0-9 '-' only ('_' is reserved as the nesting separator, ` +
@@ -124,8 +116,8 @@ function filePathToToolNamespace(filePath: string): string {
 /**
  * 生成 tool 名：命名空间_函数名 或 纯函数名
  *
- * 合成名整体须满足 LLM 工具名字符集——函数名含 `$` 等非法字符时抛错（改名或用
- * `@tool` JSDoc 覆盖），不静默净化
+ * 合成名整体须满足 LLM 工具名字符集——函数名含 `$` 等非法字符时抛错（改名），
+ * 不静默净化
  */
 function buildToolName(namespace: string, functionName: string): string {
   const name = namespace ? `${namespace}_${functionName}` : functionName;
@@ -133,7 +125,7 @@ function buildToolName(namespace: string, functionName: string): string {
     throw new Error(
       `Tool name "${name}" (function "${functionName}"${namespace ? ` in namespace "${namespace}"` : ''}) ` +
         `violates the LLM tool name pattern ${LLM_TOOL_NAME_PATTERN} — ` +
-        `rename the function or use a @tool JSDoc override (allowed: a-z A-Z 0-9 '-' '_')`,
+        `rename the function (allowed: a-z A-Z 0-9 '-' '_')`,
     );
   }
   return name;
@@ -152,7 +144,8 @@ function buildToolName(namespace: string, functionName: string): string {
  * agent 通过 config 块的 `tools` 字段显式声明引用哪些 tool。
  *
  * tool 命名规则：子目录_函数名（如 weather_getWeather，段间与命名空间-函数名都用 `_`
- * 连接），无子目录时纯函数名；目录段与合成名走字符集校验（见上方常量与 buildToolName）。
+ * 连接），无子目录时纯函数名；目录段与合成名走字符集校验（见
+ * [nameRules](../naming/nameRules.md) 与 buildToolName）。
  *
  * 重名检测：同名 tool 抛错。
  *

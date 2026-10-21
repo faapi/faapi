@@ -256,6 +256,6 @@ for await (const token of llmStream()) {
 
 - [createContext](./createContext.md)：挂载 `ctx.sse()` 方法
 - [contextTypes](./contextTypes.md)：`FaapiContext` 接口包含 `sse()` 方法签名
-- [toResponse](../response/toResponse.md)：识别 ctx 持有的 SSE writer，构造 `text/event-stream` Response
+- [toResponse](../responses/toResponse.md)：识别 ctx 持有的 SSE writer，构造 `text/event-stream` Response
 - [invokeHandler](./invokeHandler.md)：handler 返回后，invokeHandler 把 ctx 传给 toResponse
 - [createServer](../server/createServer.md)：SSE Response 不被中间件包装

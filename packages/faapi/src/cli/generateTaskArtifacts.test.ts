@@ -9,7 +9,7 @@ import {
   writeTasksModule,
   TASKS_FILE,
 } from './generateTaskArtifacts';
-import type { TaskManifest } from '../task/taskTypes';
+import type { TaskManifest } from '../tasks/taskTypes';
 
 let rootDir: string;
 const dist = 'dist';

@@ -1,0 +1,133 @@
+# task — 队列式异步任务子系统
+
+一句话概括：基于外部队列驱动的异步任务能力——handler/生命周期/cron 把耗时工作投递到队列，由驱动 worker 按 task 元信息（并发数、重试）消费执行。
+
+## 为什么需要
+
+框架此前没有任何定时/异步任务能力，业务方只能自己在 `lifecycle.onReady` 里裸写 `setInterval` 并在 `onClose` 手动清理，无重试、无并发控制、无 payload 校验。本子系统把"投递 → 队列 → worker 执行 → 重试/失败记录 → 优雅停机"整条链路产品化，并复用框架既有范式（文件约定、产物清单、app 级 registry、统一产物驱动）。
+
+## 使用场景
+
+```ts
+// 1. 任务定义（文件约定）：src/tasks/<name>/task.ts = 进程内任务；worker.ts = 隔离任务
+export interface Payload {
+  to: string;
+  template: string;
+}
+export const task = {
+  concurrency: 2,   // 并发数，默认 1
+  retries: 3,       // 失败重试次数，默认 0
+  // cron: '0 3 * * *',  // 定时入队（croner 表达式），到点自动 enqueue 空 payload
+} satisfies FaapiTaskMeta;
+export function run(payload: Payload, taskCtx: TaskContext) {
+  return { sent: true };
+}
+
+// 1.5 隔离任务（需要真取消的长任务）：src/tasks/<name>/worker.ts
+// export const task = { timeoutMs: 600_000 } satisfies FaapiWorkerTaskMeta; // 必填（60s ~ 23h）
+// export function run(payload: Payload, taskCtx: IsolatedTaskContext) { ... }
+
+// 2. 配置驱动（有任务清单时必填）：faapi.config.ts
+export default {
+  task: {
+    driver: 'pgboss',                              // 或 'bullmq'
+    pgboss: { connectionString: 'postgres://localhost:5432/app' },
+  },
+} satisfies FaapiConfig;
+
+// 3. handler 里入队（tasks 参数注入）；dedupId 幂等键（可选）——同键保留期内不重复入队
+export function POST(body: { email: string; orderId: string }, tasks: TaskClient) {
+  return tasks.enqueue('send-email', { to: body.email, template: 'welcome' }, {
+    dedupId: `order-confirm:${body.orderId}`, // 防重复投递（驱动实现见 driverTypes.md）
+  });
+}
+
+// 4. 管理：查询持久化队列 / 取消 / 重试（能力随驱动，见 driverTypes.md）
+const queued = await tasks.listQueued('send-email'); // 队列侧任务（含其他实例/历史）
+await tasks.cancel('send-email', queued[0].id);      // 取消等待/延迟中的任务
+await tasks.retry('send-email', failed.id);          // 重试失败/取消的任务
+
+// 4.2 任务事件：任务内 emit 过程事件，宿主侧实时订阅 + 查询历史（完整契约见 taskEvents.md）
+// 任务内（长产线/agent 循环）：
+//   for await (const chunk of agentStream) taskCtx.emit?.({ kind: 'agent-chunk', chunk });
+const off = tasks.subscribe('skill-distill', (e) => hub.publish(e.data)); // 实时（本进程）
+const history = tasks.listEvents('skill-distill', { jobId });             // 回放（有界保留）
+
+// 4.5 任务组：切批扇出 + 记账 + fan-in（完整语义见 taskGroups.md）
+await tasks.enqueueGroup('book-import-chunks', batches, {
+  groupId: `import:${importId}`,    // 业务关联键（缺省自动生成；同 id 重投幂等自愈）
+  onComplete: 'import-finished',    // 全部落定时框架自动入队（payload = TaskGroupSummary）
+  onFailure: 'fail-fast',           // 缺省 'run-to-completion'（跑完记 partial）
+});
+const group = await tasks.getGroup(`import:${importId}`); // 计数器快照（done/failed/…）
+
+// 5. 中间件 / 编程式：ctx.tasks（同 TaskClient）、app.tasks、lifecycle 钩子的 { tasks }
+
+// 6. 任务内访问 app 注册表（只读视图）：组装/调用 agent 不再依赖 getApp()——
+//    进程内任务拿活引用，隔离任务（worker.ts）拿派发时刻的纯数据快照（worker 内重建）
+export async function run(payload: Payload, taskCtx: TaskContext) {
+  const agent = taskCtx.registries.agent.getAgent('log-analyzer');
+  if (!agent) throw new Error('agent "log-analyzer" not registered');
+  return { analyzed: true };
+}
+```
+
+> **meta 值必须是纯字面量**：任务清单由零 import 扫描生成（读源码正则提取，不做表达式求值）——`concurrency` / `retries` / `timeoutMs` / `graceMs` 必须是数字字面量（支持下划线分隔 `600_000`），`cron` 必须是引号字符串字面量。写表达式（`10 * 60_000`）或动态值（`Number(process.env.X)`）不会被识别：单行对象写法（`{ timeoutMs: ... }`）整字段被忽略并构建期报错，行首写法可能被截断成错误值触发上下限报错（详见 `scanTasks.md` 的字面量守卫）。
+>
+> **两种声明不混装**：`task.ts`（进程内）不收 `timeoutMs` / `graceMs`，`worker.ts`（隔离）`timeoutMs` 必填——声明错位构建期报错（见 scanTasks.md）。
+
+## 模块组成
+
+| 模块 | 职责 |
+|------|------|
+| `taskTypes.ts` | 子系统全部类型（meta / manifest / metadata / job / client / queue / config） |
+| `scanTasks.ts` | CLI 扫描 `src/tasks/**` 下 `task.ts`（进程内）/ `worker.ts`（隔离）（零 import，正则提取 meta），产出 TaskManifest[] |
+| `taskRegistry.ts` | app 级 TaskRegistry（hydrate/get/list/clear，方案 A 实例化） |
+| `taskQueue.ts` | 队列语义层：payload zod 校验 + worker 执行包装（模块加载/run/记录）+ 生命周期编排 + 任务组门面与落定接线 |
+| `taskGroups.md` | 任务组原语契约（组投递 / 记账 / fan-in / 失败语义 / TaskContext.tasks）——完整设计单点维护 |
+| `taskEvents.md` | 任务事件原语契约（taskCtx.emit / subscribe / listEvents / 保留边界 / 取消口径）——完整设计单点维护 |
+| `driverTypes.ts` | `TaskDriver` 驱动抽象（存储/消费/重试/停机的边界接口，含可选组记账能力 `groups`） |
+| `loadTaskDriver.ts` | 按 `config.task.driver` 动态加载子包驱动 / 透传自定义实例，缺失显式抛错 |
+| `idleTaskDriver.ts` | 空闲占位驱动（无任务清单时使用，enqueue 显式报错引导配置驱动） |
+| `taskWorker.ts` | 隔离执行器：`worker.ts` 隔离任务在独立线程执行，超时两段式取消（真终止） |
+| `cronScheduler.ts` | cron 表达式到点自动入队（croner） |
+| `../cli/generateTaskArtifacts.ts` | 生成 `faapi-tasks.js` 清单 + 各任务的 `zod.js`（Payload schema） |
+
+## 设计决策
+
+- **超时取消必须真终止（worker 隔离执行）**：Node 主线程无法强杀协程——进程内"不再等待"式的超时是假取消（控制侧记失败、重试已投递，旧协程仍在跑）。因此隔离执行是**独立声明 API**（`worker.ts`，文件名即语义、路径构建期显式），不走 task.ts meta 的隐式判据——执行语义差异（config/registries 快照、payload 可克隆、真终止）在声明面上可见。`worker.ts` 任务走 `taskWorker.ts` 隔离线程执行，超时两段式取消：先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀——判定超时即执行真正终止。取消与失败分流：被框架终止的任务记 `cancelled`（`TaskCancelledError` / job.signal 已 abort），run 自身出错记 `failed`。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、config/registries 为派发时刻快照（函数值不跨线程，config 经 `collectConfigSnapshot` 投影、函数字段不进快照，非函数不可克隆值派发显式报错；详见 configSnapshot.md 与 taskTypes.md 差异表）。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。
+- **任务侧注册表访问走只读视图（而非 getApp()）**：注册表是 app 实例级（方案 A），而 `getApp()` 在隔离 worker 线程内不可用（globalThis 独立）、全局访问器读的是 app 启动从不水合的默认实例——任务侧曾没有任何注册表访问路径。现两条执行路径都注入 `taskCtx.registries`（只读视图，不含 hydrate/clear 写接口）：进程内传活引用；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath 完整元数据 + tools + skills）postMessage 传入、worker 内重建视图。**快照语义**：视图反映派发时刻的注册表，执行中途 reload/DB skill 变更不影响当次执行（与 worker 模块图独立的既有语义一致）。
+- **驱动必填（memory 内置驱动已移除）**：队列语义（存储/消费/重试/停机）抽象为 `TaskDriver` 接口（driverTypes.md），由独立子包提供实现——`@faapi/task-pgboss`（Postgres）、`@faapi/task-bullmq`（Redis），主包零依赖、按 `config.task.driver` 动态加载（loadTaskDriver.ts），未安装/未配置显式报错不静默降级。**存在任务清单时必须显式配置 driver**，否则 `createAppBase` 启动报错；无任务清单的项目不加载驱动（零任务项目无需安装驱动子包，`createAppBase` 用空闲占位驱动 idleTaskDriver）。进程内重启丢任务/多实例不防重跑的问题由持久化驱动天然解决——框架不再提供"可丢任务"的默认实现。
+- **统一产物驱动**：dev/prod 产物集一致（`faapi-tasks.js` + `tasks/**/zod.js` + `tasks/**/task.js` / `tasks/**/worker.js`），`createAppBase` 无 `if (isDev)` 分支。dev 与 handler 不同，任务文件启动时全量编译（任务数量小，且 worker 运行时 import 失败无法像 HTTP 请求那样反馈给调用方）。
+- **任务与定时一条线**：cron 只是"自动投递者"，到点调 `enqueue`，复用同一队列与执行模型，不做第二套执行器。
+- **任务组 = 记账在驱动侧 + 回调按任务名声明**：切批扇出/进度聚合/fan-in 三件编排样板收编为框架原语（见 taskGroups.md）——组记账存驱动（pg-boss 表 / Redis hash，跨实例/重启正确），完成回调是普通任务（持久化、可重试、独立 meta，不是闭包）；`TaskContext.tasks` 两条执行路径注入（隔离路径 postMessage RPC 代理回宿主），任务内扇出不绕 `getApp()`。组记账是驱动可选能力（`TaskDriver.groups`，未实现显式抛错不降级）；切分策略是业务知识，不在框架范围。
+- **任务事件 = 语义层观测面，不进驱动**：任务内 `taskCtx.emit(data)` 发射过程事件（agent 流式 chunk 等），宿主侧 `TaskClient.subscribe`（实时）/ `listEvents`（历史）消费——与 progress 的差异：progress 是单值覆盖槽（派发清空），事件是过程历史（seq 连续、重试不清、按 attempt 标注）。事件存本进程有界内存（单执行/全局两级上限），生命周期与任务记录绑定，**驱动零改动**——与组记账进驱动刻意对比：组记账要跨实例正确，事件是观测面（UI 桥接与任务同进程）。agent 事件不设专用管道 API：`agent.stream` chunk 原样 `emit` 即成管道（主包对 `@faapi/agent` 保持解耦，消费端本就要按 chunk 字段做业务分发）。完整契约见 [taskEvents.md](./taskEvents.md)。
+- **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle `{ tasks }` 全部指向同一 app 实例的 TaskClient；不做外部 HTTP 触发端点。
+- **payload 校验复用 zod 代码生成链路**：`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时 safeParse，不合法抛 `ValidationError`（422）。无 Payload 类型声明则跳过校验（与 tool 行为对齐）。
+- **不实现 handler 返回值隐式投递**：混淆统一响应包装语义。
+- **失败钩子**：`config.task.onFailed` 在每次任务执行失败/取消后触发（含将重试的失败，`info.willRetry` / `info.cancelled` 区分），用于告警/死信上报等副作用；自身抛错被忽略。
+- **管理端点不内置（业务方自建）**：管理 API（`listQueued`/`cancel`/`retry`）必须受鉴权保护，框架内置路由默认无鉴权是安全陷阱。业务方在受保护目录写 handler 即可暴露（见下方示例）——这符合"路由文件约定 + 注入即用"的框架范式。
+
+### 管理端点示例（放在鉴权中间件保护的目录）
+
+```ts
+// src/api/admin/tasks/handler.ts —— api/admin/ 下挂全局鉴权中间件（见 AGENTS.md 5.4）
+import type { TaskClient } from '@faapi/faapi';
+
+export function GET(query: { name?: string }, tasks: TaskClient) {
+  return tasks.listQueued(query.name);
+}
+
+export function DELETE(params: { id: string }, tasks: TaskClient) {
+  return tasks.cancel('send-email', params.id);
+}
+```
+
+## 相关模块
+
+- `src/injection/registries.ts` — AppRegistries 增加 `task`（TaskRegistry）与 `taskHandle`（TaskClient 工厂）
+- `src/injection/resolveInjection.ts` / `injectParams.ts` — `tasks` 内置注入参数
+- `src/cli/createAppCore.ts` — `loadAndHydrateTasks`、驱动加载与队列启动/停机接线、`FAAPI_CONFIG_KEYS` 加 `task`
+- `src/cli/devCommand.ts` / `buildCommand.ts` / `watcher.ts` / `createDevApp.ts` — 产物生成与 `reloadTasks` 热替换
+- `src/configs/configTypes.ts` — `TaskConfig`
+- `src/validators/` — `ValidationError`（payload 校验失败）

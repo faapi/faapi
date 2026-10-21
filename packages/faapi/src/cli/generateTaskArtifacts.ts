@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { generateZodArtifacts } from './generateZodArtifacts';
-import type { TaskManifest, TaskMetadata } from '../task/taskTypes';
+import type { TaskManifest, TaskMetadata } from '../tasks/taskTypes';
 import {
   extractToolMetadata,
   getSecondParamTypeName,

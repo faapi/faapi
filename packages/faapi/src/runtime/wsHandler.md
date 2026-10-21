@@ -131,8 +131,8 @@ interface WsSocket {
 
 ## 相关模块
 
-- `src/router/scanRoutes.ts` - 扫描 handler.ts 时识别 `WS` 导出，生成 WS 路由记录
-- `src/router/routeTypes.ts` - 新增 `WsRouteRecord` 类型
+- `src/routers/scanRoutes.ts` - 扫描 handler.ts 时识别 `WS` 导出，生成 WS 路由记录
+- `src/routers/routeTypes.ts` - 新增 `WsRouteRecord` 类型
 - `src/server/createServer.ts` - 监听 `server.on('upgrade')`，匹配 WS 路由并调用 handler
 - `src/runtime/createContext.ts` - 握手阶段构造 WsContext
-- `src/middleware/injectorTypes.ts` - WS 路由同样支持注入器
+- `src/middlewares/injectorTypes.ts` - WS 路由同样支持注入器

@@ -145,4 +145,4 @@ function createProvider(config: LlmConfig): LLMProvider;
 - [providers/openai](./providers/openai.md) —— `'openai'` provider 的具体实现
 - [reactLoop](./reactLoop.md) —— Phase 3.3，调 `complete` / `stream` 执行 ReAct 循环
 - [agent](./agent.md) —— Phase 3.4，构造时持有 `LLMProvider` 实例
-- faapi 核心 [configTypes](../../faapi/src/config/configTypes.md) —— `LlmConfig` 类型定义（Phase 2.4）
+- faapi 核心 [configTypes](../../faapi/src/configs/configTypes.md) —— `LlmConfig` 类型定义（Phase 2.4）

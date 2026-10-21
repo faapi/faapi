@@ -107,7 +107,7 @@ buildCommand
 
 ## 相关模块
 
-- [router](../router/README.md)：路由扫描与排序
+- [router](../routers/README.md)：路由扫描与排序
 - [server](../server/README.md)：HTTP 服务启动
 - [@faapi/schema](../../../schema/)：路由 schema 扩展包，通过 MCP 暴露路由信息给 LLM
-- [validator](../validator/README.md)：输入校验（消费 zod.js）
+- [validator](../validators/README.md)：输入校验（消费 zod.js）

@@ -30,17 +30,17 @@ import {
 // @faapi/faapi 内部模块（深路径，e2e 测试专用，tsc 通过 exclude 跳过检查）
 import { compileDevRoutes } from '@faapi/faapi/src/cli/compileDevRoutes';
 import { compileConfig } from '@faapi/faapi/src/cli/compileConfig';
-import { scanRoutes } from '@faapi/faapi/src/router/scanRoutes';
-import { sortRoutes } from '@faapi/faapi/src/router/sortRoutes';
+import { scanRoutes } from '@faapi/faapi/src/routers/scanRoutes';
+import { sortRoutes } from '@faapi/faapi/src/routers/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from '@faapi/faapi/src/cli/generateRoutes';
 import { generateSchemaFiles } from '@faapi/faapi/src/cli/generateSchemaFiles';
 import { scanAgents } from '@faapi/faapi/src/agents/scanAgents';
 import { generateAgentArtifacts } from '@faapi/faapi/src/cli/generateAgentArtifacts';
 import { scanTools } from '@faapi/faapi/src/tools/scanTools';
 import { generateToolArtifacts } from '@faapi/faapi/src/cli/generateToolArtifacts';
-import { invalidateMiddlewareCache } from '@faapi/faapi/src/middleware/loadMiddlewares';
+import { invalidateMiddlewareCache } from '@faapi/faapi/src/middlewares/loadMiddlewares';
 import { invalidateProgramCache } from '@faapi/faapi/src/ast/createProgram';
-import { invalidateSchemaCache } from '@faapi/faapi/src/validator/validateInput';
+import { invalidateSchemaCache } from '@faapi/faapi/src/validators/validateInput';
 
 // @faapi/agent
 import { Agent } from './agent';

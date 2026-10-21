@@ -1,0 +1,421 @@
+import { existsSync } from 'node:fs';
+import { Worker } from 'node:worker_threads';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import type { TaskRegistriesSnapshot } from './taskTypes';
+import type { WorkerEntryData, SerializedWorkerError } from './workerEntry';
+import type { LlmConfig } from '../configs/configTypes';
+import type { LogEntry, LogLevel } from '../loggers/loggerTypes';
+
+/**
+ * 任务隔离执行器
+ *
+ * 任务声明 `timeoutMs` 后在独立 worker 线程中执行：Node 主线程无法强杀协程，
+ * 进程内"不再等待"式的超时是假取消（控制侧记失败、重试已投递，旧协程仍在跑）；
+ * worker 线程的 `terminate()` 是 Node 唯一能硬终止执行的机制——判定超时即执行真正终止。
+ *
+ * 取消为两段式：先向 worker 发 abort 信号（任务监听 taskCtx.signal 可优雅退出），
+ * 宽限期内未退出则 terminate 硬杀（宽限期经 task meta `graceMs` 配置，默认
+ * KILL_GRACE_MS 5s）。超时判定即终局——宽限期内 worker
+ * 迟到的完成/错误一律按超时失败返回，不翻案。
+ *
+ * 每次 dispatch 新建 worker（入口为 [workerEntry](./workerEntry.ts)：moduleUrl/
+ * resourcesDir 经 workerData 传入，读取根播种先于任务模块求值由结构保证）——
+ * worker 模块图独立，天然加载最新任务产物（dev 热替换后无需 cache-bust）；代价
+ * 是每次执行的冷启动开销（仅声明超时的任务承担）。
+ */
+
+/**
+ * 解析 worker 入口文件 URL（模块级缓存）
+ *
+ * - dist 产物：入口与宿主同目录（tsup 多入口，`dist/workerEntry.js`）
+ * - src 源码直跑（vitest）：回退同目录 `.ts`——workerEntry 自包含（值导入仅
+ *   node:worker_threads），Node 原生类型剥离可直载，无扩展名解析问题
+ */
+let workerEntryUrl: URL | undefined;
+function resolveWorkerEntryUrl(): URL {
+  if (workerEntryUrl) return workerEntryUrl;
+  const js = new URL('./workerEntry.js', import.meta.url);
+  workerEntryUrl = existsSync(fileURLToPath(js))
+    ? js
+    : new URL('./workerEntry.ts', import.meta.url);
+  return workerEntryUrl;
+}
+
+/** abort 宽限期默认值：发出优雅取消信号后等待任务自行退出的最长时间（task meta `graceMs` 可按任务覆盖） */
+const KILL_GRACE_MS = 5_000;
+
+/**
+ * 取消错误：任务执行被框架终止（执行超时两段式取消 / 停机取消）。
+ * 语义层以此区分"取消"与 run 自身的失败——任务记录记 'cancelled' 而非 'failed'。
+ */
+export class TaskCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskCancelledError';
+  }
+}
+
+/**
+ * 隔离执行器签名（taskQueue 按任务 meta.timeoutMs 调用；测试可注入 spy）
+ */
+export type TaskWorkerRunner = typeof runTaskInWorker;
+
+export interface TaskWorkerOptions {
+  /** 任务产物模块绝对路径（`<dist>/tasks/<dir>/task.js`） */
+  taskModulePath: string;
+  payload: unknown;
+  /** signal 由执行器构造（abort/terminate 时触发），宿主只传 job 信息 */
+  taskCtx: {
+    /**
+     * 产物 resources 目录绝对路径（纯字符串可结构化克隆）——经 workerData
+     * 传给入口在任务模块求值前播种全局读取根（内部字段，不进业务 taskCtx）
+     */
+    resourcesDir?: string;
+    job: { id: string; name: string; attempt: number };
+    /**
+     * 进程配置的纯数据快照（语义层经 `collectConfigSnapshot` 投影后必传；
+     * 直接构造执行器的测试可不传——worker 内 taskCtx.config 为 undefined）。
+     * 函数值不进快照（宿主回调面不跨线程，见 configSnapshot.md）
+     */
+    config?: unknown;
+    /**
+     * 挂起/激活上下文（`tasks.resume` 重投时由语义层透传 `job.resumeState`
+     * ——信封为纯数据；首跑不传，worker 内 taskCtx.resumed 为 undefined）
+     */
+    resumed?: { state?: unknown; inject?: unknown; activations: number };
+  };
+  /** 单次执行超时（毫秒） */
+  timeoutMs: number;
+  /**
+   * 取消宽限期（毫秒）——两段式取消第一段发出 abort 信号后等待任务自行退出的
+   * 最长时间，超时未退出 `terminate()` 硬杀。来自 task meta `graceMs`，
+   * 未声明用 `KILL_GRACE_MS`（5s）；`0` 表示不留宽限期（判定取消即硬杀）
+   */
+  graceMs?: number;
+  /**
+   * 注册表快照（纯数据，postMessage 结构化克隆传入，worker 内重建只读视图注入
+   * taskCtx.registries）——语义层从 `TaskRegistriesView` 生成，缺省为空视图
+   */
+  registries?: TaskRegistriesSnapshot;
+  /**
+   * `agent.llms` 纯数据快照（postMessage 结构化克隆传入，worker 内动态加载
+   * `@faapi/agent` 重建轻量补全通道注入 taskCtx.llm）——缺省不传，worker 内
+   * taskCtx.llm 为 undefined
+   */
+  llms?: Record<string, LlmConfig>;
+  /**
+   * 任务日志配置（纯数据，postMessage 传入，worker 内联重建日志器注入 taskCtx.log；
+   * 缺省时 taskCtx.log 为 undefined）：scope/fields 与进程内路径一致（`task:<name>`
+   * + jobId/task/attempt），level 为宿主侧生效的全局级别（worker 侧预过滤，
+   * 宿主 writeLogEntry 再次过滤；undefined = 宿主未配置阈值——文件管道默认全量，
+   * worker 侧同样不过滤）
+   */
+  log?: { level?: LogLevel; scope?: string; fields?: Record<string, unknown> };
+  /** 外部取消信号（驱动停机超时 abort）——abort 同样触发两段式取消 */
+  externalSignal?: AbortSignal;
+  /**
+   * 进度回调：worker 内 `taskCtx.progress(value)` 的值经 `{ type: 'progress' }`
+   * 消息回传宿主（语义层记入 `TaskJob.progress`）；不传则进度消息被忽略
+   */
+  onProgress?: (value: unknown) => void;
+  /**
+   * 事件回调：worker 内 `taskCtx.emit(data)` 的值经 `{ type: 'event' }` 消息回传
+   * 宿主（语义层落事件缓冲 + 订阅扇出，见 taskEvents.md）；不传则事件消息被忽略。
+   * 宽限期（取消判定后）到达的事件不采纳（超时判定即终局，与 progress 同口径）
+   */
+  onEvent?: (value: unknown) => void;
+  /**
+   * 日志回调：worker 内 taskCtx.log 的条目经 `{ type: 'log' }` 消息回传宿主，
+   * 由语义层接 writeLogEntry 走统一管道（自定义 sink 同样覆盖隔离任务）；
+   * 不传则日志条目被忽略。宽限期（取消判定后）到达的条目不采纳（超时判定即终局）
+   */
+  onLog?: (entry: LogEntry) => void;
+  /**
+   * 任务客户端 RPC 分派（worker 内 `taskCtx.tasks.*` 经 `{ type: 'tasks-call' }`
+   * 消息回传宿主执行，结果/错误按 seq 回传）——语义层注入（闭包持有队列本体）；
+   * 不传则 worker 内 taskCtx.tasks 的调用以错误拒绝（直接构造执行器的测试场景）
+   */
+  onTasksCall?: (method: string, args: unknown[]) => Promise<unknown>;
+  /**
+   * 挂起回调：worker 内 `taskCtx.suspend(state)` 经 `{ type: 'suspend' }` 消息
+   * 回传宿主执行信封持久化（与进程内路径共用同一写入，语义层注入并落账
+   * suspended）；不传则 worker 内 taskCtx.suspend 的调用以错误拒绝（直接构造
+   * 执行器的测试场景，与 onTasksCall 同口径）。回调拒绝时错误原样回传 reject
+   */
+  onSuspend?: (state?: unknown) => Promise<void>;
+}
+
+/** worker 错误回传负载（serializeError 的结构化克隆产物） */
+interface WorkerErrorPayload {
+  name?: string;
+  message?: string;
+  stack?: string;
+  props?: Record<string, unknown>;
+}
+
+/**
+ * 宿主侧错误重建：new Error 后回填 name/stack/props——错误信息（含业务错误码、
+ * worker 侧堆栈）跨线程保留；class 身份不跨线程（重建对象是 Error 实例），
+ * `instanceof 自定义子类` 不成立，跨线程判错用 err.name / 自定义属性。
+ */
+function reviveError(payload: WorkerErrorPayload | undefined): Error {
+  const err = new Error(payload?.message ?? 'task worker error');
+  if (payload?.name !== undefined) err.name = payload.name;
+  if (payload?.stack !== undefined) err.stack = payload.stack;
+  if (payload?.props) {
+    for (const [key, value] of Object.entries(payload.props)) {
+      (err as unknown as Record<string, unknown>)[key] = value;
+    }
+  }
+  return err;
+}
+
+export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unknown> {
+  const { taskModulePath, payload, taskCtx, timeoutMs, externalSignal } = options;
+  const killGraceMs = options.graceMs ?? KILL_GRACE_MS;
+
+  // 预取消快速失败：驱动停机信号在派发时已触发（停机竞态），不创建 worker
+  // ——省掉线程冷启动，也不必空等宽限期
+  if (externalSignal?.aborted) {
+    throw new TaskCancelledError(
+      `Task "${taskCtx.job.name}" cancelled before start (driver stop signal already aborted)`,
+    );
+  }
+
+  const moduleUrl = pathToFileURL(taskModulePath).href;
+
+  return new Promise<unknown>((resolve, reject) => {
+    let worker: Worker;
+    try {
+      worker = new Worker(resolveWorkerEntryUrl(), {
+        workerData: { moduleUrl, resourcesDir: taskCtx.resourcesDir } satisfies WorkerEntryData,
+      });
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    /** running →（超时/外部取消）grace →（宽限未退出 terminate）settled；settled 后一切事件忽略 */
+    let phase: 'running' | 'grace' | 'settled' = 'running';
+    let cancelReason = '';
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (settle: () => void): void => {
+      if (phase === 'settled') return;
+      phase = 'settled';
+      clearTimeout(timeoutTimer);
+      if (graceTimer) clearTimeout(graceTimer);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+      void worker.terminate();
+      settle();
+    };
+
+    /** 两段式取消第一段：发优雅取消信号，宽限未退出再 terminate */
+    const startCancel = (reason: string): void => {
+      if (phase !== 'running') return;
+      phase = 'grace';
+      cancelReason = reason;
+      worker.postMessage({ type: 'abort', reason });
+      graceTimer = setTimeout(() => {
+        finish(() =>
+          reject(new TaskCancelledError(`Task "${taskCtx.job.name}" ${reason} and was terminated`)),
+        );
+      }, killGraceMs);
+    };
+
+    const onExternalAbort = (): void => startCancel('cancelled (driver stop timeout)');
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        onExternalAbort();
+      } else {
+        externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+      }
+    }
+    const timeoutTimer: ReturnType<typeof setTimeout> = setTimeout(
+      () => startCancel(`timed out after ${timeoutMs}ms`),
+      timeoutMs,
+    );
+
+    worker.on(
+      'message',
+      (msg: {
+        type?: string;
+        result?: unknown;
+        error?: WorkerErrorPayload;
+        value?: unknown;
+        entry?: LogEntry;
+        seq?: number;
+        method?: string;
+        args?: unknown[];
+        state?: unknown;
+      }) => {
+        // taskCtx.tasks RPC：worker 内代理调用回传宿主执行（结果/错误按 seq 回传）。
+        // running/grace 两阶段都处理——run 在宽限期内仍可能 await 一次入队；settled
+        // 后 worker 已 terminate，不会再有消息
+        if (msg?.type === 'tasks-call') {
+          const { seq, method, args } = msg;
+          const reply = (body: Record<string, unknown>) => {
+            try {
+              worker.postMessage({ type: 'tasks-result', seq, ...body });
+            } catch (err) {
+              // 回传值不可克隆：按调用错误回传（与 progress/log 同口径，不静默）
+              try {
+                worker.postMessage({
+                  type: 'tasks-result',
+                  seq,
+                  ok: false,
+                  error: {
+                    name: 'Error',
+                    message: `taskCtx.tasks.${method} result is not cloneable: ${String(err)}`,
+                    stack: undefined,
+                    props: {},
+                  } satisfies SerializedWorkerError,
+                });
+              } catch {
+                // 连错误负载都不可克隆（理论上不发生）——放弃回传，worker 侧按
+                // 挂起处理并随超时终止
+              }
+            }
+          };
+          if (!options.onTasksCall) {
+            reply({
+              ok: false,
+              error: {
+                name: 'Error',
+                message: `taskCtx.tasks.${method} is unavailable: no host handler was provided for this execution`,
+                stack: undefined,
+                props: {},
+              } satisfies SerializedWorkerError,
+            });
+            return;
+          }
+          options
+            .onTasksCall(method!, args ?? [])
+            .then((value) => reply({ ok: true, value }))
+            .catch((err: unknown) => {
+              reply({
+                ok: false,
+                error: {
+                  name: err instanceof Error ? err.name : 'Error',
+                  message: err instanceof Error ? err.message : String(err),
+                  stack: err instanceof Error ? err.stack : undefined,
+                  props: {},
+                } satisfies SerializedWorkerError,
+              });
+            });
+          return;
+        }
+        if (msg?.type === 'suspend') {
+          // taskCtx.suspend RPC：worker 内挂起回传宿主执行信封持久化（与进程内
+          // 路径共用同一写入，成功/失败按 seq 回传）。running/grace 两阶段都处理
+          // （与 tasks-call 同口径——挂起调用随任务超时两段式取消一并终止）；
+          // settled 后 worker 已 terminate，不会再有消息
+          const { seq, state } = msg;
+          const replySuspend = (body: Record<string, unknown>) => {
+            try {
+              worker.postMessage({ type: 'suspend-result', seq, ...body });
+            } catch {
+              // 错误负载不可克隆（理论上不发生）——放弃回传，worker 侧随超时终止
+            }
+          };
+          if (!options.onSuspend) {
+            replySuspend({
+              ok: false,
+              error: {
+                name: 'Error',
+                message:
+                  'taskCtx.suspend is unavailable: no host handler was provided for this execution',
+                stack: undefined,
+                props: {},
+              } satisfies SerializedWorkerError,
+            });
+            return;
+          }
+          options
+            .onSuspend(state)
+            .then(() => replySuspend({ ok: true }))
+            .catch((err: unknown) => {
+              replySuspend({
+                ok: false,
+                error: {
+                  name: err instanceof Error ? err.name : 'Error',
+                  message: err instanceof Error ? err.message : String(err),
+                  stack: err instanceof Error ? err.stack : undefined,
+                  props: {},
+                } satisfies SerializedWorkerError,
+              });
+            });
+          return;
+        }
+        if (phase === 'grace') {
+          // 宽限期内收到消息 = run 已结束（worker 因 parentPort 监听不会自行 exit）——
+          // 保持取消失败终局，立即返回；迟到的完成结果/进度不采纳（超时判定即终局）
+          if (msg?.type === 'done') {
+            finish(() =>
+              reject(
+                new TaskCancelledError(
+                  `Task "${taskCtx.job.name}" ${cancelReason} (task completed after the timeout)`,
+                ),
+              ),
+            );
+          } else if (msg?.type === 'error') {
+            finish(() => reject(new TaskCancelledError(msg.error?.message ?? cancelReason)));
+          }
+          return;
+        }
+        if (phase !== 'running') return;
+        if (msg?.type === 'done') {
+          finish(() => resolve(msg.result));
+        } else if (msg?.type === 'error') {
+          finish(() => reject(reviveError(msg.error)));
+        } else if (msg?.type === 'progress') {
+          options.onProgress?.(msg.value);
+        } else if (msg?.type === 'event') {
+          options.onEvent?.(msg.value);
+        } else if (msg?.type === 'log') {
+          options.onLog?.(msg.entry!);
+        }
+      },
+    );
+    worker.on('messageerror', () => {
+      // 消息反序列化失败（罕见——能通过发送端序列化的消息极少在接收端失败），
+      // 按执行错误终局，不悬挂等待超时
+      finish(() =>
+        reject(new Error(`Task "${taskCtx.job.name}" worker message could not be deserialized`)),
+      );
+    });
+    worker.on('error', (err) => {
+      finish(() => reject(err));
+    });
+    worker.on('exit', (code: number) => {
+      // 宽限阶段 worker 意外退出（任务进程死亡、未发结束消息）——保持取消失败终局
+      if (phase === 'grace') {
+        finish(() => reject(new TaskCancelledError(`Task "${taskCtx.job.name}" ${cancelReason}`)));
+      } else if (phase === 'running') {
+        finish(() => reject(new Error(`Task worker exited unexpectedly (code ${code})`)));
+      }
+    });
+
+    // taskCtx 含 job + config 纯数据快照（collectConfigSnapshot 投影，函数值不进
+    // 快照，见 configSnapshot.md）+ resumed 挂起/激活上下文（resume 重投时透传，
+    // 信封为纯数据）；registries 为纯数据快照（缺省 undefined → worker 内空视图）
+    // postMessage 不可克隆时按错误处理
+    try {
+      worker.postMessage({
+        type: 'run',
+        payload,
+        taskCtx: {
+          job: taskCtx.job,
+          ...(taskCtx.config !== undefined ? { config: taskCtx.config } : {}),
+          ...(taskCtx.resumed !== undefined ? { resumed: taskCtx.resumed } : {}),
+        },
+        registries: options.registries,
+        llms: options.llms,
+        log: options.log,
+      });
+    } catch (err) {
+      finish(() =>
+        reject(new Error(`Task "${taskCtx.job.name}" payload is not cloneable: ${String(err)}`)),
+      );
+    }
+  });
+}

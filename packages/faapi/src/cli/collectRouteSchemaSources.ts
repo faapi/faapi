@@ -5,9 +5,9 @@ import {
   type LazyTypeResolver,
 } from '../ast/extractHandlerTypes';
 import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
-import { getSchemaName } from '../validator/schemaName';
+import { getSchemaName } from '../validators/schemaName';
 import { analyzeInjectionInSourceFile } from '../injection/analyzeInjection';
-import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
+import type { RouteManifest, WsRouteManifest } from '../routers/routeTypes';
 import path from 'node:path';
 import ts from 'typescript';
 

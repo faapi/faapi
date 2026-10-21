@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createTestServer, type TestServer } from './testServer';
-import { invalidateSchemaCache } from './validator/validateInput';
+import { invalidateSchemaCache } from './validators/validateInput';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.resolve(__dirname, '../fixtures/api-basic');

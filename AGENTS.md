@@ -28,9 +28,9 @@ DDD 通用规范使用全局技能库的 `ddd` 技能，本仓库不维护本地
 
 ```
 DDD 文档（与代码同目录，单一来源）
-  src/router/scanRoutes.md    ← 模块用途、场景、依赖
-  src/router/scanRoutes.test.ts ← 行为定义
-  src/router/scanRoutes.ts      ← 实现
+  src/routers/scanRoutes.md    ← 模块用途、场景、依赖
+  src/routers/scanRoutes.test.ts ← 行为定义
+  src/routers/scanRoutes.ts      ← 实现
   src/injection/README.md       ← 跨模块功能概述（目录级）
 
 AGENTS.md                       ← 项目唯一顶层文档（本文件）
@@ -337,7 +337,7 @@ export default {
 } satisfies FaapiConfig;
 ```
 
-`config.response` 的 `ok` / `fail` 字段均可选，按需覆盖；未配置时用框架默认实现。详见 `src/config/configTypes.md`。
+`config.response` 的 `ok` / `fail` 字段均可选，按需覆盖；未配置时用框架默认实现。详见 `src/configs/configTypes.md`。
 
 完整配置示例:
 
@@ -555,7 +555,7 @@ export function GET(ctx) {
 
 **客户端断连信号**：`ctx.request.signal`（标准 Web AbortSignal）已接线到连接生命周期——客户端提前断开（响应未写完连接即 close）时触发，响应正常完成不误触发。非流式 handler 的长耗时上游调用可携带该信号（`fetch(url, { signal: ctx.request.signal })`），客户端取消即中止上游（LLM 网关转发、批量任务等）。SSE 路径用 `ctx.sse().aborted`，两者并存。详见 `src/server/createServer.md` 的「客户端断连信号」章节。
 
-handler 抛错时由内置 `formatErrorResponse` 兜底（参考 `src/response/responseFormatter.ts`）；建议业务方在全局中间件中用 `try/catch` 捕获并通过 `ctx.fail()` 返回业务化错误响应。
+handler 抛错时由内置 `formatErrorResponse` 兜底（参考 `src/responses/responseFormatter.ts`）；建议业务方在全局中间件中用 `try/catch` 捕获并通过 `ctx.fail()` 返回业务化错误响应。
 
 **错误响应的三条路径**（共享 `config.response.fail` 同一包装函数，格式一致）：
 
@@ -590,7 +590,7 @@ handler `throw err`                       → formatErrorResponse      → 走 f
 
 `ctx.requestId`：请求头 `x-request-id` 第一段优先（网关透传场景跨服务串联），否则 `crypto.randomUUID()` 生成；请求日志中间件的结构化条目同样附带该字段，业务日志与请求日志可经 requestId 关联。
 
-fields 序列化走框架统一出口 `stringifyJson`（Date→毫秒时间戳、BigInt→字符串、Map/Set→数组等，见 5.5 序列化契约），循环引用等结构错误抛 `TypeError` 冒泡——不降级（坏 fields 属业务数据缺陷，显式失败）；文件 sink 流错误（磁盘满等 OS 物理约束）每流首次 `console.error` 留痕。日志全局配置为进程级资源（faapi 单进程单 app，启动时应用一次）。详见 `packages/faapi/src/logger/logger.md`。
+fields 序列化走框架统一出口 `stringifyJson`（Date→毫秒时间戳、BigInt→字符串、Map/Set→数组等，见 5.5 序列化契约），循环引用等结构错误抛 `TypeError` 冒泡——不降级（坏 fields 属业务数据缺陷，显式失败）；文件 sink 流错误（磁盘满等 OS 物理约束）每流首次 `console.error` 留痕。日志全局配置为进程级资源（faapi 单进程单 app，启动时应用一次）。详见 `packages/faapi/src/loggers/logger.md`。
 
 ### 5.6 设计决策
 
@@ -791,27 +791,27 @@ agent 流程测试（真 reactLoop + 真工具 + 假 LLM）走 `@faapi/faapi/tes
 
 详见 `src/testing.md`。
 
-### 5.11 队列式任务子系统（src/task/）
+### 5.11 队列式任务子系统（src/tasks/）
 
 基于外部队列驱动的异步任务能力：handler / lifecycle / cron 把耗时工作投递到队列，驱动 worker 按 task 元信息（并发数、重试）消费执行。
 
-- **任务定义（文件约定，两种声明 API）**：`src/tasks/<name>/task.ts` = **进程内任务**（`FaapiTaskMeta = { concurrency? / retries? / cron? }`，`run(payload, taskCtx: TaskContext)`）；`src/tasks/<name>/worker.ts` = **隔离任务**（`FaapiWorkerTaskMeta = { timeoutMs 必填 / graceMs? / concurrency? / retries? / cron? }`，`run(payload, taskCtx: IsolatedTaskContext)`）——文件名即执行语义，运行时判据是清单 `mode` 字段而非 timeoutMs 有无。meta 值必须是纯字面量——数字字段支持下划线分隔，`cron` 为引号字符串；表达式/动态值不被零 import 扫描识别，声明了但无法识别时构建期抛错（逐字段列后果与修复指引，不警告后忽略）；声明错位（task.ts 声明 `timeoutMs`/`graceMs`、worker.ts 缺 `timeoutMs`、同目录两种文件并存）同样构建期抛错并附迁移指引，详见 `packages/faapi/src/task/scanTasks.md`（`graceMs` 为取消宽限期毫秒数，仅隔离任务生效，默认 5s）+ `run(payload, taskCtx)`；`run` 首参类型声明必填（如 `Payload` interface；确无入参契约显式声明 `type Payload = unknown` 生成恒通过 schema），缺失构建期抛错；类型声明走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`；运行时 schema 产物缺失同样抛错不静默放行）；`run` 第二参 ctx 类型标注与文件种类不符（worker.ts 标 `TaskContext` / task.ts 标 `IsolatedTaskContext`）构建期报错（generateTaskArtifacts AST 校验）
-- **超时取消真终止（worker 隔离执行）**：任务以 `worker.ts` 声明（`timeoutMs` 必填，60s ~ 23h 扫描期校验）后在独立 worker 线程执行，超时两段式取消——先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀，判定超时即执行真正终止（Node 主线程无法强杀协程，进程内"不再等待"式超时是假取消）。任务记录新增 `cancelled` 状态：被框架终止（超时终止/停机取消）记 `cancelled`，与 run 自身失败的 `failed` 分流。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、config/registries 为派发时刻快照（config 经 `collectConfigSnapshot` 纯数据投影——函数值不进快照（lifecycle 钩子/`task.onFailed`/log sink/middlewares 等宿主行为面不跨线程，与 registries 快照同款边界），其余值 structuredClone 保真，含非函数不可克隆值派发显式报错列路径，见 `configSnapshot.md`）。两个上下文类型显式分开：进程内 `TaskContext`（config 活引用全量）/ 隔离 `IsolatedTaskContext`（config 纯数据快照），suspend/resumed 两路径语义零差（隔离路径经 RPC 回传宿主执行同一信封写入，见 `taskSuspend.md`），完整差异表见 `packages/faapi/src/task/taskTypes.md`。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。详见 `packages/faapi/src/task/taskWorker.md`
-- **任务侧注册表只读视图（TaskContext.registries）**：两条执行路径均注入 `taskCtx.registries`（agent/tool/skill 元数据的只读查询视图，不含 hydrate/clear 写接口），任务内组装/调用 agent 不再依赖 `getApp()`——注册表为 app 实例级，全局访问器读的是 app 启动从不水合的默认实例，`getApp()` 在隔离 worker 内也不可用（globalThis 独立），任务侧曾没有任何注册表访问路径。任务内组装 agent 的 deps 装配走 `@faapi/agent` 的 `createAgentDeps`（注册表视图直传，插件 setup 同一实现——不再手拼访问器）。进程内传活引用（`createTaskRegistriesView`）；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath 完整元数据 + tools + skills）postMessage 传入、worker 内重建视图——**快照语义**：视图反映派发时刻的注册表，执行中途 reload/DB skill 变更不影响当次执行。详见 `packages/faapi/src/task/taskTypes.md`
+- **任务定义（文件约定，两种声明 API）**：`src/tasks/<name>/task.ts` = **进程内任务**（`FaapiTaskMeta = { concurrency? / retries? / cron? }`，`run(payload, taskCtx: TaskContext)`）；`src/tasks/<name>/worker.ts` = **隔离任务**（`FaapiWorkerTaskMeta = { timeoutMs 必填 / graceMs? / concurrency? / retries? / cron? }`，`run(payload, taskCtx: IsolatedTaskContext)`）——文件名即执行语义，运行时判据是清单 `mode` 字段而非 timeoutMs 有无。meta 值必须是纯字面量——数字字段支持下划线分隔，`cron` 为引号字符串；表达式/动态值不被零 import 扫描识别，声明了但无法识别时构建期抛错（逐字段列后果与修复指引，不警告后忽略）；声明错位（task.ts 声明 `timeoutMs`/`graceMs`、worker.ts 缺 `timeoutMs`、同目录两种文件并存）同样构建期抛错并附迁移指引，详见 `packages/faapi/src/tasks/scanTasks.md`（`graceMs` 为取消宽限期毫秒数，仅隔离任务生效，默认 5s）+ `run(payload, taskCtx)`；`run` 首参类型声明必填（如 `Payload` interface；确无入参契约显式声明 `type Payload = unknown` 生成恒通过 schema），缺失构建期抛错；类型声明走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`；运行时 schema 产物缺失同样抛错不静默放行）；`run` 第二参 ctx 类型标注与文件种类不符（worker.ts 标 `TaskContext` / task.ts 标 `IsolatedTaskContext`）构建期报错（generateTaskArtifacts AST 校验）
+- **超时取消真终止（worker 隔离执行）**：任务以 `worker.ts` 声明（`timeoutMs` 必填，60s ~ 23h 扫描期校验）后在独立 worker 线程执行，超时两段式取消——先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀，判定超时即执行真正终止（Node 主线程无法强杀协程，进程内"不再等待"式超时是假取消）。任务记录新增 `cancelled` 状态：被框架终止（超时终止/停机取消）记 `cancelled`，与 run 自身失败的 `failed` 分流。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、config/registries 为派发时刻快照（config 经 `collectConfigSnapshot` 纯数据投影——函数值不进快照（lifecycle 钩子/`task.onFailed`/log sink/middlewares 等宿主行为面不跨线程，与 registries 快照同款边界），其余值 structuredClone 保真，含非函数不可克隆值派发显式报错列路径，见 `configSnapshot.md`）。两个上下文类型显式分开：进程内 `TaskContext`（config 活引用全量）/ 隔离 `IsolatedTaskContext`（config 纯数据快照），suspend/resumed 两路径语义零差（隔离路径经 RPC 回传宿主执行同一信封写入，见 `taskSuspend.md`），完整差异表见 `packages/faapi/src/tasks/taskTypes.md`。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。详见 `packages/faapi/src/tasks/taskWorker.md`
+- **任务侧注册表只读视图（TaskContext.registries）**：两条执行路径均注入 `taskCtx.registries`（agent/tool/skill 元数据的只读查询视图，不含 hydrate/clear 写接口），任务内组装/调用 agent 不再依赖 `getApp()`——注册表为 app 实例级，全局访问器读的是 app 启动从不水合的默认实例，`getApp()` 在隔离 worker 内也不可用（globalThis 独立），任务侧曾没有任何注册表访问路径。任务内组装 agent 的 deps 装配走 `@faapi/agent` 的 `createAgentDeps`（注册表视图直传，插件 setup 同一实现——不再手拼访问器）。进程内传活引用（`createTaskRegistriesView`）；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath 完整元数据 + tools + skills）postMessage 传入、worker 内重建视图——**快照语义**：视图反映派发时刻的注册表，执行中途 reload/DB skill 变更不影响当次执行。详见 `packages/faapi/src/tasks/taskTypes.md`
 - **任务侧轻量补全通道（TaskContext.llm）**：两条执行路径均注入 `taskCtx.llm`（`@faapi/agent` 插件加载且 `agent.llms` 可解析时；一次性 LLM 补全官方出口，见 5.7 `llm` 注入行与 `packages/agent/src/lightComplete.md`）。进程内从 `registries.llm` store 惰性读取（插件晚于队列构造注册）；隔离路径传 `agent.llms` 纯数据快照、worker 内动态加载 `@faapi/agent` 重建（llms 已配置但不可解析时显式抛错含安装指引，任务失败——不静默旁路；llms 未配置时 `llm` 为 `undefined`，能力不存在非降级）——工具循环仍走 registries.agent 组装 Agent，`llm` 只承接一次性补全
-- **任务事件原语（taskCtx.emit / subscribe / listEvents）**：任务执行中经 `taskCtx.emit(data)` 发射过程事件（agent 流式 chunk、阶段标记等），宿主侧 `TaskClient.subscribe(name, handler)` 实时订阅（本进程同步扇出，不回放历史，handler 抛错 console.error 留痕）+ `listEvents(name, { jobId? })` 查询历史（单执行内 seq 升序；`TaskEvent = { task, jobId, attempt, seq, at, data }`）——与 `progress` 的差异：progress 是单值覆盖槽（派发清空），事件是过程历史（seq 跨 attempt 连续、重试不清、attempt 标注）。仅 running 状态生效（终态后忽略，与 progress 同口径）；隔离路径值经 `{ type: 'event' }` 消息回传宿主——须可结构化克隆（不可克隆按执行错误处理），取消判定后（宽限期内）到达不采纳。事件存本进程有界内存（单执行 1000 / 全局 10000 两级上限），生命周期与任务记录绑定，**驱动零改动**（与组记账进驱动刻意对比：组记账要跨实例正确，事件是观测面）；隔离任务 `taskCtx.tasks.subscribe` 显式拒绝（回调不可跨线程），`listEvents` 经 RPC 白名单可用。agent 事件不设专用管道 API——`agent.stream` chunk 原样 `emit` 即成管道（主包对 `@faapi/agent` 保持解耦，消费端本就要按 chunk 字段做业务分发）；完整契约见 `packages/faapi/src/task/taskEvents.md`
+- **任务事件原语（taskCtx.emit / subscribe / listEvents）**：任务执行中经 `taskCtx.emit(data)` 发射过程事件（agent 流式 chunk、阶段标记等），宿主侧 `TaskClient.subscribe(name, handler)` 实时订阅（本进程同步扇出，不回放历史，handler 抛错 console.error 留痕）+ `listEvents(name, { jobId? })` 查询历史（单执行内 seq 升序；`TaskEvent = { task, jobId, attempt, seq, at, data }`）——与 `progress` 的差异：progress 是单值覆盖槽（派发清空），事件是过程历史（seq 跨 attempt 连续、重试不清、attempt 标注）。仅 running 状态生效（终态后忽略，与 progress 同口径）；隔离路径值经 `{ type: 'event' }` 消息回传宿主——须可结构化克隆（不可克隆按执行错误处理），取消判定后（宽限期内）到达不采纳。事件存本进程有界内存（单执行 1000 / 全局 10000 两级上限），生命周期与任务记录绑定，**驱动零改动**（与组记账进驱动刻意对比：组记账要跨实例正确，事件是观测面）；隔离任务 `taskCtx.tasks.subscribe` 显式拒绝（回调不可跨线程），`listEvents` 经 RPC 白名单可用。agent 事件不设专用管道 API——`agent.stream` chunk 原样 `emit` 即成管道（主包对 `@faapi/agent` 保持解耦，消费端本就要按 chunk 字段做业务分发）；完整契约见 `packages/faapi/src/tasks/taskEvents.md`
 - **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle 钩子的 `{ tasks }` 全部指向同一 app 实例 TaskClient；cron（croner）到点自动入队空 payload，复用同一队列与执行模型
 - **幂等投递（dedupId）**：`enqueue` 可选幂等键——同键任务在队列系统保留期内不重复入队（重复投递返回已存在任务 id）。pgboss 映射 send 自定义 id（要求 UUID，驱动内 SHA-1 确定性映射）；bullmq 映射 jobId。**cron 投递自动携带 `cron:<任务名>:<计划触发时刻>` 键**——多 worker 实例同窗只入队一份（依赖实例时钟同步），解决多实例 cron 重复投递
 - **失败钩子**：`config.task.onFailed({ task, jobId, attempt, willRetry, cancelled, error })`——每次执行失败/取消后触发（含将重试的失败），用于告警/死信上报等副作用；自身抛错 `console.error` 留痕（不影响驱动重试决策，但不静默吞掉）
-- **管理能力（TaskClient 扩展 + TaskDriver 可选方法）**：`list(name?)`（同步，本进程快照）、`listQueued(name?)`（持久化队列视图，驱动记录与本进程记录按 id 合并、本进程优先）、`cancel(name, id)`、`retry(name, id)`。驱动方法全部可选、按队列系统能力实现——BullMQ 全支持（list 状态映射 / cancel=job.remove / retry=job.retry）；pg-boss v12 经 `findJobs` 全支持（六态精确映射，含 cancelled 可查——BullMQ 无此状态）；BullMQ 无 cancelled（cancel=job.remove 移除不可查），驱动未实现时显式抛错不静默降级。能力边界见 `packages/faapi/src/task/driverTypes.md`
-- **任务组原语（组投递 / 记账 / fan-in）**：`tasks.enqueueGroup(name, payloads, { groupId?, onComplete?, onFailure? })` 一次投递 N 个同构子任务——成员 dedupId 自动派生（`faapi-group:<groupId>:<index>`，替代业务自拼序号）、同 groupId 幂等重投自愈（长任务扇出的 groupId 建议从业务键派生，发起任务重试即天然补投）；框架在**驱动侧**记账（`TaskDriver.groups` 可选能力——pg-boss 表 / Redis hash，跨实例/重启正确，未实现显式抛错不降级）；全部成员落定（重试耗尽后的终态）时自动入队 `onComplete` 回调任务（payload = `TaskGroupSummary` 契约，回调是普通任务不是闭包，入队 dedupId 兜底至多一份）；失败语义按组声明（`'fail-fast'` 取消余下 / `'run-to-completion'` 跑完记 partial，缺省后者）；`tasks.getGroup(id)` 查计数快照；`TaskContext.tasks` / `IsolatedTaskContext.tasks` 必有字段（隔离路径 postMessage RPC 代理回宿主执行）——任务内扇出不绕 `getApp()`。切分策略是业务知识不在框架范围；完整语义与已声明边界（回调入队崩溃窗口经重投自愈、组记录常驻驱动存储不自动清理、fail-fast 不中断在跑成员）见 `packages/faapi/src/task/taskGroups.md`
-- **链式任务原语（键控单飞 / 自续投）**：`tasks.enqueueChain(name, payload, { chainKey })` 按链键单飞——同键活跃任务（pending/running/retry）存在则不投返回现状（`{ enqueued: false, jobId, status }`），无活跃才入队（dedupId 框架托管 `faapi-chain:<chainKey>:<时间戳>`，终态后可重投——固定幂等键在队列保留期占坑误挡续投由托管消除）；任务执行路径（`taskCtx.tasks` 两条执行路径）调用自动排除自身 job（任务内自续投不被自身 running 态挡住——活跃查证排除样板与漏写静默断链风险由框架消除），`ctx.tasks`/`app.tasks`/`tasks` 注入不排除；活跃查证走 `TaskDriver.list` 通道（驱动未实现显式抛错，与 listQueued 同口径），chainKey 经载荷包装随任务持久化（与组标识同机制，交付/查询还原为 `TaskJob.chainKey`）。与任务组正交：组是并行扇出 + fan-in，链是串行单飞 + 自续投，不互相替代。适用"长时 agent 调用分段推进、段尾查业务断点自续投下一段"场景（分段粒度与断点事实源是业务知识，链无 fan-in——最后一跳不续投即自然终止）；完整语义与已声明边界（活跃查证快照非事务的并发登记竞态窗口、快照容量漏判边界）见 `packages/faapi/src/task/taskChain.md`
+- **管理能力（TaskClient 扩展 + TaskDriver 可选方法）**：`list(name?)`（同步，本进程快照）、`listQueued(name?)`（持久化队列视图，驱动记录与本进程记录按 id 合并、本进程优先）、`cancel(name, id)`、`retry(name, id)`。驱动方法全部可选、按队列系统能力实现——BullMQ 全支持（list 状态映射 / cancel=job.remove / retry=job.retry）；pg-boss v12 经 `findJobs` 全支持（六态精确映射，含 cancelled 可查——BullMQ 无此状态）；BullMQ 无 cancelled（cancel=job.remove 移除不可查），驱动未实现时显式抛错不静默降级。能力边界见 `packages/faapi/src/tasks/driverTypes.md`
+- **任务组原语（组投递 / 记账 / fan-in）**：`tasks.enqueueGroup(name, payloads, { groupId?, onComplete?, onFailure? })` 一次投递 N 个同构子任务——成员 dedupId 自动派生（`faapi-group:<groupId>:<index>`，替代业务自拼序号）、同 groupId 幂等重投自愈（长任务扇出的 groupId 建议从业务键派生，发起任务重试即天然补投）；框架在**驱动侧**记账（`TaskDriver.groups` 可选能力——pg-boss 表 / Redis hash，跨实例/重启正确，未实现显式抛错不降级）；全部成员落定（重试耗尽后的终态）时自动入队 `onComplete` 回调任务（payload = `TaskGroupSummary` 契约，回调是普通任务不是闭包，入队 dedupId 兜底至多一份）；失败语义按组声明（`'fail-fast'` 取消余下 / `'run-to-completion'` 跑完记 partial，缺省后者）；`tasks.getGroup(id)` 查计数快照；`TaskContext.tasks` / `IsolatedTaskContext.tasks` 必有字段（隔离路径 postMessage RPC 代理回宿主执行）——任务内扇出不绕 `getApp()`。切分策略是业务知识不在框架范围；完整语义与已声明边界（回调入队崩溃窗口经重投自愈、组记录常驻驱动存储不自动清理、fail-fast 不中断在跑成员）见 `packages/faapi/src/tasks/taskGroups.md`
+- **链式任务原语（键控单飞 / 自续投）**：`tasks.enqueueChain(name, payload, { chainKey })` 按链键单飞——同键活跃任务（pending/running/retry）存在则不投返回现状（`{ enqueued: false, jobId, status }`），无活跃才入队（dedupId 框架托管 `faapi-chain:<chainKey>:<时间戳>`，终态后可重投——固定幂等键在队列保留期占坑误挡续投由托管消除）；任务执行路径（`taskCtx.tasks` 两条执行路径）调用自动排除自身 job（任务内自续投不被自身 running 态挡住——活跃查证排除样板与漏写静默断链风险由框架消除），`ctx.tasks`/`app.tasks`/`tasks` 注入不排除；活跃查证走 `TaskDriver.list` 通道（驱动未实现显式抛错，与 listQueued 同口径），chainKey 经载荷包装随任务持久化（与组标识同机制，交付/查询还原为 `TaskJob.chainKey`）。与任务组正交：组是并行扇出 + fan-in，链是串行单飞 + 自续投，不互相替代。适用"长时 agent 调用分段推进、段尾查业务断点自续投下一段"场景（分段粒度与断点事实源是业务知识，链无 fan-in——最后一跳不续投即自然终止）；完整语义与已声明边界（活跃查证快照非事务的并发登记竞态窗口、快照容量漏判边界）见 `packages/faapi/src/tasks/taskChain.md`
 - **产物**：`faapi-tasks.js`（任务清单，记录含 `mode: 'inline' | 'isolated'`）+ `tasks/<dir>/zod.js`（Payload schema）+ `tasks/<dir>/task.js` / `tasks/<dir>/worker.js`，dev/prod 一致全量生成；`createAppBase` 水合到 app 实例级 `taskRegistry`，dev watcher 触发 `reloadTasks()` 热替换
 - **生命周期**：队列随 `createAppBase` 启动（`FAAPI_TASKS_DISABLED=1` 或 `config.task.enabled: false` 时只入队不消费，多实例部署的 API 节点用）；`app.close()` 时 drain（停止出队 + 等 in-flight 任务，超时 abort，`config.task.shutdownTimeoutMs` 可调）
 - **驱动必填（memory 内置驱动已移除）**：存储/消费/重试/停机抽象为 `TaskDriver` 接口，由独立子包提供——`@faapi/task-pgboss`（Postgres）/ `@faapi/task-bullmq`（Redis），主包按 `config.task.driver` 动态加载（选项经 `task.pgboss` / `task.bullmq` 透传），未安装显式报错。**存在任务清单（`src/tasks/**` 下 task.ts / worker.ts）时必须显式配置 `config.task.driver`，否则启动报错**；无任务清单的项目不加载驱动（`idleTaskDriver` 占位，零任务项目无需安装驱动子包）。业务方写法（文件约定任务 + `tasks.enqueue`）跨驱动完全一致
 - **明确取舍**：框架不提供"可丢任务"的进程内默认实现——持久化、多实例防重跑由所选驱动承载；HTTP 手动触发端点留给后续
 
-详见 `packages/faapi/src/task/README.md` 与各模块 `.md`。
+详见 `packages/faapi/src/tasks/README.md` 与各模块 `.md`。
 
 #### Next.js Server Component 同进程调用（getApp + app.inject）
 

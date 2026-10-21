@@ -6,12 +6,12 @@ import { createDevApp } from './createDevApp';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
-import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
-import { invalidateSchemaCache } from '../validator/validateInput';
+import { invalidateMiddlewareCache } from '../middlewares/loadMiddlewares';
+import { invalidateSchemaCache } from '../validators/validateInput';
 import { listTools, clearToolRegistry } from '../injection/toolRegistry';
 
 // invalidateProgramCache 包一层 spy（真实行为不变），供 reloadAll 批量失效去重断言用

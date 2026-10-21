@@ -99,7 +99,7 @@ watcher 重建场景的收益最直接：改一个 handler.ts 触发重建时，
 ## 相关模块
 
 - [cli/loadEnv.ts](./loadEnv.ts) - `.env` 系列文件加载器（环境变量注入 `process.env`）
-- [config/loadConfig.ts](../config/loadConfig.ts) - 运行时配置加载（统一读 `faapi-config.js` 产物）
+- [config/loadConfig.ts](../configs/loadConfig.ts) - 运行时配置加载（统一读 `faapi-config.js` 产物）
 - [cli/buildCommand.ts](./buildCommand.ts) - 构建命令，调用 `compileConfig` 生成 `dist/faapi-config.js`
 - [cli/devCommand.ts](./devCommand.ts) - dev 命令，启动时调 `compileConfig` 生成 `.faapi/faapi-config.js`
 - [cli/watcher.ts](./watcher.ts) - watcher 文件变化时调 `compileConfig` 重生成产物

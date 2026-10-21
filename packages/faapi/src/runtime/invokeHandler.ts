@@ -1,17 +1,17 @@
 import type { FaapiContext } from './contextTypes';
 import type { ResponseMeta } from './contextTypes';
 import type { SseWriter } from './sse';
-import type { FaapiMiddleware } from '../middleware/middlewareTypes';
-import type { InjectorMap } from '../middleware/injectorTypes';
-import { toResponse } from '../response/toResponse';
-import { deferMetaHeaders, isHeadersOnlyMeta } from '../response/pendingMeta';
-import { wrapOkResult } from '../response/responseFormatter';
+import type { FaapiMiddleware } from '../middlewares/middlewareTypes';
+import type { InjectorMap } from '../middlewares/injectorTypes';
+import { toResponse } from '../responses/toResponse';
+import { deferMetaHeaders, isHeadersOnlyMeta } from '../responses/pendingMeta';
+import { wrapOkResult } from '../responses/responseFormatter';
 import { injectParamsAsync } from '../injection/injectParams';
 
 /**
  * 自动包裹 handler 返回值(统一响应包装)
  *
- * 实现已移至 [response/responseFormatter.ts](../response/responseFormatter.ts) 的
+ * 实现已移至 [response/responseFormatter.ts](../responses/responseFormatter.ts) 的
  * wrapOkResult,与 ctx.ok() / formatFailResponse / formatErrorResponse 共享同一套
  * ok/fail 函数,确保响应格式在所有路径一致。
  *

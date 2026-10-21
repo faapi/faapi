@@ -77,4 +77,4 @@
 
 - `FaapiError.ts` - 基础错误类
 - `formatErrorResponse.ts` - 格式化响应
-- `../validator/validateInput.ts` - 校验输入,将 zod issue 映射为 `ValidationIssue`（coerce 已内联到 zod schema,详见 `../validator/README.md`）
+- `../validators/validateInput.ts` - 校验输入,将 zod issue 映射为 `ValidationIssue`（coerce 已内联到 zod schema,详见 `../validators/README.md`）

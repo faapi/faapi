@@ -7,14 +7,14 @@ import { createDevApp } from './createDevApp';
 import { startWatcher } from './watcher';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { copyResources } from './copyResources';
-import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
+import { invalidateMiddlewareCache } from '../middlewares/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
-import { invalidateSchemaCache } from '../validator/validateInput';
+import { invalidateSchemaCache } from '../validators/validateInput';
 
 /**
  * watcher 热替换 e2e 测试

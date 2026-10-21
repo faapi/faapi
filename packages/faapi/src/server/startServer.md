@@ -19,6 +19,6 @@
 
 ## 相关模块
 
-- `../config/pluginTypes.ts` - RequestHandler / UpgradeHandler 类型
+- `../configs/pluginTypes.ts` - RequestHandler / UpgradeHandler 类型
 - `../cli/createAppCore.ts` - 唯一生产消费方
 - `../cli/loadPlugins.ts` - 收集插件包装器

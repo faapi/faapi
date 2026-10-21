@@ -21,7 +21,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 vi.mock('./compileConfig', () => ({
   compileConfig: vi.fn(async () => ({ generated: false, outputFile: '' })),
 }));
-vi.mock('../config/loadConfig', () => ({
+vi.mock('../configs/loadConfig', () => ({
   loadConfig: vi.fn(async () => ({})),
 }));
 vi.mock('./loadEnv', () => ({
@@ -40,10 +40,10 @@ vi.mock('./compileOnDemand', () => ({
   setDevDist: vi.fn(),
 }));
 // mock generateRouteArtifacts 的依赖（scanRoutes/serializeRoutes/writeRoutesModule）
-vi.mock('../router/scanRoutes', () => ({
+vi.mock('../routers/scanRoutes', () => ({
   scanRoutes: vi.fn(async () => ({ routes: [], wsRoutes: [] })),
 }));
-vi.mock('../router/sortRoutes', () => ({
+vi.mock('../routers/sortRoutes', () => ({
   sortRoutes: vi.fn((routes) => routes),
 }));
 vi.mock('./generateRoutes', () => ({
@@ -67,7 +67,7 @@ vi.mock('./generateAgentArtifacts', () => ({
   generateAgentArtifacts: vi.fn(async () => {}),
 }));
 // mock generateTaskArtifactsForDev 的依赖（任务子系统）
-vi.mock('../task/scanTasks', () => ({
+vi.mock('../tasks/scanTasks', () => ({
   scanTasks: vi.fn(async () => []),
   TASK_PATTERNS: ['src/tasks/**/task.ts', 'src/tasks/**/worker.ts'],
 }));
@@ -87,19 +87,19 @@ const {
   generateAgentArtifactsForDev,
 } = await import('./devCommand');
 const { compileConfig } = await import('./compileConfig');
-const { loadConfig } = await import('../config/loadConfig');
+const { loadConfig } = await import('../configs/loadConfig');
 const { loadEnv } = await import('./loadEnv');
 const { startWatcher } = await import('./watcher');
 const { createDevApp } = await import('./createDevApp');
 const { setDevOnDemandEnabled, setDevDist } = await import('./compileOnDemand');
-const { scanRoutes } = await import('../router/scanRoutes');
-const { sortRoutes } = await import('../router/sortRoutes');
+const { scanRoutes } = await import('../routers/scanRoutes');
+const { sortRoutes } = await import('../routers/sortRoutes');
 const { serializeRoutes, writeRoutesModule } = await import('./generateRoutes');
 const { scanTools } = await import('../tools/scanTools');
 const { generateToolArtifacts } = await import('./generateToolArtifacts');
 const { scanAgents } = await import('../agents/scanAgents');
 const { generateAgentArtifacts } = await import('./generateAgentArtifacts');
-const { scanTasks: _scanTasks } = await import('../task/scanTasks');
+const { scanTasks: _scanTasks } = await import('../tasks/scanTasks');
 const { generateTaskArtifacts: _generateTaskArtifacts } = await import('./generateTaskArtifacts');
 const { copyResources } = await import('./copyResources');
 

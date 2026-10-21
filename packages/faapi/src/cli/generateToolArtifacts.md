@@ -176,7 +176,7 @@ interface SerializedToolRecord {
 
 ```ts
 interface ToolSchemaSource {
-  /** tool 名（含 @tool 覆盖）,用作注释标识 */
+  /** tool 名,用作注释标识 */
   name: string;
   /** 源文件绝对路径（用于按文件分组生成 zod.js） */
   filePath: string;

@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { collectRouteSchemaSources } from './collectRouteSchemaSources';
-import type { RouteManifest } from '../router/routeTypes';
+import type { RouteManifest } from '../routers/routeTypes';
 import { invalidateProgramCache } from '../ast/createProgram';
 
 describe('collectRouteSchemaSources', () => {

@@ -109,4 +109,4 @@ OpenAI → `LLMMessage`（响应解析）：
 
 - [provider](../provider.md) —— LLMProvider 接口与 createProvider 工厂
 - [reactLoop](../reactLoop.md) —— Phase 3.3，消费 complete / stream
-- faapi 核心 [configTypes](../../../faapi/src/config/configTypes.md) —— `LlmConfig` 类型
+- faapi 核心 [configTypes](../../../faapi/src/configs/configTypes.md) —— `LlmConfig` 类型

@@ -117,6 +117,6 @@ export function buildAppAgent(ctx: FaapiContext): Agent {
 
 - [agent](./agent.md) —— `AgentDeps` 契约定义方与消费方（编程式组装的完全体形态）
 - [plugin](./plugin.md) —— 插件 setup 的调用方（装配单一实现的验证场）
-- [toolSchemaResolver](../../faapi/src/loader/toolSchemaResolver.md) —— 默认 schema 解析器（`overrides` 富化包装的底层）
+- [toolSchemaResolver](../../faapi/src/loaders/toolSchemaResolver.md) —— 默认 schema 解析器（`overrides` 富化包装的底层）
 - faapi 核心 [agentTestHarness](../../faapi/src/agentTestHarness.md) —— 测试设施的 `registries` 可直传本工厂（同一最小结构）
 - faapi 核心 [registries](../../faapi/src/injection/registries.md) —— 注册表实例与只读视图（`registries` 参数的三种来源）

@@ -9,8 +9,8 @@ import {
   hydrateRoutes,
   type SerializedRouteManifest,
 } from './generateRoutes';
-import { invalidateMiddlewareCache, loadMergedMiddlewares } from '../middleware/loadMiddlewares';
-import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
+import { invalidateMiddlewareCache, loadMergedMiddlewares } from '../middlewares/loadMiddlewares';
+import type { RouteManifest, WsRouteManifest } from '../routers/routeTypes';
 
 /**
  * generateRoutes 测试：build 时序列化路由清单 → 写 JS 模块 → start 时水合还原

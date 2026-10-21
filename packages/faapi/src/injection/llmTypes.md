@@ -16,5 +16,5 @@
 ## 相关模块
 
 - [registries](./registries.md)——`LlmChannelStore` 存储本接口实例（插件注册）
-- [taskTypes](../task/taskTypes.md)——`TaskContext.llm` 注入
+- [taskTypes](../tasks/taskTypes.md)——`TaskContext.llm` 注入
 - `@faapi/agent` [lightComplete](../../../agent/src/lightComplete.md)——实现方与使用文档

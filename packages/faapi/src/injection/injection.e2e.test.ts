@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { analyzeInjection } from './analyzeInjection';
 import { resolveInjection } from './resolveInjection';
 import { injectParamsAsync } from './injectParams';

@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createDevApp } from './createDevApp';
 import { compileConfig } from './compileConfig';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import {
   setDevOnDemandEnabled,
@@ -17,9 +17,9 @@ import {
   prodPathToSourcePath,
   _resetDevOnDemandState,
 } from './compileOnDemand';
-import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
+import { invalidateMiddlewareCache } from '../middlewares/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
-import { invalidateSchemaCache } from '../validator/validateInput';
+import { invalidateSchemaCache } from '../validators/validateInput';
 
 /**
  * 按需编译（Vite 风格）测试
@@ -174,7 +174,7 @@ describe('按需编译（Vite 风格）', () => {
     const generated1 = await ensureSchemaGenerated(
       schemaPath,
       routeFilePath,
-      serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+      serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
       tempDir,
       '.faapi',
     );
@@ -185,7 +185,7 @@ describe('按需编译（Vite 风格）', () => {
     const generated2 = await ensureSchemaGenerated(
       schemaPath,
       routeFilePath,
-      serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+      serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
       tempDir,
       '.faapi',
     );
@@ -206,7 +206,7 @@ describe('按需编译（Vite 风格）', () => {
     await ensureSchemaGenerated(
       schemaPath,
       routeFilePath,
-      serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+      serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
       tempDir,
       '.faapi',
     );
@@ -218,7 +218,7 @@ describe('按需编译（Vite 风格）', () => {
     const generated = await ensureSchemaGenerated(
       schemaPath,
       routeFilePath,
-      serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+      serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
       tempDir,
       '.faapi',
     );
@@ -384,7 +384,7 @@ describe('按需编译（Vite 风格）', () => {
       ensureSchemaGenerated(
         schemaPath,
         routeFilePath,
-        serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+        serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
         tempDir,
         '.faapi',
       ),
@@ -474,14 +474,14 @@ describe('按需编译（Vite 风格）', () => {
       ensureSchemaGenerated(
         schemaPath,
         routeFilePath,
-        serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+        serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
         tempDir,
         '.faapi',
       ),
       ensureSchemaGenerated(
         schemaPath,
         routeFilePath,
-        serialized.routes as unknown as import('../router/routeTypes').RouteManifest,
+        serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
         tempDir,
         '.faapi',
       ),

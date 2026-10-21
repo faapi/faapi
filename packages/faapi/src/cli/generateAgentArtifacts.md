@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-agent 与 tool 一样采用扫描式发现，`scanAgents` 启动时只读文件列表（零 import），产出 `AgentManifest[]`。manifest 仅含路径推导字段（`name` / `filePath`），不含 JSDoc 描述、`@agent` 覆盖名、config 块字段（systemPrompt / tools / agents / model / maxTurns / inputDescription）与派发入参 schema 声明（`inputTypeName`）。
+agent 与 tool 一样采用扫描式发现，`scanAgents` 启动时只读文件列表（零 import），产出 `AgentManifest[]`。manifest 仅含路径推导字段（`name` / `filePath`），不含 JSDoc 描述、config 块字段（systemPrompt / tools / agents / model / maxTurns / inputDescription）与派发入参 schema 声明（`inputTypeName`）。
 
 这些字段需要 TypeScript AST 提取（由 [extractAgentMetadata](../ast/extractAgentMetadata.md) 完成），提取结果序列化为 `faapi-agents.js`（ESM 模块导出 `agents` 数组），运行时由 [createAppCore](./createAppCore.md) 水合到 [agentRegistry](../injection/agentRegistry.md)。
 
@@ -19,7 +19,7 @@ agent 与 tool 一样采用扫描式发现，`scanAgents` 启动时只读文件�
 
 ### agent zod.js（声明 `Input` 时生成，与 tool 复用同一管线）
 
-`AgentMetadata.inputTypeName` 非 `undefined`（handler.ts 顶层声明 `interface Input` / `type Input`，见 [extractAgentMetadata](../ast/extractAgentMetadata.md)「派发入参 schema 声明」）的 agent，本模块额外生成 `<dist>/agents/<name>/zod.js`（与 handler.js 同级），导出 `InputSchema`——`@faapi/agent` 派发该 agent 时经 [loadToolSchema](../loader/loadToolSchema.md) 加载、`z.toJSONSchema` 组装 LLM 可见 parameters 并做 runtime 校验。
+`AgentMetadata.inputTypeName` 非 `undefined`（handler.ts 顶层声明 `interface Input` / `type Input`，见 [extractAgentMetadata](../ast/extractAgentMetadata.md)「派发入参 schema 声明」）的 agent，本模块额外生成 `<dist>/agents/<name>/zod.js`（与 handler.js 同级），导出 `InputSchema`——`@faapi/agent` 派发该 agent 时经 [loadToolSchema](../loaders/loadToolSchema.md) 加载、`z.toJSONSchema` 组装 LLM 可见 parameters 并做 runtime 校验。
 
 生成管线与 tool 完全复用：`extractTypeInfo(program, filePath, 'Input')` 提取类型（**复用元数据提取阶段已创建的 Program**，零额外解析成本）→ `generateToolSchemaFileSource`（coerce=false——入参来自 LLM JSON 调用，与 tool 一致；task 管线已先有复用先例）→ [generateZodArtifacts](./generateZodArtifacts.md) 共享管线写文件。
 
@@ -32,7 +32,7 @@ agent 与 tool 一样采用扫描式发现，`scanAgents` 启动时只读文件�
 ```
 AgentManifest[] (scanAgents, 路径推导)
     ↓ extractAgentMetadata (AST 增强)
-AgentMetadata[] (含 description / @agent 覆盖 / config 块字段)
+AgentMetadata[] (含 description / config 块字段)
     ↓ serializeAgents (filePath: src/... → <dist>/...)
 SerializedAgentRecord[] (可写入 JS)
     ↓ writeAgentsModule (JSON.stringify 嵌入 ESM)
@@ -60,7 +60,7 @@ AST 提取层的单 agent 校验（systemPrompt 必填、字面量提取失败�
 | 场景 | 行为 |
 |------|------|
 | 某个 agent 源文件不在 Program 中(`extractAgentMetadata` 返回 null) | 抛错——正常构建链路不该发生，静默跳过会让 agent 从清单里无声消失 |
-| agent 名重复(目录推导名或 `@agent` 覆盖名撞名) | 抛错——水合语义是后者覆盖前者，静默覆盖丢失 agent |
+| agent 名重复(目录推导名撞名) | 抛错——水合语义是后者覆盖前者，静默覆盖丢失 agent |
 | `agents` 引用了清单中不存在的 agent 名 | 抛错——sub-agent 递归在运行时才失败会把错误推迟到首次调用，且错误信息不带构建上下文 |
 
 `tools` 引用**不做**构建期校验——业务方 plugin 可在运行时注册额外 tool（`PluginContext.registries`），构建期校验会误报。

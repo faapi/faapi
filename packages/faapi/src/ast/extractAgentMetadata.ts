@@ -6,7 +6,6 @@ import {
   hasExportModifier,
 } from './jsDocMetadata';
 import { SchemaExtractionError } from './resolveTypeNode';
-import { LLM_TOOL_NAME_PATTERN } from '../injection/subAgentToolName';
 
 /**
  * Agent 的 LLM 可见核心字段
@@ -23,7 +22,7 @@ import { LLM_TOOL_NAME_PATTERN } from '../injection/subAgentToolName';
  * 都消费 `AgentCore`,实现"agent 与 skill 走同一运行时链路"。
  */
 export interface AgentCore {
-  /** agent 名(`@agent` JSDoc 覆盖值 或 目录推导值) */
+  /** agent 名(目录路径推导值,嵌套段用 `_` 连接) */
   name: string;
   /** JSDoc 描述(agent 描述,对 LLM 可见),无 JSDoc 或 JSDoc 无自由文本时为 `undefined` */
   description?: string;
@@ -71,10 +70,10 @@ export interface AgentCore {
  *
  * 由 [extractAgentMetadata](./extractAgentMetadata.md) 产出,合并路径推导字段
  * (来自 [scanAgents](../agents/scanAgents.md) 的 `AgentManifest`)与 AST 提取字段
- * (JSDoc 描述、`@agent` 覆盖名、config 块字段)。
+ * (JSDoc 描述、config 块字段)。
  *
  * 字段来源：
- * - `name` — `@agent` JSDoc 覆盖值,或 `pathMeta.name`(目录推导)
+ * - `name` — `pathMeta.name`(目录路径推导,嵌套段用 `_` 连接)
  * - `filePath` — 由 `pathMeta` 透传
  * - `description` — JSDoc 注释块自由文本(对 LLM 可见)
  * - `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription` — config 块字面量提取
@@ -119,9 +118,8 @@ interface FoundConfig {
  *
  * 提取内容：
  * 1. **JSDoc 描述** — config 导出的 JSDoc 自由文本
- * 2. **`@agent` 覆盖名** — JSDoc 中 `@agent` 标签后的文本，覆盖目录推导的 `name`
- * 3. **config 块字段** — systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription
- * 4. **派发入参 schema 声明** — 顶层 `interface Input` / `type Input` 名字检测（记 `inputTypeName`，
+ * 2. **config 块字段** — systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription
+ * 3. **派发入参 schema 声明** — 顶层 `interface Input` / `type Input` 名字检测（记 `inputTypeName`，
  *    类型提取由 generateAgentArtifacts 阶段完成）
  *
  * 不提取(由 `pathMeta` 透传)：`filePath`
@@ -196,15 +194,16 @@ export function extractAgentMetadata(
 
   const jsDoc = getJSDocFromNode(configFound.jsDocOwner);
   const description = extractDescription(jsDoc);
+  // @agent 覆盖名已移除——检测到残留标签抛迁移错误（不静默忽略：覆盖语义已不存在，
+  // 标签变成无人消费的死注解，与声明意图不符）。无值的裸标签（tag.comment 为 false）
+  // extractJSDocTagValue 返回 undefined，不构成残留，维持回退语义不报错
   const agentNameOverride = extractJSDocTagValue(jsDoc, 'agent');
-  // 覆盖名会进入派发工具名 agent-<name>（subAgentToolName），须整体满足 LLM 工具名
-  // 字符集——与目录推导名不同，覆盖名无嵌套语义，`_` 可用。违例在 AST 阶段显式抛错，
-  // 不静默净化（运行期 subAgentToolName 是程序化注册的兜底闸门，文件型 agent 在此拦截）
-  if (agentNameOverride !== undefined && !LLM_TOOL_NAME_PATTERN.test(agentNameOverride)) {
+  if (agentNameOverride !== undefined) {
     throw SchemaExtractionError.at(
       configFound.jsDocOwner,
       '@agent',
-      `覆盖名 "${agentNameOverride}" 含非法字符——须满足 ${LLM_TOOL_NAME_PATTERN}（覆盖名成为 LLM 工具名 "agent-<覆盖名>"，强校验上游对非法字符整单 400）`,
+      '@agent 覆盖名功能已移除——agent 名由目录路径推导（嵌套段用 _ 连接）。' +
+        '删除 @agent JSDoc 标签；需要不同名字时改名目录',
       sourceFile,
     );
   }
@@ -214,7 +213,7 @@ export function extractAgentMetadata(
     extractConfigFields(objectLiteral, sourceFile);
 
   return {
-    name: agentNameOverride ?? pathMeta.name,
+    name: pathMeta.name,
     description,
     filePath: pathMeta.filePath,
     systemPrompt,

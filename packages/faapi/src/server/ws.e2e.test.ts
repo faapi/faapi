@@ -4,11 +4,11 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { WebSocket, type RawData } from 'ws';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { createServer } from './createServer';
 import { generateSchemaFiles } from '../cli/generateSchemaFiles';
-import { invalidateSchemaCache } from '../validator/validateInput';
+import { invalidateSchemaCache } from '../validators/validateInput';
 import type { Server } from 'node:http';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

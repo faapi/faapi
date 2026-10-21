@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os';
 import { createApp, type CreateAppOptions } from './createApp';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
-import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
+import { invalidateMiddlewareCache } from '../middlewares/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
-import { invalidateSchemaCache } from '../validator/validateInput';
+import { invalidateSchemaCache } from '../validators/validateInput';
 
 /**
  * createApp 测试：prod 模式启动 API（createApp 为 createProdApp 的别名）

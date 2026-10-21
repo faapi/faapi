@@ -2,19 +2,19 @@ import type { Server } from 'node:http';
 import type { FaapiContextConfig } from '../runtime/contextTypes';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { RouteManifest, WsRouteManifest, RoutesRef } from '../router/routeTypes';
-import { sortRoutes } from '../router/sortRoutes';
-import { reportRouteConflicts } from '../router/detectRouteConflicts';
+import type { RouteManifest, WsRouteManifest, RoutesRef } from '../routers/routeTypes';
+import { sortRoutes } from '../routers/sortRoutes';
+import { reportRouteConflicts } from '../routers/detectRouteConflicts';
 import { createServer } from '../server/createServer';
 import { applyPluginWrappers } from '../server/startServer';
-import { loadConfig } from '../config/loadConfig';
+import { loadConfig } from '../configs/loadConfig';
 import { hydrateRoutes, type SerializedRouteManifest } from './generateRoutes';
-import { createTaskQueue } from '../task/taskQueue';
-import { loadTaskDriver } from '../task/loadTaskDriver';
-import { createIdleTaskDriver } from '../task/idleTaskDriver';
-import { createCronScheduler, type CronScheduler } from '../task/cronScheduler';
-import { configureLogging } from '../logger/logger';
-import type { TaskClient, TaskQueue } from '../task/taskTypes';
+import { createTaskQueue } from '../tasks/taskQueue';
+import { loadTaskDriver } from '../tasks/loadTaskDriver';
+import { createIdleTaskDriver } from '../tasks/idleTaskDriver';
+import { createCronScheduler, type CronScheduler } from '../tasks/cronScheduler';
+import { configureLogging } from '../loggers/logger';
+import type { TaskClient, TaskQueue } from '../tasks/taskTypes';
 import { loadPlugins } from './loadPlugins';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import {
@@ -22,7 +22,7 @@ import {
   createTaskRegistriesView,
   type AppRegistries,
 } from '../injection/registries';
-import type { FaapiConfig } from '../config/configTypes';
+import type { FaapiConfig } from '../configs/configTypes';
 import { ROUTE_PATTERNS } from '../utils/prodPaths';
 import {
   getTaskDriverOptions,

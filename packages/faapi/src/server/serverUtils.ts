@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { FaapiContextConfig } from '../runtime/contextTypes';
-import { markBufferedBody } from '../response/bufferedBody';
+import { markBufferedBody } from '../responses/bufferedBody';
 import { formatErrorResponse } from '../errors/formatErrorResponse';
 
 /**

@@ -1,5 +1,5 @@
 import type { FaapiContext } from '../runtime/contextTypes';
-import type { InjectorMap } from '../middleware/injectorTypes';
+import type { InjectorMap } from '../middlewares/injectorTypes';
 import { resolveInjection, type InjectionType } from './resolveInjection';
 import type { MultipartResult } from '../utils/parseMultipart';
 import { listAgents } from './agentRegistry';

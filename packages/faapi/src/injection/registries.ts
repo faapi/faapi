@@ -1,8 +1,8 @@
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
 import type { FaapiContext } from '../runtime/contextTypes';
-import type { TaskRegistry } from '../task/taskRegistry';
-import { createTaskRegistry } from '../task/taskRegistry';
+import type { TaskRegistry } from '../tasks/taskRegistry';
+import { createTaskRegistry } from '../tasks/taskRegistry';
 import type { LlmComplete } from './llmTypes';
 import { subAgentToolName } from './subAgentToolName';
 

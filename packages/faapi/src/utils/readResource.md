@@ -26,4 +26,4 @@
 - [prodPaths](./prodPaths.ts) — 复用 `isInsideDir`（目录包含判定）与 `toRealPath`（realpath 规范化，处理 macOS /tmp 符号链接差异）
 - [appSingleton](../cli/appSingleton.md) — 同款 globalThis + Symbol.for 进程级状态机制；单 app 强制在 createAppBase 入口
 - [createContext](../runtime/createContext.ts) — `createTestContext` 的 `resourcesDir` 选项 → 绑定全局读取根（仅绑定，不再挂到 ctx）
-- [taskWorker](../task/taskWorker.md) — 隔离 worker wrapper 内联播种读取根
+- [taskWorker](../tasks/taskWorker.md) — 隔离 worker wrapper 内联播种读取根

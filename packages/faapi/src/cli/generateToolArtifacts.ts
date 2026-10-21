@@ -25,7 +25,7 @@ import { generateZodSchemaSource, usesCoerceHelpers } from '../ast/generateZodSc
  * 水合时通过 `??` 兜底为 undefined。
  */
 export interface SerializedToolRecord {
-  /** tool 名(`@tool` 覆盖值 或 路径推导值) */
+  /** tool 名(路径推导值:目录路径 + 函数名) */
   name: string;
   /** 源码中的导出函数名(供 loadToolModule 在 handler.js 中按名 import) */
   functionName: string;
@@ -43,7 +43,7 @@ export interface SerializedToolRecord {
  * 与 [RouteSchemaSource](./collectRouteSchemaSources.md) 对称,但 schema key 用 tool 名而非 urlPath。
  */
 export interface ToolSchemaSource {
-  /** tool 名(含 `@tool` 覆盖),用作注释标识 */
+  /** tool 名,用作注释标识 */
   name: string;
   /** 源文件绝对路径(用于 generateToolArtifacts 按文件分组生成 zod.js) */
   filePath: string;
@@ -269,7 +269,7 @@ export function generateToolSchemaFileSource(
  *
  * 内部流程:
  * 1. 对每个 ToolManifest 调 `createProgram` + `extractToolMetadata` → ToolMetadata[]
- *    (AST 增强:补全 description / inputTypeName / `@tool` 覆盖后的 name)
+ *    (AST 增强:补全 description / inputTypeName)
  * 2. `serializeTools(metadata, dist)` → SerializedToolRecord[](filePath 转产物形式)
  * 3. `writeToolsModule(serialized, faapiToolsPath)` → 写入 `<dist>/faapi-tools.js`
  * 4. 若 `skipSchema=true`(dev 按需模式)→ 返回,不生成 zod.js

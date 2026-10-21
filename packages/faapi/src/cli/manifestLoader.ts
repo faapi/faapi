@@ -7,7 +7,7 @@ import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { defaultRegistries, type AppRegistries } from '../injection/registries';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
-import type { FaapiConfig } from '../config/configTypes';
+import type { FaapiConfig } from '../configs/configTypes';
 
 /**
  * 产物清单加载与注册表水合

@@ -18,8 +18,8 @@ vi.mock('@faapi/faapi', async (importOriginal) => {
 
 // createToolSchemaResolver 已下沉主包 loader 域，其内部经深路径 import
 // loadToolSchema——mock 需指向该模块本体（getToolSchemaPath 是纯路径计算，保持真实）
-vi.mock('@faapi/faapi/src/loader/loadToolSchema', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@faapi/faapi/src/loader/loadToolSchema')>();
+vi.mock('@faapi/faapi/src/loaders/loadToolSchema', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@faapi/faapi/src/loaders/loadToolSchema')>();
   return {
     ...actual,
     loadToolSchema: vi.fn(),
@@ -62,7 +62,7 @@ import { createProvider, type LLMProvider } from './provider';
 import { Agent, AgentError } from './agent';
 import type { AgentHandle } from './agentHandle';
 import { z } from 'zod';
-import { loadToolSchema, getToolSchemaPath } from '@faapi/faapi/src/loader/loadToolSchema';
+import { loadToolSchema, getToolSchemaPath } from '@faapi/faapi/src/loaders/loadToolSchema';
 import {
   type AgentConfig,
   type PluginContext,

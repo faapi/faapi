@@ -16,18 +16,18 @@ import fs from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { RawData } from 'ws';
 import path from 'node:path';
-import type { WsRouteMatch, RoutesRef } from '../router/routeTypes';
-import { matchWsRoute } from '../router/matchRoute';
+import type { WsRouteMatch, RoutesRef } from '../routers/routeTypes';
+import { matchWsRoute } from '../routers/matchRoute';
 import { createContext } from '../runtime/createContext';
 import { compose, mergeMeta } from '../runtime/invokeHandler';
 import type { FaapiContext, FaapiContextConfig, ResponseMeta } from '../runtime/contextTypes';
-import type { FaapiMiddleware } from '../middleware/middlewareTypes';
-import type { InjectorMap } from '../middleware/injectorTypes';
+import type { FaapiMiddleware } from '../middlewares/middlewareTypes';
+import type { InjectorMap } from '../middlewares/injectorTypes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { getClientIp } from '../utils/getClientIp';
 import { queryToObject } from '../utils/queryToObject';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
-import { validateInput } from '../validator/validateInput';
+import { validateInput } from '../validators/validateInput';
 import { ValidationError } from '../errors/httpErrors';
 import { getRuntimeSchemaPath } from '../cli/generateSchemaFiles';
 import {
@@ -38,9 +38,9 @@ import {
   getDevDist,
   prodPathToSourcePath,
 } from '../cli/compileOnDemand';
-import { loadMergedMiddlewares } from '../middleware/loadMiddlewares';
+import { loadMergedMiddlewares } from '../middlewares/loadMiddlewares';
 import type { AppRegistries } from '../injection/registries';
-import { consumePendingMetaHeaders } from '../response/pendingMeta';
+import { consumePendingMetaHeaders } from '../responses/pendingMeta';
 import {
   wrapWsSocket,
   type WsContext,

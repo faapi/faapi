@@ -64,7 +64,7 @@ export interface FailOptions {
 export interface FaapiContextConfig extends Record<string, unknown> {}
 
 import type { AppRegistries } from '../injection/registries';
-import type { Logger } from '../logger/loggerTypes';
+import type { Logger } from '../loggers/loggerTypes';
 
 export interface FaapiContext {
   /**
@@ -78,7 +78,7 @@ export interface FaapiContext {
    * 经 createContext 进入请求链路时由框架从 `registries.taskHandle` 工厂注入；
    * 无 app 编排（编程式直调 ctx）时为 undefined
    */
-  tasks?: import('../task/taskTypes.js').TaskClient;
+  tasks?: import('../tasks/taskTypes.js').TaskClient;
   /**
    * 请求 ID：请求头 `x-request-id` 第一段（网关透传场景跨服务串联），无则 crypto.randomUUID() 生成。
    * ctx.log 与请求日志中间件的条目均携带该字段，业务日志与请求日志可经此关联

@@ -6,7 +6,7 @@ import { loadPlugins, resolveLocalPluginSource } from './loadPlugins';
 import { compileProjectModules } from './compileConfig';
 import { setDevOnDemandEnabled, setDevDist, _resetDevOnDemandState } from './compileOnDemand';
 import { createAppRegistries } from '../injection/registries';
-import type { PluginContext } from '../config/pluginTypes';
+import type { PluginContext } from '../configs/pluginTypes';
 
 const mockCtx: PluginContext = {
   rootDir: '/tmp/test',

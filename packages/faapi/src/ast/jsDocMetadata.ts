@@ -41,11 +41,11 @@ export function extractDescription(jsDoc: ts.JSDoc | undefined): string | undefi
 }
 
 /**
- * 提取 `@<tagName>` 标签的覆盖名
+ * 提取 `@<tagName>` 标签值
  *
- * - `@tool weather.current` / `@agent researcher` → 标签值文本
- * - 花括号包裹（`@tool {name}`）去除花括号
- * - 无指定标签 / 标签无 comment 文本 → `undefined`（调用方回退到路径推导值，不报错）
+ * 现用于检测已移除的 `@agent` / `@tool` 覆盖名标签（残留有值标签即迁移错误）。
+ * - 花括号包裹（`@tool {name}`）去括号
+ * - 无指定标签 / 标签无 comment 文本（无值裸标签）→ `undefined`（不构成残留，调用方不报错）
  */
 export function extractJSDocTagValue(
   jsDoc: ts.JSDoc | undefined,

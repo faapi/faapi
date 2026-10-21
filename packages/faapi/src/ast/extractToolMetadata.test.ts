@@ -78,7 +78,7 @@ describe('extractToolMetadata', () => {
     it('JSDoc 只有标签无自由文本时 description 为 undefined', () => {
       writeFileSync(
         tempFile,
-        `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+        `/** @see weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
@@ -87,39 +87,53 @@ describe('extractToolMetadata', () => {
     });
   });
 
-  describe('@tool 覆盖名', () => {
-    it('@tool 标签覆盖 name', () => {
+  describe('@tool 覆盖名已移除 → 迁移错误', () => {
+    it('@tool 标签有值 → 抛迁移错误（tool 名由目录路径 + 函数名推导）', () => {
       writeFileSync(
         tempFile,
         `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
-      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather_current');
+      expect(() => extractToolMetadata(program, tempFile, 'getWeather', sharedMeta)).toThrow(
+        /已移除/,
+      );
     });
 
-    it('描述 + @tool 标签同时存在,name 使用 @tool 值', () => {
+    it('描述 + @tool 标签共存同样抛迁移错误（与描述提取无关）', () => {
       writeFileSync(
         tempFile,
         `/**\n * 获取当前天气\n * @tool weather_current\n */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
-      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather_current');
-      expect(result!.description).toBe('获取当前天气');
+      expect(() => extractToolMetadata(program, tempFile, 'getWeather', sharedMeta)).toThrow(
+        /已移除/,
+      );
     });
 
-    it('@tool 标签值带花括号时去括号', () => {
+    it('花括号包裹的 @tool 标签值同样抛迁移错误', () => {
       writeFileSync(
         tempFile,
         `/** @tool {weather_current} */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
-      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather_current');
+      expect(() => extractToolMetadata(program, tempFile, 'getWeather', sharedMeta)).toThrow(
+        /已移除/,
+      );
+    });
+
+    it('迁移错误含改名目录或函数指引', () => {
+      writeFileSync(
+        tempFile,
+        `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
+      );
+      const program = createProgram(tempFile);
+      try {
+        extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
+        expect.unreachable();
+      } catch (err) {
+        expect((err as Error).message).toContain('删除 @tool JSDoc 标签');
+        expect((err as Error).message).toContain('改名目录或函数');
+      }
     });
 
     it('无 @tool 标签时 name 使用 pathMeta.name', () => {
@@ -133,7 +147,7 @@ describe('extractToolMetadata', () => {
       expect(result!.name).toBe('weather_getWeather');
     });
 
-    it('@tool 标签无值时 name 回退到 pathMeta.name', () => {
+    it('@tool 标签无值（裸标签）不构成残留，维持回退语义不报错', () => {
       writeFileSync(
         tempFile,
         `/**\n * 获取天气\n * @tool\n */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
@@ -143,40 +157,6 @@ describe('extractToolMetadata', () => {
       expect(result).not.toBeNull();
       expect(result!.name).toBe('weather_getWeather');
       expect(result!.description).toBe('获取天气');
-    });
-
-    it('@tool 覆盖不影响 functionName(仍是源码导出名)', () => {
-      writeFileSync(
-        tempFile,
-        `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
-      );
-      const program = createProgram(tempFile);
-      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
-      expect(result).not.toBeNull();
-      expect(result!.functionName).toBe('getWeather');
-      expect(result!.name).toBe('weather_current');
-    });
-
-    it('@tool 覆盖名含点 → 抛错（覆盖名直接作为 function.name,须满足工具名字符集）', () => {
-      writeFileSync(
-        tempFile,
-        `/** @tool weather.current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
-      );
-      const program = createProgram(tempFile);
-      expect(() => extractToolMetadata(program, tempFile, 'getWeather', sharedMeta)).toThrow(
-        /weather\.current/,
-      );
-    });
-
-    it('@tool 覆盖名允许工具名字符集内的连字符与下划线', () => {
-      writeFileSync(
-        tempFile,
-        `/** @tool weather_current-v2 */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
-      );
-      const program = createProgram(tempFile);
-      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
-      expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather_current-v2');
     });
   });
 
@@ -316,15 +296,16 @@ describe('extractToolMetadata', () => {
       expect(result!.inputTypeName).toBe('WeatherInput');
     });
 
-    it('箭头函数 @tool 覆盖生效', () => {
-      writeFileSync(
-        tempFile,
-        `/** @tool weather_current */\nexport const getWeather = (input: WeatherInput) => "sunny";\n`,
-      );
+    it('箭头函数 name 与描述提取（JSDoc 在 export const 上方）', () => {
+      writeFileSync(tempFile, `/** 当前时间 */\nexport const getNow = () => ({ now: 'fixed' });\n`);
       const program = createProgram(tempFile);
-      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
+      const result = extractToolMetadata(program, tempFile, 'getNow', {
+        name: 'getNow',
+        filePath: 'src/tools/handler.ts',
+      });
       expect(result).not.toBeNull();
-      expect(result!.name).toBe('weather_current');
+      expect(result!.name).toBe('getNow');
+      expect(result!.description).toBe('当前时间');
     });
   });
 

@@ -1,9 +1,9 @@
 export type { FaapiContext, FaapiContextConfig, FailOptions } from './runtime/contextTypes';
-export type { FaapiMiddleware } from './middleware/middlewareTypes';
-export type { Injector, InjectorMap } from './middleware/injectorTypes';
-export type { CorsOptions } from './middleware/cors';
-export type { LoggerOptions } from './middleware/logger';
-export type { HelmetOptions } from './middleware/helmet';
+export type { FaapiMiddleware } from './middlewares/middlewareTypes';
+export type { Injector, InjectorMap } from './middlewares/injectorTypes';
+export type { CorsOptions } from './middlewares/cors';
+export type { LoggerOptions } from './middlewares/logger';
+export type { HelmetOptions } from './middlewares/helmet';
 export type {
   FaapiConfig,
   LifecycleHooks,
@@ -15,14 +15,14 @@ export type {
   TaskConfig,
   TaskPgBossOptions,
   TaskBullMqOptions,
-} from './config/configTypes';
+} from './configs/configTypes';
 export type {
   FaapiPlugin,
   PluginContext,
   PluginDeclaration,
   RequestHandler,
   UpgradeHandler,
-} from './config/pluginTypes';
+} from './configs/pluginTypes';
 export type { SseWriter, SseEvent, SseOptions } from './runtime/sse';
 export type { WsContext, WsSocket, WsHandler, WsEventHandlers } from './runtime/wsHandler';
 export type {
@@ -31,7 +31,7 @@ export type {
   RouteInputSchema,
   RouteOutputSchema,
   RouteParamSchema,
-} from './router/routeTypes';
+} from './routers/routeTypes';
 
 // AST 能力（供 @faapi/schema 等扩展包复用）
 export { createProgram, createPrograms, invalidateProgramCache } from './ast/createProgram';
@@ -61,7 +61,7 @@ export type {
 export { createAppRegistries, createTaskRegistriesView } from './injection/registries';
 // 轻量 LLM 补全通道规范类型（实现在 @faapi/agent 的 createLightComplete，见其 lightComplete.md）
 export type { LlmComplete, LlmCompleteOptions } from './injection/llmTypes';
-// 任务子系统（队列式异步任务，详见 src/task/README.md）
+// 任务子系统（队列式异步任务，详见 src/tasks/README.md）
 export type {
   FaapiTaskMeta,
   FaapiWorkerTaskMeta,
@@ -83,8 +83,8 @@ export type {
   TaskGroupSnapshot,
   TaskGroupOnFailure,
   TaskGroupOutcome,
-} from './task/taskTypes';
-export type { TaskRegistry } from './task/taskRegistry';
+} from './tasks/taskTypes';
+export type { TaskRegistry } from './tasks/taskRegistry';
 export type {
   TaskDriver,
   TaskDriverJob,
@@ -96,14 +96,14 @@ export type {
   TaskDriverTaskStateOps,
   TaskStateEntry,
   TaskResumeState,
-} from './task/driverTypes';
-export { createTaskRegistry } from './task/taskRegistry';
-export { createTaskQueue } from './task/taskQueue';
-export { loadTaskDriver } from './task/loadTaskDriver';
-export { createCronScheduler, type CronScheduler } from './task/cronScheduler';
-export { scanTasks, TASK_PATTERNS } from './task/scanTasks';
-export type { ToolModule } from './loader/loadToolModule';
-export type { ToolSchemaModule, SchemaSourceRef } from './loader/loadToolSchema';
+} from './tasks/driverTypes';
+export { createTaskRegistry } from './tasks/taskRegistry';
+export { createTaskQueue } from './tasks/taskQueue';
+export { loadTaskDriver } from './tasks/loadTaskDriver';
+export { createCronScheduler, type CronScheduler } from './tasks/cronScheduler';
+export { scanTasks, TASK_PATTERNS } from './tasks/scanTasks';
+export type { ToolModule } from './loaders/loadToolModule';
+export type { ToolSchemaModule, SchemaSourceRef } from './loaders/loadToolSchema';
 // 注册表访问器（单例模块,createAppBase 水合后可直接 import 调用）
 // getAgent 返回 AgentCore(LLM 可见字段);getAgentEntry 返回 AgentMetadata(含 filePath,声明文件定位)
 export {
@@ -133,27 +133,27 @@ export {
   listSkills,
 } from './injection/skillRegistry';
 // 动态加载器（dev 按需编译模式需 rootDir,prod 模式直接 import 产物）
-export { loadToolModule } from './loader/loadToolModule';
-export { loadToolSchema, getToolSchemaPath } from './loader/loadToolSchema';
+export { loadToolModule } from './loaders/loadToolModule';
+export { loadToolSchema, getToolSchemaPath } from './loaders/loadToolSchema';
 // tool schema 解析工厂（zod.js → JSON Schema + safeParse 校验）——@faapi/agent 插件
 // setup / 任务内组装 Agent / 测试设施 createAgentTestHarness 共用的装配实现
-export { createToolSchemaResolver, type ToolSchemaResolution } from './loader/toolSchemaResolver';
+export { createToolSchemaResolver, type ToolSchemaResolution } from './loaders/toolSchemaResolver';
 
 // agent handle 工厂注册（Phase 3.5）——@faapi/agent 插件 setup 时注册,
 // injectParams 在 agent 参数注入时调工厂获取 AgentHandle
 export { registerAgentHandleFactory, clearAgentHandleFactory } from './injection/agentHandle';
 
-export { cors } from './middleware/cors';
-export { logger } from './middleware/logger';
-export { helmet } from './middleware/helmet';
-export { loadConfig } from './config/loadConfig';
+export { cors } from './middlewares/cors';
+export { logger } from './middlewares/logger';
+export { helmet } from './middlewares/helmet';
+export { loadConfig } from './configs/loadConfig';
 export { loadEnv } from './cli/loadEnv';
 // 运行时资源安全读取（相对路径 + 只能读 resources 内文件，详见 src/utils/readResource.md）
 // HTTP/WS handler、任务、插件、lifecycle 钩子等所有上下文统一用本免传参函数（读取根在 createAppBase 启动时绑定）
 export { readResource } from './utils/readResource';
 
-// 日志器（级别/scope/结构化字段/可插拔 sink，config.log 全局配置，详见 src/logger/logger.md）
-export { createLogger, configureLogging, flushLogging } from './logger/logger';
+// 日志器（级别/scope/结构化字段/可插拔 sink，config.log 全局配置，详见 src/loggers/logger.md）
+export { createLogger, configureLogging, flushLogging } from './loggers/logger';
 export type {
   Logger,
   LogLevel,
@@ -161,7 +161,7 @@ export type {
   LogSink,
   LogConfig,
   CreateLoggerOptions,
-} from './logger/loggerTypes';
+} from './loggers/loggerTypes';
 
 // 错误类（供业务侧 instanceof 判定与自定义错误中间件使用）
 export {

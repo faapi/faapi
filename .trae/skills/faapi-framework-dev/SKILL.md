@@ -13,7 +13,7 @@ description: "开发 faapi 框架本身。Invoke when 在 faapi 仓库内新增/
 
 ## 单一事实来源
 
-项目级知识（架构、约定、交付定义、发布流程）只在项目根 `AGENTS.md` 维护，本技能只做场景编排，不复制内容。动手前先读 AGENTS.md 对应章节；模块级细节读 `packages/**/src` 下与代码同目录的 DDD 文档（如 `src/router/scanRoutes.md`）。
+项目级知识（架构、约定、交付定义、发布流程）只在项目根 `AGENTS.md` 维护，本技能只做场景编排，不复制内容。动手前先读 AGENTS.md 对应章节；模块级细节读 `packages/**/src` 下与代码同目录的 DDD 文档（如 `src/routers/scanRoutes.md`）。
 
 ## 场景路由
 

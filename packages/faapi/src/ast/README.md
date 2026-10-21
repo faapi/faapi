@@ -74,6 +74,6 @@ filePath
 
 ## 相关模块
 
-- [validator](../validator/README.md)：import 生成的 zod.js 进行输入校验
+- [validator](../validators/README.md)：import 生成的 zod.js 进行输入校验
 - [cli/generateSchemaFiles](../cli/generateSchemaFiles.md)：调用本模块为每个 handler 生成 zod.js
 - [@faapi/schema](../../../schema/)：调用 AST 分析生成路由 schema（通过 MCP 暴露给 LLM）

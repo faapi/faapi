@@ -292,7 +292,6 @@ describe('generateAgentArtifacts', () => {
         'src/agents/researcher/handler.ts',
         `/**
  * 研究助手
- * @agent researcher
  */
 export const config = {
   systemPrompt: 'You are a researcher',
@@ -359,23 +358,16 @@ export const config = {
       );
     });
 
-    it('agent 名重复(@agent 覆盖名撞名)→ 抛错', async () => {
+    it('@agent 标签残留 → 迁移报错（覆盖名已移除）', async () => {
       writeAgent(
         'src/agents/researcher/handler.ts',
         `/** @agent dup */\nexport const config = { systemPrompt: 'x' };\n`,
       );
-      writeAgent(
-        'src/agents/writer/handler.ts',
-        `/** @agent dup */\nexport const config = { systemPrompt: 'y' };\n`,
-      );
       const agents: AgentManifest[] = [
         { name: 'researcher', filePath: 'src/agents/researcher/handler.ts' },
-        { name: 'writer', filePath: 'src/agents/writer/handler.ts' },
       ];
       const dist = join(tempDir, 'dist');
-      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(
-        /agent 名重复: "dup"/,
-      );
+      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/已移除/);
     });
 
     it('run 导出 → 迁移报错（自定义 run 已移除）', async () => {
@@ -583,7 +575,7 @@ export const config = { systemPrompt: 'write well' };
       expect(content).toContain('.faapi/agents/researcher/handler.js');
     });
 
-    it('@agent JSDoc 覆盖目录推导名', async () => {
+    it('@agent 标签残留 → 迁移报错（目录推导名不受标签影响）', async () => {
       writeAgent(
         'src/agents/researcher/handler.ts',
         `/**
@@ -601,14 +593,7 @@ export const config = { systemPrompt: 'x' };
         },
       ];
       const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      // @agent 覆盖目录推导名
-      expect(metadata[0].name).toBe('custom-researcher');
-      expect(metadata[0].description).toBe('研究助手');
-
-      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
-      expect(content).toContain('custom-researcher');
+      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/已移除/);
     });
   });
 

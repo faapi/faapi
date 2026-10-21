@@ -25,8 +25,8 @@ Date 选择毫秒时间戳而非 ISO 字符串：JS 生态惯例（`Date.now()` 
 
 ## 相关模块
 
-- `../response/toResponse.ts` - 成功路径序列化
-- `../response/responseFormatter.ts` - 显式响应与错误兜底序列化
+- `../responses/toResponse.ts` - 成功路径序列化
+- `../responses/responseFormatter.ts` - 显式响应与错误兜底序列化
 - `../runtime/sse.ts` / `../runtime/wsHandler.ts` - 消息帧序列化
 - `../ast/generateZodSchema.ts` - 输入侧 Date preprocess（接受 ISO 字符串 + 毫秒时间戳，与输出可逆）
 

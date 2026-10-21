@@ -74,4 +74,4 @@ export async function run(payload, taskCtx) {
 - [plugin](./plugin.md)——setup 时构建 channel（共享 providers 单例）注册到 `registries.llm`
 - 主包 [llmTypes](../../faapi/src/injection/llmTypes.md)——`LlmComplete` / `LlmCompleteOptions` 规范类型（主包持有：`TaskContext` 等主包类型需引用，主包不反向依赖本包）
 - 主包 [registries](../../faapi/src/injection/registries.md)——`LlmChannelStore`；[injectParams](../../faapi/src/injection/injectParams.md)——`llm` 注入参数
-- 主包 task 子系统——`taskCtx.llm` 双路径注入（进程内活引用 / 隔离 worker 快照重建，见 [taskTypes](../../faapi/src/task/taskTypes.md)）
+- 主包 task 子系统——`taskCtx.llm` 双路径注入（进程内活引用 / 隔离 worker 快照重建，见 [taskTypes](../../faapi/src/tasks/taskTypes.md)）

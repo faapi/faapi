@@ -241,7 +241,7 @@ watcher 文件变化（debounce 100ms）
 
 ## 相关模块
 
-- [loadRouteModule](../loader/loadRouteModule.md) — handler.js 先调 `ensureCompiled` 编译再 import
+- [loadRouteModule](../loaders/loadRouteModule.md) — handler.js 先调 `ensureCompiled` 编译再 import
 - [handleWsUpgrade](../server/handleWsUpgrade.md) — WS 升级时调 `ensureCompiled`（通过 `loadWsHandler`）
 - [createServer](../server/createServer.md) — `validateInput` 之前调 `ensureSchemaGenerated`
 - [createDevApp](./createDevApp.md) — `reloadRoutes` 调 `deleteSchemaFiles` + `clearGeneratedSchemas` + `clearCompiledFiles`

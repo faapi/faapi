@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { RouteManifest, WsRouteManifest } from '../router/routeTypes';
+import type { RouteManifest, WsRouteManifest } from '../routers/routeTypes';
 import type { RouteSchemaSource } from './collectRouteSchemaSources';
 import type { RuntimeType } from '../ast/resolveTypeNode';
 import { collectRouteSchemaSources } from './collectRouteSchemaSources';

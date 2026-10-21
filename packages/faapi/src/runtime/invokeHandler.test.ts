@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { consumePendingMetaHeaders } from '../response/pendingMeta';
+import { consumePendingMetaHeaders } from '../responses/pendingMeta';
 import { invokeHandler } from './invokeHandler';
 import { createTestContext } from './createContext';
 import type { FaapiMiddleware, InjectorMap } from '../index';

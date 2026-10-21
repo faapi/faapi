@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { attachWebSocket, bindEvents } from './handleWsUpgrade';
-import type { RoutesRef } from '../router/routeTypes';
+import type { RoutesRef } from '../routers/routeTypes';
 
 /** 构造最小 WebSocket mock（仅 bindEvents 用到的面） */
 function makeRawSocket() {

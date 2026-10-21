@@ -116,9 +116,9 @@ prod 模式（createProdApp）不包含 `reloadRoutes`——产物已固化，�
 - `./buildCommand.ts` - `faapi build` 命令，生成 `dist/main.js` 启动入口（内部调用 `createProdApp` + `listen`）
 - `./devCommand.ts` - `faapi dev` 命令，内部调用 `createDevApp` + `listen`
 - `../server/createServer.ts` - `createAppBase` 内部调用，创建底层 HTTP server
-- `../config/loadConfig.ts` - `createAppBase` 统一读 `<dist>/faapi-config.js`
+- `../configs/loadConfig.ts` - `createAppBase` 统一读 `<dist>/faapi-config.js`
 - `./generateRoutes.ts` - 水合 `faapi-routes.js` 路由清单（hydrateRoutes）
-- `../router/scanRoutes.ts` - `reloadRoutes` 重新扫描路由
+- `../routers/scanRoutes.ts` - `reloadRoutes` 重新扫描路由
 - `./generateSchemaFiles.ts` - `reloadRoutes` 重新生成 zod.js
 - `./loadPlugins.ts` - 加载 `config.plugins` 声明的插件
 - `./watcher.ts` - `faapi dev` 的 watcher 接收 app 引用，调用 `app.reloadRoutes()` 实现热替换

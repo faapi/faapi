@@ -41,6 +41,6 @@ agent 调用 tool 时需要按名查找 tool 元数据（`filePath` / `functionN
 
 - [generateToolArtifacts](../cli/generateToolArtifacts.md) - 生成 `faapi-tools.js` + tool `zod.js`
 - [extractToolMetadata](../ast/extractToolMetadata.md) - `ToolMetadata` 类型定义
-- [loadToolModule](../loader/loadToolModule.md) - 按 `filePath` + `functionName` 按需加载 tool handler
+- [loadToolModule](../loaders/loadToolModule.md) - 按 `filePath` + `functionName` 按需加载 tool handler
 - [createAppCore](../cli/createAppCore.md) - 启动时水合入口
 - [agentRegistry](./agentRegistry.md) - agent 注册表（Phase 2.2，`resolveAgentTools` 解析 agent 可用 tool）

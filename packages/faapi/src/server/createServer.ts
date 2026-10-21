@@ -8,32 +8,32 @@ import { createSecureServer as createHttp2SecureServer } from 'node:http2';
 import { readFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import path from 'node:path';
-import type { RouteManifest, RouteMatch, WsRouteManifest, RoutesRef } from '../router/routeTypes';
-import { matchRoute, findAllowedMethods } from '../router/matchRoute';
-import { loadRouteModule } from '../loader/loadRouteModule';
+import type { RouteManifest, RouteMatch, WsRouteManifest, RoutesRef } from '../routers/routeTypes';
+import { matchRoute, findAllowedMethods } from '../routers/matchRoute';
+import { loadRouteModule } from '../loaders/loadRouteModule';
 import { createContextFromUrl } from '../runtime/createContext';
 import { resolveInputFromUrl, resolveBodyForQueryMethod } from '../runtime/resolveInput';
 import { invokeHandler, compose, mergeMeta } from '../runtime/invokeHandler';
 import type { FaapiContext, FaapiContextConfig, ResponseMeta } from '../runtime/contextTypes';
-import { sendNodeResponse } from '../response/sendNodeResponse';
+import { sendNodeResponse } from '../responses/sendNodeResponse';
 import {
   RouteNotFoundError,
   MethodNotAllowedError,
   ValidationError,
   PayloadTooLargeError,
 } from '../errors/httpErrors';
-import { validateInput } from '../validator/validateInput';
+import { validateInput } from '../validators/validateInput';
 import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
 import { queryToObject } from '../utils/queryToObject';
 import { getClientIp } from '../utils/getClientIp';
-import { cors, type CorsOptions } from '../middleware/cors';
-import { helmet, type HelmetOptions } from '../middleware/helmet';
-import { compression, type CompressionOptions } from '../middleware/compression';
-import { etag, type EtagOptions } from '../middleware/etag';
+import { cors, type CorsOptions } from '../middlewares/cors';
+import { helmet, type HelmetOptions } from '../middlewares/helmet';
+import { compression, type CompressionOptions } from '../middlewares/compression';
+import { etag, type EtagOptions } from '../middlewares/etag';
 import type { AppRegistries } from '../injection/registries';
-import { logger as loggerMiddleware } from '../middleware/logger';
-import type { FaapiMiddleware } from '../middleware/middlewareTypes';
-import type { InjectorMap } from '../middleware/injectorTypes';
+import { logger as loggerMiddleware } from '../middlewares/logger';
+import type { FaapiMiddleware } from '../middlewares/middlewareTypes';
+import type { InjectorMap } from '../middlewares/injectorTypes';
 import { attachWebSocket } from './handleWsUpgrade';
 import { nodeHttpToWebHeaders, buildErrorResponse } from './serverUtils';
 import { getRuntimeSchemaPath } from '../cli/generateSchemaFiles';
@@ -43,7 +43,7 @@ import {
   isDevOnDemandEnabled,
   getDevDist,
 } from '../cli/compileOnDemand';
-import { loadMergedMiddlewares } from '../middleware/loadMiddlewares';
+import { loadMergedMiddlewares } from '../middlewares/loadMiddlewares';
 
 /**
  * 将 Node.js IncomingMessage 转为 Web Request 对象
@@ -188,7 +188,7 @@ function limitStreamSize(
 /**
  * 查找路径的所有允许方法（用于 405 响应）
  *
- * 实现移至 [matchRoute](../router/matchRoute.ts)（共享路由索引：静态段 O(1) 直查,
+ * 实现移至 [matchRoute](../routers/matchRoute.ts)（共享路由索引：静态段 O(1) 直查,
  * 仅动态段线性扫描）。404 非热路径,但扫描器/探活探测的 404 高频场景下
  * 索引化仍有收益。
  */

@@ -22,5 +22,5 @@
 
 ## 相关模块
 
-- `../router/scanRoutes.ts` / `../cli/generateRoutes.ts` / `../cli/generateToolArtifacts.ts` / `../cli/generateAgentArtifacts.ts` - `toProdFilePath` 消费方（原 4 份实现合并至此）
+- `../routers/scanRoutes.ts` / `../cli/generateRoutes.ts` / `../cli/generateToolArtifacts.ts` / `../cli/generateAgentArtifacts.ts` - `toProdFilePath` 消费方（原 4 份实现合并至此）
 - `../cli/compileConfig.ts` / `../cli/aliasPlugin.ts` - `toRealPath` / `isInsideDir` / `toProdExtension` 消费方（原 2 份实现合并至此）

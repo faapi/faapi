@@ -1,6 +1,6 @@
 # formatErrorResponse
 
-一句话概括：错误响应格式化的 re-export 入口，实现已移至 [response/responseFormatter.ts](../response/responseFormatter.ts)。
+一句话概括：错误响应格式化的 re-export 入口，实现已移至 [response/responseFormatter.ts](../responses/responseFormatter.ts)。
 
 ## 为什么需要
 
@@ -11,7 +11,7 @@
 本文件仅作为 re-export 入口：
 
 ```ts
-export { formatErrorResponse } from '../response/responseFormatter';
+export { formatErrorResponse } from '../responses/responseFormatter';
 ```
 
 保留此文件的目的：
@@ -27,7 +27,7 @@ export { formatErrorResponse } from '../response/responseFormatter';
 
 ## 相关模块
 
-- [response/responseFormatter](../response/responseFormatter.md) —— 实现位置，集中所有响应格式逻辑
+- [response/responseFormatter](../responses/responseFormatter.md) —— 实现位置，集中所有响应格式逻辑
 - [server/serverUtils](../server/serverUtils.md) —— `buildErrorResponse` 调用此函数，传 `ctx.config` 让业务方自定义 fail 函数生效
 - [errors/httpErrors](./httpErrors.md) —— FaapiError 子类（`ValidationError` / `MethodNotAllowedError` / `PayloadTooLargeError` 等，由 `formatErrorResponse` 分发处理）
 - 全局错误中间件（业务侧在 `faapi.config.ts` 的 `middlewares` 中 `try/catch next()`）优先于此函数处理

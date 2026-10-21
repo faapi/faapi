@@ -200,12 +200,12 @@ describe('scanTools', () => {
     }
   });
 
-  it('函数名含 $ → 合成 tool 名违反工具名字符集，抛错并提示 @tool 覆盖', async () => {
+  it('函数名含 $ → 合成 tool 名违反工具名字符集，抛错并提示改名', async () => {
     const { dir, write, cleanup } = setupTmp();
     write('src/tools/handler.ts', 'export const $fetch = (input) => "ok";');
     try {
       await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/\$fetch/);
-      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/@tool/);
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/rename the function/);
     } finally {
       cleanup();
     }

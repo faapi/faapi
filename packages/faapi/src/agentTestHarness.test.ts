@@ -2,7 +2,7 @@
  * createAgentTestHarness 单元测试——agent 流程测试设施的行为定义
  *
  * fixture 项目在临时目录搭建（ agents + tools + src 内依赖闭包），
- * 覆盖：free-form/generated 两模式、扫描水合与生产管线一致（覆盖名/嵌套命名）、
+ * 覆盖：free-form/generated 两模式、扫描水合与生产管线一致（目录推导名/嵌套命名）、
  * loadToolModule 真实装载（含 src 内依赖闭包编译）、close 幂等清理、
  * 构建期错误冒泡。
  *
@@ -60,12 +60,11 @@ export const config = {
 `,
   );
 
-  // agent：@agent 覆盖名 + systemPromptFile 声明
+  // agent：连字符目录名（目录推导名 fancy-name）+ systemPromptFile 声明
   w(
-    'src/agents/overridden/handler.ts',
+    'src/agents/fancy-name/handler.ts',
     `/**
- * 覆盖名用例
- * @agent fancy-name
+ * 提示词文件用例
  */
 export const config = {
   systemPromptFile: 'prompts/overridden.md',
@@ -97,12 +96,11 @@ export async function getWeather(input: WeatherInput) {
 `,
   );
 
-  // tool：@tool 覆盖名
+  // tool：多行 JSDoc 描述（无标签）
   w(
     'src/tools/override/handler.ts',
     `/**
  * 当前时间
- * @tool override_now
  */
 export function getNow() {
   return { now: 'fixed' };
@@ -159,12 +157,12 @@ describe('createAgentTestHarness', () => {
       await h.close();
     });
 
-    it('agentNames 含 @agent 覆盖名与嵌套目录推导名', () => {
+    it('agentNames 含连字符目录推导名与嵌套目录推导名', () => {
       expect(h.agentNames.sort()).toEqual(['fancy-name', 'group_nested', 'researcher']);
     });
 
-    it('toolNames 含 @tool 覆盖名与命名空间推导名', () => {
-      expect(h.toolNames.sort()).toEqual(['calc_calc', 'override_now', 'weather_getWeather']);
+    it('toolNames 为命名空间推导名（目录路径 + 函数名）', () => {
+      expect(h.toolNames.sort()).toEqual(['calc_calc', 'override_getNow', 'weather_getWeather']);
     });
 
     it('registries.agent 查询与生产同接口：getAgent 字段完整', () => {
@@ -178,7 +176,7 @@ describe('createAgentTestHarness', () => {
       expect(core!.maxTurns).toBe(5);
     });
 
-    it('systemPromptFile 声明提取（覆盖名 agent）', () => {
+    it('systemPromptFile 声明提取（目录推导名 agent）', () => {
       const core = h.registries.agent.getAgent('fancy-name');
       expect(core).toBeDefined();
       expect(core!.systemPromptFile).toBe('prompts/overridden.md');

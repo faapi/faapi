@@ -115,6 +115,6 @@ meta（含 CORS 头，均在 handler 之前经 `ctx.setHeader` 写入）在首�
 - `loadRouteModule.ts` - 加载路由模块（dev 按需模式下先 `ensureCompiled` 再 import）
 - `resolveInput.ts` - 解析输入
 - `invokeHandler.ts` - 调用 handler、导出 compose/mergeMeta 用于全局中间件调度
-- `../validator/validateInput.ts` - 参数校验（zod safeParse）
+- `../validators/validateInput.ts` - 参数校验（zod safeParse）
 - `../cli/compileOnDemand.ts` - dev 按需生成 zod.js（`ensureSchemaGenerated`）
 - `../cli/generateSchemaFiles.ts` - `getRuntimeSchemaPath` 计算 zod.js 路径

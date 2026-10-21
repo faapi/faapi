@@ -20,5 +20,5 @@ Next.js Server Component、编程式测试等场景需要「不绑端口走完�
 ## 相关模块
 
 - `createAppCore.ts` — 门面与 AppBase.inject 签名
-- `../../response/sendNodeResponse.ts` — mockRes 的消费方（pipe 目标）
+- `../../responses/sendNodeResponse.ts` — mockRes 的消费方（pipe 目标）
 - `../../server/startServer.ts` — applyPluginWrappers（listener 包装语义）

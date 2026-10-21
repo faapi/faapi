@@ -40,5 +40,5 @@
 ## 相关模块
 
 - `../errors/FaapiError.ts` - `RunConflictError` 基类（409 错误响应自动格式化）
-- `../task/taskTypes.ts` 的 `TaskEvent` - 任务事件通道（后台任务观测面，与本原语分工见上）
+- `../tasks/taskTypes.ts` 的 `TaskEvent` - 任务事件通道（后台任务观测面，与本原语分工见上）
 - `../../agent/src/agentHandle.md`（`@faapi/agent`）- 典型消费方：run handle.signal 接 `agent.run` 的 abort 链路

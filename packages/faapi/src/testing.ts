@@ -17,8 +17,8 @@
 export { createTestContext, type CreateTestContextOptions } from './runtime/createContext';
 export { invokeHandler } from './runtime/invokeHandler';
 export type { FaapiContext } from './runtime/contextTypes';
-export type { FaapiMiddleware } from './middleware/middlewareTypes';
-export type { InjectorMap } from './middleware/injectorTypes';
+export type { FaapiMiddleware } from './middlewares/middlewareTypes';
+export type { InjectorMap } from './middlewares/injectorTypes';
 
 // E2E 测试辅助（业务方测试完整请求链路 + WS 路由）
 export { createTestServer, type TestServer, type TestServerOptions } from './testServer';

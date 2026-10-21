@@ -62,8 +62,6 @@ agent directory names allow a-z A-Z 0-9 '-' only ('_' is reserved as the nesting
 
 > 迁移提示：旧版 `/` 规范化为 `.` 且允许段内任意字符（含平铺点号目录 `easy-writing.wizard/`）。新版下嵌套调用名 `easy-writing.wizard` 改为 `easy-writing_wizard`（`agents` 声明、`agent.run({ agent })`、authHooks 前缀判断同步改），平铺点号目录需改名为连字符（`easy-writing-wizard/`）。
 
-agent 名可被 JSDoc `@agent` 覆盖（由 [extractAgentMetadata](../ast/extractAgentMetadata.md) 在 AST 阶段处理，Phase 1.8）——覆盖值须整体匹配 `^[a-zA-Z0-9_-]+$`（无嵌套语义，`_` 可用），违例在 AST 阶段抛错。
-
 ## 导出检测（正则）
 
 scanAgents 检测一个保留导出名：
@@ -96,4 +94,4 @@ export async function scanAgents(
 - [scanTools](../tools/scanTools.md) - tool 扫描（同构，扫描 `src/tools/**`）
 - [extractAgentMetadata](../ast/extractAgentMetadata.md) - AST 增强 agent 元数据（Phase 1.8）
 - [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 生成 `faapi-agents.js`（Phase 1.9）
-- [scanRoutes](../router/scanRoutes.md) - 路由扫描（同构设计参考）
+- [scanRoutes](../routers/scanRoutes.md) - 路由扫描（同构设计参考）

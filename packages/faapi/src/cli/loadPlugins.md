@@ -26,7 +26,7 @@ plugins: [
 ## 加载流程
 
 1. 遍历 declarations，解析为统一格式 { specifier, options, enable }（非法声明进 `failures`，聚齐后统一抛错）
-2. `enable: false` 跳过（唯一运行时开关——插件不应引入环境变量做冗余控制，详见 [pluginTypes.md](../config/pluginTypes.md#开关约定)）
+2. `enable: false` 跳过（唯一运行时开关——插件不应引入环境变量做冗余控制，详见 [pluginTypes.md](../configs/pluginTypes.md#开关约定)）
 3. name 去重（重复声明属配置错误，进 `failures`）
 4. `importPluginModule(specifier, rootDir, dist)` 加载：
    - **包名**（非相对/绝对路径）：原样 import，Node 按包解析
@@ -66,6 +66,6 @@ loadPlugins 返回 `{ handlerWrappers, upgradeWrappers }`，由 `applyPluginWrap
 
 ## 相关模块
 
-- [pluginTypes.ts](../config/pluginTypes.md) - FaapiPlugin / PluginContext / PluginDeclaration 类型
+- [pluginTypes.ts](../configs/pluginTypes.md) - FaapiPlugin / PluginContext / PluginDeclaration 类型
 - [createApp.ts](./createApp.md) - 调用方（listen 之前调用）
 - [startServer.ts](../server/startServer.md) - `applyPluginWrappers` 工具函数

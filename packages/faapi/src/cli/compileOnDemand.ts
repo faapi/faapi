@@ -4,7 +4,7 @@ import { compileDevRoutes } from './compileDevRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { getRuntimeSchemaPath } from './generateSchemaFiles';
 import { collectRelativeImports } from './collectImports';
-import type { RouteManifest } from '../router/routeTypes';
+import type { RouteManifest } from '../routers/routeTypes';
 
 /**
  * 按需编译（Vite 风格）：仅在请求时编译被访问的 handler.ts 及其依赖闭包 + 生成 zod.js
@@ -300,7 +300,7 @@ export async function ensureSchemaGenerated(
   routes: RouteManifest,
   rootDir: string,
   dist: string,
-  wsRoutes?: import('../router/routeTypes').WsRouteManifest,
+  wsRoutes?: import('../routers/routeTypes').WsRouteManifest,
 ): Promise<boolean> {
   // mutex: 同一 schemaPath 正在被别的请求生成 → 等待并返回 false；
   // 失败时 inFlight 的 rejection 原样传播（与 ensureCompiled 同语义）

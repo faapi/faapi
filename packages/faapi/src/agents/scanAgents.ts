@@ -1,5 +1,6 @@
 import fg from 'fast-glob';
 import type { AgentManifestList } from './agentTypes';
+import { DIR_SEGMENT_PATTERN } from '../naming/nameRules';
 
 /**
  * 默认 agent 扫描 patterns
@@ -15,18 +16,10 @@ import type { AgentManifestList } from './agentTypes';
 export const DEFAULT_AGENT_PATTERNS = ['src/agents/**/handler.ts'];
 
 /**
- * agent 目录段合法字符——LLM 工具名字符集（`[a-zA-Z0-9_-]`，OpenAI 兼容协议对
- * function.name 的硬约束）再排除 `_`：`_` 被 `/` 规范化独占为嵌套分隔符（段内出现
- * 会让「嵌套」与「段内下划线」不可区分），`.` 等其余字符进入派发工具名
- * （`agent-<agentName>`）后会被强校验上游（DeepSeek / OpenAI 等）整单 400
- */
-const AGENT_DIR_SEGMENT_PATTERN = /^[a-zA-Z0-9-]+$/;
-
-/**
  * 从文件路径提取 agent 名
  *
  * 匹配 `agents/<subpath>/handler.ts` 模式（任意前缀），取 `agents/` 之后、`handler.ts`
- * 之前的完整子路径，`/` 规范化为 `_`（`_` 在段内禁用，见 AGENT_DIR_SEGMENT_PATTERN
+ * 之前的完整子路径，`/` 规范化为 `_`（`_` 在段内禁用，见 DIR_SEGMENT_PATTERN
  * ——嵌套语义无歧义，且组合名整体满足派发工具名字符集，见
  * [subAgentToolName](../injection/subAgentToolName.md)）。
  *
@@ -51,7 +44,7 @@ function extractAgentNameFromPath(filePath: string): string {
   }
   const segments = match[1]!.split('/');
   for (const segment of segments) {
-    if (!AGENT_DIR_SEGMENT_PATTERN.test(segment)) {
+    if (!DIR_SEGMENT_PATTERN.test(segment)) {
       throw new Error(
         `Invalid agent directory segment "${segment}" in "${filePath}": ` +
           `agent directory names allow a-z A-Z 0-9 '-' only ('_' is reserved as the nesting separator, ` +

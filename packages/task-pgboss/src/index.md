@@ -17,7 +17,7 @@
 
 ## 相关模块
 
-- 主包 `packages/faapi/src/task/driverTypes.ts` —— `TaskDriver` 接口定义与各驱动能力边界
-- 主包 `packages/faapi/src/task/taskGroups.md` —— 任务组原语契约（组投递 / 记账 / fan-in / 失败语义）
-- 主包 `packages/faapi/src/task/taskQueue.ts` —— 语义层（任务记录 / payload 校验 / 生命周期编排），本层只做驱动映射
+- 主包 `packages/faapi/src/tasks/driverTypes.ts` —— `TaskDriver` 接口定义与各驱动能力边界
+- 主包 `packages/faapi/src/tasks/taskGroups.md` —— 任务组原语契约（组投递 / 记账 / fan-in / 失败语义）
+- 主包 `packages/faapi/src/tasks/taskQueue.ts` —— 语义层（任务记录 / payload 校验 / 生命周期编排），本层只做驱动映射
 - `@faapi/task-bullmq` —— 对照驱动：BullMQ 的 add 隐式建队列，无需 ensureQueue

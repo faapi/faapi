@@ -1,14 +1,14 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import type { FaapiPlugin, PluginDeclaration } from '../config/pluginTypes';
-import type { RequestHandler, UpgradeHandler } from '../config/pluginTypes';
+import type { FaapiPlugin, PluginDeclaration } from '../configs/pluginTypes';
+import type { RequestHandler, UpgradeHandler } from '../configs/pluginTypes';
 import { ensureCompiled, isDevOnDemandEnabled, isProductFresh } from './compileOnDemand';
 import { compileProjectModules } from './compileConfig';
 
 /** loadPlugins 的输入上下文（不含 wrap 能力，由 loadPlugins 内部注入） */
 type LoadPluginsContext = Omit<
-  import('../config/pluginTypes').PluginContext,
+  import('../configs/pluginTypes').PluginContext,
   'wrapHandler' | 'wrapUpgradeHandler'
 >;
 

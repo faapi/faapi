@@ -67,4 +67,4 @@ tool / sub-agent **成功返回后**调用（异常路径不调用）——审�
 - `agent.ts` - `AgentRuntimeConfig` 钩子字段 + `executeTool` 拦截点 + `buildToolDefinitions` 过滤点
 - `plugin.ts` - 工厂捕获 ctx（`AgentHandleFactory` 签名本就接收 ctx）
 - `agentHandle.ts`（faapi 包） - `getAgentHandle(ctx)` 注入点
-- `../../faapi/src/config/configTypes.ts` - `AgentConfig` 用户配置面字段
+- `../../faapi/src/configs/configTypes.ts` - `AgentConfig` 用户配置面字段

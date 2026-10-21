@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createTestContext } from './createContext';
-import { toResponse } from '../response/toResponse';
+import { toResponse } from '../responses/toResponse';
 
 describe('Cookie 支持', () => {
   describe('getCookie - 读取 cookie', () => {

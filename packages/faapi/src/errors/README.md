@@ -37,5 +37,5 @@ ValidationError 额外包含 `issues` 字段；MethodNotAllowedError 的响应�
 
 ## 相关模块
 
-- [validator](../validator/README.md)：触发 ValidationError
+- [validator](../validators/README.md)：触发 ValidationError
 - [server](../server/README.md)：调用 formatErrorResponse

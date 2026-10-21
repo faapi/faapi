@@ -10,7 +10,7 @@ import {
 import { createProgram, invalidateProgramCache } from '../ast/createProgram';
 import { extractAllTypes } from '../ast/extractHandlerTypes';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
-import type { RouteManifest } from '../router/routeTypes';
+import type { RouteManifest } from '../routers/routeTypes';
 import type { RouteSchemaSource } from './collectRouteSchemaSources';
 
 /**

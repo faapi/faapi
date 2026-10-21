@@ -32,9 +32,9 @@ CORS 在路由匹配前执行，确保 OPTIONS 预检请求能正常返回 CORS 
 
 ## 相关模块
 
-- [router](../router/README.md)：路由匹配
-- [loader](../loader/README.md)：模块加载
+- [router](../routers/README.md)：路由匹配
+- [loader](../loaders/README.md)：模块加载
 - [runtime](../runtime/README.md)：上下文创建与 handler 调用
-- [validator](../validator/README.md)：输入校验
-- [response](../response/README.md)：响应处理
+- [validator](../validators/README.md)：输入校验
+- [response](../responses/README.md)：响应处理
 - [errors](../errors/README.md)：错误处理

@@ -123,10 +123,10 @@ node dist/main             # 启动生产服务器（需先 build，运行 dist/
 ## 文档
 
 - [AGENTS.md](./AGENTS.md) — 项目定位、架构、约定、验收标准（项目唯一顶层文档）
-- [中间件系统](./packages/faapi/src/middleware/README.md)
-- [路由系统](./packages/faapi/src/router/README.md)
+- [中间件系统](./packages/faapi/src/middlewares/README.md)
+- [路由系统](./packages/faapi/src/routers/README.md)
 - [运行时](./packages/faapi/src/runtime/README.md)
-- [配置](./packages/faapi/src/config/README.md)
+- [配置](./packages/faapi/src/configs/README.md)
 - [AST 类型校验](./packages/faapi/src/ast/README.md)
 - [AST 支持的 TypeScript 类型清单](./packages/faapi/src/ast/supported-types.md)
 - [CLI](./packages/faapi/src/cli/README.md)

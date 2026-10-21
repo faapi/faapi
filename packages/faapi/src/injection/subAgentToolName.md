@@ -21,7 +21,7 @@ agent-as-tool 把 sub-agent 包装成 tool 发给 LLM，`function.name` 受 Open
 - `LLM_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/`——OpenAI 兼容协议对 `function.name` 的字符集约束
 - `subAgentToolName(agentName)` = `'agent-' + agentName`，组合结果不满足 pattern 时抛 `Error`（含 agent 名与改名指引）——不静默净化（掩盖配置错误），不降级放行（强校验上游 400）
 
-agent 名本身的合法性由上游保证：文件型 agent 在 [scanAgents](../agents/scanAgents.md) 目录段校验（段内 `[a-zA-Z0-9-]`，`_` 为嵌套分隔符）+ [extractAgentMetadata](../ast/extractAgentMetadata.md) 的 `@agent` 覆盖名校验；本助手是最后一道运行时闸门（程序化 `hydrate` 的 agent 名不经构建期扫描）。
+agent 名本身的合法性由上游保证：文件型 agent 在 [scanAgents](../agents/scanAgents.md) 目录段校验（段内 `[a-zA-Z0-9-]`，`_` 为嵌套分隔符）；本助手是最后一道运行时闸门（程序化 `hydrate` 的 agent 名不经构建期扫描）。
 
 ## 相关模块
 

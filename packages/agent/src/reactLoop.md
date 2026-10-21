@@ -70,7 +70,7 @@ tool 执行错误回传 LLM 是业界惯例（OpenAI Agents SDK / LangChain / Cr
 ### `maxTurns` 语义
 
 - 一轮 = 一次 LLM 调用（含可能的 tool 执行）
-- `maxTurns` 默认 `10`（由 [AgentConfig](../../faapi/src/config/configTypes.md).maxTurns 提供）
+- `maxTurns` 默认 `10`（由 [AgentConfig](../../faapi/src/configs/configTypes.md).maxTurns 提供）
 - agent 自身 `config.maxTurns` 覆盖全局默认
 - 超出时抛 `ReactLoopError`，包含已用轮数、maxTurns 值和**中断时的完整 `messages`**（业务方可提高 maxTurns 后传入 `config.messages` 续跑，轮数重新计数）
 

@@ -26,4 +26,4 @@
 
 - `src/cli/generateToolArtifacts.ts` — schema 生成管线复用（generateToolSchemaFileSource / getSchemaOutputPath）
 - `src/cli/createAppCore.ts` — loadAndHydrateTasks 水合
-- `src/task/scanTasks.ts` — 输入来源
+- `src/tasks/scanTasks.ts` — 输入来源

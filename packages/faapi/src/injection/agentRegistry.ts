@@ -49,7 +49,7 @@ export function clearAgentRegistry(): void {
  * 返回 [AgentCore](../ast/extractAgentMetadata.md)（不含 filePath）。
  * 加载 handler.js 执行 `run` 函数请用 [getAgentEntry](#getAgentEntry)。
  *
- * @param name agent 名（如 `researcher`，含 `@agent` 覆盖值）
+ * @param name agent 名（如 `researcher`，目录路径推导）
  */
 export function getAgent(name: string): AgentCore | undefined {
   return defaultRegistries.agent.getAgent(name);

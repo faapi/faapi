@@ -260,5 +260,5 @@ const result = await agent.run('北京天气', { agent: 'researcher', provider: 
 - [wsTestClient.ts](./wsTestClient.ts) - `connectWs` + `MessageQueue` WS 测试客户端
 - [agentTestHarness.ts](./agentTestHarness.ts) - `createAgentTestHarness` agent 流程测试设施
 - [injection/injectParams.ts](./injection/injectParams.ts) - 参数注入实现
-- [middleware/middlewareTypes.ts](./middleware/middlewareTypes.ts) - 中间件类型
-- [middleware/injectorTypes.ts](./middleware/injectorTypes.ts) - 注入器类型
+- [middleware/middlewareTypes.ts](./middlewares/middlewareTypes.ts) - 中间件类型
+- [middleware/injectorTypes.ts](./middlewares/injectorTypes.ts) - 注入器类型

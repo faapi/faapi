@@ -1,12 +1,12 @@
 # extractToolMetadata
 
-一句话概括：从 tool handler.ts 源文件提取单个 tool 的 JSDoc 描述、`@tool` 覆盖名、第一个参数的 interface 名,产出完整的 `ToolMetadata`(继承 `ToolCore` + 代码加载细节)供产物生成阶段消费。
+一句话概括：从 tool handler.ts 源文件提取单个 tool 的 JSDoc 描述、第一个参数的 interface 名,产出完整的 `ToolMetadata`(继承 `ToolCore` + 代码加载细节)供产物生成阶段消费。
 
 ## 为什么需要
 
 `scanTools` 只通过正则提取了**函数导出名**(Vite 风格零 import),但生成 `faapi-tools.js` 清单和每个 tool 的 `zod.js` schema 还需要两类信息:
 
-1. **JSDoc 描述 + `@tool` 覆盖名**——tool 名对 LLM 可见,描述让 LLM 理解 tool 用途。`@tool` 标签允许覆盖路径推导的默认名(如把 `weather_getWeather` 改为 `weather_current`;覆盖名须满足工具名字符集,见下文)。
+1. **JSDoc 描述**——tool 名由目录路径 + 函数名推导,描述让 LLM 理解 tool 用途。
 2. **第一个参数的 interface 名**——用于调用 `extractTypeInfo` 生成 zod schema,实现 tool 输入参数的运行时校验(与路由 body/query 同构)。
 
 这些信息必须用 TypeScript AST 提取(JSDoc 和类型标注在运行时被擦除)。本模块在 dev/build 启动时对每个 `ToolManifest` 调用一次,把路径推导字段(name/filePath/functionName)与 AST 提取字段(description/inputTypeName)合并为完整的 `ToolMetadata`,供 [generateToolArtifacts](../cli/generateToolArtifacts.md) 直接序列化。
@@ -16,7 +16,7 @@
 `ToolCore` 描述 LLM 可见字段(不含代码加载细节),`ToolMetadata` 继承 `ToolCore` 额外含代码加载细节:
 
 - **`ToolCore`** —— `name` / `description`。描述"tool 是什么",发往 LLM 的 tool 定义只含此层字段(`name` / `description` / input schema)。`toolRegistry.getTool` 返回的 `ToolMetadata` 包含 `ToolCore` 字段。
-- **`ToolMetadata extends ToolCore`** —— 额外含 `filePath`(`loadToolModule` 加载 handler.js 用) / `functionName`(源码导出函数名,AST 定位 + 运行时 resolveExport 用,不受 `@tool` 覆盖影响) / `inputTypeName`(第一个参数 interface 名,供 [extractTypeInfo](./extractHandlerTypes.md) 生成 zod schema)。仅文件型 tool 实现。
+- **`ToolMetadata extends ToolCore`** —— 额外含 `filePath`(`loadToolModule` 加载 handler.js 用) / `functionName`(源码导出函数名,AST 定位 + 运行时 resolveExport 用) / `inputTypeName`(第一个参数 interface 名,供 [extractTypeInfo](./extractHandlerTypes.md) 生成 zod schema)。仅文件型 tool 实现。
 
 与 [extractAgentMetadata](./extractAgentMetadata.md) 的 `AgentCore` / `AgentMetadata` 分层同构——LLM-facing 字段与代码加载细节分离,便于未来扩展(如 DB-driven tool 只实现 `ToolCore` 即可)。
 
@@ -36,27 +36,23 @@
 |-----------|-------------------|
 | `/** 获取天气 */` | `'获取天气'` |
 | `/**\n * 获取天气\n * @param input 城市名\n */` | `'获取天气'`(@param 之前的首段) |
-| `/** @tool x */`(无自由文本) | `undefined` |
+| `/** @see x */`(无自由文本) | `undefined` |
 | 无 JSDoc | `undefined` |
 
 多行描述保留换行(TypeScript 已自动剥离每行前缀 ` * `),不做截断。
 
-### `@tool` 覆盖名
+### `@tool` 覆盖名（已移除，迁移错误）
 
-JSDoc 中 `@tool <name>` 标签的值,覆盖路径推导的 `name`:
+JSDoc `@tool <name>` 覆盖名功能已移除——tool 名统一由目录路径 + 函数名推导（嵌套段用 `_` 连接），保证「目录路径 + 函数名 → 注册名」映射单射。函数 JSDoc 中出现**有值的 `@tool` 标签**时，AST 提取阶段抛 `SchemaExtractionError` 迁移错误：
 
-| JSDoc | 提取的覆盖名 | 最终 `ToolMetadata.name` |
-|-------|------------|------------------------|
-| `/** @tool weather_current */` | `'weather_current'` | `'weather_current'` |
-| `/** @tool {weather_current} */` | `'weather_current'`(去花括号) | `'weather_current'` |
-| `/** 描述 \n * @tool weather_current */` | `'weather_current'` | `'weather_current'` |
-| 无 `@tool` 标签 | `undefined` | 使用 `pathMeta.name`(路径推导值) |
+```
+@tool 覆盖名功能已移除——tool 名由目录路径 + 函数名推导（嵌套段用 _ 连接）。
+删除 @tool JSDoc 标签；需要不同名字时改名目录或函数
+```
 
-`@tool` 标签值缺省(只有 `@tool` 没有值)时,`ToolMetadata.name` 回退到 `pathMeta.name`(不报错,降级为路径推导值)。
+无值的裸标签（`/** @tool */`）不构成残留，维持回退语义不报错。
 
-**覆盖名字符集校验**:覆盖值必须整体匹配 `^[a-zA-Z0-9_-]+$`(LLM 工具名字符集——tool 名直接作为 `function.name` 发给 LLM,强校验上游对非法字符整单 400)。违例在 AST 提取阶段抛错,不静默净化。
-
-> **注意**: `@tool` 只覆盖 `ToolMetadata.name`,不影响 `functionName`(源码导出名)和 `filePath`——这两个字段始终是真实路径/源码信息,用于 AST 定位和产物生成。
+> 历史：旧版 `@tool` 标签允许覆盖路径推导名（覆盖值须匹配 `^[a-zA-Z0-9_-]+$`），`functionName` 不受影响。标签覆盖会让注册名与目录结构脱钩，与 agent 侧 `@agent` 覆盖名一并移除（统一命名口径）。
 
 ### 第一个参数的 interface 名
 
@@ -77,7 +73,7 @@ JSDoc 中 `@tool <name>` 标签的值,覆盖路径推导的 `name`:
 ```ts
 // LLM 可见核心字段(文件型 tool 实现,DB-driven tool 未来只实现此层)
 interface ToolCore {
-  name: string;             // @tool 覆盖值 或 pathMeta.name
+  name: string;             // pathMeta.name（目录路径 + 函数名推导,嵌套段用 _ 连接）
   description?: string;      // JSDoc 描述,无 JSDoc 时 undefined
 }
 
@@ -111,7 +107,7 @@ function extractToolMetadata(
 
 ## 相关模块
 
-- [jsDocMetadata.ts](./jsDocMetadata.md) - JSDoc 工具函数（hasExportModifier / getJSDocFromNode / extractDescription / @tag 覆盖名提取，统一来源）
+- [jsDocMetadata.ts](./jsDocMetadata.md) - JSDoc 工具函数（hasExportModifier / getJSDocFromNode / extractDescription / @tag 标签值提取——现用于 @tool 残留标签迁移检测，统一来源）
 
 - [scanTools](../tools/scanTools.md) - 产出 `ToolManifest`(含 `functionName`),供本模块的 `pathMeta` 来源
 - [toolTypes](../tools/toolTypes.md) - `ToolManifest` 类型定义

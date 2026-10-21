@@ -29,7 +29,7 @@ import { generateZodArtifacts } from './generateZodArtifacts';
  * > 声明式执行（config + 默认 reactLoop）。
  */
 export interface SerializedAgentRecord {
-  /** agent 名（`@agent` 覆盖值 或 目录推导值） */
+  /** agent 名（目录路径推导值，嵌套段用 `_` 连接） */
   name: string;
   /** JSDoc 描述（对 LLM 可见），无则省略 */
   description?: string;
@@ -140,9 +140,7 @@ function validateAgentList(metadata: AgentMetadata[]): void {
   for (const a of metadata) {
     const prev = names.get(a.name);
     if (prev) {
-      throw new Error(
-        `agent 名重复: "${a.name}"（${prev} 与 ${a.filePath} 冲突——目录推导名或 @agent 覆盖名撞名）`,
-      );
+      throw new Error(`agent 名重复: "${a.name}"（${prev} 与 ${a.filePath} 冲突——目录推导名撞名）`);
     }
     names.set(a.name, a.filePath);
   }
@@ -164,7 +162,7 @@ function validateAgentList(metadata: AgentMetadata[]): void {
  *
  * 内部流程：
  * 1. 对每个 AgentManifest 调 `createProgram` + `extractAgentMetadata` → AgentMetadata[]
- *    （AST 增强：补全 description / `@agent` 覆盖名 / config 块字段 / inputTypeName）
+ *    （AST 增强：补全 description / config 块字段 / inputTypeName）
  * 2. `validateAgentList` 清单级校验（名重复 / agents 互引存在性）
  * 3. `serializeAgents(metadata, dist)` → SerializedAgentRecord[]（filePath 转产物形式）
  * 4. `writeAgentsModule(serialized, faapiAgentsPath)` → 写入 `<dist>/faapi-agents.js`

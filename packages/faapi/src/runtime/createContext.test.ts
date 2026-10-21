@@ -398,7 +398,7 @@ describe('createContext - requestId 与请求级日志器', () => {
   });
 
   it('ctx.log 输出自动携带 requestId/method/path 字段', async () => {
-    const { configureLogging } = await import('../logger/logger');
+    const { configureLogging } = await import('../loggers/logger');
     const entries: any[] = [];
     configureLogging({ sink: (e) => entries.push(e) });
     try {
@@ -416,7 +416,7 @@ describe('createContext - requestId 与请求级日志器', () => {
   });
 
   it('ctx.log.child 派生更细分类（scope 合并、requestId 继承）', async () => {
-    const { configureLogging } = await import('../logger/logger');
+    const { configureLogging } = await import('../loggers/logger');
     const entries: any[] = [];
     configureLogging({ sink: (e) => entries.push(e) });
     try {

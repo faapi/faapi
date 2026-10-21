@@ -4,7 +4,7 @@ import type { FaapiContext } from '../runtime/contextTypes';
 import type { MultipartResult } from '../utils/parseMultipart';
 import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
 import { hydrateAgentRegistry, clearAgentRegistry } from './agentRegistry';
-import { createLogger } from '../logger/logger';
+import { createLogger } from '../loggers/logger';
 
 describe('injectParams', () => {
   beforeEach(() => {

@@ -1,12 +1,12 @@
 # extractAgentMetadata
 
-一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、`@agent` 覆盖名、config 块字段(systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription)与派发入参 schema 声明(`Input` 导出检测)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
+一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、config 块字段(systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription)与派发入参 schema 声明(`Input` 导出检测)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
 
 ## 为什么需要
 
 `scanAgents` 只通过正则检测了 `run` 导出是否存在(Vite 风格零 import)，但生成 `faapi-agents.js` 清单还需要两类信息：
 
-1. **JSDoc 描述 + `@agent` 覆盖名**——agent 名对 LLM 可见，描述让 LLM 理解 agent 用途。`@agent` 标签允许覆盖目录推导的默认名。
+1. **JSDoc 描述**——agent 名由目录路径推导，描述让 LLM 理解 agent 用途。
 2. **config 块字段**——`systemPrompt`(系统提示词,与 `systemPromptFile` 互斥二选一)、`systemPromptFile`(相对产物 resources 目录的提示词文件路径,运行时读文件内容)、`tools`(agent 显式声明可用 tool 引用列表)、`agents`(可调用的其他 agent 列表)、`model`(LLM 模型)、`maxTurns`(最大对话轮数)、`inputDescription`(agent-as-tool 派发交接单说明)。这些字段在运行时由 Agent 类/reactLoop 消费。
 3. **派发入参 schema 声明**——handler.ts 顶层声明名为 `Input` 的 interface / type alias 时，`AgentMetadata.inputTypeName` 记为 `'Input'`，[generateAgentArtifacts](../cli/generateAgentArtifacts.md) 据此生成 agent 的 zod.js，`@faapi/agent` 派发该 agent 时用富 JSON Schema 替代默认单字段 `input`。
 
@@ -51,24 +51,22 @@ JSDoc 从哪个导出提取取决于 agent 的定义形式：
 | JSDoc 形式 | 提取的 description |
 |-----------|-------------------|
 | `/** 研究员 agent */` | `'研究员 agent'` |
-| `/**\n * 研究员 agent\n * @agent researcher\n */` | `'研究员 agent'`(`@agent` 之前的首段) |
-| `/** @agent researcher */`(无自由文本) | `undefined` |
+| `/**\n * 研究员 agent\n * @see researcher\n */` | `'研究员 agent'`(`@see` 之前的首段) |
+| `/** @see researcher */`(无自由文本) | `undefined` |
 | 无 JSDoc | `undefined` |
 
-### `@agent` 覆盖名
+### `@agent` 覆盖名（已移除，迁移错误）
 
-JSDoc 中 `@agent <name>` 标签的值，覆盖目录推导的 `name`：
+JSDoc `@agent <name>` 覆盖名功能已移除——agent 名统一由目录路径推导（嵌套段用 `_` 连接），保证「目录路径 → 注册名」映射单射。文件中出现**有值的 `@agent` 标签**时，AST 提取阶段抛 `SchemaExtractionError` 迁移错误：
 
-| JSDoc | 提取的覆盖名 | 最终 `AgentMetadata.name` |
-|-------|------------|------------------------|
-| `/** @agent researcher */` | `'researcher'` | `'researcher'` |
-| `/** @agent {researcher} */` | `'researcher'`(去花括号) | `'researcher'` |
-| `/** 描述 \n * @agent researcher */` | `'researcher'` | `'researcher'` |
-| 无 `@agent` 标签 | `undefined` | 使用 `pathMeta.name`(目录推导值) |
+```
+@agent 覆盖名功能已移除——agent 名由目录路径推导（嵌套段用 _ 连接）。
+删除 @agent JSDoc 标签；需要不同名字时改名目录
+```
 
-与 `@tool` 覆盖名([extractToolMetadata](./extractToolMetadata.md))同构——去花括号、缺省回退。
+无值的裸标签（`/** @agent */`）不构成残留，维持回退语义不报错。
 
-**覆盖名字符集校验**：覆盖值必须整体匹配 `^[a-zA-Z0-9_-]+$`(LLM 工具名字符集——覆盖名会进入派发工具名 `agent-<name>`,见 [subAgentToolName](../injection/subAgentToolName.md);与目录推导名不同,覆盖名无嵌套语义,`_` 可用)。违例在 AST 提取阶段抛错,不静默净化。
+> 历史：旧版 `@agent` 标签允许覆盖目录推导名（覆盖值须匹配 `^[a-zA-Z0-9_-]+$`）。标签覆盖会让「目录路径 → 注册名」不再单射（两个目录可声明同名 agent），与重名检测语义冲突，故随目录段白名单收敛一并移除。
 
 ### config 块字段
 
@@ -172,7 +170,7 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 ```ts
 // LLM 可见核心字段(文件型 agent 与 DB-driven skill 都实现)
 interface AgentCore {
-  name: string;              // @agent 覆盖值 或 pathMeta.name
+  name: string;              // pathMeta.name（目录路径推导,嵌套段用 _ 连接）
   description?: string;      // JSDoc 描述(用途说明,不构成提示词)
   systemPrompt?: string;     // 系统提示词;文件型 agent 必填(构建期校验),DB skill 由业务方自治
   tools?: string[];          // agent 显式声明可用 tool 引用列表
@@ -212,7 +210,7 @@ function extractAgentMetadata(
 
 ## 相关模块
 
-- [jsDocMetadata.ts](./jsDocMetadata.md) - JSDoc 工具函数（hasExportModifier / getJSDocFromNode / extractDescription / @tag 覆盖名提取，统一来源）
+- [jsDocMetadata.ts](./jsDocMetadata.md) - JSDoc 工具函数（hasExportModifier / getJSDocFromNode / extractDescription / @tag 标签值提取——现用于 @agent 残留标签迁移检测，统一来源）
 
 - [scanAgents](../agents/scanAgents.md) - 产出 `AgentManifest`，供本模块的 `pathMeta` 来源
 - [agentTypes](../agents/agentTypes.md) - `AgentManifest` 类型定义

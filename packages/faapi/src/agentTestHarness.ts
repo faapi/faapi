@@ -16,9 +16,9 @@ import {
   type ToolRegistry,
   type AgentRegistry,
 } from './injection/registries';
-import { loadToolModule as loadToolModuleImpl } from './loader/loadToolModule';
-import { createToolSchemaResolver, type ToolSchemaResolution } from './loader/toolSchemaResolver';
-import type { ToolModule } from './loader/loadToolModule';
+import { loadToolModule as loadToolModuleImpl } from './loaders/loadToolModule';
+import { createToolSchemaResolver, type ToolSchemaResolution } from './loaders/toolSchemaResolver';
+import type { ToolModule } from './loaders/loadToolModule';
 import type { ToolMetadata } from './ast/extractToolMetadata';
 import type { AgentMetadata } from './ast/extractAgentMetadata';
 
@@ -77,9 +77,9 @@ export interface AgentTestHarness {
   resolveToolSchema?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   /** 与 `resolveToolSchema` 同一实例（仅 `schemaMode: 'generated'` 提供） */
   resolveAgentInputSchema?: (agent: AgentMetadata) => Promise<ToolSchemaResolution | undefined>;
-  /** 扫描水合后的 agent 注册名清单（`@agent` 覆盖名生效后） */
+  /** 扫描水合后的 agent 注册名清单（目录路径推导名） */
   agentNames: string[];
-  /** 扫描水合后的 tool 最终名清单（`@tool` 覆盖名生效后） */
+  /** 扫描水合后的 tool 最终名清单（路径推导名：目录路径 + 函数名） */
   toolNames: string[];
   /** 产物临时目录绝对路径（free-form 下含 tool handler 编译产物，generated 下另有 zod.js） */
   schemaDist: string;

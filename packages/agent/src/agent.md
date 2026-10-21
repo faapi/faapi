@@ -51,7 +51,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | `getTool(name)` | [toolRegistry.getTool](../../faapi/src/injection/toolRegistry.md) | 查 tool 元数据（filePath / functionName / inputTypeName） |
 | `resolveAgentTools(name)` | [agentRegistry.resolveAgentTools](../../faapi/src/injection/agentRegistry.md) | agent 显式声明的 tools 引用（仅查文件 registry） |
 | `resolveSubAgents(name)` | [agentRegistry.resolveSubAgents](../../faapi/src/injection/agentRegistry.md) | agent 可调用 sub-agent 列表（`AgentCore[]`,仅查文件 registry,skill 不参与 sub-agent 递归） |
-| `loadToolModule(...)` | [loadToolModule](../../faapi/src/loader/loadToolModule.md) | 动态 import tool handler |
+| `loadToolModule(...)` | [loadToolModule](../../faapi/src/loaders/loadToolModule.md) | 动态 import tool handler |
 | `resolveToolSchema?(tool)` | Phase 3.5 实现 | tool input 的 JSON Schema + 校验函数（基于 `zod.js` + `z.toJSONSchema`） |
 | `resolveAgentInputSchema?(agent)` | 同上（同一 resolver 实例） | sub-agent 派发入参 schema 解析（`AgentMetadata` 的 `inputTypeName` → zod.js → JSON Schema + 校验函数），见「派发入参 schema 声明」；未提供时派发一律走单字段 `input` 模式（编程式组装的向后兼容） |
 | `resolveSystemPrompt?(name, meta, base)` | —（应用组装层注入） | systemPrompt 装饰钩子：包装框架解析好的 base（内联字面量 / `systemPromptFile` 文件内容），返回值即最终 system 消息。见「resolveSystemPrompt 装饰钩子」 |
@@ -67,7 +67,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | 任务内组装（`src/tasks/**/task.ts`） | 窄对象（如 `{ currentUserId }`，经 `declare module` 增强的字段免 cast 直传） | 任务无 HTTP 请求，只传 tool handler 鉴权硬闸需要的身份字段 |
 | 编程式直调（测试/自定义启动器） | 不传 | 钩子收到 `undefined`，业务方在钩子里自行决定拒绝与否 |
 
-`declare module '@faapi/faapi'` 增强的字段随 `Partial` 保留——钩子/`filterTools` 内 `ctx?.user` 等增强字段的类型提示照常可用。sub-agent 递归复用同一 deps，ctx 随行不变。完整传递链见 [authHooks.md](./authHooks.md)，任务侧组装示例见主包 [taskTypes.md](../../faapi/src/task/taskTypes.md)「任务内组装 Agent」。
+`declare module '@faapi/faapi'` 增强的字段随 `Partial` 保留——钩子/`filterTools` 内 `ctx?.user` 等增强字段的类型提示照常可用。sub-agent 递归复用同一 deps，ctx 随行不变。完整传递链见 [authHooks.md](./authHooks.md)，任务侧组装示例见主包 [taskTypes.md](../../faapi/src/tasks/taskTypes.md)「任务内组装 Agent」。
 
 ### `Agent` 类方法
 
@@ -238,7 +238,7 @@ const agent = new Agent(
 sub-agent 包装为 tool 发给 LLM 时,`function.name` 受 OpenAI 兼容协议硬约束 `^[a-zA-Z0-9_-]+$`（DeepSeek / OpenAI 等强校验上游对非法字符整单 400）。命名规则由主包 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md) 统一：
 
 - **派发名 = `agent-<agentName>`**——前缀 `agent-`（旧版 `agent.` 点号前缀违反协议,已废弃）
-- agent 名本身须合法：文件型 agent 由 [scanAgents](../../faapi/src/agents/scanAgents.md) 目录段字符集校验保证（段内 `[a-zA-Z0-9-]`,`_` 为嵌套分隔符,如 `easy-writing_wizard`）;`@agent` 覆盖名由 AST 阶段校验
+- agent 名本身须合法：文件型 agent 由 [scanAgents](../../faapi/src/agents/scanAgents.md) 目录段字符集校验保证（段内 `[a-zA-Z0-9-]`,`_` 为嵌套分隔符,如 `easy-writing_wizard`）
 - **执行路由不按前缀猜测**——`buildLoopConfig` 时建立「派发名 → agent 名」映射（`agentToolNames`）与常规 tool 声明集合（`declaredTools`）两个结构,`executeTool` 按声明来源路由：真工具 `agent-foo`（即使注册表存在、甚至声明了）与 sub-agent `foo` 的派发名 `agent-foo` 不会互相误伤
 - **构建期冲突显式抛 `AgentError`**：某 sub-agent 的派发名与该 agent 声明的常规 tool 名相同（如声明了 tool `agent-writer` 又声明 sub-agent `writer`）→ 抛错要求改名——静默遮蔽会让其中一方不可达
 
@@ -484,5 +484,5 @@ asTool(name: string): AgentToolDescriptor | undefined {
 - [provider](./provider.md) —— Phase 3.2,Agent 构造时持有 `providers` Map（由 plugin 从 `config.agent.llms` 遍历调 `createProvider` 创建）
 - faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) —— `AgentDeps` 访问器的真实实现来源（Phase 3.5 接线）
 - faapi 核心 [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— tool 元数据查询
-- faapi 核心 [loadToolModule](../../faapi/src/loader/loadToolModule.md) —— 动态加载 tool handler
+- faapi 核心 [loadToolModule](../../faapi/src/loaders/loadToolModule.md) —— 动态加载 tool handler
 - faapi 核心 [extractAgentMetadata](../../faapi/src/ast/extractAgentMetadata.md) / [extractToolMetadata](../../faapi/src/ast/extractToolMetadata.md) —— 元数据类型定义

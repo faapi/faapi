@@ -54,7 +54,7 @@ toResponse（将返回值转为 Response）
 中间件洋葱（内→外）：... → mw2.after → mw1.after
 ```
 
-中间件不调用 `next()` 即拦截请求；`try/catch` 包裹 `next()` 可捕获内层错误。注入器与中间件解耦，详见 [middleware/README.md](../middleware/README.md)。
+中间件不调用 `next()` 即拦截请求；`try/catch` 包裹 `next()` 可捕获内层错误。注入器与中间件解耦，详见 [middleware/README.md](../middlewares/README.md)。
 
 ## 输入解析策略
 
@@ -66,5 +66,5 @@ toResponse（将返回值转为 Response）
 ## 相关模块
 
 - [injection](../injection/README.md)：参数注入
-- [middleware](../middleware/README.md)：中间件系统
-- [response](../response/README.md)：响应处理
+- [middleware](../middlewares/README.md)：中间件系统
+- [response](../responses/README.md)：响应处理

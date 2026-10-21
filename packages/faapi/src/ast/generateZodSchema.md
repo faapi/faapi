@@ -226,4 +226,4 @@ export const GETQuerySchema = z.object({
 - [resolveTypeNode](./resolveTypeNode) — TypeScript 类型节点 → RuntimeType
 - [extractHandlerTypes](./extractHandlerTypes) — 从 handler 文件提取 HandlerTypeInfo
 - [generateSchemaFiles](../cli/generateSchemaFiles) — 调用本模块生成 zod.js 文件
-- [validateInput](../validator/validateInput) — 运行时 import zod.js 并 safeParse
+- [validateInput](../validators/validateInput) — 运行时 import zod.js 并 safeParse

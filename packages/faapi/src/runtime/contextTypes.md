@@ -47,7 +47,7 @@ return ctx.fail({ status: 404, code: 'USER_NOT_FOUND', message: '用户不存在
 
 ## ctx.requestId / ctx.log（请求级日志）
 
-`createContext` 为每个请求注入两个与日志相关的字段（详见 `../logger/logger.md`）：
+`createContext` 为每个请求注入两个与日志相关的字段（详见 `../loggers/logger.md`）：
 
 - `ctx.requestId: string`——请求头 `x-request-id` 第一段优先（网关透传场景跨服务串联），否则 `crypto.randomUUID()` 生成；`ctx.log` 与请求日志中间件的结构化条目均携带该字段
 - `ctx.log: Logger`——请求级日志器，scope `http`，字段自动携带 `requestId`/`method`/`path`；handler 内 `ctx.log.info(...)` 即可输出，或用参数名 `log` 注入（与 `ctx.log` 同一实例）；`ctx.log.child('user')` 派生更细分类（scope 合并为 `http:user`，requestId 继承）

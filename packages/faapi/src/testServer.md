@@ -227,8 +227,8 @@ it('vi.mock 生效', async () => {
 
 - [server/createServer.ts](./server/createServer.ts) - 底层 HTTP server 创建（`createTestServer` 内部调用）
 - [cli/generateSchemaFiles.ts](./cli/generateSchemaFiles.ts) - 生成 zod.js（自动调 `mkdtemp` + `generateSchemaFiles`）
-- [router/scanRoutes.ts](./router/scanRoutes.ts) - 路由扫描
-- [router/sortRoutes.ts](./router/sortRoutes.ts) - 路由排序
-- [validator/validateInput.ts](./validator/validateInput.ts) - schema 模块缓存（`close` 时调 `invalidateSchemaCache`）
+- [router/scanRoutes.ts](./routers/scanRoutes.ts) - 路由扫描
+- [router/sortRoutes.ts](./routers/sortRoutes.ts) - 路由排序
+- [validator/validateInput.ts](./validators/validateInput.ts) - schema 模块缓存（`close` 时调 `invalidateSchemaCache`）
 - [wsTestClient.ts](./wsTestClient.ts) - WebSocket 测试客户端（搭配 `createTestServer` 测 WS 路由）
 - [testing.md](./testing.md) - 业务方测试支持总览

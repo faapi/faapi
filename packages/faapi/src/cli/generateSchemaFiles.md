@@ -137,5 +137,5 @@ function getHelpersImportPath(relDir: string): string
 
 - [generateZodSchema](../ast/generateZodSchema) — RuntimeType → zod schema 代码（含 coerce preprocess）
 - [collectRouteSchemaSources](./collectRouteSchemaSources) — AST 提取入口
-- [validateInput](../validator/validateInput) — 运行时 import zod.js 并 safeParse
+- [validateInput](../validators/validateInput) — 运行时 import zod.js 并 safeParse
 - [compileDevRoutes](./compileDevRoutes) / [compileBuildRoutes](./compileBuildRoutes) — 编译 .ts → .js（zod.js 由本模块单独生成）

@@ -6,20 +6,20 @@ import {
   loadAndHydrateTasks,
 } from './createAppCore';
 import path from 'node:path';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { scanTools } from '../tools/scanTools';
 import { TOOL_PATTERNS } from '../tools/scanTools';
 import { generateToolArtifacts } from './generateToolArtifacts';
 import { scanAgents } from '../agents/scanAgents';
 import { DEFAULT_AGENT_PATTERNS } from '../agents/scanAgents';
 import { generateAgentArtifacts } from './generateAgentArtifacts';
-import { scanTasks, TASK_PATTERNS } from '../task/scanTasks';
+import { scanTasks, TASK_PATTERNS } from '../tasks/scanTasks';
 import { generateTaskArtifacts } from './generateTaskArtifacts';
 import { ensureCompiled } from './compileOnDemand';
-import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
+import { invalidateMiddlewareCache } from '../middlewares/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
-import { invalidateSchemaCache } from '../validator/validateInput';
+import { invalidateSchemaCache } from '../validators/validateInput';
 import { setLoadTimestamp } from '../utils/importWithCacheBust';
 import {
   clearCompiledFiles,
@@ -144,7 +144,7 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     if (!suppressProgramInvalidation) invalidateProgramCache();
     // 重新扫描 agents（零 import，仅读源码 + 正则检测 config/run 导出）
     const agents = await scanAgents(ctx.rootDir, DEFAULT_AGENT_PATTERNS);
-    // 重生成 faapi-agents.js（含 AST 增强：description / @agent 覆盖 / config 块字段）
+    // 重生成 faapi-agents.js（含 AST 增强：description / config 块字段）
     // agent 不生成 zod.js（无输入参数），无 skipSchema 选项
     await generateAgentArtifacts(agents, ctx.rootDir, ctx.dist);
     // 重新水合 faapi-agents.js 到 agentRegistry（reload 后需更新注册表）

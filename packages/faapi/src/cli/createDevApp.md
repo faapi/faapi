@@ -76,7 +76,7 @@ watcher 一轮重建串行调 `reloadAll`：开头 `invalidateProgramCache()` �
 - `createApp.ts` - `createProdApp` 的向后兼容别名
 - `devCommand.ts` - `faapi dev` 命令，内部调用 `createDevApp` + `listen` + 启动 watcher
 - `watcher.ts` - 接收 app 引用，文件变更时调 `app.reloadRoutes()` 实现热替换
-- `../router/scanRoutes.ts` - `reloadRoutes` 重新扫描路由（零 import，仅读源码 + 正则）
+- `../routers/scanRoutes.ts` - `reloadRoutes` 重新扫描路由（零 import，仅读源码 + 正则）
 - `./compileOnDemand.ts` - 按需模式下的缓存失效与 stale zod.js 删除
 - `./generateSchemaFiles.ts` - 非按需模式下 `reloadRoutes` 全量重新生成 zod.js
 - `../tools/scanTools.ts` - `reloadTools` 重新扫描 tools（零 import，仅读源码 + 正则），导出 `TOOL_PATTERNS`

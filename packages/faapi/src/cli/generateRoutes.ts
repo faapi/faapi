@@ -5,8 +5,8 @@ import type {
   WsRouteManifest,
   RouteRecord,
   WsRouteRecord,
-} from '../router/routeTypes';
-import type { HttpMethod } from '../router/constants';
+} from '../routers/routeTypes';
+import type { HttpMethod } from '../routers/constants';
 import { toProdFilePath } from '../utils/prodPaths';
 import { atomicWriteFile } from '../utils/atomicWrite';
 

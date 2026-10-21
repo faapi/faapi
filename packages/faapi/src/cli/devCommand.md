@@ -55,7 +55,7 @@ dev 启动时**只编译配置和路由清单**，不全量编译 handler.js / �
 
 `devCommand` 导出 `generateRouteArtifacts(rootDir, patterns, dist)` 函数，**仅生成路由清单**：
 
-1. `scanRoutes` 扫描路由（读源码 + 正则提取方法名，零 import——详见 [scanRoutes](../router/scanRoutes.md)）
+1. `scanRoutes` 扫描路由（读源码 + 正则提取方法名，零 import——详见 [scanRoutes](../routers/scanRoutes.md)）
 2. `sortRoutes` 排序
 3. `serializeRoutes` + `writeRoutesModule` 生成 `faapi-routes.js`
 

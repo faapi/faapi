@@ -34,4 +34,4 @@ faapi 的类型校验和依赖注入需要知道每个 HTTP 方法的主输入�
 
 - `cli/collectRouteSchemaSources.ts` - 用 `getInputTypeForMethod` 确定提取哪个参数的 schema
 - [runtime/resolveInput.ts](../runtime/resolveInput.ts) - 用 `getInputTypeForMethod` 和 `hasBody` 解析请求输入
-- [validator/schemaName.ts](../validator/schemaName.ts) - 用 `getInputTypeForMethod` 生成 schema 存储 key
+- [validator/schemaName.ts](../validators/schemaName.ts) - 用 `getInputTypeForMethod` 生成 schema 存储 key

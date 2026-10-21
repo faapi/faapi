@@ -47,7 +47,7 @@ dev 按需模式下，WS handler.js 不预编译——首次 WS 连接时 `loadW
 ## 相关模块
 
 - [runtime/wsHandler.ts](../runtime/wsHandler.md) - WsContext / WsEventHandlers / WsSocket 封装
-- [router/matchRoute.ts](../router/matchRoute.ts) - WS 路由匹配
+- [router/matchRoute.ts](../routers/matchRoute.ts) - WS 路由匹配
 - [runtime/createContext.ts](../runtime/createContext.ts) - 构造请求上下文
 - [runtime/invokeHandler.ts](../runtime/invokeHandler.md) - `compose` 洋葱中间件执行
 - [errors/formatErrorResponse.ts](../errors/formatErrorResponse.ts) - 内置错误响应格式化

@@ -64,10 +64,10 @@ node dist/main             # 启动生产服务器
 完整文档见 [GitHub 仓库](https://github.com/faapi/faapi#readme)。
 
 - [架构与约定](https://github.com/faapi/faapi/blob/main/AGENTS.md)
-- [中间件系统](https://github.com/faapi/faapi/blob/main/packages/faapi/src/middleware/README.md)
-- [路由系统](https://github.com/faapi/faapi/blob/main/packages/faapi/src/router/README.md)
+- [中间件系统](https://github.com/faapi/faapi/blob/main/packages/faapi/src/middlewares/README.md)
+- [路由系统](https://github.com/faapi/faapi/blob/main/packages/faapi/src/routers/README.md)
 - [运行时](https://github.com/faapi/faapi/blob/main/packages/faapi/src/runtime/README.md)
-- [配置](https://github.com/faapi/faapi/blob/main/packages/faapi/src/config/README.md)
+- [配置](https://github.com/faapi/faapi/blob/main/packages/faapi/src/configs/README.md)
 - [CLI](https://github.com/faapi/faapi/blob/main/packages/faapi/src/cli/README.md)
 
 ## 许可证

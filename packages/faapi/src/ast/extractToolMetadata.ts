@@ -5,7 +5,6 @@ import {
   getJSDocFromNode,
   hasExportModifier,
 } from './jsDocMetadata';
-import { LLM_TOOL_NAME_PATTERN } from '../injection/subAgentToolName';
 import { SchemaExtractionError } from './resolveTypeNode';
 
 /**
@@ -22,7 +21,7 @@ import { SchemaExtractionError } from './resolveTypeNode';
  * 都消费 `ToolCore` 字段组装 LLM tool 列表。
  */
 export interface ToolCore {
-  /** tool 名(`@tool` JSDoc 覆盖值 或 路径推导值) */
+  /** tool 名(路径推导值:目录路径 + 函数名,嵌套段用 `_` 连接) */
   name: string;
   /** JSDoc 描述(tool 描述,对 LLM 可见),无 JSDoc 或 JSDoc 无自由文本时为 `undefined` */
   description?: string;
@@ -33,16 +32,16 @@ export interface ToolCore {
  *
  * 继承 [ToolCore](./extractToolMetadata.md) 的 LLM 字段,额外扩展**代码本体加载细节**:
  * - `filePath` — `loadToolModule` 加载 `handler.js` 产物定位函数用
- * - `functionName` — 源码导出函数名(不受 `@tool` 覆盖影响,AST 定位 + 运行时 resolveExport 用)
+ * - `functionName` — 源码导出函数名(AST 定位 + 运行时 resolveExport 用)
  * - `inputTypeName` — 第一个参数的 TypeReference 名(供 [extractTypeInfo](./extractHandlerTypes.md)
  *   生成 zod schema;运行时 `resolveToolSchema` 据此定位 `zod.js`)
  *
  * 由 [extractToolMetadata](./extractToolMetadata.md) 产出,合并路径推导字段
  * (来自 [scanTools](../tools/scanTools.md) 的 `ToolManifest`)与 AST 提取字段
- * (JSDoc 描述、`@tool` 覆盖名、第一个参数 interface 名)。
+ * (JSDoc 描述、第一个参数 interface 名)。
  *
  * 字段来源:
- * - `name` — `@tool` JSDoc 覆盖值,或 `pathMeta.name`(路径推导)
+ * - `name` — `pathMeta.name`(路径推导,嵌套段用 `_` 连接)
  * - `description` — JSDoc 注释块自由文本(对 LLM 可见)
  * - `filePath` / `functionName` — 由 `pathMeta` 透传
  * - `inputTypeName` — 第一个参数的 TypeReference 名(供 [extractTypeInfo](./extractHandlerTypes.md) 生成 zod schema)
@@ -53,7 +52,7 @@ export interface ToolMetadata extends ToolCore {
   inputTypeName?: string;
   /** 源码相对路径(从 `pathMeta` 透传) */
   filePath: string;
-  /** 源码中的导出函数名(从 `pathMeta` 透传,AST 定位用,不受 `@tool` 覆盖影响) */
+  /** 源码中的导出函数名(从 `pathMeta` 透传,AST 定位用) */
   functionName: string;
 }
 
@@ -77,8 +76,7 @@ type FunctionLike = ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpre
  *
  * 提取内容:
  * 1. **JSDoc 描述** — 注释块自由文本(`@tag` 之前的首段),对 LLM 可见
- * 2. **`@tool` 覆盖名** — JSDoc 中 `@tool` 标签后的文本(如 `customName`),覆盖路径推导的 `name`
- * 3. **第一个参数 interface 名** — 供 [extractTypeInfo](./extractHandlerTypes.ts) 生成 zod schema
+ * 2. **第一个参数 interface 名** — 供 [extractTypeInfo](./extractHandlerTypes.ts) 生成 zod schema
  *
  * 不提取(由 `pathMeta` 透传): `filePath` / `functionName`
  *
@@ -113,20 +111,22 @@ export function extractToolMetadata(
   const jsDoc = getJSDocFromNode(jsDocOwner);
   const description = extractDescription(jsDoc);
   const toolNameOverride = extractJSDocTagValue(jsDoc, 'tool');
-  // 覆盖名直接作为 function.name 发给 LLM，须整体满足工具名字符集（与 @agent 覆盖名
-  // 同规则；路径推导名的校验在 scanTools）。违例在 AST 阶段显式抛错，不静默净化
-  if (toolNameOverride !== undefined && !LLM_TOOL_NAME_PATTERN.test(toolNameOverride)) {
+  // @tool 覆盖名已移除——检测到残留标签抛迁移错误（不静默忽略：覆盖语义已不存在，
+  // 标签变成无人消费的死注解，与声明意图不符）。无值的裸标签（tag.comment 为 false）
+  // extractJSDocTagValue 返回 undefined，不构成残留，维持回退语义不报错
+  if (toolNameOverride !== undefined) {
     throw SchemaExtractionError.at(
       jsDocOwner,
       '@tool',
-      `覆盖名 "${toolNameOverride}" 含非法字符——须满足 ${LLM_TOOL_NAME_PATTERN}（tool 名直接作为 LLM function.name，强校验上游对非法字符整单 400）`,
+      '@tool 覆盖名功能已移除——tool 名由目录路径 + 函数名推导（嵌套段用 _ 连接）。' +
+        '删除 @tool JSDoc 标签；需要不同名字时改名目录或函数',
       sourceFile,
     );
   }
   const inputTypeName = getFirstParamTypeName(fn, sourceFile);
 
   return {
-    name: toolNameOverride ?? pathMeta.name,
+    name: pathMeta.name,
     description,
     inputTypeName,
     filePath: pathMeta.filePath,

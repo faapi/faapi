@@ -4,14 +4,14 @@
 
 ## 为什么需要
 
-faapi 引入 agent 能力后，需要把目录结构转换为 tool 清单。与路由扫描（[scanRoutes](../router/scanRoutes.md)）同构——"文件系统即 tool"，用户在约定目录下写 `handler.ts` 导出函数即声明一个 tool，框架自动扫描收集。
+faapi 引入 agent 能力后，需要把目录结构转换为 tool 清单。与路由扫描（[scanRoutes](../routers/scanRoutes.md)）同构——"文件系统即 tool"，用户在约定目录下写 `handler.ts` 导出函数即声明一个 tool，框架自动扫描收集。
 
 所有 tool 统一放在 `src/tools/` 下，跨 agent 复用，agent 通过 `tools` 显式声明可用 tool（见 [agentRegistry](../injection/agentRegistry.md) 的 `resolveAgentTools`）。
 
 旧版（如果用运行时 import 提取函数名）会让 dev 启动慢、按需编译无法实现。新版改为：
 
 - **函数名提取**：正则匹配源码 `export function <name>` / `export const <name> = ...`，不 import 模块
-- **零 import**：启动时只读源码 + 正则，tool.js 加载延后到 [loadToolModule](../loader/loadToolModule.md) 请求阶段（详见 [compileOnDemand](../cli/compileOnDemand.md)）
+- **零 import**：启动时只读源码 + 正则，tool.js 加载延后到 [loadToolModule](../loaders/loadToolModule.md) 请求阶段（详见 [compileOnDemand](../cli/compileOnDemand.md)）
 
 ## 使用场景
 
@@ -92,11 +92,9 @@ tool 名 = `子目录_函数名`，子目录作为命名空间前缀，目录段
 
 - 每个目录段必须匹配 `^[a-zA-Z0-9-]+$`——LLM 工具名字符集（`[a-zA-Z0-9_-]`，OpenAI 兼容协议对 `function.name` 的硬约束）再排除 `_`（`_` 被 `/` 规范化独占为嵌套分隔符，段内出现会让嵌套与段内下划线不可区分）
 - 合成的 tool 名整体必须匹配 `^[a-zA-Z0-9_-]+$`——函数名含 `$` 等非法字符（如 `export const $fetch`）时抛错
-- 违例在扫描时显式抛错（含路径与改名 / `@tool` 覆盖指引），不静默净化——非法名字发给强校验上游（DeepSeek / OpenAI 等）整单 400
+- 违例在扫描时显式抛错（含路径与改名指引），不静默净化——非法名字发给强校验上游（DeepSeek / OpenAI 等）整单 400
 
 > 迁移提示：旧版用 `.` 连接（`weather.getWeather` / `a.b.deep`）。新版下 agent config 的 `tools` 声明、authHooks 的名字匹配需同步改为 `_` 形式（`weather_getWeather` / `a_b_deep`）。
-
-> 此处为 scanTools 的**路径推导默认名**。函数 JSDoc 的 `@tool` 标签可在 AST 增强阶段覆盖最终名（如 `@tool weather_current` 把 `weather_getWeather` 覆盖为 `weather_current`；覆盖名须整体满足工具名字符集），见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「JSDoc 描述 + `@tool` 覆盖名」。
 
 ### 重名检测
 
@@ -109,9 +107,9 @@ tool 名 = `子目录_函数名`，子目录作为命名空间前缀，目录段
 - `parseToolFile.ts` - tool 文件路径解析（命名空间生成）
 - `toolTypes.ts` - `ToolManifest` 类型定义（含 `functionName` 字段，供 AST 提取定位函数）
 - `TOOL_PATTERNS` - 扫描 patterns（`src/tools/**/*.ts`，框架约定非用户可配置项），由 devCommand / buildCommand / createDevApp.reloadTools 共享
-- [scanRoutes](../router/scanRoutes.md) - 路由扫描（同构设计参考）
+- [scanRoutes](../routers/scanRoutes.md) - 路由扫描（同构设计参考）
 - [scanAgents](./scanAgents.md) - agent 扫描（与 tool 扫描对称）
 - [extractToolMetadata](../ast/extractToolMetadata.md) - 消费 `functionName` 在源文件中提取 JSDoc/参数类型
 - [generateToolArtifacts](../cli/generateToolArtifacts.md) - 生成 `faapi-tools.js` 清单 + zod schema
-- [loadToolModule](../loader/loadToolModule.md) - 按需 import tool.js
+- [loadToolModule](../loaders/loadToolModule.md) - 按需 import tool.js
 - [compileOnDemand](../cli/compileOnDemand.md) - dev 按需编译模式（依赖 scanTools 的零 import 特性）

@@ -7,15 +7,15 @@ import { createAppBase, getApp, type CreateAppOptions } from './createAppCore';
 import { readResource } from '../utils/readResource';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
-import { scanRoutes } from '../router/scanRoutes';
-import { sortRoutes } from '../router/sortRoutes';
+import { scanRoutes } from '../routers/scanRoutes';
+import { sortRoutes } from '../routers/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
 import { scanTools, TOOL_PATTERNS } from '../tools/scanTools';
 import { generateToolArtifacts, writeToolsModule, serializeTools } from './generateToolArtifacts';
-import { invalidateMiddlewareCache } from '../middleware/loadMiddlewares';
+import { invalidateMiddlewareCache } from '../middlewares/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
-import { invalidateSchemaCache } from '../validator/validateInput';
+import { invalidateSchemaCache } from '../validators/validateInput';
 import { getTool, listTools, clearToolRegistry } from '../injection/toolRegistry';
 
 /**
@@ -953,7 +953,7 @@ describe('createAppBase - config.log 全局日志接线', () => {
     if (savedDist === undefined) delete process.env.FAAPI_DIST;
     else process.env.FAAPI_DIST = savedDist;
     delete process.env.LOG_LEVEL;
-    const { configureLogging } = await import('../logger/logger');
+    const { configureLogging } = await import('../loggers/logger');
     configureLogging(undefined);
     invalidateSchemaCache();
     invalidateMiddlewareCache();
@@ -985,7 +985,7 @@ describe('createAppBase - config.log 全局日志接线', () => {
     await compileArtifacts();
     const { app } = await createAppBase({ rootDir: tempDir });
     try {
-      const { createLogger } = await import('../logger/logger');
+      const { createLogger } = await import('../loggers/logger');
       const lines: string[] = [];
       const spy = spyConsoleMethod('error', lines);
       try {
@@ -1012,7 +1012,7 @@ describe('createAppBase - config.log 全局日志接线', () => {
     await compileArtifacts();
     const { app } = await createAppBase({ rootDir: tempDir });
     try {
-      const { createLogger } = await import('../logger/logger');
+      const { createLogger } = await import('../loggers/logger');
       createLogger('t').info('via config sink');
       const entries = (globalThis as unknown as { __logSinkEntries: Array<{ message: string }> })
         .__logSinkEntries;

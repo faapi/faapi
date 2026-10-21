@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import type { RequestHandler, UpgradeHandler } from '../config/pluginTypes';
+import type { RequestHandler, UpgradeHandler } from '../configs/pluginTypes';
 
 /**
  * 应用 handler / upgrade 包装器到 server

@@ -43,4 +43,4 @@ export default {
 
 - [runtime/createContext](../runtime/createContext.ts) — 接收 ip 参数，存到 ctx.ip
 - [injection/injectParams](../injection/injectParams.ts) — `ip` 参数名注入 ctx.ip
-- [config/configTypes](../config/configTypes.md) — `trustedProxy` 配置字段
+- [config/configTypes](../configs/configTypes.md) — `trustedProxy` 配置字段
