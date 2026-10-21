@@ -210,4 +210,76 @@ describe('scanTools', () => {
       cleanup();
     }
   });
+
+  it('预留函数名 handler：识别为 tool 但函数名不拼名，tool 名即命名空间', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/tools/weather/handler.ts', 'export async function handler(input) { return "ok"; }');
+    try {
+      const tools = await scanTools(dir, ['src/tools/**/*.ts']);
+      expect(tools).toHaveLength(1);
+      expect(tools[0]).toMatchObject({
+        name: 'weather',
+        functionName: 'handler',
+        filePath: 'src/tools/weather/handler.ts',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('handler 支持 export const 箭头函数形式，多层嵌套时 tool 名为完整命名空间', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/tools/a/b/handler.ts', 'export const handler = async (input) => "ok";');
+    try {
+      const tools = await scanTools(dir, ['src/tools/**/*.ts']);
+      expect(tools).toHaveLength(1);
+      expect(tools[0]).toMatchObject({
+        name: 'a_b',
+        functionName: 'handler',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('handler 与同文件普通函数共存 → 命名空间名 + 常规合成名', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write(
+      'src/tools/math/handler.ts',
+      'export async function handler(input) { return "ok"; }\nexport function add(a, b) { return a + b; }',
+    );
+    try {
+      const tools = await scanTools(dir, ['src/tools/**/*.ts']);
+      expect(tools).toHaveLength(2);
+      const names = tools.map((t) => t.name).sort();
+      expect(names).toEqual(['math', 'math_add']);
+      const handlerTool = tools.find((t) => t.functionName === 'handler');
+      expect(handlerTool?.name).toBe('math');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('无命名空间下 handler → 抛错（合成名为空，提示挪入子目录）', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/tools/handler.ts', 'export async function handler(input) { return "ok"; }');
+    try {
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/handler/);
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/subdirectory/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('handler 合成名与其他 tool 名冲突 → 全局重名检测抛错', async () => {
+    const { dir, write, cleanup } = setupTmp();
+    write('src/tools/weather/handler.ts', 'export async function handler(input) { return "a"; }');
+    write('src/tools/handler.ts', 'export function weather(input) { return "b"; }');
+    try {
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/Tool conflict/);
+      await expect(scanTools(dir, ['src/tools/**/*.ts'])).rejects.toThrow(/"weather"/);
+    } finally {
+      cleanup();
+    }
+  });
 });

@@ -17,7 +17,7 @@ tool 层多个模块（扫描、生成产物、加载、注册表）共享同一
 
 | 字段 | 类型 | 用途 |
 |------|------|------|
-| `name` | `string` | tool 名，格式 `子目录_函数名`（如 `weather_getWeather`），无子目录时纯函数名。对 LLM 可见 |
+| `name` | `string` | tool 名，格式 `子目录_函数名`（如 `weather_getWeather`），无子目录时纯函数名；预留函数名 `handler` 时为命名空间本身（如 `weather`，函数名不拼名）。对 LLM 可见 |
 | `functionName` | `string` | 源码中的真实导出函数名（如 `getWeather`）。供 `extractToolMetadata` 在源文件中定位函数节点提取 JSDoc/参数类型 |
 | `filePath` | `string` | 源码相对路径（如 `src/tools/weather/handler.ts`），AST schema 提取需要 `.ts` |
 

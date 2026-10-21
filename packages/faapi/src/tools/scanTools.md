@@ -39,6 +39,7 @@ src/
 - tool 文件名固定为 `handler.ts`（与路由 `handler.ts` 对称）
 - 文件内的所有 `export function` / `export const =` 函数声明都识别为 tool（一个文件可声明多个 tool）
 - 排除保留导出名：`default` / `config` / `run`（agent 系统保留，非 tool）
+- 预留函数名 `handler`：识别为 tool，但函数名不拼进 tool 名（tool 名即命名空间，见下文）
 
 ## 函数导出识别（正则）
 
@@ -87,6 +88,21 @@ tool 名 = `子目录_函数名`，子目录作为命名空间前缀，目录段
 2. 去掉文件名（`handler.ts`）
 3. 剩余路径段（非空时）用 `_` 连接，作为命名空间
 4. tool 名 = 命名空间 + `_` + 函数名；无子目录时纯函数名
+
+### 预留函数名 `handler`（函数名不拼名）
+
+`handler` 是命名空间独占的预留函数名——识别为 tool，但函数名不拼进 tool 名，tool 名即命名空间本身，目录表达「一个能力一个 tool」的语义单元。命名与文件名 `handler.ts` 呼应（「目录 = 能力，handler.ts = 实现，handler 函数 = 本体」），并与路由侧对称（`src/api/<path>/handler.ts` 导出方法函数，URL 只看目录）：
+
+| 文件路径 | 函数名 | tool 名 |
+|---------|--------|---------|
+| `src/tools/weather/handler.ts` | `handler` | `weather` |
+| `src/tools/a/b/handler.ts` | `handler` | `a_b` |
+| `src/tools/weather/handler.ts` | `getWeather` | `weather_getWeather`（普通函数不受影响） |
+
+- `handler` 与同文件其他函数可共存（如同时导出 `handler` 与 `getWeather` → `weather` + `weather_getWeather`）
+- `functionName` 仍为 `handler`——AST 提取（[extractToolMetadata](../ast/extractToolMetadata.md)）与运行时函数定位（`loadToolModule`）语义不变
+- 无命名空间时（`src/tools/handler.ts` 导出 `handler`）合成名为空串，扫描期显式抛错（不回退为函数名——「函数名不拼名」语义下 `handler` 作 tool 名无意义），报错含挪入子目录指引
+- `handler` 合成名与其他 tool 名冲突时走全局重名检测抛错（如根级 `export function weather` 与 `src/tools/weather/handler.ts` 的 `handler` 同名）
 
 **字符集校验**（构建期强制，与 [agent 目录段](../agents/scanAgents.md)同规则）：
 

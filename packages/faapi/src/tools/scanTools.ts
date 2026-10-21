@@ -45,6 +45,20 @@ const TOOL_EXPORT_RE = new RegExp(
 const RESERVED_EXPORTS = new Set(['default', 'config', 'run']);
 
 /**
+ * 预留 tool 函数名（识别为 tool，但函数名不拼进 tool 名）
+ *
+ * `handler` 是命名空间独占的函数名——tool 名即命名空间本身（`src/tools/weather/handler.ts`
+ * 导出 `handler` → tool 名 `weather`），目录表达「一个能力一个 tool」的语义单元。
+ * 与 RESERVED_EXPORTS 不同：`handler` 会被识别为 tool，`functionName` 仍为 `handler`
+ * （AST 提取与运行时函数定位语义不变），只是合成名不含函数名。
+ *
+ * 命名理由：与文件名 `handler.ts` 呼应——「目录 = 能力，handler.ts = 实现，handler
+ * 函数 = 本体」；与路由侧对称（`src/api/<path>/handler.ts` 导出方法函数，URL 只看
+ * 目录，函数名是方法名而非路径成分）。
+ */
+const HANDLER_EXPORT = 'handler';
+
+/**
  * 从源码内容中提取所有 tool 函数导出名（去重 + 排除保留名）
  */
 function extractToolExportsFromSource(source: string): Set<string> {
@@ -116,11 +130,27 @@ function filePathToToolNamespace(filePath: string): string {
 /**
  * 生成 tool 名：命名空间_函数名 或 纯函数名
  *
+ * 预留函数名 `handler` 例外：识别为 tool 但函数名不拼进 tool 名，tool 名即命名空间
+ * （`weather/handler` → `weather`）；无命名空间时合成名为空串，显式抛错（不回退为
+ * 函数名——「函数名不拼名」语义下 `handler` 作 tool 名无意义）。
+ *
  * 合成名整体须满足 LLM 工具名字符集——函数名含 `$` 等非法字符时抛错（改名），
  * 不静默净化
  */
 function buildToolName(namespace: string, functionName: string): string {
-  const name = namespace ? `${namespace}_${functionName}` : functionName;
+  const name =
+    functionName === HANDLER_EXPORT
+      ? namespace
+      : namespace
+        ? `${namespace}_${functionName}`
+        : functionName;
+  if (!name) {
+    throw new Error(
+      `Reserved function name "${HANDLER_EXPORT}" in "tools/handler.ts" cannot form a tool name — ` +
+        `handler is a namespace-only tool (tool name = directory namespace, function name is not appended), ` +
+        `move it into a subdirectory (e.g. tools/weather/handler.ts → tool "weather")`,
+    );
+  }
   if (!LLM_TOOL_NAME_PATTERN.test(name)) {
     throw new Error(
       `Tool name "${name}" (function "${functionName}"${namespace ? ` in namespace "${namespace}"` : ''}) ` +
@@ -144,7 +174,8 @@ function buildToolName(namespace: string, functionName: string): string {
  * agent 通过 config 块的 `tools` 字段显式声明引用哪些 tool。
  *
  * tool 命名规则：子目录_函数名（如 weather_getWeather，段间与命名空间-函数名都用 `_`
- * 连接），无子目录时纯函数名；目录段与合成名走字符集校验（见
+ * 连接），无子目录时纯函数名；预留函数名 `handler` 例外（tool 名即命名空间，函数名
+ * 不拼名）；目录段与合成名走字符集校验（见
  * [nameRules](../naming/nameRules.md) 与 buildToolName）。
  *
  * 重名检测：同名 tool 抛错。
