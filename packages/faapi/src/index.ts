@@ -52,7 +52,6 @@ export type {
   AppRegistries,
   ToolRegistry,
   AgentRegistry,
-  SkillRegistry,
   AgentHandleStore,
   AgentHandleFactory,
   TaskRegistriesView,
@@ -121,17 +120,6 @@ export {
   SUB_AGENT_TOOL_PREFIX,
   subAgentToolName,
 } from './injection/subAgentToolName';
-// skill 注册表（运行时 DB-driven skills,业务方 plugin 接入外部源时调）
-// skill 与 agent 物理隔离——agentRegistry 查询函数不 fallback 到 skillRegistry,
-// skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归。
-// 业务方 plugin 自行编排使用（如自定义注入器或中间件注入到 handler）。
-export {
-  hydrateSkillRegistry,
-  upsertSkill,
-  removeSkill,
-  getSkill,
-  listSkills,
-} from './injection/skillRegistry';
 // 动态加载器（dev 按需编译模式需 rootDir,prod 模式直接 import 产物）
 export { loadToolModule } from './loaders/loadToolModule';
 export { loadToolSchema, getToolSchemaPath } from './loaders/loadToolSchema';

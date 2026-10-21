@@ -341,7 +341,6 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         .map((core) => registriesView.agent.getAgentEntry(core.name))
         .filter((entry): entry is AgentMetadata => entry !== undefined),
       tools: registriesView.tool.list(),
-      skills: registriesView.skill.list(),
     };
   }
 

@@ -16,10 +16,10 @@
 
 `AgentCore` 描述 LLM 可见字段，`AgentMetadata` 继承 `AgentCore` 额外含 `filePath`：
 
-- **`AgentCore`** —— `name` / `description` / `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription`。文件型 agent 与 DB-driven skill 都实现此接口。`agentRegistry.getAgent` 返回此类型。
+- **`AgentCore`** —— `name` / `description` / `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription`。文件型 agent 实现此接口。`agentRegistry.getAgent` 返回此类型。
 - **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`(声明文件定位)与 `inputTypeName`(派发入参 schema 定位,声明 `Input` 时为 `'Input'`)。仅文件型 agent 实现。`agentRegistry.getAgentEntry` 返回此类型。
 
-DB-driven skill 不实现 `AgentMetadata`(无源文件)，只实现 `AgentCore` 存入 `skillRegistry`——skill 无编译期产物，天然没有 `inputTypeName`，派发时走单字段 `input` 交接单模式。
+`inputTypeName` 仅在 handler.ts 顶层声明 `Input` 类型时提取，派发入参 schema 由此定位；未声明时派发走单字段 `input` 交接单模式。
 
 与 [extractToolMetadata](./extractToolMetadata.md) 的 `ToolCore` / `ToolMetadata` 分层同构。
 
@@ -157,7 +157,7 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 
 理由："声明了却提取不出"是确定的构建错误——静默降级为 `undefined` 后，运行时与"合法地未声明"不可区分(`reactLoop` 对 `undefined` systemPrompt 是正常路径)，agent 人设整体失效且端到端无任何告警。与 schema 类型提取的原则一致(AST 暂不支持的语法直接抛错，不降级)。
 
-`systemPrompt` / `systemPromptFile` 进一步收紧为**二选一必填**（仅声明式 agent）：提示词定义 agent 人设与输出格式约定，无提示词的声明式 agent 不是合法的文件型 agent(JSDoc `description` 只是 LLM 可见的用途说明，不构成提示词)。`systemPromptFile` 的值为相对产物 resources 目录的路径字面量，运行时（`@faapi/agent` 的 `buildLoopConfig`）每次 run 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。约束加在文件型 agent 的构建期——DB-driven skill 不经过此链路，`AgentCore.systemPrompt` / `AgentCore.systemPromptFile` 类型保持可选，由业务方 plugin 自治。
+`systemPrompt` / `systemPromptFile` 进一步收紧为**二选一必填**（仅声明式 agent）：提示词定义 agent 人设与输出格式约定，无提示词的声明式 agent 不是合法的文件型 agent(JSDoc `description` 只是 LLM 可见的用途说明，不构成提示词)。`systemPromptFile` 的值为相对产物 resources 目录的路径字面量，运行时（`@faapi/agent` 的 `buildLoopConfig`）每次 run 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。约束加在文件型 agent 的构建期。
 
 **自定义 `run` 导出已移除**：agent 统一为声明式执行（config + 默认 reactLoop），检测到 `export function/const run` 抛 `SchemaExtractionError` 迁移错误——编排场景注册 tool（有 schema/trace/鉴权钩子），多 agent 协作用 config.agents 声明 sub-agent。
 
@@ -168,11 +168,11 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 ## API
 
 ```ts
-// LLM 可见核心字段(文件型 agent 与 DB-driven skill 都实现)
+// LLM 可见核心字段(文件型 agent 实现)
 interface AgentCore {
   name: string;              // pathMeta.name（目录路径推导,嵌套段用 _ 连接）
   description?: string;      // JSDoc 描述(用途说明,不构成提示词)
-  systemPrompt?: string;     // 系统提示词;文件型 agent 必填(构建期校验),DB skill 由业务方自治
+  systemPrompt?: string;     // 系统提示词;文件型 agent 必填(构建期校验)
   tools?: string[];          // agent 显式声明可用 tool 引用列表
   agents?: string[];         // 可调用的其他 agent 名
   model?: string;            // LLM 模型名

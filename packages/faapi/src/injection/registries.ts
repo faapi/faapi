@@ -14,7 +14,7 @@ import { subAgentToolName } from './subAgentToolName';
  * 此前注册表是模块级全局单例 + hydrate 整体替换语义，后创建的 app 会覆盖
  * 先创建的 app 的清单，任一 app close 会清空全部（详见各模块 .md）。
  *
- * 原四个模块（toolRegistry / agentRegistry / skillRegistry / agentHandle）
+ * 原三个模块（toolRegistry / agentRegistry / agentHandle）
  * 保留同名全局函数作为**默认实例的便捷访问器**（供编程式直调 / 单元测试 /
  * 无 app 上下文的场景），内部全部路由到本模块的 `defaultRegistries`。
  * 框架自身链路（hydrate / 请求注入 / `@faapi/agent` 插件 / lifecycle 钩子）
@@ -153,47 +153,6 @@ export function createAgentRegistry(tool: ToolRegistry): AgentRegistry {
   };
 }
 
-// ─── Skill 注册表 ────────────────────────────────────────────────────
-
-export interface SkillRegistry {
-  /** 全量替换（DB change stream 场景也可用 upsert 增量） */
-  hydrate(skills: AgentCore[]): void;
-  /** 增量注册 / 覆盖（业务方监听 DB 单条变更） */
-  upsert(skill: AgentCore): void;
-  remove(name: string): void;
-  get(name: string): AgentCore | undefined;
-  list(): AgentCore[];
-  clear(): void;
-}
-
-export function createSkillRegistry(): SkillRegistry {
-  let registry = new Map<string, AgentCore>();
-  return {
-    hydrate(skills) {
-      const next = new Map<string, AgentCore>();
-      for (const skill of skills) {
-        next.set(skill.name, skill);
-      }
-      registry = next;
-    },
-    upsert(skill) {
-      registry.set(skill.name, skill);
-    },
-    remove(name) {
-      registry.delete(name);
-    },
-    get(name) {
-      return registry.get(name);
-    },
-    list() {
-      return Array.from(registry.values());
-    },
-    clear() {
-      registry = new Map();
-    },
-  };
-}
-
 // ─── Agent handle 工厂 ───────────────────────────────────────────────
 
 /** agent handle 工厂函数（由 `@faapi/agent` 插件注册） */
@@ -290,7 +249,6 @@ export function createTaskHandleStore(): TaskHandleStore {
 export interface AppRegistries {
   tool: ToolRegistry;
   agent: AgentRegistry;
-  skill: SkillRegistry;
   task: TaskRegistry;
   agentHandle: AgentHandleStore;
   taskHandle: TaskHandleStore;
@@ -316,7 +274,6 @@ export interface TaskRegistriesView {
     | 'resolveSubAgents'
   >;
   tool: Pick<ToolRegistry, 'get' | 'list'>;
-  skill: Pick<SkillRegistry, 'get' | 'list'>;
 }
 
 /** 从 AppRegistries 构造任务侧只读视图（活引用——进程内执行路径直接使用） */
@@ -334,10 +291,6 @@ export function createTaskRegistriesView(registries: AppRegistries): TaskRegistr
       get: (name) => registries.tool.get(name),
       list: () => registries.tool.list(),
     },
-    skill: {
-      get: (name) => registries.skill.get(name),
-      list: () => registries.skill.list(),
-    },
   };
 }
 
@@ -353,7 +306,6 @@ export function createEmptyTaskRegistriesView(): TaskRegistriesView {
       resolveSubAgents: () => [],
     },
     tool: { get: () => undefined, list: () => [] },
-    skill: { get: () => undefined, list: () => [] },
   };
 }
 
@@ -361,12 +313,11 @@ export function createEmptyTaskRegistriesView(): TaskRegistriesView {
 export function createAppRegistries(): AppRegistries {
   const tool = createToolRegistry();
   const agent = createAgentRegistry(tool);
-  const skill = createSkillRegistry();
   const task = createTaskRegistry();
   const agentHandle = createAgentHandleStore();
   const taskHandle = createTaskHandleStore();
   const llm = createLlmChannelStore();
-  return { tool, agent, skill, task, agentHandle, taskHandle, llm };
+  return { tool, agent, task, agentHandle, taskHandle, llm };
 }
 
 /**

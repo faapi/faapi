@@ -19,7 +19,7 @@
 | --- | --- | --- |
 | `query` / `params` / `headers` / `context` / `cookies` / `ip` / `ua` / `body` / `form` / `files` / `fields` | 同步从 ctx/body 取值 | 见 `getBuiltinInjectionValue` |
 | `rawQuery` / `rawParams` / `rawBody` | 同步从 ctx 同名字段取值（恒原始，管线永不覆盖） | 见 `getBuiltinInjectionValue` |
-| `agents` | 同步从 [agentRegistry](./agentRegistry.md) 取值 | `AgentCore[]`（所有已注册 agent 的 LLM 可见元数据，合并文件型 + DB skill） |
+| `agents` | 同步从 [agentRegistry](./agentRegistry.md) 取值 | `AgentCore[]`（所有已注册文件型 agent 的 LLM 可见元数据） |
 | `agent` | 调 [agentHandle](./agentHandle.md) 工厂 `getAgentHandle(ctx)` 取值 | `AgentHandle` 实例（`@faapi/agent` 插件未注册时返回 `undefined`） |
 | `tasks` | 读 `registries.taskHandle` 工厂 | `TaskClient`（无 app 编排时 `undefined`） |
 | `llm` | 读 `registries.llm` store（`get()` 无参——channel 与请求上下文无关） | `LlmComplete` 轻量补全通道（`@faapi/agent` 插件未加载时 `undefined`） |

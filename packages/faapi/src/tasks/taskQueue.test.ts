@@ -1131,7 +1131,6 @@ describe('createTaskQueue', () => {
     appRegistries.tool.hydrate([
       { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
     ]);
-    appRegistries.skill.hydrate([{ name: 'db-skill', systemPrompt: 's' }]);
 
     const run = vi.fn(async (_payload: unknown, taskCtx: unknown) => taskCtx);
     const deps = makeDeps({ hello: { run } });
@@ -1151,7 +1150,6 @@ describe('createTaskQueue', () => {
         registries: {
           agent: { getAgent: (n: string) => unknown; listAgents: () => unknown[] };
           tool: { get: (n: string) => unknown };
-          skill: { get: (n: string) => unknown };
         };
       },
     ];
@@ -1160,11 +1158,10 @@ describe('createTaskQueue', () => {
     });
     expect(taskCtx.registries.agent.listAgents()).toHaveLength(1);
     expect(taskCtx.registries.tool.get('parse')).toMatchObject({ name: 'parse' });
-    expect(taskCtx.registries.skill.get('db-skill')).toMatchObject({ name: 'db-skill' });
     await queue.stop();
   });
 
-  it('隔离执行传注册表纯数据快照：runIsolated 收到 agents（完整元数据）/tools/skills', async () => {
+  it('隔离执行传注册表纯数据快照：runIsolated 收到 agents（完整元数据）/tools', async () => {
     const appRegistries = createAppRegistries();
     appRegistries.agent.hydrate([
       {
@@ -1177,7 +1174,6 @@ describe('createTaskQueue', () => {
     appRegistries.tool.hydrate([
       { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
     ]);
-    appRegistries.skill.hydrate([{ name: 'db-skill', systemPrompt: 's' }]);
 
     const fake = makeFakeDriver();
     const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
@@ -1203,7 +1199,6 @@ describe('createTaskQueue', () => {
       registries: {
         agents: Array<{ name: string; filePath?: string; systemPrompt?: string }>;
         tools: Array<{ name: string }>;
-        skills: Array<{ name: string }>;
       };
     };
     // agents 为完整元数据快照（含 filePath，非仅 LLM 可见字段）
@@ -1218,7 +1213,6 @@ describe('createTaskQueue', () => {
     expect(call.registries.tools).toEqual([
       { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
     ]);
-    expect(call.registries.skills).toEqual([{ name: 'db-skill', systemPrompt: 's' }]);
     await queue.stop();
   });
 
@@ -1253,7 +1247,7 @@ describe('createTaskQueue', () => {
     await queue.enqueue('heavy');
     await fake.dispatch('heavy', {}, 1);
     expect(runIsolated.mock.calls[0]![0]).toMatchObject({
-      registries: { agents: [], tools: [], skills: [] },
+      registries: { agents: [], tools: [] },
     });
     await queue.stop();
   });

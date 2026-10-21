@@ -22,9 +22,6 @@ import { hydrateToolRegistry, clearToolRegistry } from './toolRegistry';
  * - Phase 2.2 扩展：asTool / resolveAgentTools / resolveSubAgents
  *
  * resolveAgentTools 跨注册表依赖 toolRegistry，测试中同步水合两个注册表。
- *
- * skill 与 agent 完全独立（方案 A）：agentRegistry 不 fallback 到 skillRegistry,
- * skillRegistry 自身的存储语义在 skillRegistry.test.ts 单独测。
  */
 describe('agentRegistry', () => {
   beforeEach(() => {
@@ -387,46 +384,6 @@ describe('agentRegistry', () => {
       expect(_.agentName).toBe('researcher');
       expect(_.description).toBe('研究助手');
       expect(_.metadata).toBe(researcher);
-    });
-  });
-
-  describe('与 skillRegistry 物理隔离（方案 A）', () => {
-    /**
-     * skill 与 agent 完全独立：agentRegistry 的查询函数不 fallback 到 skillRegistry,
-     * skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归。
-     *
-     * skillRegistry 由业务方 plugin 内部使用,其存储语义在 skillRegistry.test.ts 单独测。
-     */
-    it('getAgent 不 fallback 到 skillRegistry', () => {
-      hydrateAgentRegistry([researcher]);
-      // 即便 skillRegistry 通过 upsertSkill 塞了同名 translator,getAgent 也找不到
-      // (skillRegistry 的写入由 skillRegistry.test.ts 自测,这里只验证 fallback 不发生)
-      expect(getAgent('translator')).toBeUndefined();
-      // researcher 仍走文件 registry
-      expect(getAgent('researcher')).toEqual(researcher);
-    });
-
-    it('listAgents 不合并 skillRegistry', () => {
-      hydrateAgentRegistry([researcher, writer]);
-      const list = listAgents();
-      // 只返回文件型 agent,不包含任何 skill
-      expect(list).toHaveLength(2);
-      const names = list.map((a) => a.name).sort();
-      expect(names).toEqual(['researcher', 'writer']);
-    });
-
-    it('resolveSubAgents 不 fallback 到 skillRegistry', () => {
-      // orchestrator 引用 skill 名 'translator',resolveSubAgents 应跳过
-      const orchestrator: AgentMetadata = {
-        name: 'orchestrator',
-        filePath: 'dist/agents/orchestrator/handler.js',
-        agents: ['writer', 'translator'],
-      };
-      hydrateAgentRegistry([orchestrator, writer]);
-      const subs = resolveSubAgents('orchestrator');
-      // 只解析出文件型 writer,skill 'translator' 不参与
-      expect(subs).toHaveLength(1);
-      expect(subs[0]!.name).toBe('writer');
     });
   });
 });

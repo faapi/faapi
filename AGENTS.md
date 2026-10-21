@@ -357,8 +357,6 @@ export default {
     async onReady({ rootDir, routes, server, registries }) {
       // 初始化数据库连接、Redis 等
       console.log(`Server ready with ${routes.length} routes`);
-      // DB-driven skill 经 app 实例注册表灌入（与 app 生命周期绑定）
-      // await loadSkillsFromDB().then((skills) => registries.skill.hydrate(skills));
     },
     async onClose({ rootDir, server }) {
       // 清理资源、优雅关闭
@@ -628,35 +626,20 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 
 `loadMergedMiddlewares` 单文件加载带缓存（`getCachedMiddlewares` / `setCachedMiddlewares`），多文件合并语义：子级中间件追加在父级之后（洋葱模型内层），子级注入器覆盖父级同名注入器。
 
-#### 5.6.3 双 registry 设计（agentRegistry + skillRegistry）
-
-agent 与 skill 物理隔离，职责正交不耦合：
+#### 5.6.3 agentRegistry
 
 | 来源 | registry | 注入时机 | API |
 |------|-----------|----------|-----|
 | 文件型 agent（`src/agents/<name>/handler.ts`） | `agentRegistry` | `createAppBase` 启动期 / `reloadAgents` dev 热替换 | `hydrateAgentRegistry` 整体替换 |
-| DB-driven skill（业务方 plugin 从 DB / 外部源加载） | `skillRegistry` | 业务方 `lifecycle.onReady` + 运行时增量 | `hydrateSkillRegistry` / `upsertSkill` / `removeSkill` |
 
-物理隔离的必要性：
-
-- **职责正交不耦合**——**agent 负责核心流程**（声明式 LLM 循环、文件型入口、sub-agent 递归；编排场景注册 tool）；**skill 用于拓展**（运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用）。两者不构成覆盖关系
+**skillRegistry（DB-driven skill 注册表）已整体下线**——业务实践证明「全局共享、名键唯一」的 skill 模型不成立（技能天然是用户 / 租户维度，业务方最终都自建消费链路）。需要运行时动态 agent 元数据的业务方自行实现「实时查库 + LLM 可见花名册 + tool 按需读取」模式（不进框架注册表）。
 
 **agent 统一为声明式执行（自定义 run 已移除）**：agent = config 声明（systemPrompt / systemPromptFile / tools / agents / model / maxTurns）+ 默认 reactLoop。检测到 handler 导出 `run` 时构建期抛迁移错误。原 run 的两个场景由更强能力承接——**LLM 可调用的编排代码注册 tool**（有 schema 校验、trace 采集、鉴权钩子覆盖，全链路可观测），**多 agent 协作用 config.agents 声明 sub-agent**（继承 provider、delta 冒泡、usage 整树上卷）。
 
 **派发入参 schema 声明（per-agent 富 schema）**：agent handler.ts 顶层声明 `interface Input` / `type Input` 时，该 agent 被派发（`agent-<name>` 工具）的入参不再是单字段 `{ input: string }` 交接单，而是结构性 JSON Schema（构建期生成 `agents/<name>/zod.js` 导出 `InputSchema`，字段 JSDoc 即主控 LLM 可见参数描述），`executeSubAgent` 执行前校验，失败按工具同语义回灌 `{ error }`。未声明的 agent 保持单字段 `input` + `inputDescription` 行为，完全向后兼容；`inputDescription` 与 `Input` 互斥生效（声明了 `Input` 即以 schema 为准）。详见 `packages/agent/src/agent.md` 的「派发入参 schema 声明」。
-- **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 清单来自编译期产物，reload 时整体重新生成，**dev 模式 watcher 每次改文件都触发 reload**，业务方 DB skill 若混在同一 registry 会被清空，需要业务方手动重新塞，不可接受
-- **DB skill 是运行时增量**——业务方监听 DB change stream 单条增删改，与"整体替换"语义天然冲突
+- **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 清单来自编译期产物，reload 时整体重新生成，**dev 模式 watcher 每次改文件都触发 reload**，外部加载的动态数据不要混入同一 registry
 
-**注册表实例化（app 实例级状态）**：三张注册表 + agent handle 工厂为 **app 实例级状态**——`createAppBase` 创建独立实例（`AppRegistries`），水合、请求链路（`FaapiContext.registries`）、插件（`PluginContext.registries`）、lifecycle 钩子（`LifecycleContext.registries`）均读写 app 自己的实例，`app.close()` 随实例销毁。**faapi 单进程单 app（多 app 同进程不支持）**——`createAppBase` 检测到进程内已有存活 app 时显式抛错，先 `close()` 才能再建（单例语义、全局日志、`readResource` 绑定等进程级资源都以唯一 app 为前提）。四个模块保留的全局函数（`getTool` / `listAgents` / `hydrateSkillRegistry` 等）是**默认实例**的便捷访问器（编程式直调 / 测试用），与 app 实例相互独立——经全局函数水合的数据不会进入任何 app 的请求链路。
-
-**agentRegistry 的查询函数不 fallback 到 skillRegistry**——`getAgent` / `listAgents` / `resolveAgentTools` / `resolveSubAgents` / `asTool` 只查文件 registry。skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归（skill 不再被 agent 的 `agents` 列表自动引用）。skillRegistry 仅供业务方 plugin 内部使用，需要让 handler 看到 skill 时业务方自行通过注入器或中间件机制注入。
-
-DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetadata` 接口）：
-- 只填 LLM 可见字段：`name` / `description?` / `systemPrompt?` / `tools?` / `agents?` / `model?` / `maxTurns?` / `inputDescription?`（agent-as-tool 派发交接单说明，未声明时 sub-agent 工具 schema 的 input description 用框架默认文案）
-- 无需 `filePath` / `inputTypeName` 占位——两字段属于 `AgentMetadata`（文件型 agent 专用，DB skill 不实现该接口）；skill 无编译期产物，派发时恒走单字段 `input` 交接单模式
-- DB skill 不支持自定义 `run` 函数——自定义 run 机制已整体移除（文件型 agent 同样声明式执行）
-
-详见 `src/injection/skillRegistry.md`。
+**注册表实例化（app 实例级状态）**：注册表 + agent handle 工厂为 **app 实例级状态**——`createAppBase` 创建独立实例（`AppRegistries`），水合、请求链路（`FaapiContext.registries`）、插件（`PluginContext.registries`）、lifecycle 钩子（`LifecycleContext.registries`）均读写 app 自己的实例，`app.close()` 随实例销毁。**faapi 单进程单 app（多 app 同进程不支持）**——`createAppBase` 检测到进程内已有存活 app 时显式抛错，先 `close()` 才能再建（单例语义、全局日志、`readResource` 绑定等进程级资源都以唯一 app 为前提）。各模块保留的全局函数（`getTool` / `listAgents` 等）是**默认实例**的便捷访问器（编程式直调 / 测试用），与 app 实例相互独立——经全局函数水合的数据不会进入任何 app 的请求链路。
 
 ### 5.7 内置注入类型
 
@@ -677,7 +660,7 @@ DB skill 字段约定（业务方从 DB 转 `AgentCore`，不实现 `AgentMetada
 | `files` | 上传文件数组 | `POST(files)` |
 | `fields` | Multipart 表单字段 | `POST(fields)` |
 | `agent` | `AgentHandle`（由 `@faapi/agent` 插件注册的工厂 `getAgentHandle(ctx)` 注入，含可调用 `run`/`stream`/`asTool`；无默认 agent——`run`/`stream` 每次显式传 `{ agent, model }`）；插件未注册时返回 `undefined` | `GET(agent)` |
-| `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，合并文件型 + DB skill 按名去重） | `GET(agents)` |
+| `agents` | 所有已注册 agent 的 LLM 可见元数据列表（`AgentCore[]`，来自 `agentRegistry.listAgents()`，文件型 agent） | `GET(agents)` |
 | `llm` | 轻量 LLM 补全通道 `LlmComplete`（`@faapi/agent` 插件注册到 `registries.llm`，与 agent 循环共享 `agent.llms` 同源 providers。一次性补全官方出口——字符串进字符串出，复用 provider 重试引擎，默认 60s 超时 + `LLMTimeoutError`/`status` 错误分型 + `onFailure` 留痕钩子（自身抛错 console.error 留痕）；传输失败恒抛 `LLMProviderError`，无降级出口（需要降级语义业务侧 try/catch 自行实现），model key 解析与 `agent.run` 同规则；详见 `packages/agent/src/lightComplete.md`）；插件未加载时 `undefined` | `POST(llm: LlmComplete)` |
 | `tasks` | 任务队列客户端 `TaskClient`（`enqueue(name, payload)` / `list()`），与 `ctx.tasks` / `app.tasks` 指向同一 app 实例队列 | `POST(tasks)` |
 | `log` | 请求级日志器（与 `ctx.log` 同一实例，scope `http`，自动携带 `requestId`/`method`/`path` 字段，详见 5.5.4） | `GET(log)` |
@@ -797,7 +780,7 @@ agent 流程测试（真 reactLoop + 真工具 + 假 LLM）走 `@faapi/faapi/tes
 
 - **任务定义（文件约定，两种声明 API）**：`src/tasks/<name>/task.ts` = **进程内任务**（`FaapiTaskMeta = { concurrency? / retries? / cron? }`，`run(payload, taskCtx: TaskContext)`）；`src/tasks/<name>/worker.ts` = **隔离任务**（`FaapiWorkerTaskMeta = { timeoutMs 必填 / graceMs? / concurrency? / retries? / cron? }`，`run(payload, taskCtx: IsolatedTaskContext)`）——文件名即执行语义，运行时判据是清单 `mode` 字段而非 timeoutMs 有无。meta 值必须是纯字面量——数字字段支持下划线分隔，`cron` 为引号字符串；表达式/动态值不被零 import 扫描识别，声明了但无法识别时构建期抛错（逐字段列后果与修复指引，不警告后忽略）；声明错位（task.ts 声明 `timeoutMs`/`graceMs`、worker.ts 缺 `timeoutMs`、同目录两种文件并存）同样构建期抛错并附迁移指引，详见 `packages/faapi/src/tasks/scanTasks.md`（`graceMs` 为取消宽限期毫秒数，仅隔离任务生效，默认 5s）+ `run(payload, taskCtx)`；`run` 首参类型声明必填（如 `Payload` interface；确无入参契约显式声明 `type Payload = unknown` 生成恒通过 schema），缺失构建期抛错；类型声明走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`；运行时 schema 产物缺失同样抛错不静默放行）；`run` 第二参 ctx 类型标注与文件种类不符（worker.ts 标 `TaskContext` / task.ts 标 `IsolatedTaskContext`）构建期报错（generateTaskArtifacts AST 校验）
 - **超时取消真终止（worker 隔离执行）**：任务以 `worker.ts` 声明（`timeoutMs` 必填，60s ~ 23h 扫描期校验）后在独立 worker 线程执行，超时两段式取消——先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀，判定超时即执行真正终止（Node 主线程无法强杀协程，进程内"不再等待"式超时是假取消）。任务记录新增 `cancelled` 状态：被框架终止（超时终止/停机取消）记 `cancelled`，与 run 自身失败的 `failed` 分流。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、config/registries 为派发时刻快照（config 经 `collectConfigSnapshot` 纯数据投影——函数值不进快照（lifecycle 钩子/`task.onFailed`/log sink/middlewares 等宿主行为面不跨线程，与 registries 快照同款边界），其余值 structuredClone 保真，含非函数不可克隆值派发显式报错列路径，见 `configSnapshot.md`）。两个上下文类型显式分开：进程内 `TaskContext`（config 活引用全量）/ 隔离 `IsolatedTaskContext`（config 纯数据快照），suspend/resumed 两路径语义零差（隔离路径经 RPC 回传宿主执行同一信封写入，见 `taskSuspend.md`），完整差异表见 `packages/faapi/src/tasks/taskTypes.md`。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。详见 `packages/faapi/src/tasks/taskWorker.md`
-- **任务侧注册表只读视图（TaskContext.registries）**：两条执行路径均注入 `taskCtx.registries`（agent/tool/skill 元数据的只读查询视图，不含 hydrate/clear 写接口），任务内组装/调用 agent 不再依赖 `getApp()`——注册表为 app 实例级，全局访问器读的是 app 启动从不水合的默认实例，`getApp()` 在隔离 worker 内也不可用（globalThis 独立），任务侧曾没有任何注册表访问路径。任务内组装 agent 的 deps 装配走 `@faapi/agent` 的 `createAgentDeps`（注册表视图直传，插件 setup 同一实现——不再手拼访问器）。进程内传活引用（`createTaskRegistriesView`）；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath 完整元数据 + tools + skills）postMessage 传入、worker 内重建视图——**快照语义**：视图反映派发时刻的注册表，执行中途 reload/DB skill 变更不影响当次执行。详见 `packages/faapi/src/tasks/taskTypes.md`
+- **任务侧注册表只读视图（TaskContext.registries）**：两条执行路径均注入 `taskCtx.registries`（agent/tool 元数据的只读查询视图，不含 hydrate/clear 写接口），任务内组装/调用 agent 不再依赖 `getApp()`——注册表为 app 实例级，全局访问器读的是 app 启动从不水合的默认实例，`getApp()` 在隔离 worker 内也不可用（globalThis 独立），任务侧曾没有任何注册表访问路径。任务内组装 agent 的 deps 装配走 `@faapi/agent` 的 `createAgentDeps`（注册表视图直传，插件 setup 同一实现——不再手拼访问器）。进程内传活引用（`createTaskRegistriesView`）；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath 完整元数据 + tools）postMessage 传入、worker 内重建视图——**快照语义**：视图反映派发时刻的注册表，执行中途 reload 变更不影响当次执行。详见 `packages/faapi/src/tasks/taskTypes.md`
 - **任务侧轻量补全通道（TaskContext.llm）**：两条执行路径均注入 `taskCtx.llm`（`@faapi/agent` 插件加载且 `agent.llms` 可解析时；一次性 LLM 补全官方出口，见 5.7 `llm` 注入行与 `packages/agent/src/lightComplete.md`）。进程内从 `registries.llm` store 惰性读取（插件晚于队列构造注册）；隔离路径传 `agent.llms` 纯数据快照、worker 内动态加载 `@faapi/agent` 重建（llms 已配置但不可解析时显式抛错含安装指引，任务失败——不静默旁路；llms 未配置时 `llm` 为 `undefined`，能力不存在非降级）——工具循环仍走 registries.agent 组装 Agent，`llm` 只承接一次性补全
 - **任务事件原语（taskCtx.emit / subscribe / listEvents）**：任务执行中经 `taskCtx.emit(data)` 发射过程事件（agent 流式 chunk、阶段标记等），宿主侧 `TaskClient.subscribe(name, handler)` 实时订阅（本进程同步扇出，不回放历史，handler 抛错 console.error 留痕）+ `listEvents(name, { jobId? })` 查询历史（单执行内 seq 升序；`TaskEvent = { task, jobId, attempt, seq, at, data }`）——与 `progress` 的差异：progress 是单值覆盖槽（派发清空），事件是过程历史（seq 跨 attempt 连续、重试不清、attempt 标注）。仅 running 状态生效（终态后忽略，与 progress 同口径）；隔离路径值经 `{ type: 'event' }` 消息回传宿主——须可结构化克隆（不可克隆按执行错误处理），取消判定后（宽限期内）到达不采纳。事件存本进程有界内存（单执行 1000 / 全局 10000 两级上限），生命周期与任务记录绑定，**驱动零改动**（与组记账进驱动刻意对比：组记账要跨实例正确，事件是观测面）；隔离任务 `taskCtx.tasks.subscribe` 显式拒绝（回调不可跨线程），`listEvents` 经 RPC 白名单可用。agent 事件不设专用管道 API——`agent.stream` chunk 原样 `emit` 即成管道（主包对 `@faapi/agent` 保持解耦，消费端本就要按 chunk 字段做业务分发）；完整契约见 `packages/faapi/src/tasks/taskEvents.md`
 - **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle 钩子的 `{ tasks }` 全部指向同一 app 实例 TaskClient；cron（croner）到点自动入队空 payload，复用同一队列与执行模型

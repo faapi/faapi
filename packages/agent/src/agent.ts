@@ -944,7 +944,7 @@ export class Agent {
    * 富 schema 判定需要完整元数据的 `inputTypeName`（`AgentCore` 不含）——经
    * `getAgentEntry` 查询；未声明或 `resolveAgentInputSchema` 未接线时返回单字段
    * `input` schema（历史行为,完全向后兼容）。`inputDescription` 仍从 `AgentCore`
-   * 读取（LLM 可见字段的既定来源,DB skill 同样可声明）。
+   * 读取（LLM 可见字段的既定来源）。
    *
    * @throws {AgentError} 声明了 `inputTypeName` 且 resolver 已接线但解析为
    *   `undefined`（zod.js 缺失/损坏的产物异常,不静默退回单字段模式）

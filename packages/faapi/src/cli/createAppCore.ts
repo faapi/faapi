@@ -467,7 +467,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       // 全局默认实例不被 app 生命周期触碰
       registries.tool.clear();
       registries.agent.clear();
-      registries.skill.clear();
       registries.task.clear();
       registries.agentHandle.clear();
       registries.taskHandle.clear();

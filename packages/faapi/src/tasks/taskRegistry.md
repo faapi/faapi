@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-与 tool/agent/skill registry 同构（方案 A 实例化）：任务清单来自编译期产物，reload 时整体替换；每个 app 持有独立实例，多 app 同进程互不串台。
+与 tool/agent registry 同构（方案 A 实例化）：任务清单来自编译期产物，reload 时整体替换；每个 app 持有独立实例，多 app 同进程互不串台。
 
 ## 使用场景
 

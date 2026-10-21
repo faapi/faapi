@@ -29,22 +29,9 @@ Phase 2.2 在基础查询 API 上扩展三个能力，对应 agent 三类用法�
 ### 单例 + 全量替换
 
 - `hydrateAgentRegistry(agents)` —— 全量替换注册表内容（启动 + reload 调用）
-- `clearAgentRegistry()` —— 清空（app close 时调用，与 `clearToolRegistry` / `clearSkillRegistry` / `setCurrentApp(null)` 对称）
+- `clearAgentRegistry()` —— 清空（app close 时调用，与 `clearToolRegistry` / `setCurrentApp(null)` 对称）
 
 全量替换而非增量注册：agent 清单来自编译期产物，reload 时整体重新生成，增量追踪反而复杂（与 `hydrateToolRegistry` 同构）。
-
-### 与 skillRegistry 的关系 — 物理隔离
-
-本注册表只承载文件型 agent（编译期 `faapi-agents.js` 产物来源）。[skillRegistry](./skillRegistry.md) 是独立的运行时动态 skill 注册表，供业务方 plugin 内部使用（DB-driven skill 的 hydrate / upsert / remove）。
-
-**职责正交不耦合**：
-
-- **agent 负责核心流程**：含 `run` 函数的多步 prompt 串联、文件型入口、sub-agent 递归
-- **skill 用于拓展**：运行时动态补充的 LLM 可见元数据，业务方 plugin 自行编排使用
-
-本模块的查询函数（`getAgent` / `listAgents` / `asTool` / `resolveAgentTools` / `resolveSubAgents`）**不 fallback 到 skillRegistry**——skill 不参与 agent 查询链路、不覆盖文件型 agent、不参与 sub-agent 递归。skill 不再被 agent 的 `agents` 列表自动引用。
-
-`reloadAgents`（dev watcher 触发）只重新 hydrate 文件 registry；skillRegistry 由业务方 plugin 自行管理生命周期（`hydrateSkillRegistry` / `upsertSkill` / `removeSkill`），dev 改文件不会清空 skillRegistry，业务方需自行在 `onReady` 或监听 DB change stream 时维护。
 
 ### 基础查询 API — Core/Entry 双查询模式
 
@@ -57,7 +44,7 @@ agent 元数据分两层接口，对应两类使用方（详见 [extractAgentMet
 | --- | --- | --- |
 | `getAgent(name)` | `AgentCore \| undefined` | LLM-facing 场景：`agents` 注入器、`asTool` 描述、`resolveAgentTools` / `resolveSubAgents` 解析。仅查文件 registry |
 | `getAgentEntry(name)` | `AgentMetadata \| undefined` | 框架内部：`@faapi/agent` 子包查声明文件定位（清单可观测性） |
-| `listAgents()` | `AgentCore[]` | 返回所有已注册文件型 agent（不合并 skillRegistry；副本，修改不影响内部状态） |
+| `listAgents()` | `AgentCore[]` | 返回所有已注册文件型 agent（副本，修改不影响内部状态） |
 
 **调用方选择**：消费 LLM 可见字段（`systemPrompt` / `tools` / `agents` / `model` / `maxTurns`）的代码用 `getAgent`；需要 `filePath` 的代码用 `getAgentEntry`。
 

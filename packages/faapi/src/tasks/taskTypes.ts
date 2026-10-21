@@ -1,5 +1,5 @@
 import type { ToolMetadata } from '../ast/extractToolMetadata';
-import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
+import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import type { TaskRegistry } from './taskRegistry';
 import type { TaskDriver } from './driverTypes';
 import type { TaskWorkerRunner } from './taskWorker';
@@ -211,7 +211,6 @@ export interface TaskRegistriesSnapshot {
   /** agent 完整元数据（含 filePath，非仅 LLM 可见字段） */
   agents: AgentMetadata[];
   tools: ToolMetadata[];
-  skills: AgentCore[];
 }
 
 /**
@@ -243,7 +242,7 @@ export interface TaskContext {
   config: FaapiContextConfig;
   job: { id: string; name: string; attempt: number };
   /**
-   * app 注册表只读视图（agent/tool/skill 元数据查询，不含 hydrate/clear 写接口）
+   * app 注册表只读视图（agent/tool 元数据查询，不含 hydrate/clear 写接口）
    *
    * 活引用（`createAppBase` 创建队列时传入）——反映注册表实时状态。
    * 任务内组装 agent 用 `registries.agent.getAgentEntry(name)`（含 filePath）。
@@ -335,7 +334,7 @@ export interface IsolatedTaskContext {
   /**
    * app 注册表只读视图——**派发时刻的快照**在 worker 内重建（宿主生成
    * `TaskRegistriesSnapshot` 纯数据随 postMessage 传入），查询方法与活引用
-   * 视图同型；执行中途的 reload/DB skill 变更不影响当次执行。
+   * 视图同型；执行中途的 reload 变更不影响当次执行。
    */
   registries: TaskRegistriesView;
   /**

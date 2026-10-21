@@ -6,7 +6,6 @@ import { runTaskInWorker, TaskCancelledError } from './taskWorker';
 import {
   createToolRegistry,
   createAgentRegistry,
-  createSkillRegistry,
   createAgentHandleStore,
   createTaskHandleStore,
   createTaskRegistriesView,
@@ -448,7 +447,6 @@ describe('runTaskInWorker', () => {
   it('视图一致性：worker 重建视图与宿主 createTaskRegistriesView 输出一致（同一份注册表数据）', async () => {
     const toolRegistry = createToolRegistry();
     const agentRegistry = createAgentRegistry(toolRegistry);
-    const skillRegistry = createSkillRegistry();
     const metas: AgentMetadata[] = [
       {
         name: 'log-analyzer',
@@ -466,11 +464,9 @@ describe('runTaskInWorker', () => {
     toolRegistry.hydrate([
       { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
     ]);
-    skillRegistry.hydrate([{ name: 'db-skill', systemPrompt: 's' }]);
     const hostView = createTaskRegistriesView({
       tool: toolRegistry,
       agent: agentRegistry,
-      skill: skillRegistry,
       task: createTaskRegistry(),
       agentHandle: createAgentHandleStore(),
       taskHandle: createTaskHandleStore(),
@@ -483,7 +479,6 @@ describe('runTaskInWorker', () => {
         .map((core) => hostView.agent.getAgentEntry(core.name))
         .filter((entry): entry is AgentMetadata => entry !== undefined),
       tools: hostView.tool.list(),
-      skills: hostView.skill.list(),
     };
 
     const modulePath = writeTaskModule(
@@ -502,8 +497,6 @@ describe('runTaskInWorker', () => {
           resolveSubAgentsMissing: r.agent.resolveSubAgents('helper'),
           toolGet: r.tool.get('parse'),
           toolList: r.tool.list(),
-          skillGet: r.skill.get('db-skill'),
-          skillList: r.skill.list(),
         };
       }`,
     );
@@ -528,8 +521,6 @@ describe('runTaskInWorker', () => {
       resolveSubAgentsMissing: hostView.agent.resolveSubAgents('helper'),
       toolGet: hostView.tool.get('parse'),
       toolList: hostView.tool.list(),
-      skillGet: hostView.skill.get('db-skill'),
-      skillList: hostView.skill.list(),
     };
     expect(workerResult).toEqual(hostResult);
   });
@@ -656,7 +647,7 @@ describe('runTaskInWorker', () => {
     await expect(pending).rejects.toThrow(/cancelled/);
   });
 
-  it('注册表快照传入：taskCtx.registries 在 worker 内可查 agent/tool/skill 元数据', async () => {
+  it('注册表快照传入：taskCtx.registries 在 worker 内可查 agent/tool 元数据', async () => {
     const modulePath = writeTaskModule(
       'registry',
       `export function run(_payload, taskCtx) {
@@ -667,8 +658,6 @@ describe('runTaskInWorker', () => {
           agents: r.agent.listAgents().map((a) => a.name),
           tool: r.tool.get('parse'),
           tools: r.tool.list().map((t) => t.name),
-          skill: r.skill.get('db-skill'),
-          skills: r.skill.list().map((s) => s.name),
           viewHasNoHydrate: r.agent.hydrate === undefined && r.tool.hydrate === undefined,
         };
       }`,
@@ -692,7 +681,6 @@ describe('runTaskInWorker', () => {
           { name: 'helper', filePath: 'dist/agents/helper/handler.js' },
         ],
         tools: [{ name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' }],
-        skills: [{ name: 'db-skill', systemPrompt: 's' }],
       },
       timeoutMs: 5000,
     })) as Record<string, unknown>;
@@ -712,8 +700,6 @@ describe('runTaskInWorker', () => {
     expect(result.agents).toEqual(['log-analyzer', 'helper']);
     expect(result.tool).toMatchObject({ name: 'parse' });
     expect(result.tools).toEqual(['parse']);
-    expect(result.skill).toMatchObject({ name: 'db-skill' });
-    expect(result.skills).toEqual(['db-skill']);
     expect(result.viewHasNoHydrate).toBe(true);
   });
 
@@ -747,7 +733,6 @@ describe('runTaskInWorker', () => {
           { name: 'helper', filePath: 'dist/agents/helper/handler.js' },
         ],
         tools: [{ name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' }],
-        skills: [],
       },
       timeoutMs: 5000,
     })) as Record<string, unknown>;
@@ -783,8 +768,6 @@ describe('runTaskInWorker', () => {
           agents: r.agent.listAgents(),
           tool: r.tool.get('x'),
           tools: r.tool.list(),
-          skill: r.skill.get('x'),
-          skills: r.skill.list(),
         };
       }`,
     );
@@ -799,8 +782,6 @@ describe('runTaskInWorker', () => {
       agents: [],
       tool: undefined,
       tools: [],
-      skill: undefined,
-      skills: [],
     });
   });
 });

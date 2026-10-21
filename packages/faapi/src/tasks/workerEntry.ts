@@ -55,7 +55,6 @@ export interface SerializedWorkerError {
 export function buildRegistriesView(snapshot?: TaskRegistriesSnapshot) {
   const agents = new Map((snapshot?.agents ?? []).map((a) => [a.name, a] as const));
   const tools = new Map((snapshot?.tools ?? []).map((t) => [t.name, t] as const));
-  const skills = new Map((snapshot?.skills ?? []).map((s) => [s.name, s] as const));
   return {
     agent: {
       getAgent: (name: string) => agents.get(name),
@@ -98,10 +97,6 @@ export function buildRegistriesView(snapshot?: TaskRegistriesSnapshot) {
     tool: {
       get: (name: string) => tools.get(name),
       list: () => Array.from(tools.values()),
-    },
-    skill: {
-      get: (name: string) => skills.get(name),
-      list: () => Array.from(skills.values()),
     },
   };
 }

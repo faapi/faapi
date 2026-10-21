@@ -51,7 +51,7 @@ raw 系参数与 `query`/`params`/`body` 的「校验转换后」口径二分互
 [createServer](../server/createServer.md) 的「输入字段口径」）。
 
 `agent` / `agents` 注入类型在 `PARAM_TYPE_MAP` 中映射，识别参数名后由 [injectParams](./injectParams.md) 的内置注入处理：
-- `agents` → 返回 `listAgents()`（[agentRegistry](./agentRegistry.md) 中所有 agent 的 `AgentCore[]`，合并文件型 + DB skill）
+- `agents` → 返回 `listAgents()`（[agentRegistry](./agentRegistry.md) 中所有文件型 agent 的 `AgentCore[]`）
 - `agent` → 返回 `getAgentHandle(ctx)`（通过 [agentHandle](./agentHandle.md) 工厂机制注入 `AgentHandle`，含可调用 `run`/`stream`/`asTool`）
 
 `@faapi/agent` 插件在 setup 时调 `registerAgentHandleFactory` 注册工厂,工厂在每次请求时构造 [Agent](../../agent/src/agent.md) 实例作为 `AgentHandle` 返回。核心提供注册点,插件提供工厂,不通过注入器机制。

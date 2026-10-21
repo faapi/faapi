@@ -12,13 +12,8 @@ export type { AgentToolDescriptor } from './registries';
  * agent 注册表实例在构造时绑定同套 tool 注册表实例（`resolveAgentTools` 跨表查找），
  * 多 app 同进程互不串台。
  *
- * 本模块的同名函数保留为**默认实例**的便捷访问器（语义约束不变：不 fallback 到
- * skillRegistry、Core / Entry 双查询入口），供编程式直调 / 单元测试使用。
- *
- * ## 与 skillRegistry 物理隔离
- *
- * agent 负责核心流程,skill 用于拓展——查询函数不 fallback 到 skillRegistry，
- * 实例化后依旧如此（两套注册表实例互不引用）。
+ * 本模块的同名函数保留为**默认实例**的便捷访问器（Core / Entry 双查询入口），
+ * 供编程式直调 / 单元测试使用。
  *
  * 详见 [agentRegistry.md](./agentRegistry.md)。
  */

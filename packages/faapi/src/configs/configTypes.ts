@@ -120,7 +120,7 @@ export interface LifecycleContext {
   routes: import('../routers/routeTypes.js').RouteManifest;
   /** 服务器实例（onBoot 钩子触发时已创建但未监听，`listening === false`） */
   server: import('node:http').Server;
-  /** app 级注册表——skill 等运行时动态注册路径（`registries.skill.upsert(...)`） */
+  /** app 级注册表（tool/agent/task 等，随 app 生命周期创建与销毁） */
   registries: import('../injection/registries.js').AppRegistries;
   /** 任务客户端——onBoot/onReady 中投递异步任务（`tasks.enqueue(name, payload)`） */
   tasks: import('../tasks/taskTypes.js').TaskClient;
