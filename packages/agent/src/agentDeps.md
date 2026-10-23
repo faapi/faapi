@@ -1,6 +1,6 @@
 # agentDeps
 
-一句话概括：`createAgentDeps(options)` 官方 deps 装配工厂——从注册表视图 + llms 配置构造完整 `AgentDeps`，插件 setup 与任务内组装/自组装共用同一装配，业务只声明差异项（装饰钩子、schema 富化、配置覆盖），不再逐字段复刻框架工厂的访问器拼装。
+一句话概括：`createAgentDeps(options)` 官方 deps 装配工厂——从注册表视图 + agent 配置构造完整 `AgentDeps`，插件 setup 与任务内组装/自组装共用同一装配；`agentConfig` 参数直收 `faapi.config.ts` 的 `agent` 块复合形状（llms + 运行时旋钮），业务只声明差异项（装饰钩子、schema 富化、配置覆盖），不再逐字段复刻框架工厂的访问器拼装、也不必手工拆装复合配置块。
 
 ## 为什么需要
 
@@ -11,9 +11,11 @@
 
 框架文档（`agent.md`「派发入参 schema 声明」的编程式组装路径、`toolSchemaResolver.md` 任务侧示例）展示的就是手拼形态——框架亲手把定制业务推向机械。本模块把「从 registries + llms 构造 deps」抽为单一实现：插件 setup 改调它，任务内/自组装也调它，机械只此一份。
 
+复合配置块的拆装同理收进本工厂：`faapi.config.ts` 的 `agent` 块（`AgentConfig`）是 llms 目录与运行时旋钮的复合形状，而 deps 消费的是 `llms` 与 `AgentRuntimeConfig` 双参数——此前插件 setup 与业务自组装各自手工逐字段拆装，框架每新增一个旋钮两处清单都要记得补，漏掉的那侧**静默缺失**（实证：`enableTracing` 曾在插件侧清单漏拼，`faapi.config` 配置后静默不生效）。`agentConfig` 参数直收复合块，拆装清单（含 `enableTracing` 全量字段）只在 `toAgentRuntimeConfig` 一处维护，插件与自组装两路自动到达。
+
 ## 使用场景
 
-- **任务内组装 agent**（主要场景）：`src/tasks/<name>/task.ts` 中 `new Agent(createAgentDeps({ registries: taskCtx.registries, llms, rootDir }))`——任务数据经 payload 显式传入，鉴权身份经 `ctx` 窄对象透传（框架契约：`AgentDeps.ctx` 为 `Partial<FaapiContext>` 纯透传）
+- **任务内组装 agent**（主要场景）：`src/tasks/<name>/task.ts` 中 `new Agent(createAgentDeps({ registries: taskCtx.registries, agentConfig: taskCtx.config.agent }))`——配置经 `taskCtx.config.agent` 读回（faapi.config 单一来源），鉴权身份经 `ctx` 窄对象透传（框架契约：`AgentDeps.ctx` 为 `Partial<FaapiContext>` 纯透传）
 - **自组装单点**：业务组装工厂（如 writer 的 `buildAppAgent`）用 `overrides` 叠加差异项——`resolveSystemPrompt` 装饰、`resolveSubAgentContext` 派发上下文供数、schema 富化包装、config 覆盖——访问器拼装不再复刻
 - **插件 setup**：`@faapi/agent` 插件内部同样经本工厂装配（与任务侧单一实现，不出现适配漂移）
 - **测试设施**：`createAgentTestHarness` 的 `registries` + `loadToolModule` 可经 `overrides` 接进同一装配（harness 自带桥接形态与此工厂同构）
@@ -39,6 +41,15 @@ interface CreateAgentDepsOptions {
   /** 项目根目录（loadToolModule 桥接与 schema 解析器定位用；缺省 process.cwd()） */
   rootDir?: string;
   /**
+   * faapi.config 的 `agent` 块复合形状（llms + 运行时旋钮）直收——与
+   * `FaapiConfig['agent']`（AgentConfig）同构，可整体透传 `ctx.config.agent` /
+   * `taskCtx.config.agent` 读回值。拆装清单在本工厂单一维护（含 enableTracing
+   * 全量字段），与显式 `llms` / `config` 的合并语义：显式参数优先，
+   * `agentConfig` 提供底座（llms：`options.llms ?? agentConfig.llms`；
+   * config：`{ ...拆装结果, ...options.config }`）
+   */
+  agentConfig?: AgentConfig;
+  /**
    * LLM provider 配置（key 为 provider 名）。提供时逐项 `createProvider` 转换为
    * providers Map 并透传 llms（model key 解析用）；缺省为空 Map + 空 llms
    * （外部 provider 模式——`agent.run(input, { provider })` 每次显式注入）
@@ -62,6 +73,7 @@ function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps;
 - **schema 解析器**：默认内部 `createToolSchemaResolver({ rootDir })`（同一实例注入 `resolveToolSchema` + `resolveAgentInputSchema`，tool 与派发入参共用缓存）；经 `overrides` 覆盖时（如富化包装）以覆盖值为准
 - **空 apiKey 照常注册 provider**：部分网关/本地模型场景无需 key；「key 未配置」的启动期显性提示由插件 setup 负责（工厂可能在任务内调用，不在此处刷警告）——上游 401 的错误文案来自上游，可按 provider 名定位
 - **overrides 浅合并**：`{ ...base, ...overrides }`——覆盖单个访问器不影响其余装配；需要深度定制时用完整的编程式组装（`new Agent(deps)` 直拼）
+- **agentConfig 合并语义**：`llms = options.llms ?? agentConfig?.llms ?? {}`；`config` 在提供 `agentConfig` 时为 `{ ...toAgentRuntimeConfig(agentConfig), ...options.config }`（显式 `config` 字段覆盖底座同名字段），未提供时 `options.config` 原样透传——存量 `llms`/`config` 双参数用法逐字节不变
 - **不产生 providers/llms 之外的隐式依赖**：`llms` 未提供即外部 provider 模式，与插件「llms 可选」语义一致
 
 ## 示例
@@ -71,17 +83,17 @@ function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps;
 ```ts
 // src/tasks/log-analysis/task.ts
 import { Agent, createAgentDeps } from '@faapi/agent';
+import type { AgentConfig } from '@faapi/faapi';
 import type { TaskContext } from '@faapi/faapi';
 
-const llms = {
-  openai: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, models: { 'gpt-4o': {} } },
-};
-
 export async function run(payload, taskCtx: TaskContext) {
+  // 配置单一来源：faapi.config.ts 的 agent 块，taskCtx.config 活引用读回
+  // （FaapiContextConfig 为开放 Record，读回时按 AgentConfig 断言形状）
+  const agentConfig = taskCtx.config.agent as AgentConfig | undefined;
   const agent = new Agent(
     createAgentDeps({
       registries: taskCtx.registries, // 只读视图，最小结构直传
-      llms,
+      agentConfig,
       ctx: { currentUserId: payload.userId }, // 鉴权身份窄对象透传（框架契约）
     }),
   );
@@ -96,13 +108,14 @@ export async function run(payload, taskCtx: TaskContext) {
 ```ts
 // src/lib/agent-assembly.ts
 import { Agent, createAgentDeps, type AgentDeps } from '@faapi/agent';
+import type { AgentConfig } from '@faapi/faapi';
 
 export function buildAppAgent(ctx: FaapiContext): Agent {
+  const agentConfig = ctx.config?.agent as AgentConfig | undefined;
   const base = createAgentDeps({
     ctx,
     registries: ctx.registries,
-    llms: AGENT_RUNTIME.llms,
-    config: AGENT_RUNTIME.config,
+    agentConfig,
     overrides: {
       resolveSystemPrompt: createSystemPromptResolver(),        // 业务提示词装饰
       resolveSubAgentContext: createSubAgentContextResolver(),  // 派发边界按参数供数（见 agent.md「resolveSubAgentContext 派发上下文钩子」）
@@ -117,6 +130,7 @@ export function buildAppAgent(ctx: FaapiContext): Agent {
 
 - [agent](./agent.md) —— `AgentDeps` 契约定义方与消费方（编程式组装的完全体形态）
 - [plugin](./plugin.md) —— 插件 setup 的调用方（装配单一实现的验证场）
+- faapi 核心 [configTypes](../../faapi/src/configs/configTypes.md) —— `AgentConfig` 复合形状定义方（`agentConfig` 参数的同构来源）
 - [toolSchemaResolver](../../faapi/src/loaders/toolSchemaResolver.md) —— 默认 schema 解析器（`overrides` 富化包装的底层）
 - faapi 核心 [agentTestHarness](../../faapi/src/agentTestHarness.md) —— 测试设施的 `registries` 可直传本工厂（同一最小结构）
 - faapi 核心 [registries](../../faapi/src/injection/registries.md) —— 注册表实例与只读视图（`registries` 参数的三种来源）

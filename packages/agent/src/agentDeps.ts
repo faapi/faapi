@@ -11,6 +11,7 @@
 import {
   loadToolModule,
   createToolSchemaResolver,
+  type AgentConfig,
   type FaapiContext,
   type LlmConfig,
   type ToolRegistry,
@@ -40,6 +41,15 @@ export interface CreateAgentDepsOptions {
   /** 项目根目录（loadToolModule 桥接与 schema 解析器定位用；缺省 process.cwd()） */
   rootDir?: string;
   /**
+   * faapi.config 的 `agent` 块复合形状（llms + 运行时旋钮）直收——与
+   * `FaapiConfig['agent']`（AgentConfig）同构，可整体透传 `ctx.config.agent` /
+   * `taskCtx.config.agent` 读回值。拆装清单在本工厂单一维护（含 enableTracing
+   * 全量字段），与显式 `llms` / `config` 的合并语义：显式参数优先，
+   * `agentConfig` 提供底座（llms：`options.llms ?? agentConfig.llms`；
+   * config：`{ ...拆装结果, ...options.config }`）
+   */
+  agentConfig?: AgentConfig;
+  /**
    * LLM provider 配置（key 为 provider 名）。提供时逐项 `createProvider` 转换为
    * providers Map 并透传 llms（model key 解析用）；缺省为空 Map + 空 llms
    * （外部 provider 模式——`agent.run(input, { provider })` 每次显式注入）
@@ -55,7 +65,28 @@ export interface CreateAgentDepsOptions {
 }
 
 /**
- * 从注册表视图 + llms 配置构造完整 AgentDeps
+ * `AgentConfig`（faapi.config 的 agent 块复合形状）拆装为 `AgentRuntimeConfig`
+ *
+ * 复合块拆装的字段清单单一来源——框架新增 `AgentConfig` 旋钮时只改本函数一处，
+ * 插件 setup 与业务自组装两路自动到达（历史缺口：清单散落两端手抄，某侧漏拼
+ * 即静默缺失，enableTracing 曾中招）。
+ */
+function toAgentRuntimeConfig(agentConfig: AgentConfig): AgentRuntimeConfig {
+  return {
+    maxTurns: agentConfig.maxTurns,
+    maxAgentDepth: agentConfig.maxAgentDepth,
+    maxHistoryTokens: agentConfig.maxHistoryTokens,
+    enableTracing: agentConfig.enableTracing,
+    traceId: agentConfig.traceId,
+    traceIdTemplate: agentConfig.traceIdTemplate,
+    beforeToolCall: agentConfig.beforeToolCall,
+    afterToolCall: agentConfig.afterToolCall,
+    filterTools: agentConfig.filterTools,
+  };
+}
+
+/**
+ * 从注册表视图 + agent 配置构造完整 AgentDeps
  *
  * 装配内容与 `@faapi/agent` 插件 setup 同构：注册表访问器透传、loadToolModule
  * 桥接（rootDir 注入）、schema 解析器（同一实例服务 tool input 与派发入参）、
@@ -72,9 +103,21 @@ export interface CreateAgentDepsOptions {
  * @param options registries 必填，其余可选
  */
 export function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps {
-  const { registries, ctx, rootDir = process.cwd(), llms = {}, config, overrides } = options;
+  const {
+    registries,
+    ctx,
+    rootDir = process.cwd(),
+    agentConfig,
+    llms,
+    config,
+    overrides,
+  } = options;
 
-  const resolvedLlms: Record<string, LlmConfig> = llms;
+  // agentConfig 为底座、显式参数优先：llms 整体替换（??），config 字段级覆盖（spread 后置）
+  const resolvedLlms: Record<string, LlmConfig> = llms ?? agentConfig?.llms ?? {};
+  const resolvedConfig: AgentRuntimeConfig | undefined = agentConfig
+    ? { ...toAgentRuntimeConfig(agentConfig), ...config }
+    : config;
   // overrides 直传 providers 时跳过 llms 转换（外部 provider 实例注入，llms 仍透传
   // 供 model key 解析）；否则逐项 createProvider
   const providers =
@@ -95,7 +138,7 @@ export function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps {
     providers,
     llms: resolvedLlms,
     rootDir,
-    ...(config ? { config } : {}),
+    ...(resolvedConfig ? { config: resolvedConfig } : {}),
     ...(ctx ? { ctx } : {}),
     getAgent: (name) => registries.agent.getAgent(name),
     getAgentEntry: (name) => registries.agent.getAgentEntry(name),

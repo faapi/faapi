@@ -864,11 +864,15 @@ describe('lifecycle onBoot（listen 前钩子）', () => {
   });
 
   /** 写 faapi.config.ts + handler + 编译产物（同进程 globalThis 传递钩子事件） */
-  async function setupApp(configContent: string) {
+  async function setupApp(configContent: string, handlerSource?: string) {
     writeFileSync(join(tempDir, 'faapi.config.ts'), configContent, 'utf-8');
     const handlerPath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
     mkdirSync(join(handlerPath, '..'), { recursive: true });
-    writeFileSync(handlerPath, `export function GET() { return { hello: 'world' }; }\n`, 'utf-8');
+    writeFileSync(
+      handlerPath,
+      handlerSource ?? `export function GET() { return { hello: 'world' }; }\n`,
+      'utf-8',
+    );
 
     await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
     await compileConfig({ rootDir: tempDir, dist: 'dist' });
@@ -930,6 +934,47 @@ export default {
       // listen 失败的 app 仍需 close（单 app 强制下遗留存活 app 会卡住后续创建）
       await app.close();
     }
+  });
+
+  it('onBoot/onReady/onClose 收到 config——与请求 ctx.config 同一对象（活引用）', async () => {
+    await setupApp(
+      `const g = globalThis;
+g.__lifecycleConfigs = [];
+export default {
+  answer: 42,
+  lifecycle: {
+    onBoot(ctx) { g.__lifecycleConfigs.push(['onBoot', ctx.config]); },
+    onReady(ctx) { g.__lifecycleConfigs.push(['onReady', ctx.config]); },
+    onClose(ctx) { g.__lifecycleConfigs.push(['onClose', ctx.config]); },
+  },
+};
+`,
+      `const g = globalThis;
+export function GET(ctx) {
+  g.__requestConfig = ctx.config;
+  return { answer: ctx.config.answer };
+}
+`,
+    );
+
+    const { app } = await createAppBase({ rootDir: tempDir, port: 0 });
+    await app.listen();
+    const res = await app.inject({ method: 'GET', path: '/api/hello' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: { answer: 42 } });
+    await app.close();
+
+    const g = globalThis as {
+      __lifecycleConfigs?: [string, unknown][];
+      __requestConfig?: unknown;
+    };
+    const configs = g.__lifecycleConfigs ?? [];
+    expect(configs.map(([name]) => name)).toEqual(['onBoot', 'onReady', 'onClose']);
+    // 三个钩子收到的 config 均与请求 ctx.config 同一对象（活引用，非快照副本）
+    for (const [, config] of configs) {
+      expect(config).toBe(g.__requestConfig);
+    }
+    expect((g.__requestConfig as { answer: number }).answer).toBe(42);
   });
 });
 

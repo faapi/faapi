@@ -64,9 +64,12 @@ describe('configTypes', () => {
         subscribe: () => () => {},
         listEvents: () => [],
       },
+      config: { answer: 42 },
     };
     expect(ctx.rootDir).toBe('/app');
     expect(ctx.routes).toEqual([]);
+    // config 为 faapi.config 全量活引用（FaapiContextConfig 开放 Record）
+    expect(ctx.config.answer).toBe(42);
   });
 
   it('FaapiConfig 的 lifecycle.onReady 接收 LifecycleContext 参数', () => {

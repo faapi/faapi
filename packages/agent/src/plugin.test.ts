@@ -229,6 +229,18 @@ describe('@faapi/agent plugin', () => {
         content: `you are a researcher\n\nT=${result.traceId}`,
       });
     });
+
+    it('config.agent.enableTracing:true 经复合块到达运行时——run 返回 result.trace', async () => {
+      // 历史缺口复现：插件手写清单曾漏拼 enableTracing（配置静默失效回落 false）
+      completeRequests.length = 0;
+      const factory = setupAndCaptureFactory(makeCtx({ ...fullAgentConfig, enableTracing: true }));
+      const agent = factory!(makeReqCtx()) as Agent;
+
+      const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('ok');
+      expect(result.trace).toBeDefined();
+      expect(result.trace!.traceId).toBe(result.traceId);
+    });
   });
 
   describe('setup() — 配置缺失', () => {

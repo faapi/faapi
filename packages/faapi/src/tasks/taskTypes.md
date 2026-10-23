@@ -105,40 +105,33 @@ export async function run() {
 
 隔离路径为纯字符串随快照 postMessage 传入（可结构化克隆）：进程内经 app 启动时的全局绑定即可读；隔离 worker 中 wrapper 在 run 派发前把快照值播种到全局读取根——所以 worker 内 `readResource` 与 agent `systemPromptFile` 都自动可用，无需手工传目录。`TaskQueueDeps.resourcesDir` 保留为内部字段——仅作隔离 worker 读取根播种的数据源（不进业务可见的 TaskContext）。
 
-### 任务内组装 Agent（完整 deps）
+### 任务内组装 Agent（官方装配工厂）
 
-任务内 new `Agent` 跑 LLM 循环时，deps 从 `registries` 视图 + 包级导出组装；`resolveToolSchema` 用 `@faapi/agent` 公开的 `createToolSchemaResolver` 工厂（不要直连 `loadToolSchema`——它返回 `{ schema, schemaName }` 原始 zod 模块，不满足 `AgentDeps.resolveToolSchema` 契约的 `{ jsonSchema, validate }`）：
+任务内 new `Agent` 跑 LLM 循环时，deps 装配走 `@faapi/agent` 公开的 `createAgentDeps` 工厂（与插件 setup 单一实现）——`agentConfig` 直收 `taskCtx.config.agent` 读回的复合配置块，不再手拼访问器/schema 解析器（`resolveToolSchema` 由工厂内置 `createToolSchemaResolver` 接线——不要直连 `loadToolSchema`，它返回原始 zod 模块，不满足 `AgentDeps.resolveToolSchema` 契约的 `{ jsonSchema, validate }`）：
 
 ```ts
 // src/tasks/log-analysis/task.ts
-import { Agent, createToolSchemaResolver } from '@faapi/agent';
-import { loadToolModule } from '@faapi/faapi';
-
-// 模块级创建一次（rootDir 缺省 process.cwd()，faapi 服务进程 cwd 即项目根）
-const resolveToolSchema = createToolSchemaResolver();
+import { Agent, createAgentDeps } from '@faapi/agent';
+import type { AgentConfig } from '@faapi/faapi';
 
 export async function run(payload, taskCtx) {
-  const agent = new Agent({
-    providers,                       // 外部 provider 模式：调用方传 provider 实例
-    llms,                            // config.agent.llms（可空对象）
-    rootDir: process.cwd(),
-    getAgent: taskCtx.registries.agent.getAgent,
-    getAgentEntry: taskCtx.registries.agent.getAgentEntry,
-    getTool: taskCtx.registries.tool.get,
-    resolveAgentTools: taskCtx.registries.agent.resolveAgentTools,
-    resolveSubAgents: taskCtx.registries.agent.resolveSubAgents,
-    loadToolModule: (filePath, functionName) => loadToolModule(filePath, functionName, process.cwd()),
-    resolveToolSchema,               // zod.js → JSON Schema + safeParse 校验（带 mtime 缓存）
-    // 任务无 HTTP 请求——把鉴权身份塞进窄 ctx（Partial<FaapiContext>），tool handler
-    // 的硬闸（ctx?.currentUserId === undefined 拒绝）与鉴权钩子照常读取。
-    // currentUserId 等自定义字段经 declare module '@faapi/faapi' 增强 FaapiContext 后免 cast 直传
-    ctx: { currentUserId: payload.userId },
-  });
+  // 配置单一来源：faapi.config.ts 的 agent 块，taskCtx.config 活引用读回
+  const agentConfig = taskCtx.config.agent as AgentConfig | undefined;
+  const agent = new Agent(
+    createAgentDeps({
+      registries: taskCtx.registries, // 只读视图，最小结构直传
+      agentConfig,
+      // 任务无 HTTP 请求——把鉴权身份塞进窄 ctx（Partial<FaapiContext>），tool handler
+      // 的硬闸（ctx?.currentUserId === undefined 拒绝）与鉴权钩子照常读取。
+      // currentUserId 等自定义字段经 declare module '@faapi/faapi' 增强 FaapiContext 后免 cast 直传
+      ctx: { currentUserId: payload.userId },
+    }),
+  );
   return agent.run(payload.input, { agent: 'log-analyzer', provider });
 }
 ```
 
-`ctx` 纯透传语义（框架零读取，HTTP 完整 ctx / 任务窄对象 / 编程式 undefined 三种来源）见 `@faapi/agent` 的 [agent.md](../../../agent/src/agent.md)「AgentDeps.ctx」章节；工厂行为（缓存、`undefined` 语义）见 [toolSchemaResolver.md](../../../agent/src/toolSchemaResolver.md)；`AgentDeps` 各字段见 [agent.md](../../../agent/src/agent.md)。
+装配工厂的行为约定（providers/llms 转换、overrides 浅合并、进程级复用建议）见 `@faapi/agent` 的 [agentDeps.md](../../../agent/src/agentDeps.md)；`ctx` 纯透传语义（框架零读取，HTTP 完整 ctx / 任务窄对象 / 编程式 undefined 三种来源）见 [agent.md](../../../agent/src/agent.md)「AgentDeps.ctx」章节；`AgentDeps` 各字段见 [agent.md](../../../agent/src/agent.md)。
 
 ## 相关模块
 

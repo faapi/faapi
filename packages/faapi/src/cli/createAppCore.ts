@@ -22,7 +22,7 @@ import {
   createTaskRegistriesView,
   type AppRegistries,
 } from '../injection/registries';
-import type { FaapiConfig } from '../configs/configTypes';
+import type { FaapiConfig, LifecycleContext } from '../configs/configTypes';
 import { ROUTE_PATTERNS } from '../utils/prodPaths';
 import {
   getTaskDriverOptions,
@@ -377,6 +377,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
             server,
             registries,
             tasks: taskQueue,
+            config: config as LifecycleContext['config'],
           });
           console.log('- onBoot hook executed');
         } catch (err) {
@@ -422,6 +423,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
               server,
               registries,
               tasks: taskQueue,
+              config: config as LifecycleContext['config'],
             });
             console.log('- onReady hook executed');
           }
@@ -460,6 +462,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           server,
           registries,
           tasks: taskQueue,
+          config: config as LifecycleContext['config'],
         });
       }
 

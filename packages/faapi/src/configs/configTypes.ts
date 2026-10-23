@@ -124,6 +124,12 @@ export interface LifecycleContext {
   registries: import('../injection/registries.js').AppRegistries;
   /** 任务客户端——onBoot/onReady 中投递异步任务（`tasks.enqueue(name, payload)`） */
   tasks: import('../tasks/taskTypes.js').TaskClient;
+  /**
+   * faapi.config 全量配置（活引用）——与请求 `ctx.config` / 进程内任务
+   * `taskCtx.config` 同一对象。钩子内读业务配置（含 `agent` 块复合形状经
+   * `ctx.config.agent` 读回，可整体透传 `@faapi/agent` 的 createAgentDeps）
+   */
+  config: import('../runtime/contextTypes.js').FaapiContextConfig;
 }
 
 /**

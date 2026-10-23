@@ -354,8 +354,11 @@ export default {
     async onBoot({ rootDir, routes }) {
       if (!process.env.DB_HOST) throw new Error('DB_HOST is required');
     },
-    async onReady({ rootDir, routes, server, registries }) {
+    async onReady({ rootDir, routes, server, registries, config }) {
       // 初始化数据库连接、Redis 等
+      // 钩子 ctx（LifecycleContext）携带 config：faapi.config 全量活引用，与请求
+      // ctx.config 同一对象——钩子内读业务配置；agent 块经 config.agent 读回可整体
+      // 透传 @faapi/agent 的 createAgentDeps({ agentConfig })（生命周期内组装 agent 场景，如重启续跑）
       console.log(`Server ready with ${routes.length} routes`);
     },
     async onClose({ rootDir, server }) {

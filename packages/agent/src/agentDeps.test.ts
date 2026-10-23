@@ -24,7 +24,7 @@ vi.mock('./provider', async (importOriginal) => {
 
 // ─── 导入（mock 后）─────────────────────────────────
 import { createAppRegistries, createTaskRegistriesView } from '@faapi/faapi';
-import type { AgentMetadata, ToolMetadata } from '@faapi/faapi';
+import type { AgentConfig, AgentMetadata, ToolMetadata } from '@faapi/faapi';
 import { createAgentDeps } from './agentDeps';
 import { Agent } from './agent';
 import { createProvider, type LLMProvider } from './provider';
@@ -122,6 +122,59 @@ describe('createAgentDeps', () => {
 
     expect(deps.ctx).toEqual(ctx);
     expect(deps.config).toEqual(config);
+  });
+
+  it('agentConfig 直收：复合块全量拆装——llms 转 providers，config 含 enableTracing 全字段到达', () => {
+    const beforeToolCall = () => undefined;
+    const afterToolCall = () => undefined;
+    const filterTools = <T extends Array<unknown>>(tools: T) => tools;
+    const agentConfig: AgentConfig = {
+      llms: LLMS,
+      maxTurns: 12,
+      maxAgentDepth: 4,
+      maxHistoryTokens: 30000,
+      enableTracing: true,
+      traceId: false,
+      traceIdTemplate: 'trace: {traceId}',
+      beforeToolCall,
+      afterToolCall,
+      filterTools,
+    };
+    const deps = createAgentDeps({ registries: makeRegistries(), agentConfig });
+
+    expect(vi.mocked(createProvider)).toHaveBeenCalledWith(LLMS.openai);
+    expect(deps.llms).toEqual(LLMS);
+    expect(deps.providers.get('openai')).toBeDefined();
+    expect(deps.config).toEqual({
+      maxTurns: 12,
+      maxAgentDepth: 4,
+      maxHistoryTokens: 30000,
+      enableTracing: true,
+      traceId: false,
+      traceIdTemplate: 'trace: {traceId}',
+      beforeToolCall,
+      afterToolCall,
+      filterTools,
+    });
+  });
+
+  it('agentConfig 底座 + 显式 llms/config 优先：llms 整体替换，config 字段级覆盖', () => {
+    const explicitLlms = {
+      openai: { provider: 'openai' as const, apiKey: 'explicit-key', models: { 'gpt-4o': {} } },
+    };
+    const deps = createAgentDeps({
+      registries: makeRegistries(),
+      agentConfig: { llms: LLMS, maxTurns: 12, enableTracing: true },
+      llms: explicitLlms,
+      config: { maxTurns: 7 },
+    });
+
+    // 显式 llms 整体优先（不走 agentConfig.llms）
+    expect(deps.llms).toBe(explicitLlms);
+    expect(deps.llms.openai.apiKey).toBe('explicit-key');
+    // 显式 config 覆盖同名字段，agentConfig 未覆盖字段保留底座
+    expect(deps.config?.maxTurns).toBe(7);
+    expect(deps.config?.enableTracing).toBe(true);
   });
 
   it('overrides 浅合并：装饰钩子覆盖默认装配，其余字段不受影响', () => {

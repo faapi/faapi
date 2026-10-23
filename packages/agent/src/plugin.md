@@ -58,10 +58,12 @@ export function POST(agent: AgentHandle, body: { input: string }) {
 PluginContext { config.agent, rootDir }
          ↓
 1. readAgentConfig(ctx) → AgentConfig | undefined
-2. 遍历 agentConfig?.llms ?? {} → 每项调 createProvider → Map<providerKey, LLMProvider>
-   （llms 可选——未配置时 providers 为空 Map,进入「外部 provider 模式」,照常注册工厂）
-3. 构造 AgentRuntimeConfig（maxTurns / maxAgentDepth）
-4. registerAgentHandleFactory(() => new Agent({ providers, llms, rootDir, config, ...accessors }))
+2. 遍历 agentConfig?.llms ?? {} → 空 apiKey warn（provider 实例由 createAgentDeps 创建）
+   （llms 可选——未配置时进入「外部 provider 模式」,照常注册工厂）
+3. createAgentDeps({ registries, rootDir, agentConfig: agentConfig ?? {} })
+   —— agent 块复合形状整体透传,llms → providers 转换与 AgentRuntimeConfig 拆装
+   （含 enableTracing 全量字段）都在装配工厂单一实现
+4. registerAgentHandleFactory(() => new Agent({ ...baseDeps, ctx }))
 5. ctx.registries.llm.register(createLightComplete({ llms, providers }))——轻量补全通道
    （与 agent 循环共享同一 providers 单例；llms 未配置时照常注册,调用时报 AgentError）
 ```
@@ -78,8 +80,9 @@ PluginContext { config.agent, rootDir }
 ```ts
 // setup 时经官方装配工厂构造一次（createAgentDeps，见 agentDeps.md——插件 setup /
 // 任务内组装 / 自组装单一实现）：providers Map 与 schema 解析器缓存随 deps
-// 生命周期跨请求复用
-const baseDeps = createAgentDeps({ registries, rootDir, llms, config: runtimeConfig });
+// 生命周期跨请求复用。agent 块复合形状整体透传（拆装清单单一维护，
+// 框架新增旋钮两路自动到达——不再手写 runtimeConfig 字段清单）
+const baseDeps = createAgentDeps({ registries, rootDir, agentConfig: agentConfig ?? {} });
 
 registerAgentHandleFactory((ctx) => {
   // 请求回调只叠加每请求差异项（ctx 透传链：authHooks 与 tool handler 第二参数）

@@ -40,7 +40,7 @@
  */
 
 import { type FaapiPlugin, type PluginContext, type AgentConfig } from '@faapi/faapi';
-import { Agent, type AgentRuntimeConfig } from './agent';
+import { Agent } from './agent';
 import { createAgentDeps } from './agentDeps';
 import { createLightComplete } from './lightComplete';
 
@@ -89,29 +89,13 @@ const agentPlugin: FaapiPlugin = {
       }
     }
 
-    // 全局 agent 运行时配置覆盖
-    const runtimeConfig: AgentRuntimeConfig = {
-      maxTurns: agentConfig?.maxTurns,
-      maxAgentDepth: agentConfig?.maxAgentDepth,
-      maxHistoryTokens: agentConfig?.maxHistoryTokens,
-      // traceId 层级追踪（见 ./traceId.md）——默认开启,显式 false 整体关闭
-      traceId: agentConfig?.traceId,
-      traceIdTemplate: agentConfig?.traceIdTemplate,
-      // 鉴权钩子（authHooks,见 ./authHooks.md）——业务方在 config.agent 声明
-      beforeToolCall: agentConfig?.beforeToolCall,
-      afterToolCall: agentConfig?.afterToolCall,
-      filterTools: agentConfig?.filterTools,
-    };
-
+    // 全局 agent 运行时配置经 agentConfig 复合块整体透传（拆装清单在
+    // createAgentDeps 的 toAgentRuntimeConfig 单一维护——新增旋钮两路自动到达）
     const rootDir = ctx.rootDir;
-    // deps 装配走官方工厂（与任务内组装/自组装单一实现）：setup 时装配一次——
-    // providers Map 与 schema 解析器缓存随 deps 生命周期跨请求复用；
-    // 请求回调只叠加每请求差异项（ctx 透传链）
     const baseDeps = createAgentDeps({
       registries,
       rootDir,
-      llms,
-      config: runtimeConfig,
+      agentConfig: agentConfig ?? {},
     });
 
     // 轻量补全通道注册到 registries.llm——handler 的 `llm` 注入参数与任务执行上下文
