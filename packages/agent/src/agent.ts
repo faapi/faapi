@@ -478,6 +478,33 @@ export interface AgentDeps {
     args: Record<string, unknown>,
     ctx: Partial<FaapiContext> | undefined,
   ) => Promise<string | undefined>;
+  /**
+   * sub-agent 派发入参改写钩子（可选,缺省 = 原样放行——现状行为）
+   *
+   * `executeSubAgent` 在派发入参校验（富 schema 模式 zod validate）**之后**、
+   * user 消息构造（`extractSubAgentUserInput`）**之前**调用,返回普通对象**整体
+   * 替换**派发 args——改写后的 args 构造子代理首条 user 消息（交接单附件通道:
+   * 服务端按 agent 材料清单预取的设定/大纲/参考包拼进 user,不污染身份/纪律所在的
+   * system）,并传导给后续全部消费点（`resolveSubAgentContext` 供数、`afterToolCall`
+   * 审计）——同一份最终 args 全链一致。
+   *
+   * - 改写结果**不受 Input schema 约束**（校验已过、不再二次校验）——服务端合成
+   *   材料字段无需声明进 `Input`,主控可见的派发 schema 保持干净
+   * - `subName` 是真实 agent 名（非 `agent-<name>` 派发名——与 `resolveSubAgentContext`
+   *   同款）;`args` 为校验后的派发入参;根调用不触发
+   * - 返回 `undefined` 原样放行;返回非普通对象（null / 数组 / 原始值）抛 `AgentError`
+   *   （业务代码 bug 显式失败,不静默忽略）
+   * - 抛错原样上抛,被 reactLoop per-tool catch 回传主控 LLM（不吞不降级）
+   * - 调用先于 `resolveSubAgentContext`——context 钩子消费改写后的最终 args;
+   *   deps 全树共享,流式 / 非流式父循环同一接线
+   *
+   * 详见 [agent.md](./agent.md)「resolveSubAgentInput 派发入参改写钩子」。
+   */
+  resolveSubAgentInput?: (
+    subName: string,
+    args: Record<string, unknown>,
+    ctx: Partial<FaapiContext> | undefined,
+  ) => Promise<Record<string, unknown> | undefined>;
 }
 
 // Agent 系统级错误家族持有于 agentErrors.ts（reactLoop 的历史压缩守卫需要抛
@@ -1102,6 +1129,10 @@ export class Agent {
    *    省掉一次注定失败的子 agent 轮次）;通过后以 coerce 后的 value 继续传导。
    *    声明了但解析为 `undefined`（zod.js 缺失/损坏）抛 `AgentError` 显式失败;
    *    resolver 未接线或未声明 `Input` 时跳过校验,行为与历史版本一致
+   *    校验通过后经 `resolveSubAgentInput` 改写钩子（可选,已接线时）：返回普通
+   *    对象整体替换 args（服务端合成材料拼进派发 user 消息,不受 Input schema
+   *    约束）,undefined 原样放行——先于 `resolveSubAgentContext`,后续消费点均见
+   *    最终 args,详见 agent.md「resolveSubAgentInput 派发入参改写钩子」
    * 3. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`（无 trace、无结构化
    *    usage 可卷——直接返回业务结果,其 token 不进入父 run 台账）
    * 4. 无 `run` 时调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`
@@ -1172,12 +1203,32 @@ export class Agent {
           : undefined,
     };
 
+    // 派发入参改写钩子（resolveSubAgentInput,见 agent.md 同名章节）：校验已过
+    // （args 为 coerce 后可信值）,此处异步预取服务端材料并改写 args——返回普通
+    // 对象整体替换（合成物不受 Input schema 约束,不再二次校验）,undefined 原样
+    // 放行;非法返回形状抛 AgentError 显式失败;抛错原样上抛被 per-tool catch 回传
+    // 主控 LLM。先于 resolveSubAgentContext 调用——后续消费点（context 供数 /
+    // user 消息构造 / afterToolCall 审计）均见同一份最终 args
+    if (this.deps.resolveSubAgentInput) {
+      const rewritten = await this.deps.resolveSubAgentInput(subName, args, this.deps.ctx);
+      if (rewritten !== undefined) {
+        if (typeof rewritten !== 'object' || rewritten === null || Array.isArray(rewritten)) {
+          throw new AgentError(
+            `resolveSubAgentInput hook for sub-agent "${subName}" must return a plain object (the rewritten dispatch args) or undefined, got ${
+              Array.isArray(rewritten) ? 'array' : rewritten === null ? 'null' : typeof rewritten
+            }`,
+          );
+        }
+        args = rewritten;
+      }
+    }
+
     // 派发上下文钩子（resolveSubAgentContext,见 agent.md 同名章节）：args 已过校验
-    // （可信）,此处异步供数并把产出注入**本子 Agent 实例**——子循环 buildLoopConfig
-    // 在 resolveSystemPrompt 结果之后以 \n\n 追加为最终 system 消息。undefined/空串
-    // 跳过（buildLoopConfig 侧判）;抛错原样上抛,被 reactLoop per-tool catch 回传主控
-    // LLM。调用先于流式/非流式分支分流——两分支同一接线。每次派发独立子 Agent 实例,
-    // 同轮并行派发各自注入无交叉
+    // （可信;resolveSubAgentInput 已接线时为改写后的最终 args）,此处异步供数并把产出注入
+    // **本子 Agent 实例**——子循环 buildLoopConfig 在 resolveSystemPrompt 结果之后以
+    // \n\n 追加为最终 system 消息。undefined/空串跳过（buildLoopConfig 侧判）;抛错
+    // 原样上抛,被 reactLoop per-tool catch 回传主控 LLM。调用先于流式/非流式分支
+    // 分流——两分支同一接线。每次派发独立子 Agent 实例,同轮并行派发各自注入无交叉
     if (this.deps.resolveSubAgentContext) {
       subAgent.subAgentContextBlock = await this.deps.resolveSubAgentContext(
         subName,
