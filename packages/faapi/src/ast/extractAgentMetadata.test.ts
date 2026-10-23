@@ -233,6 +233,84 @@ describe('extractAgentMetadata', () => {
     });
   });
 
+  describe('config.vars 提取（提示词模板变量）', () => {
+    it('提取混合类型 vars（string/number/boolean）', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x', vars: { role: '情节审稿', maxTurnsHint: 8, strict: true } };\n`,
+      );
+      expect(result!.vars).toEqual({ role: '情节审稿', maxTurnsHint: 8, strict: true });
+    });
+
+    it('vars 未声明 → undefined', () => {
+      const result = extract(`export const config = { systemPrompt: 'x', model: 'gpt-4' };\n`);
+      expect(result!.vars).toBeUndefined();
+    });
+
+    it('vars 空对象 → 空对象（声明即渲染）', () => {
+      const result = extract(`export const config = { systemPrompt: 'x', vars: {} };\n`);
+      expect(result!.vars).toEqual({});
+    });
+
+    it('vars 叶子支持无插值模板字符串与 + 拼接（与 systemPrompt 同规则）', () => {
+      const result = extract(
+        "export const config = { systemPrompt: 'x', vars: { a: `模板`, b: '审' + '稿' } };\n",
+      );
+      expect(result!.vars).toEqual({ a: '模板', b: '审稿' });
+    });
+
+    it('vars 非对象值（字符串/数字）→ 抛错', () => {
+      expect(() => extract(`export const config = { systemPrompt: 'x', vars: 'role' };\n`)).toThrow(
+        SchemaExtractionError,
+      );
+      expect(() => extract(`export const config = { systemPrompt: 'x', vars: 3 };\n`)).toThrow(
+        SchemaExtractionError,
+      );
+    });
+
+    it('vars 嵌套对象叶子 → 抛错（仅平面一层）', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', vars: { item: { title: 'x' } } };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('vars 数组叶子 → 抛错', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', vars: { list: ['a'] } };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('vars 标识符引用叶子（shorthand）→ 抛错', () => {
+      expect(() =>
+        extract(
+          `const role = 'x';\nexport const config = { systemPrompt: 'x', vars: { role } };\n`,
+        ),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('vars 显式标识符引用叶子 → 抛错', () => {
+      expect(() =>
+        extract(
+          `const role = 'x';\nexport const config = { systemPrompt: 'x', vars: { role: role } };\n`,
+        ),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('vars 含插值模板字符串叶子 → 抛错', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', vars: { a: \`前\${'x'}后\` } };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('vars null / undefined 字面量叶子 → 抛错', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', vars: { a: null } };\n`),
+      ).toThrow(SchemaExtractionError);
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', vars: { a: undefined } };\n`),
+      ).toThrow(SchemaExtractionError);
+    });
+  });
+
   describe('config 块字段提取（函数返回对象）', () => {
     it('从 export function config() 的 return 提取字段', () => {
       const result = extract(

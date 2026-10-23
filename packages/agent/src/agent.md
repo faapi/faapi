@@ -157,6 +157,36 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
 - 错误语义：读取失败（读取根未绑定 / 文件不存在 / 越界）→ 抛 `AgentError`
   （带 agent 名与文件路径），不静默降级为空提示词
 - 路径基准为产物 resources 目录（读取经主包免传参 `readResource`，详见 [copyResources](../../faapi/src/cli/copyResources.md)）
+- 内容含 `{{...}}` 占位符时配合 config 的 `vars` 声明做模板注入,见下节
+
+### vars 提示词模板变量（config 静态声明）
+
+agent config 支持 `vars: Record<string, string | number | boolean>`（静态字面量,构建期
+AST 提取进 faapi-agents.js 清单,声明与提取规则见主包
+[extractAgentMetadata.md](../../faapi/src/ast/extractAgentMetadata.md)）——systemPrompt /
+systemPromptFile 内容中的 `{{key}}` 占位符按 vars 渲染（渲染实现见
+[promptTemplate.md](./promptTemplate.md)）：
+
+```ts
+// prompts/reviewer.txt 内声明 {{role}} / {{focus}},同一模板被多个 agent 复用
+export const config = {
+  systemPromptFile: 'prompts/reviewer.txt',
+  vars: { role: '情节审稿', focus: '逻辑链完整性' },
+};
+```
+
+- **适用场景**：同一提示词模板复用 + agent 间静态特化——vars 是构建期固化的字面量,
+  同一 agent 每次运行渲染相同内容;每次运行不同的动态内容走 user input 或派发入参
+  （per-agent `Input` schema）,不适用本机制
+- **触发条件**：config 声明 vars（含空对象）→ 渲染;未声明 → 完全不渲染,逐字节现状
+  （存量提示词中的 `{{...}}` 字面文本不受影响）
+- **全链生效**：顶层 run / stream 与 sub-agent 派发一致——vars 在 agent 元数据上,
+  派发的子代理同样按其自身 config.vars 渲染
+- **缺失变量显式抛错**：占位符在 vars 中无对应值 → `AgentError`（带 agent 名与占位符名）,
+  不发起 LLM 请求,不静默留占位符
+- **渲染时机**：base 解析（systemPromptFile 读文件 / 内联 systemPrompt）之后、
+  `resolveSystemPrompt` 装饰钩子之前——钩子看到渲染后内容;traceId 块仍在其后追加
+- **新鲜度**：每次 run / stream / 派发渲染,不缓存——dev 改 prompt 文件立即生效
 
 ### resolveSystemPrompt 装饰钩子（base + 应用装饰）
 
@@ -168,7 +198,7 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
 
 | 项 | 语义 |
 | --- | --- |
-| base 解析顺序 | 与现状一致：`systemPromptFile` 优先直读，失败抛 `AgentError`（钩子不被调用）；内联缺省 `''`（reactLoop 按 truthy 处理，与缺省 undefined 行为一致——不插 system 消息） |
+| base 解析顺序 | `systemPromptFile` 优先直读，失败抛 `AgentError`（钩子不被调用）；内联缺省 `''`（reactLoop 按 truthy 处理，与缺省 undefined 行为一致——不插 system 消息）。agent config 声明 `vars` 时 base 先经 vars 渲染（见上方「vars 提示词模板变量」），钩子收到渲染后内容 |
 | 错误传播 | 钩子抛错原样上抛，走 run / stream 既有错误链；不吞不降级 |
 | 调用时机 | 每次 run / stream、每次 sub-agent 派发各一次（`buildLoopConfig` 内，与现行文件直读同款新鲜度——dev 改 prompt 文件立即生效） |
 | 子代理传导 | `executeSubAgent` 以同一 deps 构造子 Agent——一次注入覆盖主控与全部可达子代理，无需应用双包装 |
@@ -478,6 +508,7 @@ asTool(name: string): AgentToolDescriptor | undefined {
 ## 相关模块
 
 - [reactLoop](./reactLoop.md) —— Phase 3.3,Agent 的 `run`/`stream` 委托给它
+- [promptTemplate](./promptTemplate.md) —— 提示词模板渲染（config 的 `vars` 静态声明）,`resolveSystemPrompt` 内 base 解析后调用
 - [agentScope](./agentScope.md) —— 执行作用域（`getAgentScope`）,挂载点在 `Agent.run`/`stream` 入口,sub 换栈经 executeSubAgent 委托链统一发生
 - [trace](./trace.md) —— Tracing 类型与文档（`AgentTrace` / `AgentTraceEvent` / `TracingToolResult`）,Agent 类是其「接线层」（填 agentName + 包装 sub-agent 返回值）
 - [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」—— `SubAgentToolResult` 的上卷语义与边界

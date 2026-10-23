@@ -13,6 +13,7 @@ import type { AgentRunOptions } from './agentHandle';
 import { AgentError, AgentRecursionError, AgentToolTimeoutError } from './agentErrors';
 import { runWithAgentScope } from './agentScope';
 import type { HistoryCompactor } from './historyCompaction';
+import { renderPromptTemplate } from './promptTemplate';
 import { createProvider } from './provider';
 import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
@@ -439,7 +440,8 @@ export interface AgentDeps {
    * systemPrompt 装饰钩子（可选,缺省 = 原样返回 base——现状行为）
    *
    * 框架解析好 base systemPrompt（内联 `systemPrompt` 字面量,或 `systemPromptFile`
-   * 文件内容,解析语义与现状一致）后调用,返回值即最终 system 消息——组装层在框架
+   * 文件内容,解析语义与现状一致;agent config 声明 `vars` 时已含模板渲染结果,见
+   * promptTemplate.md）后调用,返回值即最终 system 消息——组装层在框架
    * 解析结果之上叠加应用层装饰（共享协议块 / 条件块 / DB 运行时层）的正当接缝,
    * 替代「包装访问器 + 预读文件建快照 + 剥除 systemPromptFile 声明」三件套机械。
    *
@@ -761,9 +763,11 @@ export class Agent {
     // systemPromptFile：每次 run 读文件内容作为 systemPrompt（不走缓存——dev 改
     // prompt 文件经 watcher 增量复制后立即生效，无需 reload）。读取经主包免传参
     // readResource（读取根在 app 启动时绑定、隔离 worker 播种），越界/缺失显式抛
-    // AgentError,不静默降级为空提示词。派发上下文块（resolveSubAgentContext 产出,
-    // 父侧 executeSubAgent 注入本实例）在其后以 \n\n 追加——undefined/空串跳过,
-    // 详见 agent.md「resolveSubAgentContext 派发上下文钩子」
+    // AgentError,不静默降级为空提示词。agent config 声明 vars 时 base 在
+    // resolveSystemPrompt 内做模板渲染（{{key}} 占位符,见 promptTemplate.md）。
+    // 派发上下文块（resolveSubAgentContext 产出,父侧 executeSubAgent 注入本实例）
+    // 在其后以 \n\n 追加——undefined/空串跳过,详见 agent.md「resolveSubAgentContext
+    // 派发上下文钩子」
     const systemPrompt = await this.resolveSystemPrompt(agentName, meta);
     const withContextBlock = this.subAgentContextBlock
       ? [systemPrompt, this.subAgentContextBlock].filter(Boolean).join('\n\n')
@@ -808,10 +812,15 @@ export class Agent {
    * utils/readResource.md）。构建期已保证 systemPrompt 与 systemPromptFile 二选一
    * ——读取失败（未绑定 / 文件缺失 / 越界）抛 `AgentError`，不静默降级。
    *
-   * `deps.resolveSystemPrompt` 已接线时在 base 之上调用装饰钩子,返回值即最终
-   * system 消息——每次 run / 派发新鲜调用,子代理经同一 deps 全树生效;未接线时
-   * 原样返回 base（逐字节现状）。reactLoop 对 systemPrompt 按 truthy 处理,
-   * 内联缺省 `''` 与缺省 undefined 行为一致（不插 system 消息）。
+   * agent config 声明 `vars` 时（提示词模板注入,见 promptTemplate.md）base 在装饰
+   * 钩子之前做模板渲染——`{{key}}` 占位符按 meta.vars 填充（静态字面量,构建期提取）,
+   * 缺失/非法占位符抛错包装为 `AgentError`（带 agent 名）,不发起 LLM 请求;未声明时
+   * 完全不渲染（逐字节现状）。
+   *
+   * `deps.resolveSystemPrompt` 已接线时在 base 之上调用装饰钩子（钩子收到的是 vars
+   * 渲染后的内容）,返回值即最终 system 消息——每次 run / 派发新鲜调用,子代理经同一
+   * deps 全树生效;未接线时原样返回 base（逐字节现状）。reactLoop 对 systemPrompt 按
+   * truthy 处理,内联缺省 `''` 与缺省 undefined 行为一致（不插 system 消息）。
    */
   private async resolveSystemPrompt(agentName: string, meta: AgentCore): Promise<string> {
     let base: string;
@@ -826,6 +835,14 @@ export class Agent {
           `Agent "${agentName}" systemPromptFile read failed: ${meta.systemPromptFile} (${reason}) — ` +
             'the file must exist under the runtime resources dir (src/resources/, copied into the dist by dev/build)',
         );
+      }
+    }
+    if (meta.vars !== undefined) {
+      try {
+        base = renderPromptTemplate(base, meta.vars);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new AgentError(`Agent "${agentName}" systemPrompt vars render failed — ${reason}`);
       }
     }
     return this.deps.resolveSystemPrompt

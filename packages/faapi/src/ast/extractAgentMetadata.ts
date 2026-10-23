@@ -55,6 +55,16 @@ export interface AgentCore {
    * 的 `buildToolDefinitions` 用框架默认文案
    */
   inputDescription?: string;
+  /**
+   * 提示词模板变量(config 块字面量提取,静态值),未声明时为 `undefined`;
+   * 声明了但含非字面量叶子(嵌套对象/数组/标识符引用/含插值模板字符串等)在构建期抛错
+   *
+   * 声明后 agent 的 systemPrompt / systemPromptFile 内容中的 `{{key}}` 占位符在
+   * 每次 run / sub-agent 派发时按 vars 渲染(同一 agent 每次运行渲染相同内容——
+   * 用于「同一提示词模板复用 + agent 间静态特化」);未声明时提示词原样使用
+   * (占位符不渲染)。运行时渲染见 `@faapi/agent` 的 promptTemplate.md
+   */
+  vars?: Record<string, string | number | boolean>;
 }
 
 /**
@@ -209,7 +219,7 @@ export function extractAgentMetadata(
   }
 
   // config 块字段提取（extractConfigFields 保证 systemPrompt/systemPromptFile 二选一非空）
-  const { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription } =
+  const { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription, vars } =
     extractConfigFields(objectLiteral, sourceFile);
 
   return {
@@ -223,6 +233,7 @@ export function extractAgentMetadata(
     model,
     maxTurns,
     inputDescription,
+    vars,
     inputTypeName: findInputDeclaration(sourceFile) ? 'Input' : undefined,
   };
 }
@@ -401,6 +412,7 @@ function extractConfigFields(
   model?: string;
   maxTurns?: number;
   inputDescription?: string;
+  vars?: Record<string, string | number | boolean>;
 } {
   let systemPrompt: string | undefined;
   let systemPromptFile: string | undefined;
@@ -409,6 +421,7 @@ function extractConfigFields(
   let model: string | undefined;
   let maxTurns: number | undefined;
   let inputDescription: string | undefined;
+  let vars: Record<string, string | number | boolean> | undefined;
 
   for (const prop of objLit.properties) {
     // 跳过 SpreadAssignment（...other）
@@ -451,13 +464,16 @@ function extractConfigFields(
       case 'inputDescription':
         inputDescription = requireStringValue(prop, 'inputDescription', sourceFile);
         break;
+      case 'vars':
+        vars = requireVarsValue(prop, sourceFile);
+        break;
       default:
         // 框架不读的字段几乎必然是拼写错误或误解——静默忽略后运行时按默认值
         // 跑，与声明意图不符（如 maxTurn 拼错后轮数走默认值）
         throw SchemaExtractionError.at(
           prop,
           `config.${propName}`,
-          '未知 config 字段——仅支持 systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription',
+          '未知 config 字段——仅支持 systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription / vars',
           sourceFile,
         );
     }
@@ -484,7 +500,16 @@ function extractConfigFields(
     );
   }
 
-  return { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription };
+  return {
+    systemPrompt,
+    systemPromptFile,
+    tools,
+    agents,
+    model,
+    maxTurns,
+    inputDescription,
+    vars,
+  };
 }
 
 /**
@@ -601,6 +626,88 @@ function extractNumberValue(expr: ts.Expression): number | undefined {
     return Number.isNaN(num) ? undefined : num;
   }
   return undefined;
+}
+
+/**
+ * 从属性赋值提取提示词模板变量（config.vars），声明了但提取失败抛 `SchemaExtractionError`
+ *
+ * 仅接受平面对象字面量，叶子为静态字面量：
+ * - string：字符串字面量 / 无插值模板字符串 / 其 `+` 拼接（与 systemPrompt 同规则）
+ * - number：数字字面量
+ * - boolean：`true` / `false`
+ *
+ * 嵌套对象 / 数组 / null·undefined / 标识符引用 / 含插值模板字符串 / spread 等
+ * 静态不可求值的叶子抛 `SchemaExtractionError`——vars 随 faapi-agents.js 清单
+ * JSON 序列化，声明了却提取不出与「合法地未声明」在运行时不可区分，只能在构建期拦截。
+ */
+function requireVarsValue(
+  prop: ts.PropertyAssignment,
+  sourceFile: ts.SourceFile,
+): Record<string, string | number | boolean> {
+  const initializer = prop.initializer;
+  if (!ts.isObjectLiteralExpression(initializer)) {
+    throw SchemaExtractionError.at(
+      initializer,
+      'config.vars',
+      '仅支持平面对象字面量（叶子为字符串/数字/布尔字面量）',
+      sourceFile,
+    );
+  }
+
+  const vars: Record<string, string | number | boolean> = {};
+  for (const leaf of initializer.properties) {
+    if (ts.isSpreadAssignment(leaf)) {
+      throw SchemaExtractionError.at(
+        leaf,
+        'config.vars',
+        '不支持 spread——vars 叶子必须是静态字面量（spread 无法静态求值）',
+        sourceFile,
+      );
+    }
+    if (!ts.isPropertyAssignment(leaf)) {
+      throw SchemaExtractionError.at(
+        leaf,
+        'config.vars',
+        '仅支持 key: value 属性形式（不支持 shorthand/方法/getter）',
+        sourceFile,
+      );
+    }
+    const key = getPropertyName(leaf.name);
+    if (!key) {
+      throw SchemaExtractionError.at(
+        leaf.name,
+        'config.vars',
+        '不支持 computed 属性名',
+        sourceFile,
+      );
+    }
+
+    const valueExpr = leaf.initializer;
+    const str = extractStringValue(valueExpr);
+    if (str !== undefined) {
+      vars[key] = str;
+      continue;
+    }
+    const num = extractNumberValue(valueExpr);
+    if (num !== undefined) {
+      vars[key] = num;
+      continue;
+    }
+    if (
+      valueExpr.kind === ts.SyntaxKind.TrueKeyword ||
+      valueExpr.kind === ts.SyntaxKind.FalseKeyword
+    ) {
+      vars[key] = valueExpr.kind === ts.SyntaxKind.TrueKeyword;
+      continue;
+    }
+    throw SchemaExtractionError.at(
+      valueExpr,
+      `config.vars.${key}`,
+      '仅支持字符串/数字/布尔字面量（字符串含无插值模板字符串与 + 拼接）；嵌套对象/数组/null/标识符引用/含插值模板字符串无法静态求值',
+      sourceFile,
+    );
+  }
+  return vars;
 }
 
 /**

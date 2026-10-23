@@ -48,6 +48,7 @@ function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
     model: opts.model,
     maxTurns: opts.maxTurns,
     inputDescription: opts.inputDescription,
+    vars: opts.vars,
   };
 }
 
@@ -423,6 +424,171 @@ describe('Agent', () => {
       for (const m of result.messages) {
         expect(m).not.toHaveProperty('reasoning_content');
       }
+    });
+  });
+
+  describe('vars 提示词模板变量（config 静态声明）', () => {
+    /** 创建临时 resources 目录并绑定读取根（免传参 readResource 依赖进程级绑定） */
+    function useResourcesDir(files: Record<string, string>): () => void {
+      const resDir = join(
+        tmpdir(),
+        `faapi-agent-vars-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      for (const [rel, content] of Object.entries(files)) {
+        const abs = join(resDir, rel);
+        mkdirSync(join(abs, '..'), { recursive: true });
+        writeFileSync(abs, content, 'utf-8');
+      }
+      setActiveResourcesDir(resDir);
+      return () => {
+        setActiveResourcesDir(null);
+        rmSync(resDir, { recursive: true, force: true });
+      };
+    }
+
+    it('config.vars 渲染 systemPromptFile 内容进 system 消息', async () => {
+      const cleanup = useResourcesDir({
+        'prompts/reviewer.txt': '- 角色:{{role}}\n- 关注点:{{focus}}',
+      });
+      try {
+        const { provider, completeCalls } = createMockProvider([
+          llmResponse({ content: 'ok', stopReason: 'stop' }),
+        ]);
+        const agent = new Agent(
+          createDeps({
+            provider,
+            agent: agentMeta({
+              systemPromptFile: 'prompts/reviewer.txt',
+              vars: { role: '情节审稿', focus: '逻辑链完整性' },
+            }),
+          }),
+        );
+
+        await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+        const request = completeCalls.mock.calls[0][0];
+        expect(request.messages[0]).toEqual({
+          role: 'system',
+          content: '- 角色:情节审稿\n- 关注点:逻辑链完整性',
+        });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('内联 systemPrompt 同样按 config.vars 渲染', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({
+            systemPrompt: '为 {{name}} 项目提供审稿,严格模式:{{strict}}',
+            vars: { name: 'novel', strict: true },
+          }),
+        }),
+      );
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls.mock.calls[0][0].messages[0]).toEqual({
+        role: 'system',
+        content: '为 novel 项目提供审稿,严格模式:true',
+      });
+    });
+
+    it('未声明 vars:占位符原样保留（逐字节现状）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: '模板 {{name}} 原样' }),
+        }),
+      );
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls.mock.calls[0][0].messages[0]).toEqual({
+        role: 'system',
+        content: '模板 {{name}} 原样',
+      });
+    });
+
+    it('vars 缺占位符键 → 抛 AgentError 且不发起 LLM 请求', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: '标题:{{item.title}}', vars: { other: 'x' } }),
+        }),
+      );
+
+      await expect(agent.run('hi', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrow(
+        AgentError,
+      );
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('渲染发生在装饰钩子之前:钩子收到渲染后的 base', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: '{{name}}', vars: { name: 'x' } }),
+          resolveSystemPromptImpl: async (_name, _meta, base) => `decorated(${base})`,
+        }),
+      );
+
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls.mock.calls[0][0].messages[0]).toEqual({
+        role: 'system',
+        content: 'decorated(x)',
+      });
+    });
+
+    it('sub-agent 派发同样按其 config.vars 渲染（全链一致）', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '写吧' })],
+          stopReason: 'tool_calls',
+        }),
+        // 子 agent 的请求
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        // 父最终答案
+        llmResponse({ content: 'parent-final', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ name: 'researcher', agents: ['writer'] }),
+          subAgents: [
+            agentMeta({
+              name: 'writer',
+              systemPrompt: '子代理角色:{{role}}',
+              vars: { role: '审稿' },
+            }),
+          ],
+          subAgentEntries: [agentEntry({ name: 'writer' })],
+        }),
+      );
+
+      const result = await agent.run('write', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('parent-final');
+
+      // 子 agent 请求的 system 消息已按子代理自身 config.vars 渲染
+      const childRequest = completeCalls.mock.calls[1][0];
+      expect(childRequest.messages[0]).toEqual({
+        role: 'system',
+        content: '子代理角色:审稿',
+      });
     });
   });
 
