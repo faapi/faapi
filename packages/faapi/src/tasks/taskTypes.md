@@ -73,13 +73,35 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 详见 `src/loggers/logger.md`。
 
 ## TaskContext.llm（轻量 LLM 补全通道）
-
 `TaskContext.llm?: LlmComplete` 为可选字段（`@faapi/agent` 插件加载且 `agent.llms` 可解析时注入）：一次性 LLM 补全（分类/蒸馏/摘要/改写等）的官方出口——复用 `agent.llms` 同源配置与 provider 重试引擎，失败钩子内建、传输失败恒抛（不提供降级出口），详见 `@faapi/agent` 的 lightComplete.md。两条路径：
 
 - **进程内路径**：任务执行时刻从 `registries.llm` store 惰性读取（插件晚于队列构造注册，构造期快照会漏）——与 agent 循环共享同一 providers 单例
 - **隔离路径**（`worker.ts`）：channel 是函数闭包不可跨线程——`agent.llms` 纯数据快照（`TaskQueueDeps.llms`，可结构化克隆）随派发下发，worker 内动态加载 `@faapi/agent` 重建实例（`workerEntry.buildLlmChannel`，specifier 变量拼接、与 `loadTaskDriver` 加载驱动子包同策略）。**llms 已配置但 `@faapi/agent` 不可解析 → 显式抛错**（含安装指引），任务失败——配置声明了能力而环境不能交付属环境错误，fail fast；llms 未配置时不触发加载、`taskCtx.llm` 为 `undefined`（能力不存在，非降级）
 
 工具循环场景仍走 `registries.agent` 组装 `Agent`（见下节）——`llm` 只承接一次性补全，两者互补。
+
+## TaskContext.carry（执行上下文携带管道）与 taskCtx.agent（静默组装通道）
+
+`enqueue` / `enqueueGroup` / `enqueueChain` 的 `opts.carry` 声明**执行上下文快照**（身份/标记等纯数据，如 `carry: { currentUserId: ctx.currentUserId }`）：随任务 envelope 持久化（驱动载荷包装形态，跨实例/重启正确），执行端还原到 `taskCtx.carry`（两条路径均注入；未携带/旧格式任务归一为空对象）。**身份在它天然存在的地方声明一次，队列只搬运**（Sidekiq Current / Temporal headers 同款模式）：
+
+```ts
+// HTTP handler 里入队——身份来自请求管线
+await tasks.enqueue('distill', payload, { carry: { currentUserId: ctx.currentUserId } });
+
+// 任务里静默消费——agent 通道自动以 carry 为执行 ctx 构造
+export async function run(payload, taskCtx) {
+  const agent = taskCtx.agent; // @faapi/agent 增强的 AgentHandle | undefined
+  if (!agent) throw new Error('agent unavailable');
+  return agent.stream(...); // authHooks 读到 carry.currentUserId——门禁放行
+}
+```
+
+行为约定：
+
+- **纯数据校验**：carry 须为普通对象且可结构化克隆（要持久化 + 跨隔离 worker 线程），含函数/symbol/不可克隆值在 **enqueue 时刻显式抛错**（与 config 快照同款边界，不留到派发才炸）
+- **续投自动继承**：任务内 `taskCtx.tasks.enqueue*` 自动带上当前执行的 carry（显式传 carry 整体覆盖，不合并）；`tasks.resume` 激活重投继承挂起前的 carry
+- **cron 触发**为空对象（无调用方上下文，业务按需在 run 内补）
+- **`taskCtx.agent` 惰性通道**（仅进程内任务）：首次访问经 `agentHandle` 工厂以 `{ ...taskCtx.carry }` 为执行 ctx 构造并缓存复用——与 HTTP 请求链的 `agent` 参数注入同一份 baseDeps（插件 setup 闭包）；类型由 `@faapi/agent` 的 declare module 增强为 `AgentHandle | undefined`（未安装该包时类型与运行时一致：字段不存在）。**隔离任务无此通道**（恒 undefined）——agentHandle 工厂为宿主闭包不可跨线程，隔离任务跑 agent 走 `createAgentDeps` 编程式组装（见下节）
 
 ## TaskContext.tasks（任务侧任务客户端）
 

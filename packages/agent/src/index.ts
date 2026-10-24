@@ -115,5 +115,10 @@ export { createToolSchemaResolver, type SchemaSourceRef } from '@faapi/faapi';
 // AgentHandle 接口 + AgentRunOptions（Phase 3.5）——handler 的 agent 参数类型,Agent 满足此接口
 export { type AgentHandle, type AgentRunOptions } from './agentHandle';
 
+// TaskContext.agent 类型增强（7.1）——declare module 声明合并:业务 import
+// '@faapi/agent' 即得 taskCtx.agent 的 AgentHandle 强类型（进程内任务的静默
+// 组装通道,见 taskContextAgent.ts）
+import './taskContextAgent';
+
 // 默认导出：faapi 插件（Phase 3.5）——在 faapi.config.ts 的 plugins 中声明 '@faapi/agent' 即启用
 export { default } from './plugin';

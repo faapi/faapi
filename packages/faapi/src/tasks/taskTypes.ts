@@ -176,6 +176,8 @@ export interface TaskJob {
   groupId?: string;
   /** 所属链（链式投递的任务携带；chainKey 键控单飞语义见 taskChain.md） */
   chainKey?: string;
+  /** enqueue 时携带的执行上下文快照（`opts.carry`；未传无此字段） */
+  carry?: Record<string, unknown>;
   createdAt: number;
   /** 计划执行时间戳（重试/延迟任务与 createdAt 不同） */
   runAt?: number;
@@ -290,6 +292,16 @@ export interface TaskContext {
    * 工具循环场景仍走 registries.agent 组装 Agent。详见 `@faapi/agent` 的 lightComplete.md。
    */
   llm?: LlmComplete;
+  /**
+   * enqueue 时携带的执行上下文快照（`enqueue/enqueueGroup/enqueueChain` 的
+   * `opts.carry`）——身份/标记等**纯数据**（隔离快照同款边界），随任务持久化
+   * 跨实例/重启正确。任务内续投自动继承当前 carry（显式传 carry 覆盖）；
+   * cron 触发为空对象。典型用途：HTTP 入队处声明执行身份
+   * （`carry: { currentUserId: ctx.currentUserId }`），任务侧经
+   * `taskCtx.carry` 或 `taskCtx.agent`（@faapi/agent 增强，惰性以 carry 为
+   * 执行 ctx 构造）消费——身份在它天然存在的地方声明一次，队列只搬运。
+   */
+  carry: Record<string, unknown>;
 }
 
 /**
@@ -378,6 +390,11 @@ export interface IsolatedTaskContext {
    * 详见 `@faapi/agent` 的 lightComplete.md。
    */
   llm?: LlmComplete;
+  /**
+   * enqueue 时携带的执行上下文快照（与进程内 {@link TaskContext.carry} 同源）——
+   * 纯数据随 run 消息下发（天然可结构化克隆），worker 内原样可用。
+   */
+  carry: Record<string, unknown>;
 }
 
 /**
@@ -416,7 +433,7 @@ export interface TaskClient {
   enqueue(
     name: string,
     payload?: unknown,
-    opts?: { delayMs?: number; dedupId?: string },
+    opts?: { delayMs?: number; dedupId?: string; carry?: Record<string, unknown> },
   ): Promise<{ id: string }>;
   /**
    * 链式投递：chainKey 键控单飞（同键至多一条活跃任务），无活跃才入队（完整
@@ -439,7 +456,12 @@ export interface TaskClient {
   enqueueChain(
     name: string,
     payload?: unknown,
-    opts?: { chainKey: string; delayMs?: number; excludeJobId?: string },
+    opts?: {
+      chainKey: string;
+      delayMs?: number;
+      excludeJobId?: string;
+      carry?: Record<string, unknown>;
+    },
   ): Promise<
     { enqueued: true; id: string } | { enqueued: false; jobId: string; status: TaskJobStatus }
   >;
@@ -492,6 +514,7 @@ export interface TaskClient {
       onComplete?: string;
       onFailure?: TaskGroupOnFailure;
       delayMs?: number;
+      carry?: Record<string, unknown>;
     },
   ): Promise<{ groupId: string; jobs: { id: string }[] }>;
   /**
@@ -576,6 +599,13 @@ export interface TaskQueueDeps {
    * （worker 内 taskCtx.llm 为 undefined）
    */
   llms?: Record<string, LlmConfig>;
+  /**
+   * agent handle 工厂 store（AppRegistries.agentHandle）——进程内执行路径
+   * `taskCtx.agent` 惰性通道的数据源（以 `taskCtx.carry` 为执行 ctx 构造，
+   * 与 HTTP 请求链同一份 baseDeps）；缺省 taskCtx.agent 恒 undefined。
+   * 隔离路径不消费（工厂为宿主闭包不可跨线程）
+   */
+  agentHandle?: import('../injection/registries.js').AgentHandleStore;
   /**
    * 队列驱动（必填）：`loadTaskDriver` 解析结果（pgboss/bullmq 子包驱动）
    * 或自定义 TaskDriver 实例；无任务清单时由 createAppBase 传入 idleTaskDriver

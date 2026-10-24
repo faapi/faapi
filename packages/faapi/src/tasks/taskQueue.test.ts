@@ -11,7 +11,13 @@ import type { IsolatedTaskContext, TaskContext, TaskEvent, TaskModule } from './
 interface EnqueueCall {
   name: string;
   payload: unknown;
-  opts?: { delayMs?: number; retries?: number };
+  opts?: {
+    delayMs?: number;
+    retries?: number;
+    carry?: Record<string, unknown>;
+    chainKey?: string;
+    groupId?: string;
+  };
 }
 
 /**
@@ -32,6 +38,7 @@ function makeFakeDriver(options: { syncDispatch?: boolean } = {}) {
     payload: unknown,
     attempt = 1,
     signal?: AbortSignal,
+    meta?: { groupId?: string; chainKey?: string; carry?: Record<string, unknown> },
   ): Promise<unknown> => {
     const worker = workers.get(name);
     if (!worker) throw new Error(`no worker registered for "${name}"`);
@@ -41,6 +48,9 @@ function makeFakeDriver(options: { syncDispatch?: boolean } = {}) {
       payload,
       attempt,
       signal: signal ?? new AbortController().signal,
+      ...(meta?.groupId !== undefined ? { groupId: meta.groupId } : {}),
+      ...(meta?.chainKey !== undefined ? { chainKey: meta.chainKey } : {}),
+      ...(meta?.carry !== undefined ? { carry: meta.carry } : {}),
     };
     return worker.process(job);
   };
@@ -1350,5 +1360,147 @@ describe('createTaskQueue', () => {
     await fake.dispatch('heavy', {}, 1);
     expect(runIsolated.mock.calls[0]![0]).toMatchObject({ llms: undefined });
     await queue.stop();
+  });
+});
+
+describe('createTaskQueue — carry 执行上下文管道', () => {
+  it('enqueue 带 carry：驱动透传 + 派发还原 taskCtx.carry + 记录携带', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const run = vi.fn(async (_p: unknown, taskCtx: TaskContext) => {
+      seen.push(taskCtx.carry);
+      return 'ok';
+    });
+    const deps = makeDeps({ distill: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+
+    const carry = { currentUserId: 42, tag: 'a' };
+    await queue.enqueue('distill', { novelId: 1 }, { carry });
+    expect(fake.enqueues[0]!.opts).toMatchObject({ carry });
+
+    await fake.dispatch('distill', { novelId: 1 }, 1, undefined, { carry });
+    expect(seen[0]).toEqual(carry);
+    expect(queue.list('distill')[0]).toMatchObject({ carry });
+    await queue.stop();
+  });
+
+  it('未携带 carry（存量/cron 场景）：taskCtx.carry 归一为空对象', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const run = vi.fn(async (_p: unknown, taskCtx: TaskContext) => {
+      seen.push(taskCtx.carry);
+      return 'ok';
+    });
+    const deps = makeDeps({ sweep: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+
+    await queue.enqueue('sweep');
+    await fake.dispatch('sweep', {}, 1);
+    expect(seen[0]).toEqual({});
+    await queue.stop();
+  });
+
+  it('非法 carry（含函数）：enqueue 显式抛错不入队', async () => {
+    const run = vi.fn();
+    const deps = makeDeps({ distill: { run } });
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+
+    await expect(
+      queue.enqueue(
+        'distill',
+        {},
+        { carry: { bad: () => 1 } as unknown as Record<string, unknown> },
+      ),
+    ).rejects.toThrow(/structured-cloneable/);
+    await expect(
+      queue.enqueue('distill', {}, { carry: [1, 2] as unknown as Record<string, unknown> }),
+    ).rejects.toThrow(/plain object/);
+    expect(fake.enqueues).toHaveLength(0);
+    await queue.stop();
+  });
+
+  it('任务内续投自动继承当前 carry，显式传 carry 覆盖（scoped client 统一走 withCarry helper，enqueue/enqueueGroup/enqueueChain 同语义）', async () => {
+    const fake = makeFakeDriver();
+    let enqueuedFromTask: (() => Promise<void>) | null = null;
+    const run = vi.fn(async (_p: unknown, taskCtx: TaskContext) => {
+      enqueuedFromTask = async () => {
+        await taskCtx.tasks.enqueue('child', {});
+        await taskCtx.tasks.enqueue('override', {}, { carry: { explicit: true } });
+      };
+      return 'ok';
+    });
+    const childRun = vi.fn(async () => 'ok');
+    const deps = makeDeps({
+      parent: { run },
+      child: { run: childRun },
+      override: { run: childRun },
+    });
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
+    queue.start();
+
+    const carry = { currentUserId: 7 };
+    await queue.enqueue('parent', {}, { carry });
+    await fake.dispatch('parent', {}, 1, undefined, { carry });
+    await enqueuedFromTask!();
+
+    const byName = (n: string) => fake.enqueues.filter((e) => e.name === n);
+    expect(byName('child')[0]!.opts).toMatchObject({ carry });
+    // 显式 carry 覆盖继承（不合并——整体替换语义）
+    expect(byName('override')[0]!.opts).toMatchObject({ carry: { explicit: true } });
+    await queue.stop();
+  });
+
+  it('taskCtx.agent 惰性通道：以 carry 为执行 ctx 构造一次缓存复用；store 缺失为 undefined', async () => {
+    const fake = makeFakeDriver();
+    const factoryCtxs: unknown[] = [];
+    let factoryCalls = 0;
+    const marker = { agent: 'fake-handle' };
+    // 最小 agentHandle store：register 记录工厂，get 按 carry 构造
+    const store = {
+      register: vi.fn(),
+      get: (ctx: unknown) => {
+        factoryCalls += 1;
+        factoryCtxs.push(ctx);
+        return marker;
+      },
+      clear: vi.fn(),
+    };
+    const agents: unknown[] = [];
+    const run = vi.fn(async (_p: unknown, taskCtx: TaskContext) => {
+      agents.push((taskCtx as { agent?: unknown }).agent);
+      agents.push((taskCtx as { agent?: unknown }).agent);
+      return 'ok';
+    });
+    const deps = makeDeps({ distill: { run } });
+    const queue = createTaskQueue({
+      ...deps,
+      driver: fake.driver,
+      agentHandle: store as never,
+    });
+    queue.start();
+
+    const carry = { currentUserId: 9 };
+    await queue.enqueue('distill', {}, { carry });
+    await fake.dispatch('distill', {}, 1, undefined, { carry });
+
+    // 惰性构造一次 + 缓存复用；工厂收到 carry 内容作执行 ctx
+    expect(factoryCalls).toBe(1);
+    expect(factoryCtxs[0]).toEqual(carry);
+    expect(agents[0]).toBe(marker);
+    expect(agents[1]).toBe(marker);
+    await queue.stop();
+
+    // store 缺失：字段不存在（undefined），不影响执行
+    const fake2 = makeFakeDriver();
+    const deps2 = makeDeps({ solo: { run: vi.fn(async () => 'ok') } });
+    const queue2 = createTaskQueue({ ...deps2, driver: fake2.driver });
+    queue2.start();
+    await queue2.enqueue('solo');
+    await expect(fake2.dispatch('solo', {}, 1)).resolves.toBe('ok');
+    await queue2.stop();
   });
 });

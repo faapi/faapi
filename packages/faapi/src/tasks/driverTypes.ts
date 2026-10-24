@@ -33,6 +33,11 @@ export interface TaskDriverJob {
   chainKey?: string;
   /** 挂起/激活上下文（激活重投的执行携带；驱动在交付时从挂起信封载体还原） */
   resumeState?: TaskResumeState;
+  /**
+   * enqueue 时携带的执行上下文快照（身份/标记等纯数据；驱动在交付时从载荷
+   * 包装还原，语义层注入 `taskCtx.carry` / 惰性 agent 通道的合成 ctx）
+   */
+  carry?: Record<string, unknown>;
 }
 
 /** 语义层交给驱动层的执行函数（抛错 = 失败，由驱动按入队时的 retries 重试） */
@@ -60,6 +65,8 @@ export interface TaskDriverRecord {
   groupId?: string;
   /** 所属链（链式投递的任务携带；驱动从链键载体还原后返回） */
   chainKey?: string;
+  /** enqueue 时携带的执行上下文快照（驱动从载荷包装还原后返回） */
+  carry?: Record<string, unknown>;
   createdAt: number;
   /** 计划执行时间戳（延迟任务） */
   runAt?: number;
@@ -108,6 +115,12 @@ export interface TaskDriver {
        * 组标识，载荷包装形态），交付时还原为 `TaskDriverJob.resumeState`
        */
       resumeState?: TaskResumeState;
+      /**
+       * 执行上下文快照（身份/标记等纯数据，可选）——驱动以此随任务持久化
+       * （载体同组标识，载荷包装形态；纯数据可结构化克隆，跨实例/重启正确），
+       * 交付/查询时还原为 `TaskDriverJob.carry` / `TaskDriverRecord.carry`
+       */
+      carry?: Record<string, unknown>;
     },
   ): Promise<string>;
   /**

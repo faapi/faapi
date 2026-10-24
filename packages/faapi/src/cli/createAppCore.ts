@@ -288,6 +288,9 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     // 隔离路径传 agent.llms 纯数据快照（worker 内重建）
     llm: registries.llm,
     llms: config?.agent?.llms,
+    // taskCtx.agent 惰性通道数据源（进程内路径；以 taskCtx.carry 为执行 ctx
+    // 构造，与 HTTP 请求链同一份 baseDeps——插件未注册工厂时为 undefined）
+    agentHandle: registries.agentHandle,
     driver: taskDriver,
     onFailed: config?.task?.onFailed,
   });

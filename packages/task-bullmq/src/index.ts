@@ -42,29 +42,36 @@ export interface BullMQDriverOptions {
 const DEFAULT_KEEP_AGE_SECONDS = 7 * 24 * 3600;
 
 /**
- * 框架元数据的载荷包装（组标识 / 链键 / 挂起激活的传输载体）
+ * 框架元数据的载荷包装（组标识 / 链键 / 挂起激活 / 执行上下文的传输载体）
  *
  * BullMQ 的 job 除 data（payload）外无任意元数据字段，组标识/链键/激活上下文随
- * 载荷一起存储：`enqueue(opts.groupId / opts.chainKey / opts.resumeState)` 时包装、
- * worker 交付 / getJobs 查询时还原。仅带元数据的任务包装（存量行为不变）；包装对
- * 业务不可见，`TaskDriverRecord.payload` 恒为业务原始 payload。业务 payload 恰为
- * 该形状（保留键 + 无其他键）会被误解包——保留键为框架命名空间，业务 payload
+ * 载荷一起存储：`enqueue(opts.groupId / opts.chainKey / opts.resumeState / opts.carry)`
+ * 时包装、worker 交付 / getJobs 查询时还原。仅带元数据的任务包装（存量行为不变）；
+ * 包装对业务不可见，`TaskDriverRecord.payload` 恒为业务原始 payload。业务 payload
+ * 恰为该形状（保留键 + 无其他键）会被误解包——保留键为框架命名空间，业务 payload
  * 不应占用。
  */
 const GROUP_KEY = '__faapiGroup';
 const CHAIN_KEY = '__faapiChain';
 const RESUME_KEY = '__faapiResume';
+const CARRY_KEY = '__faapiCarry';
 const PAYLOAD_KEY = '__faapiPayload';
 
-/** 框架元数据包装（组/链/挂起激活载体）：仅带元数据的任务包装（存量行为不变） */
+/** 框架元数据包装（组/链/挂起激活/执行上下文载体）：仅带元数据的任务包装（存量行为不变） */
 function wrapMetaPayload(
-  meta: { groupId?: string; chainKey?: string; resumeState?: unknown },
+  meta: {
+    groupId?: string;
+    chainKey?: string;
+    resumeState?: unknown;
+    carry?: Record<string, unknown>;
+  },
   payload: unknown,
 ): object {
   return {
     ...(meta.groupId !== undefined ? { [GROUP_KEY]: meta.groupId } : {}),
     ...(meta.chainKey !== undefined ? { [CHAIN_KEY]: meta.chainKey } : {}),
     ...(meta.resumeState !== undefined ? { [RESUME_KEY]: meta.resumeState } : {}),
+    ...(meta.carry !== undefined ? { [CARRY_KEY]: meta.carry } : {}),
     [PAYLOAD_KEY]: payload,
   };
 }
@@ -74,6 +81,7 @@ function unwrapMetaPayload(data: unknown): {
   groupId?: string;
   chainKey?: string;
   resumeState?: unknown;
+  carry?: Record<string, unknown>;
 } {
   if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
     const wrapped = data as Record<string, unknown>;
@@ -83,7 +91,12 @@ function unwrapMetaPayload(data: unknown): {
       typeof wrapped[RESUME_KEY] === 'object' &&
       wrapped[RESUME_KEY] !== null &&
       !Array.isArray(wrapped[RESUME_KEY]);
-    const metaCount = (hasGroup ? 1 : 0) + (hasChain ? 1 : 0) + (hasResume ? 1 : 0);
+    const hasCarry =
+      typeof wrapped[CARRY_KEY] === 'object' &&
+      wrapped[CARRY_KEY] !== null &&
+      !Array.isArray(wrapped[CARRY_KEY]);
+    const metaCount =
+      (hasGroup ? 1 : 0) + (hasChain ? 1 : 0) + (hasResume ? 1 : 0) + (hasCarry ? 1 : 0);
     if (
       metaCount > 0 &&
       wrapped[PAYLOAD_KEY] !== undefined &&
@@ -94,6 +107,7 @@ function unwrapMetaPayload(data: unknown): {
         ...(hasGroup ? { groupId: wrapped[GROUP_KEY] as string } : {}),
         ...(hasChain ? { chainKey: wrapped[CHAIN_KEY] as string } : {}),
         ...(hasResume ? { resumeState: wrapped[RESUME_KEY] } : {}),
+        ...(hasCarry ? { carry: wrapped[CARRY_KEY] as Record<string, unknown> } : {}),
       };
     }
   }
@@ -423,11 +437,15 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         groupId: opts?.groupId,
         chainKey: opts?.chainKey,
         resumeState: opts?.resumeState,
+        carry: opts?.carry,
       };
       const job = await queue.add(
         name,
-        // 组投递成员 / 链式任务以载荷包装携带组/链标识（交付时还原，业务 payload 不变）
-        meta.groupId !== undefined || meta.chainKey !== undefined || meta.resumeState !== undefined
+        // 组投递成员 / 链式任务 / 上下文携带以载荷包装携带元数据（交付时还原，业务 payload 不变）
+        meta.groupId !== undefined ||
+          meta.chainKey !== undefined ||
+          meta.resumeState !== undefined ||
+          meta.carry !== undefined
           ? wrapMetaPayload(meta, payload)
           : payload,
         {
@@ -466,8 +484,8 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           // attemptsStarted 由 BullMQ 维护（首次执行为 1，重试递增，跨实例/重启准确）——
           // 进程内自计数会内存泄漏且多实例/重启后失真
           const attempt = job.attemptsStarted;
-          // 组投递成员 / 链式任务 / 激活重投：从载荷包装还原业务 payload 与元数据
-          const { payload, groupId, chainKey, resumeState } = unwrapMetaPayload(job.data);
+          // 组投递成员 / 链式任务 / 激活重投 / 上下文携带：从载荷包装还原业务 payload 与元数据
+          const { payload, groupId, chainKey, resumeState, carry } = unwrapMetaPayload(job.data);
           // 信号由驱动自管：stop 超时 abort（BullMQ 自身不提供执行中任务的取消能力）
           const controller = new AbortController();
           inflight.set(id, controller);
@@ -481,6 +499,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
               ...(groupId !== undefined ? { groupId } : {}),
               ...(chainKey !== undefined ? { chainKey } : {}),
               ...(resumeState !== undefined ? { resumeState: resumeState as TaskResumeState } : {}),
+              ...(carry !== undefined ? { carry } : {}),
             });
           } finally {
             inflight.delete(id);
@@ -550,7 +569,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           for (const job of jobs) {
             if (!job) continue;
             // 组投递成员 / 链式任务：从载荷包装还原业务 payload 与组/链标识（记录对业务不可见包装）
-            const { payload, groupId, chainKey } = unwrapMetaPayload(job.data);
+            const { payload, groupId, chainKey, carry } = unwrapMetaPayload(job.data);
             records.push({
               id: job.id ?? '',
               name: job.name,
@@ -563,6 +582,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
               ...(job.failedReason ? { error: job.failedReason } : {}),
               ...(groupId !== undefined ? { groupId } : {}),
               ...(chainKey !== undefined ? { chainKey } : {}),
+              ...(carry !== undefined ? { carry } : {}),
               createdAt: job.timestamp,
               ...(job.processedOn ? { runAt: job.processedOn } : {}),
             });

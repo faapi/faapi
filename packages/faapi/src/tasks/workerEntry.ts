@@ -393,10 +393,11 @@ function bootstrap(): void {
       type?: string;
       reason?: string;
       payload?: unknown;
-      /** job + config 纯数据快照（collectConfigSnapshot 投影）+ resumed 挂起/激活上下文 */
+      /** job + config 纯数据快照（collectConfigSnapshot 投影）+ carry 执行上下文快照 + resumed 挂起/激活上下文 */
       taskCtx?: {
         job?: { id: string; name: string; attempt: number };
         config?: unknown;
+        carry?: Record<string, unknown>;
         resumed?: { state?: unknown; inject?: unknown; activations: number };
       };
       registries?: TaskRegistriesSnapshot;

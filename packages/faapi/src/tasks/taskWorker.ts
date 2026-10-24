@@ -79,6 +79,11 @@ export interface TaskWorkerOptions {
      */
     config?: unknown;
     /**
+     * enqueue 时携带的执行上下文快照（语义层透传 `job.carry`，纯数据已校验；
+     * 未携带/旧格式任务由语义层归一为空对象——worker 内 taskCtx.carry 恒有）
+     */
+    carry?: Record<string, unknown>;
+    /**
      * 挂起/激活上下文（`tasks.resume` 重投时由语义层透传 `job.resumeState`
      * ——信封为纯数据；首跑不传，worker 内 taskCtx.resumed 为 undefined）
      */
@@ -396,9 +401,9 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
     });
 
     // taskCtx 含 job + config 纯数据快照（collectConfigSnapshot 投影，函数值不进
-    // 快照，见 configSnapshot.md）+ resumed 挂起/激活上下文（resume 重投时透传，
-    // 信封为纯数据）；registries 为纯数据快照（缺省 undefined → worker 内空视图）
-    // postMessage 不可克隆时按错误处理
+    // 快照，见 configSnapshot.md）+ carry 执行上下文快照（enqueue 时刻已校验纯数据）
+    // + resumed 挂起/激活上下文（resume 重投时透传，信封为纯数据）；registries 为
+    // 纯数据快照（缺省 undefined → worker 内空视图）postMessage 不可克隆时按错误处理
     try {
       worker.postMessage({
         type: 'run',
@@ -406,6 +411,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         taskCtx: {
           job: taskCtx.job,
           ...(taskCtx.config !== undefined ? { config: taskCtx.config } : {}),
+          ...(taskCtx.carry !== undefined ? { carry: taskCtx.carry } : {}),
           ...(taskCtx.resumed !== undefined ? { resumed: taskCtx.resumed } : {}),
         },
         registries: options.registries,

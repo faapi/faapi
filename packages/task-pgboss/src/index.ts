@@ -49,17 +49,24 @@ export type PgBossDriverOptions = ConstructorOptions & {
 const GROUP_KEY = '__faapiGroup';
 const CHAIN_KEY = '__faapiChain';
 const RESUME_KEY = '__faapiResume';
+const CARRY_KEY = '__faapiCarry';
 const PAYLOAD_KEY = '__faapiPayload';
 
-/** 框架元数据包装（组/链/挂起激活载体）：仅带元数据的任务包装（存量行为不变） */
+/** 框架元数据包装（组/链/挂起激活/执行上下文载体）：仅带元数据的任务包装（存量行为不变） */
 function wrapMetaPayload(
-  meta: { groupId?: string; chainKey?: string; resumeState?: unknown },
+  meta: {
+    groupId?: string;
+    chainKey?: string;
+    resumeState?: unknown;
+    carry?: Record<string, unknown>;
+  },
   payload: unknown,
 ): object {
   return {
     ...(meta.groupId !== undefined ? { [GROUP_KEY]: meta.groupId } : {}),
     ...(meta.chainKey !== undefined ? { [CHAIN_KEY]: meta.chainKey } : {}),
     ...(meta.resumeState !== undefined ? { [RESUME_KEY]: meta.resumeState } : {}),
+    ...(meta.carry !== undefined ? { [CARRY_KEY]: meta.carry } : {}),
     [PAYLOAD_KEY]: payload,
   };
 }
@@ -69,6 +76,7 @@ function unwrapMetaPayload(data: unknown): {
   groupId?: string;
   chainKey?: string;
   resumeState?: unknown;
+  carry?: Record<string, unknown>;
 } {
   if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
     const wrapped = data as Record<string, unknown>;
@@ -78,7 +86,12 @@ function unwrapMetaPayload(data: unknown): {
       typeof wrapped[RESUME_KEY] === 'object' &&
       wrapped[RESUME_KEY] !== null &&
       !Array.isArray(wrapped[RESUME_KEY]);
-    const metaCount = (hasGroup ? 1 : 0) + (hasChain ? 1 : 0) + (hasResume ? 1 : 0);
+    const hasCarry =
+      typeof wrapped[CARRY_KEY] === 'object' &&
+      wrapped[CARRY_KEY] !== null &&
+      !Array.isArray(wrapped[CARRY_KEY]);
+    const metaCount =
+      (hasGroup ? 1 : 0) + (hasChain ? 1 : 0) + (hasResume ? 1 : 0) + (hasCarry ? 1 : 0);
     if (
       metaCount > 0 &&
       wrapped[PAYLOAD_KEY] !== undefined &&
@@ -89,6 +102,7 @@ function unwrapMetaPayload(data: unknown): {
         ...(hasGroup ? { groupId: wrapped[GROUP_KEY] as string } : {}),
         ...(hasChain ? { chainKey: wrapped[CHAIN_KEY] as string } : {}),
         ...(hasResume ? { resumeState: wrapped[RESUME_KEY] } : {}),
+        ...(hasCarry ? { carry: wrapped[CARRY_KEY] as Record<string, unknown> } : {}),
       };
     }
   }
@@ -559,15 +573,20 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
         ...(opts?.delayMs ? { startAfter: new Date(Date.now() + opts.delayMs) } : {}),
       };
       // pg-boss data 形参为 object——基础类型 payload（cron 空任务等）按 JSON 语义透传；
-      // 组投递成员 / 链式投递 / 挂起激活重投以载荷包装携带元数据（交付时还原，业务 payload 不变）
+      // 组投递成员 / 链式投递 / 挂起激活重投 / 执行上下文携带以载荷包装携带元数据
+      // （交付时还原，业务 payload 不变）
       const meta = {
         groupId: opts?.groupId,
         chainKey: opts?.chainKey,
         resumeState: opts?.resumeState,
+        carry: opts?.carry,
       };
       const id = await b.send(
         name,
-        meta.groupId !== undefined || meta.chainKey !== undefined || meta.resumeState !== undefined
+        meta.groupId !== undefined ||
+          meta.chainKey !== undefined ||
+          meta.resumeState !== undefined ||
+          meta.carry !== undefined
           ? wrapMetaPayload(meta, payload)
           : (payload as object),
         sendOptions,
@@ -611,8 +630,10 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
             jobs.map(async (job) => {
               // retryCount 从 0 起（首次执行为 0）→ faapi attempt 从 1 起
               const attempt = job.retryCount + 1;
-              // 组投递成员 / 链式任务 / 激活重投：从载荷包装还原业务 payload 与元数据
-              const { payload, groupId, chainKey, resumeState } = unwrapMetaPayload(job.data);
+              // 组投递成员 / 链式任务 / 激活重投 / 上下文携带：从载荷包装还原业务 payload 与元数据
+              const { payload, groupId, chainKey, resumeState, carry } = unwrapMetaPayload(
+                job.data,
+              );
               // unwrap 按结构判定存在性，形状契约（TaskResumeState）由语义层与包装侧保证
               const typedResumeState = resumeState as TaskResumeState | undefined;
               // 信号由驱动自管：stop 超时 abort（pg-boss 自身不提供执行中任务的取消能力）
@@ -629,6 +650,7 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
                     ...(groupId !== undefined ? { groupId } : {}),
                     ...(chainKey !== undefined ? { chainKey } : {}),
                     ...(typedResumeState !== undefined ? { resumeState: typedResumeState } : {}),
+                    ...(carry !== undefined ? { carry } : {}),
                   });
                 } catch (err) {
                   // fail 的 data 存 jsonb：传可序列化的错误摘要（原始 Error 序列化为 {} 丢信息）
@@ -764,8 +786,8 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
           const status = stateMap[job.state];
           if (!status) continue;
           if (wanted && !wanted.includes(status)) continue;
-          // 组投递成员 / 链式任务：从载荷包装还原业务 payload 与组/链标识（记录对业务不可见包装）
-          const { payload, groupId, chainKey } = unwrapMetaPayload(job.data);
+          // 组投递成员 / 链式任务 / 上下文携带：从载荷包装还原业务 payload 与元数据（记录对业务不可见包装）
+          const { payload, groupId, chainKey, carry } = unwrapMetaPayload(job.data);
           // fail 的 data 存 output jsonb：{ name, message } 或 { value }（startWorker
           // 结算形态）；错误摘要优先取 message/value——提取不到（空对象/缺失）时
           // 不放 error 字段，其余形态 String 化保底
@@ -794,6 +816,7 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
             runAt: job.startAfter.getTime(),
             ...(groupId !== undefined ? { groupId } : {}),
             ...(chainKey !== undefined ? { chainKey } : {}),
+            ...(carry !== undefined ? { carry } : {}),
             ...(error !== undefined ? { error } : {}),
           });
         }

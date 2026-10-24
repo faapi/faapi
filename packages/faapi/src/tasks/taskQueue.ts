@@ -258,6 +258,30 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     }
   }
 
+  /**
+   * carry 纯数据校验（enqueue 时刻显式失败，与 config 快照同款边界）：身份/标记
+   * 快照要随任务持久化（跨实例/重启）并 postMessage 进隔离 worker——非普通对象
+   * 或含不可结构化克隆值（函数/symbol/不可克隆宿主对象）在入队即报错，不留到
+   * 派发时刻才炸
+   */
+  function assertCarryData(carry: Record<string, unknown>): void {
+    if (typeof carry !== 'object' || carry === null || Array.isArray(carry)) {
+      throw new Error(
+        '[faapi] carry must be a plain object of execution context (e.g. { currentUserId }) — ' +
+          'arrays/primitives are not valid carry payloads.',
+      );
+    }
+    try {
+      structuredClone(carry);
+    } catch {
+      throw new Error(
+        '[faapi] carry must be structured-cloneable pure data (it persists with the job and ' +
+          'crosses the isolated-worker thread boundary) — functions, symbols and non-cloneable ' +
+          'host objects are not allowed. See taskTypes.md (TaskContext.carry).',
+      );
+    }
+  }
+
   function assertGroupSupport(): void {
     if (!driver.groups) {
       throw new Error(
@@ -395,6 +419,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     };
     if (job.groupId !== undefined) record.groupId = job.groupId;
     if (job.chainKey !== undefined) record.chainKey = job.chainKey;
+    if (job.carry !== undefined) record.carry = job.carry;
     record.attempts = job.attempt;
     transitionStatus(record, 'running');
     // 派发清空上一轮的进度（本轮执行经 taskCtx.progress 重新写入）
@@ -430,6 +455,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             // 值不进快照与 registries 快照同边界；非函数不可克隆值派发显式报错，
             // 见 configSnapshot.md），worker 内 taskCtx.config 读取
             config: collectConfigSnapshot(deps.config),
+            // 执行上下文快照（enqueue 时刻已校验纯数据）同 run 消息下发
+            carry: job.carry ?? {},
             // 挂起/激活上下文透传（信封为纯数据；首跑不传）
             ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
           },
@@ -465,10 +492,21 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               throw new Error(`[faapi] Unknown task client method "${method}"`);
             }
             let callArgs = args;
-            if (method === 'enqueueChain') {
+            // enqueue 系方法自动继承当前执行的 carry（与进程内 scoped client 同语义）
+            if (method === 'enqueue' || method === 'enqueueGroup') {
+              const idx = method === 'enqueue' ? 2 : 2;
+              const opts = (args[idx] as { carry?: Record<string, unknown> } | undefined) ?? {};
+              if (opts.carry === undefined && job.carry !== undefined) {
+                callArgs = [...args];
+                callArgs[idx] = { ...opts, carry: job.carry };
+              }
+            } else if (method === 'enqueueChain') {
+              const opts = (args[2] as { carry?: Record<string, unknown> } | undefined) ?? {};
+              const needsCarry = opts.carry === undefined && job.carry !== undefined;
               callArgs = [...args];
               callArgs[2] = {
-                ...((callArgs[2] as Record<string, unknown> | undefined) ?? {}),
+                ...opts,
+                ...(needsCarry ? { carry: job.carry } : {}),
                 excludeJobId: job.id,
               };
             }
@@ -498,13 +536,16 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         const taskCtx: TaskContext = {
           signal: job.signal,
           // 执行作用域客户端：委托队列本体（与 ctx.tasks / app.tasks 同一 app 实例），
-          // 链式投递自动注入调用方自身 job id（enqueueChain 排除自身）
+          // 链式投递自动注入调用方自身 job id（enqueueChain 排除自身）+ 续投
+          // 自动继承当前 carry
           tasks: createScopedTaskClient(job.id),
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
           registries: registriesView,
           // 轻量补全通道惰性读取（插件晚于队列构造注册，执行时刻取值才可见）
           llm: deps.llm?.get(),
+          // enqueue 时携带的执行上下文快照（未携带/旧格式任务为空对象）
+          carry: job.carry ?? {},
           log: createLogger(`task:${job.name}`, {
             fields: { jobId: job.id, task: job.name, attempt: job.attempt },
           }),
@@ -525,6 +566,30 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           // 挂起/激活上下文：首跑 undefined；激活重投的执行经驱动载体还原回传
           ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
         };
+        // taskCtx.agent 惰性通道（TaskContext 不声明该字段——类型由 @faapi/agent
+        // declare module 增强为 AgentHandle）：首次访问经 agentHandle 工厂以
+        // carry 为执行 ctx 构造（与 HTTP 请求链同一份 baseDeps），缓存复用；
+        // store 未注入/插件未注册工厂时为 undefined（隔离路径不挂载——工厂为
+        // 宿主闭包不可跨线程，见 taskTypes.md 能力边界）
+        if (deps.agentHandle) {
+          const store = deps.agentHandle;
+          let cachedAgent: unknown;
+          let agentResolved = false;
+          Object.defineProperty(taskCtx, 'agent', {
+            enumerable: true,
+            get: () => {
+              if (!agentResolved) {
+                // 工厂签名收 FaapiContext，但 deps.ctx 为 Partial 纯透传——carry
+                // 合成的执行 ctx 按框架契约传入（插件工厂同款浅透传）
+                cachedAgent = store.get({
+                  ...taskCtx.carry,
+                } as unknown as import('../runtime/contextTypes.js').FaapiContext);
+                agentResolved = true;
+              }
+              return cachedAgent;
+            },
+          });
+        }
         result = await mod.run(job.payload, taskCtx);
       }
       if (suspended) {
@@ -592,12 +657,14 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       groupId?: string;
       chainKey?: string;
       resumeState?: TaskResumeState;
+      carry?: Record<string, unknown>;
     },
   ): Promise<string> {
     if (stopped) {
       throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
     }
     assertKnownTask(name);
+    if (opts?.carry !== undefined) assertCarryData(opts.carry);
     const data = await validatePayload(name, payload);
     const meta = registry.get(name)!;
     const id = await driver.enqueue(name, data, {
@@ -611,6 +678,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
       ...(opts?.chainKey !== undefined ? { chainKey: opts.chainKey } : {}),
       ...(opts?.resumeState !== undefined ? { resumeState: opts.resumeState } : {}),
+      ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
     });
     // driver.enqueue 可能已同步触发派发——runJob 已写入
     // running/done 记录时不要用 pending 覆盖
@@ -623,6 +691,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         attempts: 0,
         ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
         ...(opts?.chainKey !== undefined ? { chainKey: opts.chainKey } : {}),
+        ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
         createdAt: Date.now(),
         ...(opts?.delayMs ? { runAt: Date.now() + opts.delayMs } : {}),
       });
@@ -655,6 +724,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         createdAt: record.createdAt,
         ...(record.groupId !== undefined ? { groupId: record.groupId } : {}),
         ...(record.chainKey !== undefined ? { chainKey: record.chainKey } : {}),
+        ...(record.carry !== undefined ? { carry: record.carry } : {}),
         ...(record.result !== undefined ? { result: record.result } : {}),
         ...(record.error !== undefined ? { error: record.error } : {}),
         ...(record.runAt !== undefined ? { runAt: record.runAt } : {}),
@@ -671,20 +741,29 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   /**
    * 任务执行作用域的 TaskClient 包装：enqueueChain 自动注入调用方自身 job id
    * （活跃查证排除自身——任务体内自续投不被自身 running 态挡住，手写
-   * `j.id !== 当前job.id` 的样板与漏写断链风险由本约定消除）。与队列本体的差异
-   * 仅在链式投递的调用方身份注入，其余方法直委托（同一 app 实例队列语义不变）。
+   * `j.id !== 当前job.id` 的样板与漏写断链风险由本约定消除）；enqueue 系方法
+   * 自动继承当前执行的 carry（显式传 carry 覆盖——身份在任务链上自然流转，
+   * Sidekiq Current / Temporal headers 同款语义）。与队列本体的差异仅在这两
+   * 项约定，其余方法直委托（同一 app 实例队列语义不变）。
    */
   function createScopedTaskClient(jobId: string): TaskClient {
+    // 当前执行的 carry（runJob 已写入 record；快照读取不随执行中变更漂移）
+    const inheritCarry = (): Record<string, unknown> | undefined => records.get(jobId)?.carry;
+    const withCarry = <O extends { carry?: Record<string, unknown> }>(opts?: O): O | undefined => {
+      if (opts?.carry !== undefined) return opts;
+      const inherited = inheritCarry();
+      return inherited === undefined ? opts : ({ ...(opts ?? {}), carry: inherited } as O);
+    };
     return {
-      enqueue: (name, payload, opts) => queue.enqueue(name, payload, opts),
+      enqueue: (name, payload, opts) => queue.enqueue(name, payload, withCarry(opts)),
       // opts 为 undefined 时 chainKey 守卫先抛错（注入无观察差异），不额外兜底
       enqueueChain: (name, payload, opts) =>
-        queue.enqueueChain(name, payload, opts && { ...opts, excludeJobId: jobId }),
+        queue.enqueueChain(name, payload, opts && { ...withCarry(opts)!, excludeJobId: jobId }),
       list: (name) => queue.list(name),
       listQueued: (name) => queue.listQueued(name),
       cancel: (name, id) => queue.cancel(name, id),
       retry: (name, id) => queue.retry(name, id),
-      enqueueGroup: (name, payloads, opts) => queue.enqueueGroup(name, payloads, opts),
+      enqueueGroup: (name, payloads, opts) => queue.enqueueGroup(name, payloads, withCarry(opts)),
       getGroup: (groupId) => queue.getGroup(groupId),
       resume: (name, jobId, opts) => queue.resume(name, jobId, opts),
       subscribe: (name, handler) => queue.subscribe(name, handler),
@@ -697,6 +776,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       const id = await enqueueCore(name, payload, {
         delayMs: opts?.delayMs,
         dedupId: opts?.dedupId,
+        ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
       });
       return { id };
     },
@@ -728,6 +808,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         delayMs: opts?.delayMs,
         dedupId: CHAIN_DEDUP(chainKey, Date.now()),
         chainKey,
+        ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
       });
       return { enqueued: true, id };
     },
@@ -768,6 +849,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           ...(opts?.inject !== undefined ? { inject: opts.inject } : {}),
           activations: entry.activations + 1,
         },
+        // 激活重投继承挂起前的 carry（执行身份随任务续存，不因挂起/激活丢失）
+        ...(record.carry !== undefined ? { carry: record.carry } : {}),
       });
       // 原挂起记录转 done（该挂起周期已终结，新执行为独立任务记录）
       transitionStatus(record, 'done');
@@ -811,6 +894,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           delayMs: opts?.delayMs,
           dedupId: GROUP_MEMBER_DEDUP(groupId, i + 1),
           groupId,
+          ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
         });
         jobs.push({ id });
       }
