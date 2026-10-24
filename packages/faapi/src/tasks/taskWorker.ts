@@ -63,6 +63,16 @@ export type TaskWorkerRunner = typeof runTaskInWorker;
 export interface TaskWorkerOptions {
   /** 任务产物模块绝对路径（`<dist>/tasks/<dir>/task.js`） */
   taskModulePath: string;
+  /**
+   * 项目根目录（隔离 agent 通道用——随 workerData 下发，worker 内组装 AgentDeps
+   * 时作为 schema 解析器的产物定位根；仅 `onAgentCall` 注入时消费）
+   */
+  rootDir?: string;
+  /**
+   * `@faapi/agent` 模块 file:// URL（隔离 agent 通道的可注入覆盖——测试注入
+   * bundle 产物；缺省 worker 内按裸说明符 `@faapi/agent` 解析生产安装包）
+   */
+  agentModuleUrl?: string;
   payload: unknown;
   /** signal 由执行器构造（abort/terminate 时触发），宿主只传 job 信息 */
   taskCtx: {
@@ -148,6 +158,14 @@ export interface TaskWorkerOptions {
    * 执行器的测试场景，与 onTasksCall 同口径）。回调拒绝时错误原样回传 reject
    */
   onSuspend?: (state?: unknown) => Promise<void>;
+  /**
+   * 隔离任务 agent RPC 分派（worker 内 agent 编排循环的工具调用/钩子经
+   * `{ type: 'agent-call' }` 消息回传宿主执行，结果/错误按 seq 回传）——语义层
+   * 注入（闭包持有 agentToolRunner 与任务合成契约 ctx）；不传则 run 消息不携带
+   * `agentChannel`，worker 内 taskCtx.agent 不挂载（插件未加载，能力不存在）。
+   * 返回值/参数须可结构化克隆（不可克隆按执行错误回传，与 tasks-call 同口径）
+   */
+  onAgentCall?: (kind: string, payload: Record<string, unknown>) => Promise<unknown>;
 }
 
 /** worker 错误回传负载（serializeError 的结构化克隆产物） */
@@ -193,7 +211,12 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
     let worker: Worker;
     try {
       worker = new Worker(resolveWorkerEntryUrl(), {
-        workerData: { moduleUrl, resourcesDir: taskCtx.resourcesDir } satisfies WorkerEntryData,
+        workerData: {
+          moduleUrl,
+          resourcesDir: taskCtx.resourcesDir,
+          rootDir: options.rootDir,
+          agentModuleUrl: options.agentModuleUrl,
+        } satisfies WorkerEntryData,
       });
     } catch (err) {
       reject(err);
@@ -252,6 +275,8 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         method?: string;
         args?: unknown[];
         state?: unknown;
+        kind?: string;
+        payload?: Record<string, unknown>;
       }) => {
         // taskCtx.tasks RPC：worker 内代理调用回传宿主执行（结果/错误按 seq 回传）。
         // running/grace 两阶段都处理——run 在宽限期内仍可能 await 一次入队；settled
@@ -298,6 +323,63 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
             .then((value) => reply({ ok: true, value }))
             .catch((err: unknown) => {
               reply({
+                ok: false,
+                error: {
+                  name: err instanceof Error ? err.name : 'Error',
+                  message: err instanceof Error ? err.message : String(err),
+                  stack: err instanceof Error ? err.stack : undefined,
+                  props: {},
+                } satisfies SerializedWorkerError,
+              });
+            });
+          return;
+        }
+        if (msg?.type === 'agent-call') {
+          // 隔离 agent RPC：worker 内编排循环的工具调用/钩子回传宿主执行（runner
+          // 与任务合成 ctx 由语义层注入）。running/grace 两阶段都处理（与 tasks-call
+          // 同口径——调用随任务超时两段式取消一并终止）；settled 后不会再有消息
+          const { seq, kind, payload } = msg;
+          const replyAgent = (body: Record<string, unknown>) => {
+            try {
+              worker.postMessage({ type: 'agent-result', seq, ...body });
+            } catch (err) {
+              // 回传值不可克隆：按执行错误回传（工具结果须可结构化克隆——能力边界）
+              try {
+                worker.postMessage({
+                  type: 'agent-result',
+                  seq,
+                  ok: false,
+                  error: {
+                    name: 'Error',
+                    message:
+                      `agent RPC "${kind}" result is not cloneable across the worker boundary: ${String(err)}` +
+                      '. Keep tool results plain data (JSON-serializable values).',
+                    stack: undefined,
+                    props: {},
+                  } satisfies SerializedWorkerError,
+                });
+              } catch {
+                // 连错误负载都不可克隆（理论上不发生）——放弃回传，worker 侧按挂起处理
+              }
+            }
+          };
+          if (!options.onAgentCall) {
+            replyAgent({
+              ok: false,
+              error: {
+                name: 'Error',
+                message: `agent RPC "${kind}" is unavailable: no host handler was provided for this execution`,
+                stack: undefined,
+                props: {},
+              } satisfies SerializedWorkerError,
+            });
+            return;
+          }
+          options
+            .onAgentCall(kind!, (payload as Record<string, unknown>) ?? {})
+            .then((value) => replyAgent({ ok: true, value }))
+            .catch((err: unknown) => {
+              replyAgent({
                 ok: false,
                 error: {
                   name: err instanceof Error ? err.name : 'Error',
@@ -417,6 +499,9 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         registries: options.registries,
         llms: options.llms,
         log: options.log,
+        // 隔离 agent 通道开关：onAgentCall 已注入（agentToolRunner 已注册）才挂载
+        // worker 内 taskCtx.agent——插件未加载时能力不存在，worker 不组装
+        agentChannel: options.onAgentCall !== undefined,
       });
     } catch (err) {
       finish(() =>

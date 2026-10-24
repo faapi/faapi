@@ -1,4 +1,6 @@
 export type { FaapiContext, FaapiContextConfig, FailOptions } from './runtime/contextTypes';
+export type { AgentToolContext } from './runtime/agentToolContext';
+export { createThrowingTaskClient, toAgentToolContext } from './runtime/agentToolContext';
 export type { FaapiMiddleware } from './middlewares/middlewareTypes';
 export type { Injector, InjectorMap } from './middlewares/injectorTypes';
 export type { CorsOptions } from './middlewares/cors';
@@ -54,6 +56,8 @@ export type {
   AgentRegistry,
   AgentHandleStore,
   AgentHandleFactory,
+  AgentToolRunner,
+  AgentToolRunnerStore,
   TaskRegistriesView,
   LlmChannelStore,
 } from './injection/registries';
@@ -84,6 +88,7 @@ export type {
   TaskGroupOutcome,
 } from './tasks/taskTypes';
 export type { TaskRegistry } from './tasks/taskRegistry';
+export { createTaskToolContext, type TaskToolContextSource } from './tasks/taskToolContext';
 export type {
   TaskDriver,
   TaskDriverJob,

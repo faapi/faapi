@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createContext, createTestContext } from './createContext';
+import { createAppRegistries } from '../injection/registries';
 
 describe('createContext', () => {
   it('从 Request 创建 context，path 正确', () => {
@@ -427,5 +428,29 @@ describe('createContext - requestId 与请求级日志器', () => {
     } finally {
       configureLogging(undefined);
     }
+  });
+});
+
+describe('ctx.tasks 挂载（恒在）', () => {
+  it('无 registries：tasks 为抛错桩——字段恒在、调用即显式失败并含修复指引', () => {
+    const ctx = createContext(new Request('http://localhost/'), {});
+    expect(ctx.tasks).toBeDefined();
+    expect(() =>
+      (ctx.tasks as unknown as { enqueue: (n: string, p: unknown) => Promise<unknown> }).enqueue(
+        'x',
+        {},
+      ),
+    ).toThrow(/无任务队列/);
+  });
+
+  it('有 registries：tasks 为 taskHandle 工厂产物（同一 app 实例队列）', () => {
+    const registries = createAppRegistries();
+    const queue = { enqueue: async () => ({ jobId: 'j1' }) };
+    registries.taskHandle.register(() => queue);
+
+    const ctx = createTestContext({ path: '/api/user', registries });
+
+    expect(ctx.registries).toBe(registries);
+    expect(ctx.tasks).toBe(queue);
   });
 });

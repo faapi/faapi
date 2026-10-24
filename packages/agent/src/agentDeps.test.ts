@@ -26,9 +26,13 @@ vi.mock('./provider', async (importOriginal) => {
 import { createAppRegistries, createTaskRegistriesView } from '@faapi/faapi';
 import type { AgentConfig, AgentMetadata, ToolMetadata } from '@faapi/faapi';
 import { createAgentDeps } from './agentDeps';
-import { Agent, type AgentDeps } from './agent';
+import { Agent, AgentError, type AgentDeps } from './agent';
 import { createProvider, type LLMProvider } from './provider';
 import { createScriptLLM } from './scriptLlm';
+import { createStandaloneToolContext } from './standaloneToolContext';
+
+/** 共享合规 ctx（ctx 必填契约下各装配用例的公共入参） */
+const toolCtx = createStandaloneToolContext();
 
 const agentEntry: AgentMetadata = {
   name: 'researcher',
@@ -71,7 +75,7 @@ describe('createAgentDeps', () => {
 
   it('注册表访问器透传：deps 直查注册表数据', () => {
     const registries = makeRegistries();
-    const deps = createAgentDeps({ registries });
+    const deps = createAgentDeps({ registries, ctx: toolCtx });
 
     expect(deps.getAgent('researcher')?.name).toBe('researcher');
     expect(deps.getAgentEntry('researcher')?.filePath).toBe(agentEntry.filePath);
@@ -85,14 +89,18 @@ describe('createAgentDeps', () => {
   it('TaskRegistriesView（只读视图）可直传同一最小结构', () => {
     const registries = makeRegistries();
     const view = createTaskRegistriesView(registries);
-    const deps = createAgentDeps({ registries: view });
+    const deps = createAgentDeps({ registries: view, ctx: toolCtx });
 
     expect(deps.getAgent('researcher')?.name).toBe('researcher');
     expect(deps.resolveAgentTools('researcher')).toHaveLength(1);
   });
 
   it('agentConfig.llms 提供时逐项转换 providers 并透传 llms', () => {
-    const deps = createAgentDeps({ registries: makeRegistries(), agentConfig: { llms: LLMS } });
+    const deps = createAgentDeps({
+      registries: makeRegistries(),
+      ctx: toolCtx,
+      agentConfig: { llms: LLMS },
+    });
 
     expect(vi.mocked(createProvider)).toHaveBeenCalledWith(LLMS.openai);
     expect(deps.providers.get('openai')).toBeDefined();
@@ -100,7 +108,7 @@ describe('createAgentDeps', () => {
   });
 
   it('agentConfig 缺省为外部 provider 模式：空 Map + 空 llms', () => {
-    const deps = createAgentDeps({ registries: makeRegistries() });
+    const deps = createAgentDeps({ registries: makeRegistries(), ctx: toolCtx });
 
     expect(deps.providers.size).toBe(0);
     expect(deps.llms).toEqual({});
@@ -108,18 +116,35 @@ describe('createAgentDeps', () => {
   });
 
   it('rootDir 缺省 process.cwd()，显式值透传', () => {
-    expect(createAgentDeps({ registries: makeRegistries() }).rootDir).toBe(process.cwd());
-    expect(createAgentDeps({ registries: makeRegistries(), rootDir: '/project' }).rootDir).toBe(
-      '/project',
+    expect(createAgentDeps({ registries: makeRegistries(), ctx: toolCtx }).rootDir).toBe(
+      process.cwd(),
     );
+    expect(
+      createAgentDeps({ registries: makeRegistries(), ctx: toolCtx, rootDir: '/project' }).rootDir,
+    ).toBe('/project');
   });
 
-  it('ctx 透传；agentConfig 缺省时 deps 不含 config 键', () => {
-    const ctx = { currentUserId: 42 };
+  it('ctx 透传（同引用）；agentConfig 缺省时 deps 不含 config 键', () => {
+    const ctx = createStandaloneToolContext({ currentUserId: 42 });
     const deps = createAgentDeps({ registries: makeRegistries(), ctx });
 
-    expect(deps.ctx).toEqual(ctx);
+    expect(deps.ctx).toBe(ctx);
     expect(deps.config).toBeUndefined();
+  });
+
+  it('ctx 缺失（绕过 TS 的 JS 调用）显式抛 AgentError（必填契约的运行时保证）', () => {
+    expect(() =>
+      createAgentDeps({
+        registries: makeRegistries(),
+        ctx: undefined as unknown as typeof toolCtx,
+      }),
+    ).toThrow(AgentError);
+    expect(() =>
+      createAgentDeps({
+        registries: makeRegistries(),
+        ctx: undefined as unknown as typeof toolCtx,
+      }),
+    ).toThrow(/createStandaloneToolContext/);
   });
 
   it('agentConfig 直收：复合块全量拆装——llms 转 providers，config 含 enableTracing/toolTimeoutMs 全字段到达', () => {
@@ -139,7 +164,7 @@ describe('createAgentDeps', () => {
       afterToolCall,
       filterTools,
     };
-    const deps = createAgentDeps({ registries: makeRegistries(), agentConfig });
+    const deps = createAgentDeps({ registries: makeRegistries(), ctx: toolCtx, agentConfig });
 
     expect(vi.mocked(createProvider)).toHaveBeenCalledWith(LLMS.openai);
     expect(deps.llms).toEqual(LLMS);
@@ -169,6 +194,7 @@ describe('createAgentDeps', () => {
     });
     const deps = createAgentDeps({
       registries: makeRegistries(),
+      ctx: toolCtx,
       agentConfig: { decorateDeps: decorate },
     });
 
@@ -187,6 +213,7 @@ describe('createAgentDeps', () => {
     });
     const deps = createAgentDeps({
       registries: makeRegistries(),
+      ctx: toolCtx,
       agentConfig: { decorateDeps: decorate },
       overrides: { resolveToolSchema: overrideSchema },
     });
@@ -200,7 +227,11 @@ describe('createAgentDeps', () => {
       throw new Error('recipe broken');
     };
     expect(() =>
-      createAgentDeps({ registries: makeRegistries(), agentConfig: { decorateDeps: decorate } }),
+      createAgentDeps({
+        registries: makeRegistries(),
+        ctx: toolCtx,
+        agentConfig: { decorateDeps: decorate },
+      }),
     ).toThrow('recipe broken');
   });
 
@@ -209,6 +240,7 @@ describe('createAgentDeps', () => {
       `${base}+装饰`;
     const deps = createAgentDeps({
       registries: makeRegistries(),
+      ctx: toolCtx,
       agentConfig: { llms: LLMS },
       overrides: { resolveSystemPrompt },
     });
@@ -224,6 +256,7 @@ describe('createAgentDeps', () => {
     const providers = new Map<string, LLMProvider>([['openai', scripted]]);
     const deps = createAgentDeps({
       registries: makeRegistries(),
+      ctx: toolCtx,
       agentConfig: { llms: LLMS },
       overrides: { providers },
     });
@@ -235,8 +268,16 @@ describe('createAgentDeps', () => {
   });
 
   it('每次调用返回独立 deps（providers Map 不共享）', () => {
-    const a = createAgentDeps({ registries: makeRegistries(), agentConfig: { llms: LLMS } });
-    const b = createAgentDeps({ registries: makeRegistries(), agentConfig: { llms: LLMS } });
+    const a = createAgentDeps({
+      registries: makeRegistries(),
+      ctx: toolCtx,
+      agentConfig: { llms: LLMS },
+    });
+    const b = createAgentDeps({
+      registries: makeRegistries(),
+      ctx: toolCtx,
+      agentConfig: { llms: LLMS },
+    });
 
     expect(a.providers).not.toBe(b.providers);
   });
@@ -245,6 +286,7 @@ describe('createAgentDeps', () => {
     const scripted = createScriptLLM([{ content: '研究完成' }]);
     const deps = createAgentDeps({
       registries: makeRegistries(),
+      ctx: toolCtx,
       overrides: { providers: new Map([['openai', scripted]]) },
     });
     const agent = new Agent(deps);

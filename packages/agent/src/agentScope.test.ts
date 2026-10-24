@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Agent } from './agent';
 import { getAgentScope, type AgentScope } from './agentScope';
 import { reactLoop } from './reactLoop';
+import { createStandaloneToolContext } from './standaloneToolContext';
 import type { AgentDeps } from './agent';
 import type { AgentCore, ToolMetadata, ToolModule } from '@faapi/faapi';
 import type {
@@ -146,6 +147,7 @@ function createTreeDeps(opts: {
       openai: { provider: 'openai', apiKey: 'test-key', models: { 'gpt-4o': {} } },
     },
     rootDir: '/project',
+    ctx: createStandaloneToolContext(),
     getAgent: (name) =>
       declarations[name]
         ? agentMeta({ name, tools: declarations[name]!.tools, agents: declarations[name]!.agents })

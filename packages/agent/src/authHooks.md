@@ -21,17 +21,24 @@ HTTP 路由有成熟的中间件鉴权（洋葱模型），但 agent 链是另�
 ```
 HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
   └─ handler 注入 agent（AgentHandle）
-      └─ 工厂捕获 ctx → AgentDeps.ctx       ← @faapi/agent plugin（此前工厂丢弃了 ctx）
-          ├─ tool handler: (args, ctx)      ← 第二参数（此前只有 args）
-          └─ sub-agent: 同一 ctx 递归传导    ← subDeps 展开 deps，ctx 随行
+      └─ toAgentToolContext 收窄 → AgentDeps.ctx   ← @faapi/agent plugin
+          ├─ tool handler: (args, ctx)      ← 第二参数（AgentToolContext 契约）
+          └─ sub-agent: 同一 ctx 递归传导    ← subDeps 共享 deps，ctx 随行
 
-任务内组装 Agent（无 HTTP 请求）            ← deps.ctx 显式传窄对象
-  └─ new Agent({ ..., ctx: { currentUserId } })
-      └─ 同一透传链：钩子与 tool handler 收到该窄对象（如 tool 硬闸读 ctx.currentUserId）
+进程内任务（taskCtx.agent 静默通道）
+  └─ createTaskToolContext 合成 → AgentDeps.ctx   ← carry 数据字段落顶层 + scoped
+      tasks / 任务级 logger / job.signal（与 HTTP 同契约，见 taskToolContext.md）
+
+隔离任务（worker 内 taskCtx.agent）
+  └─ worker 侧同配方合成 → AgentDeps.ctx
+      └─ 工具调用 / 钩子 / 派发钩子经 RPC 回宿主执行 ← agentToolRunner（宿主以
+          同配方合成 ctx），业务函数面与资源零跨线程
+
+无 app 编排（测试 / 编程式）
+  └─ createStandaloneToolContext 显式构造   ← 诚实缺省（tasks 抛错桩等）
 ```
 
-- `AgentDeps.ctx` 类型为 `Partial<FaapiContext>`——框架自身零读取、纯透传，完整性由场景决定：HTTP 请求传完整 ctx（插件工厂捕获），任务内组装传窄对象（`declare module` 增强字段免 cast 直传），编程式调用不传。详见 [agent.md](./agent.md)「AgentDeps.ctx」章节
-- 编程式调用（测试 / 自定义启动器直接 `new Agent(deps)`）不传 ctx，钩子收到 `undefined`——诚实反映"没有请求上下文"，业务方在钩子里自行决定拒绝与否
+- `AgentDeps.ctx` 类型为 `AgentToolContext`（**必填**）——契约字段（`tasks` / `log` / `signal`）由框架在三条约执行路径上合成保证正确；业务身份字段经 `declare module` 增强 `AgentToolContext` 后强类型读取，cron/系统触发无身份时业务侧 fail-closed 断言拒绝。完整填充规则见主包 [agentToolContext.md](../../faapi/src/runtime/agentToolContext.md)
 - sub-agent 递归不换 HTTP 请求，ctx 不变——工作区约束一路生效
 
 ## 钩子语义
@@ -39,6 +46,8 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
 ### `beforeToolCall(name, args, ctx)`
 
 `executeTool` 最开头调用（sub-agent 派发分流**之前**）——一个钩子同时覆盖常规 tool（`name = 'weather_getWeather'`）与 sub-agent 递归（`name = 'agent-researcher'`,派发工具名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)），业务方按前缀区分策略（用主包导出的 `SUB_AGENT_TOOL_PREFIX` 判别,不硬编码字符串）。不需要平行的 `beforeAgentCall`。
+
+允许返回 Promise（`await` 语义）——隔离任务路径的钩子经 RPC 垫片转发宿主执行；同步钩子不受影响。
 
 三种返回：
 

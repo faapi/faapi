@@ -3,6 +3,7 @@ import { markBufferedBody } from '../responses/bufferedBody';
 import { createSseWriter, type SseOptions, type SseWriter } from './sse';
 import { wrapOkResult, formatFailResponse, jsonOk } from '../responses/responseFormatter';
 import { createLogger } from '../loggers/logger';
+import { createThrowingTaskClient } from './agentToolContext';
 import { queryToObject } from '../utils/queryToObject';
 import { setActiveResourcesDir } from '../utils/readResource';
 
@@ -100,6 +101,9 @@ export function createContextFromUrl(
   const ctx = {
     requestId,
     log,
+    // AgentToolContext 契约的 signal 来源：request.signal 同引用（客户端断开传播，
+    // 详见 agentToolContext.md「三路径填充规则」）
+    signal: request.signal,
     request,
     params,
     rawParams: params,
@@ -232,6 +236,11 @@ export function createContextFromUrl(
     // 任务客户端：同一 app 实例的 TaskClient（入队/查询），ctx.tasks 与
     // `tasks` 参数注入 / app.tasks 指向同一队列
     ctx.tasks = registries.taskHandle.get(ctx) as FaapiContext['tasks'];
+  } else {
+    // 无 app 编排（编程式裸构 / 轻量测试设施）：tasks 填抛错桩——字段恒在
+    // （FaapiContext 必有契约），任意方法调用即显式失败并给修复指引，不静默
+    // undefined（与 AgentToolContext 契约的 tasks 填充规则同源，见 agentToolContext.md）
+    ctx.tasks = createThrowingTaskClient();
   }
 
   // 执行用户自定义的 ctx 扩展钩子（config.extendContext）

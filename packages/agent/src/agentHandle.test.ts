@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Agent } from './agent';
 import type { AgentHandle, AgentRunOptions } from './agentHandle';
+import { createStandaloneToolContext } from './standaloneToolContext';
 import type { AgentDeps } from './agent';
 import type { AgentCore, AgentMetadata, LlmConfig, ToolMetadata } from '@faapi/faapi';
 import type {
@@ -83,6 +84,7 @@ function mockDeps(opts?: { provider?: LLMProvider; llms?: Record<string, LlmConf
     providers,
     llms,
     rootDir: '/project',
+    ctx: createStandaloneToolContext(),
     getAgent: (name) => (name === 'researcher' ? agentCore : undefined),
     getAgentEntry: (name) => (name === 'researcher' ? agentEntryMeta : undefined),
     getTool: () => undefined,

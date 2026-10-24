@@ -2,8 +2,8 @@ import { readResource, subAgentToolName } from '@faapi/faapi';
 import type {
   AgentCore,
   AgentMetadata,
+  AgentToolContext,
   AgentToolDescriptor,
-  FaapiContext,
   LlmConfig,
   ToolMetadata,
   ToolModule,
@@ -324,26 +324,30 @@ export interface AgentRuntimeConfig {
  */
 export type ToolCallGuard = { error: string } | { args: Record<string, unknown> };
 
-/** 执行守卫钩子签名（ctx 为请求上下文透传——HTTP 完整 ctx / 任务窄对象 / 编程式 undefined） */
+/**
+ * 执行守卫钩子签名（ctx 为 [AgentToolContext](../../faapi/src/runtime/agentToolContext.md)
+ * 契约——框架三路径合成，必有且基础字段正确）。允许返回 Promise（隔离任务路径
+ * 经 RPC 转发宿主执行；同步钩子不受影响）。
+ */
 export type ToolCallGuardHook = (
   name: string,
   args: Record<string, unknown>,
-  ctx: Partial<FaapiContext> | undefined,
-) => void | ToolCallGuard;
+  ctx: AgentToolContext,
+) => void | ToolCallGuard | Promise<void | ToolCallGuard>;
 
 /** 审计钩子签名（仅成功路径调用） */
 export type AfterToolCallHook = (
   name: string,
   args: Record<string, unknown>,
   result: unknown,
-  ctx: Partial<FaapiContext> | undefined,
+  ctx: AgentToolContext,
 ) => void;
 
-/** 可见性过滤钩子签名 */
+/** 可见性过滤钩子签名（允许返回 Promise——隔离任务路径经 RPC 转发宿主执行） */
 export type FilterToolsHook = (
   tools: LLMToolDefinition[],
-  ctx: Partial<FaapiContext> | undefined,
-) => LLMToolDefinition[];
+  ctx: AgentToolContext,
+) => LLMToolDefinition[] | Promise<LLMToolDefinition[]>;
 
 /**
  * 本次调用的解析结果（[buildLoopConfig](#buildLoopConfig) 解析后经闭包传给 executeTool）
@@ -401,18 +405,19 @@ export interface AgentDeps {
   /** 全局 agent 配置覆盖 */
   config?: AgentRuntimeConfig;
   /**
-   * 请求上下文透传（authHooks ctx 传递链,见 [authHooks.md](./authHooks.md)）
+   * 执行上下文（[AgentToolContext](../../faapi/src/runtime/agentToolContext.md) 契约，必填）
    *
-   * 类型为 Partial——框架自身零读取,纯透传给鉴权钩子与 tool handler 第二参数,
-   * 完整性由调用方场景决定：
-   * - HTTP 请求（@faapi/agent 工厂）传完整 ctx（完整可赋给 Partial）
-   * - 任务内组装传窄对象（如鉴权硬闸需要的 `{ currentUserId }`,declare module
-   *   增强字段免 cast 直传,完整 FaapiContext 任务侧无法构造）
-   * - 编程式直调（测试/自定义启动器）不传,钩子收到 undefined
+   * 框架三路径合成、基础字段（tasks/log/signal）保证正确：
+   * - HTTP 请求：`toAgentToolContext` 收窄完整请求 ctx（@faapi/agent 插件工厂）
+   * - 进程内任务：carry + scoped TaskClient + 任务级 logger + job.signal 合成
+   * - 隔离任务：worker 侧合成；工具与钩子经 RPC 回宿主，宿主以同配方合成
+   * - 测试/编程式：`createStandaloneToolContext`（无 app 场景的合规构造）
    *
-   * sub-agent 递归经 subDeps 展开自动传导（同一调用内 ctx 不变）。
+   * 业务身份字段（currentUserId 等）经 declare module 增强本类型，随 ctx 全链
+   * 传导给鉴权钩子与 tool handler 第二参数。sub-agent 递归经 deps 共享自动传导
+   * （同一调用内 ctx 不变）。
    */
-  ctx?: Partial<FaapiContext>;
+  ctx: AgentToolContext;
   /** 查 agent LLM 可见元数据（对应 agentRegistry.getAgent,返回 AgentCore） */
   getAgent: (name: string) => AgentCore | undefined;
   /** 查 agent 完整元数据（对应 agentRegistry.getAgentEntry,返回 AgentMetadata 含 filePath） */
@@ -477,7 +482,7 @@ export interface AgentDeps {
   resolveSubAgentContext?: (
     subName: string,
     args: Record<string, unknown>,
-    ctx: Partial<FaapiContext> | undefined,
+    ctx: AgentToolContext,
   ) => Promise<string | undefined>;
   /**
    * sub-agent 派发入参改写钩子（可选,缺省 = 原样放行——现状行为）
@@ -504,7 +509,7 @@ export interface AgentDeps {
   resolveSubAgentInput?: (
     subName: string,
     args: Record<string, unknown>,
-    ctx: Partial<FaapiContext> | undefined,
+    ctx: AgentToolContext,
   ) => Promise<Record<string, unknown> | undefined>;
 }
 
@@ -976,9 +981,10 @@ export class Agent {
       });
     }
 
-    // 可见性过滤（authHooks）：无权 tool 不进 LLM 的 tools 清单（每次 run/stream 生效）
+    // 可见性过滤（authHooks）：无权 tool 不进 LLM 的 tools 清单（每次 run/stream 生效）。
+    // await 兼容：隔离任务路径的钩子经 RPC 垫片转发宿主执行（异步）
     const defs = Array.from(definitions.values());
-    const filtered = this.deps.config?.filterTools?.(defs, this.deps.ctx);
+    const filtered = await this.deps.config?.filterTools?.(defs, this.deps.ctx);
     return filtered ?? defs;
   }
 
@@ -1043,10 +1049,12 @@ export class Agent {
   ): Promise<unknown | SubAgentToolResult> {
     // 执行守卫（authHooks）：在 sub-agent 分流之前——一个钩子同时覆盖常规 tool
     // 与 sub-agent 递归。拒绝时不执行目标,守卫的 error 回传 LLM;
-    // 改写时以守卫返回的 args 继续（多租户场景强制注入可信值）
+    // 改写时以守卫返回的 args 继续（多租户场景强制注入可信值）。
+    // await 兼容：隔离任务路径的钩子经 RPC 垫片转发宿主执行（异步）；同步钩子
+    // 返回值 await 后原样透传，语义不变
     const name = rawName;
     let args = rawArgs;
-    const guard = this.deps.config?.beforeToolCall?.(name, args, this.deps.ctx);
+    const guard = await this.deps.config?.beforeToolCall?.(name, args, this.deps.ctx);
     if (guard) {
       if ('error' in guard) return { error: guard.error };
       if ('args' in guard) args = guard.args;
@@ -1072,51 +1080,10 @@ export class Agent {
       return await this.executeSubAgent(subName, args, callCtx, deltaEmitter);
     }
 
-    // 常规 tool
-    const tool = this.deps.getTool(name);
-    if (!tool) {
-      throw new Error(`Tool "${name}" not found`);
-    }
-
-    // 可选 input 校验
-    const schemaRes = await this.getToolSchema(tool);
-    let callArgs = args;
-    if (schemaRes) {
-      const result = schemaRes.validate(args);
-      if (!result.ok) {
-        // 校验失败：返回 { error } 对象，不调用 handler——错误回传 LLM 重试
-        return { error: result.error };
-      }
-      callArgs = result.value ?? args;
-    }
-
-    const mod = await this.deps.loadToolModule(tool.filePath, tool.functionName);
-    const toolTimeoutMs = this.deps.config?.toolTimeoutMs;
-    let result: unknown;
-    if (toolTimeoutMs && toolTimeoutMs > 0) {
-      // 超时竞速:到点抛 AgentToolTimeoutError,被 reactLoop per-tool catch 后回传 LLM。
-      // 输了的 handler Promise 无从取消(同步持有的执行不中断),仅不再等待其结果
-      result = await Promise.race([
-        mod.handler(callArgs, this.deps.ctx),
-        new Promise<never>((_, reject) => {
-          const timer = setTimeout(
-            () => reject(new AgentToolTimeoutError(name, toolTimeoutMs)),
-            toolTimeoutMs,
-          );
-          timer.unref?.();
-        }),
-      ]);
-    } else {
-      result = await mod.handler(callArgs, this.deps.ctx);
-    }
-    try {
-      this.deps.config?.afterToolCall?.(name, args, result, this.deps.ctx);
-    } catch (hookErr) {
-      // 审计钩子自身抛错只留痕——钩子在 return 前同步调用,不隔离会把成功的 tool
-      // 结果变成错误回传 LLM(审计故障劫持执行语义,LLM 拿到审计报错还可能重试)
-      console.error(`[faapi] afterToolCall hook error for tool "${name}":`, hookErr);
-    }
-    return result;
+    // 常规 tool：执行半段（getTool → schema 校验 → handler → afterToolCall）抽为
+    // 模块级 executeToolCall——与隔离任务宿主侧工具执行器共用同一实现
+    // （schemaCache 传实例缓存，保持"同一 tool 只解析一次"语义）
+    return executeToolCall(this.deps, name, args, this.deps.ctx, this.schemaCache);
   }
 
   /**
@@ -1314,4 +1281,82 @@ export class Agent {
     }
     return wrapped;
   }
+}
+
+/**
+ * 单次 tool 调用的执行半段（getTool → 可选 input 校验 → loadToolModule → handler →
+ * afterToolCall）——模块级独立函数
+ *
+ * 两个消费方：
+ * - `Agent.executeTool` 常规 tool 分支（守卫 + 白名单 + sub-agent 分流留在类内——
+ *   守卫覆盖 sub-agent 派发、白名单按声明集合校验；schemaCache 传实例缓存，
+ *   保持"同一 tool 只解析一次"语义）
+ * - 隔离任务的宿主侧工具执行器（`@faapi/agent` 插件注册的 agentToolRunner）——
+ *   worker 的 RPC 垫片把 tool-call 转发到宿主，宿主以同函数执行：schema 解析、
+ *   钩子、handler 与全部资源（db 连接池等）都留在宿主，worker 只跑 LLM 编排循环
+ *
+ * 校验失败返回 `{ error }` 对象（不抛错，回传 LLM 重试）；tool 未找到 / handler
+ * 抛错原样上抛（reactLoop per-tool catch 回传 LLM）。afterToolCall 钩子自身抛错
+ * 只留痕（审计故障不劫持执行语义）。
+ */
+export async function executeToolCall(
+  deps: AgentDeps,
+  name: string,
+  args: Record<string, unknown>,
+  ctx: AgentToolContext,
+  schemaCache?: Map<string, ToolSchemaResolution | undefined>,
+): Promise<unknown> {
+  const tool = deps.getTool(name);
+  if (!tool) {
+    throw new Error(`Tool "${name}" not found`);
+  }
+
+  // 可选 input 校验（schemaCache 语义与 Agent.getToolSchema 一致——含 undefined
+  // 结果，用 has 区分未解析 vs 解析为空；resolver 未提供时直接 undefined 不写缓存）
+  let schemaRes: ToolSchemaResolution | undefined;
+  if (!deps.resolveToolSchema) {
+    schemaRes = undefined;
+  } else if (schemaCache?.has(name)) {
+    schemaRes = schemaCache.get(name);
+  } else {
+    schemaRes = await deps.resolveToolSchema(tool);
+    schemaCache?.set(name, schemaRes);
+  }
+  let callArgs = args;
+  if (schemaRes) {
+    const result = schemaRes.validate(args);
+    if (!result.ok) {
+      // 校验失败：返回 { error } 对象，不调用 handler——错误回传 LLM 重试
+      return { error: result.error };
+    }
+    callArgs = result.value ?? args;
+  }
+
+  const mod = await deps.loadToolModule(tool.filePath, tool.functionName);
+  const toolTimeoutMs = deps.config?.toolTimeoutMs;
+  let result: unknown;
+  if (toolTimeoutMs && toolTimeoutMs > 0) {
+    // 超时竞速:到点抛 AgentToolTimeoutError,被 reactLoop per-tool catch 后回传 LLM。
+    // 输了的 handler Promise 无从取消(同步持有的执行不中断),仅不再等待其结果
+    result = await Promise.race([
+      mod.handler(callArgs, ctx),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new AgentToolTimeoutError(name, toolTimeoutMs)),
+          toolTimeoutMs,
+        );
+        timer.unref?.();
+      }),
+    ]);
+  } else {
+    result = await mod.handler(callArgs, ctx);
+  }
+  try {
+    deps.config?.afterToolCall?.(name, args, result, ctx);
+  } catch (hookErr) {
+    // 审计钩子自身抛错只留痕——钩子在 return 前同步调用,不隔离会把成功的 tool
+    // 结果变成错误回传 LLM(审计故障劫持执行语义,LLM 拿到审计报错还可能重试)
+    console.error(`[faapi] afterToolCall hook error for tool "${name}":`, hookErr);
+  }
+  return result;
 }

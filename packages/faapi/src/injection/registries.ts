@@ -1,6 +1,7 @@
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
 import type { FaapiContext } from '../runtime/contextTypes';
+import type { AgentToolContext } from '../runtime/agentToolContext';
 import type { TaskRegistry } from '../tasks/taskRegistry';
 import { createTaskRegistry } from '../tasks/taskRegistry';
 import type { LlmComplete } from './llmTypes';
@@ -155,14 +156,20 @@ export function createAgentRegistry(tool: ToolRegistry): AgentRegistry {
 
 // ─── Agent handle 工厂 ───────────────────────────────────────────────
 
-/** agent handle 工厂函数（由 `@faapi/agent` 插件注册） */
-export type AgentHandleFactory = (ctx: FaapiContext) => unknown;
+/**
+ * agent handle 工厂函数（由 `@faapi/agent` 插件注册）
+ *
+ * 入参为 [AgentToolContext](../runtime/agentToolContext.md) 契约（必有、基础字段
+ * 三路径合成保证）——HTTP 路径经 `toAgentToolContext` 从完整请求 ctx 收窄，
+ * 任务路径由 taskQueue 以 carry + 任务级能力合成。
+ */
+export type AgentHandleFactory = (ctx: AgentToolContext) => unknown;
 
 export interface AgentHandleStore {
   /** 注册工厂（null 清理）；二次注册覆盖 */
   register(factory: AgentHandleFactory | null): void;
   /** 工厂已注册时返回 AgentHandle 实例，未注册返回 undefined */
-  get(ctx: FaapiContext): unknown;
+  get(ctx: AgentToolContext): unknown;
   clear(): void;
 }
 
@@ -243,6 +250,74 @@ export function createTaskHandleStore(): TaskHandleStore {
   };
 }
 
+// ─── 隔离任务工具执行器 store ────────────────────────────────────────
+
+/**
+ * 隔离任务工具执行器（由 `@faapi/agent` 插件注册）
+ *
+ * 隔离 worker 的 agent 编排循环把业务函数面（工具 handler、鉴权钩子、派发钩子）
+ * 经 RPC 回传宿主执行——worker 只跑 LLM 调用与编排决策，db 连接池等资源单实例、
+ * 钩子无需跨线程。执行器与 `Agent.executeTool` 常规分支共用同一实现
+ * （`@faapi/agent` 的 `executeToolCall`）。方法返回值/参数均须可结构化克隆
+ * （跨 postMessage 边界，不可克隆按执行错误显式失败）。
+ *
+ * 各方法 ctx 为宿主侧按任务合成的 [AgentToolContext](../runtime/agentToolContext.md)
+ * （carry + scoped TaskClient + 任务级 logger + job.signal，与进程内
+ * `taskCtx.agent` 同配方，见 taskToolContext.md）。
+ */
+export interface AgentToolRunner {
+  /** 执行守卫钩子（覆盖常规 tool 与 sub-agent 派发；void 放行 / { error } 拒绝 / { args } 改写） */
+  beforeToolCall(
+    ctx: AgentToolContext,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown>;
+  /** 单次 tool 调用（schema 校验失败返回 { error }；handler 抛错原样上抛） */
+  toolCall(
+    ctx: AgentToolContext,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown>;
+  /** 可见性过滤钩子（tools 为 OpenAI 规范形数组，返回过滤后数组） */
+  filterTools(ctx: AgentToolContext, tools: unknown[]): Promise<unknown[]>;
+  /** sub-agent 派发入参改写钩子（未接线时 undefined 原样放行） */
+  resolveSubAgentInput(
+    ctx: AgentToolContext,
+    subName: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | undefined>;
+  /** sub-agent 派发上下文钩子（未接线时 undefined 跳过注入） */
+  resolveSubAgentContext(
+    ctx: AgentToolContext,
+    subName: string,
+    args: Record<string, unknown>,
+  ): Promise<string | undefined>;
+}
+
+/** 隔离任务工具执行器 store（app 实例级，随 app 生命周期；与 LlmChannelStore 同形态） */
+export interface AgentToolRunnerStore {
+  /** 注册执行器（null 清理）；二次注册覆盖 */
+  register(runner: AgentToolRunner | null): void;
+  /** 执行器已注册时返回实例，未注册返回 undefined */
+  get(): AgentToolRunner | undefined;
+  clear(): void;
+}
+
+export function createAgentToolRunnerStore(): AgentToolRunnerStore {
+  let current: AgentToolRunner | null = null;
+  return {
+    register(runner) {
+      current = runner;
+    },
+    get() {
+      return current ?? undefined;
+    },
+    clear() {
+      current = null;
+    },
+  };
+}
+
 // ─── App 级集合 ──────────────────────────────────────────────────────
 
 /** 一个 app 实例持有的全套注册表 */
@@ -254,6 +329,8 @@ export interface AppRegistries {
   taskHandle: TaskHandleStore;
   /** 轻量 LLM 补全通道（`@faapi/agent` 插件注册；未加载插件时为空） */
   llm: LlmChannelStore;
+  /** 隔离任务工具执行器（`@faapi/agent` 插件注册；未加载插件时为空——worker 内 taskCtx.agent 不挂载） */
+  agentToolRunner: AgentToolRunnerStore;
 }
 
 /**
@@ -317,7 +394,8 @@ export function createAppRegistries(): AppRegistries {
   const agentHandle = createAgentHandleStore();
   const taskHandle = createTaskHandleStore();
   const llm = createLlmChannelStore();
-  return { tool, agent, task, agentHandle, taskHandle, llm };
+  const agentToolRunner = createAgentToolRunnerStore();
+  return { tool, agent, task, agentHandle, taskHandle, llm, agentToolRunner };
 }
 
 /**

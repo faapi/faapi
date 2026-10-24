@@ -1,4 +1,5 @@
 import type { FaapiContext } from '../runtime/contextTypes';
+import { toAgentToolContext } from '../runtime/agentToolContext';
 import type { InjectorMap } from '../middlewares/injectorTypes';
 import { resolveInjection, type InjectionType } from './resolveInjection';
 import type { MultipartResult } from '../utils/parseMultipart';
@@ -64,11 +65,16 @@ function getBuiltinInjectionValue(type: InjectionType, ctx: FaapiContext, body?:
     case 'agents':
       return ctx.registries ? ctx.registries.agent.listAgents() : listAgents();
     // Phase 3.5：调 @faapi/agent 插件注册的工厂获取 AgentHandle
+    // 工厂入参为 AgentToolContext 契约——完整请求 ctx 经 toAgentToolContext 收窄
+    // （tasks 缺失显式抛错：registries 存在则必有，缺失即框架接线 bug）
     case 'agent':
-      return ctx.registries ? ctx.registries.agentHandle.get(ctx) : getAgentHandle(ctx);
-    // 任务子系统：注入 TaskClient（入队/查询）；未注册工厂（无 app 编排）时 undefined
+      return ctx.registries
+        ? ctx.registries.agentHandle.get(toAgentToolContext(ctx))
+        : getAgentHandle(ctx);
+    // 任务子系统：注入 TaskClient（入队/查询）——直接读 ctx.tasks（单一来源，
+    // createContext 挂载：有 app 编排为同一 app 实例队列，无编排为抛错桩）
     case 'tasks':
-      return ctx.registries ? ctx.registries.taskHandle.get(ctx) : undefined;
+      return ctx.tasks;
     // 轻量 LLM 补全通道：@faapi/agent 插件注册到 registries.llm；与请求上下文无关，
     // get 无参。插件未加载（或编程式直调 ctx 无 registries）时 undefined
     case 'llm':

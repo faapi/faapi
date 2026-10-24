@@ -74,11 +74,14 @@ export interface FaapiContext {
    */
   registries?: AppRegistries;
   /**
-   * 任务队列客户端（TaskClient：enqueue/list）。
-   * 经 createContext 进入请求链路时由框架从 `registries.taskHandle` 工厂注入；
-   * 无 app 编排（编程式直调 ctx）时为 undefined
+   * 任务队列客户端（TaskClient：enqueue/list）——**必有字段**。
+   * 经 createContext 进入请求链路时由框架从 `registries.taskHandle` 工厂注入
+   * （与 `tasks` 参数注入 / `app.tasks` 同一 app 实例队列）；无 app 编排
+   * （编程式裸构 / 轻量测试设施）时为抛错桩 `createThrowingTaskClient()`——
+   * 字段恒在、任意方法调用即显式失败并给修复指引，不静默 `undefined`
+   * （详见 [createContext.md](./createContext.md) 的「ctx.tasks 挂载」）
    */
-  tasks?: import('../tasks/taskTypes.js').TaskClient;
+  tasks: import('../tasks/taskTypes.js').TaskClient;
   /**
    * 请求 ID：请求头 `x-request-id` 第一段（网关透传场景跨服务串联），无则 crypto.randomUUID() 生成。
    * ctx.log 与请求日志中间件的条目均携带该字段，业务日志与请求日志可经此关联
@@ -94,6 +97,15 @@ export interface FaapiContext {
    * ```
    */
   log: Logger;
+  /**
+   * 取消信号（`request.signal` 的同引用别名）
+   *
+   * 客户端提前断开（响应未写完连接即 close）时 aborted 置真。长耗时上游调用
+   * 可携带：`fetch(url, { signal: ctx.signal })`——客户端取消即中止上游。
+   * SSE 流式断开检测用 `ctx.sse().aborted`，两者并存。
+   * 同时是 AgentToolContext 契约的 signal 字段来源（tool handler 三路径统一）。
+   */
+  signal: AbortSignal;
   request: Request;
   /**
    * 动态路由参数（校验转换后的值）

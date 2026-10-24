@@ -11,6 +11,19 @@
 - `ctx.params` / `ctx.rawParams`：同一原始段引用（调用方传入）；管线校验后仅
   `ctx.params` 被替换为转换值，`ctx.rawParams` 保持原始
 
+## ctx.tasks 挂载（恒在）
+
+`ctx.tasks: TaskClient` 为**必有字段**，两条形态由是否有 app 编排决定：
+
+- **有 registries**（真实请求链路 / `createTestContext` 传 registries）：`registries.taskHandle`
+  工厂产物——与 `tasks` 参数注入 / `app.tasks` 指向同一 app 实例队列
+- **无 registries**（编程式裸构 / 轻量测试设施）：`createThrowingTaskClient()` 抛错桩——
+  字段恒在、任意方法调用即显式失败并给修复指引（与 [agentToolContext.md](./agentToolContext.md)
+  契约的 tasks 填充规则同源），不静默 `undefined`
+
+`tasks` 参数注入直接读 `ctx.tasks`（单一来源）——handler 侧无编排场景的队列交互
+得到明确报错而非 `TypeError: Cannot read properties of undefined`。
+
 ## 为什么需要
 
 将 Web 标准 Request 对象转换为 faapi 上下文，提取 params、query、headers 等信息。

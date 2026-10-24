@@ -101,7 +101,7 @@ export async function run(payload, taskCtx) {
 - **纯数据校验**：carry 须为普通对象且可结构化克隆（要持久化 + 跨隔离 worker 线程），含函数/symbol/不可克隆值在 **enqueue 时刻显式抛错**（与 config 快照同款边界，不留到派发才炸）
 - **续投自动继承**：任务内 `taskCtx.tasks.enqueue*` 自动带上当前执行的 carry（显式传 carry 整体覆盖，不合并）；`tasks.resume` 激活重投继承挂起前的 carry
 - **cron 触发**为空对象（无调用方上下文，业务按需在 run 内补）
-- **`taskCtx.agent` 惰性通道**（仅进程内任务）：首次访问经 `agentHandle` 工厂以 `{ ...taskCtx.carry }` 为执行 ctx 构造并缓存复用——与 HTTP 请求链的 `agent` 参数注入同一份 baseDeps（插件 setup 闭包）；类型由 `@faapi/agent` 的 declare module 增强为 `AgentHandle | undefined`（未安装该包时类型与运行时一致：字段不存在）。**隔离任务无此通道**（恒 undefined）——agentHandle 工厂为宿主闭包不可跨线程，隔离任务跑 agent 走 `createAgentDeps` 编程式组装（见下节）
+- **`taskCtx.agent` 惰性通道**（两条路径均有）：首次访问经 `agentHandle` 工厂（进程内）或 worker 内动态组装（隔离）构造并缓存复用——执行 ctx 按 `createTaskToolContext` 配方合成（**carry 数据字段落顶层 + 契约字段 tasks/log/signal 后置**，见 [taskToolContext.md](./taskToolContext.md)，与 [AgentToolContext 契约](../runtime/agentToolContext.md) 对齐）；类型由 `@faapi/agent` 的 declare module 增强为 `AgentHandle | undefined`（未安装该包时类型与运行时一致：字段不存在）。**隔离任务的通道以宿主 `agentToolRunner` 注册为前提**（`@faapi/agent` 插件加载）——worker 内编排循环把工具/钩子经 RPC 回传宿主执行（`agentToolRunner`，业务函数面与资源零跨线程）；插件未加载时两条路径均 undefined（能力不存在非降级），手工组装走 `createAgentDeps`（见下节）
 
 ## TaskContext.tasks（任务侧任务客户端）
 
@@ -143,17 +143,22 @@ export async function run(payload, taskCtx) {
     createAgentDeps({
       registries: taskCtx.registries, // 只读视图，最小结构直传
       agentConfig,
-      // 任务无 HTTP 请求——把鉴权身份塞进窄 ctx（Partial<FaapiContext>），tool handler
-      // 的硬闸（ctx?.currentUserId === undefined 拒绝）与鉴权钩子照常读取。
-      // currentUserId 等自定义字段经 declare module '@faapi/faapi' 增强 FaapiContext 后免 cast 直传
-      ctx: { currentUserId: payload.userId },
+      // 任务无 HTTP 请求——契约 ctx 按任务配方合成（身份在 carry 数据字段落顶层），
+      // tool handler 的硬闸与鉴权钩子照常读取。currentUserId 等自定义字段经
+      // declare module '@faapi/faapi' 增强 AgentToolContext 后免 cast 直传
+      ctx: createTaskToolContext({
+        carry: { currentUserId: payload.userId },
+        tasks: taskCtx.tasks,
+        log: taskCtx.log,
+        signal: taskCtx.signal,
+      }),
     }),
   );
   return agent.run(payload.input, { agent: 'log-analyzer', provider });
 }
 ```
 
-装配工厂的行为约定（providers/llms 转换、overrides 浅合并、进程级复用建议）见 `@faapi/agent` 的 [agentDeps.md](../../../agent/src/agentDeps.md)；`ctx` 纯透传语义（框架零读取，HTTP 完整 ctx / 任务窄对象 / 编程式 undefined 三种来源）见 [agent.md](../../../agent/src/agent.md)「AgentDeps.ctx」章节；`AgentDeps` 各字段见 [agent.md](../../../agent/src/agent.md)。
+装配工厂的行为约定（providers/llms 转换、overrides 浅合并、进程级复用建议）见 `@faapi/agent` 的 [agentDeps.md](../../../agent/src/agentDeps.md)；`AgentDeps.ctx` 为必填的 [AgentToolContext](../runtime/agentToolContext.md) 契约（三路径合成保证，无 app 场景用 `createStandaloneToolContext`）见 [agent.md](../../../agent/src/agent.md)「AgentDeps.ctx」章节；`AgentDeps` 各字段见 [agent.md](../../../agent/src/agent.md)。
 
 ## 相关模块
 

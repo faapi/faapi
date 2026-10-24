@@ -51,8 +51,19 @@ export {
   type CreateAgentDepsOptions,
   type AgentDepsRegistries,
 } from './agentDeps';
+// 无 app 编排场景的合规 AgentToolContext 构造（测试/编程式/占位，详见 standaloneToolContext.md）
+export {
+  createStandaloneToolContext,
+  type StandaloneToolContextOverrides,
+} from './standaloneToolContext';
 // 规范类型主包持有（TaskContext 等主包类型引用），此处 re-export 供业务方统一标注
 export type { LlmComplete, LlmCompleteOptions } from '@faapi/faapi';
+// tool handler 第二参数契约（主包声明、三路径合成保证），re-export 供业务方统一标注
+export type { AgentToolContext } from '@faapi/faapi';
+// 任务路径契约 ctx 合成（单一配方，见 faapi 的 taskToolContext.md）——值 re-export：
+// 隔离 worker 内 buildAgentChannel 只解析 '@faapi/agent' 一个说明符（workerEntry
+// 自包含约束），合成函数经本出口到达
+export { createTaskToolContext } from '@faapi/faapi';
 
 // ReAct 循环引擎（Phase 3.3）
 export {

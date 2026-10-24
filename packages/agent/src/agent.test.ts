@@ -9,11 +9,12 @@ import type { AgentDeps, AgentRuntimeConfig, ToolSchemaResolution } from './agen
 import type {
   AgentCore,
   AgentMetadata,
-  FaapiContext,
+  AgentToolContext,
   LlmConfig,
   ToolMetadata,
   ToolModule,
 } from '@faapi/faapi';
+import { createStandaloneToolContext } from './standaloneToolContext';
 import type {
   LLMProvider,
   LLMResponse,
@@ -26,15 +27,22 @@ import type {
 } from './provider';
 import type { SubAgentCallEvent } from './trace';
 
-// 任务侧鉴权字段增强（declare module 声明合并）——与业务方 src/tasks/** 的用法同构：
-// 窄 ctx 携带增强字段直传 AgentDeps.ctx（Partial<FaapiContext>），免 as 断言
+// 任务侧鉴权字段增强（declare module 声明合并）——与业务方用法同构：
+// AgentToolContext（tool handler 第二参数契约）与 FaapiContext（HTTP ctx）双锚点增强，
+// 窄对象携带增强字段直传 AgentDeps.ctx / createStandaloneToolContext，免 as 断言
 declare module '@faapi/faapi' {
+  interface AgentToolContext {
+    currentUserId?: number;
+  }
   interface FaapiContext {
     currentUserId?: number;
   }
 }
 
 // ─── Mock 数据构造器 ─────────────────────────────────
+
+/** 钩子断言用的共享合规 ctx（引用同一对象——identity 快路径，避免深比较 Proxy 桩） */
+const toolCtx42 = createStandaloneToolContext({ currentUserId: 42 });
 
 /** 构造 AgentCore（LLM 可见字段,不含 filePath） */
 function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
@@ -188,7 +196,7 @@ function createDeps(opts: {
   subAgents?: AgentCore[];
   subAgentEntries?: AgentMetadata[];
   config?: AgentRuntimeConfig;
-  ctx?: Partial<FaapiContext>;
+  ctx?: AgentToolContext;
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   resolveAgentInputSchemaImpl?: (agent: AgentMetadata) => Promise<ToolSchemaResolution | undefined>;
@@ -196,12 +204,12 @@ function createDeps(opts: {
   resolveSubAgentContextImpl?: (
     subName: string,
     args: Record<string, unknown>,
-    ctx: Partial<FaapiContext> | undefined,
+    ctx: AgentToolContext,
   ) => Promise<string | undefined>;
   resolveSubAgentInputImpl?: (
     subName: string,
     args: Record<string, unknown>,
-    ctx: Partial<FaapiContext> | undefined,
+    ctx: AgentToolContext,
   ) => Promise<Record<string, unknown> | undefined>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
 }): AgentDeps {
@@ -225,7 +233,7 @@ function createDeps(opts: {
     // 追加注入块。traceId 自身的默认开启/注入/链式行为由「traceId 追踪标识」
     // describe 全量覆盖；传了 config 的用例不钉（该用例自管）
     config: opts.config ?? { traceId: false },
-    ctx: opts.ctx,
+    ctx: opts.ctx ?? createStandaloneToolContext(),
     getAgent: (name) =>
       name === opts.agent.name ? opts.agent : opts.subAgents?.find((a) => a.name === name),
     getAgentEntry: (name) =>
@@ -828,17 +836,14 @@ describe('Agent', () => {
 
     it('接线后追加：子代理 system = base + \\n\\n + 产出；钩子收（真实 agent 名, args, ctx）', async () => {
       const hook = vi.fn(
-        async (
-          subName: string,
-          args: Record<string, unknown>,
-          ctx: Partial<FaapiContext> | undefined,
-        ) => `ctx[${subName}:${JSON.stringify(args)}:${ctx?.currentUserId}]`,
+        async (subName: string, args: Record<string, unknown>, ctx: AgentToolContext) =>
+          `ctx[${subName}:${JSON.stringify(args)}:${ctx.currentUserId}]`,
       );
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
         createDeps({
           provider,
-          ctx: { currentUserId: 42 },
+          ctx: toolCtx42,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
           resolveSubAgentContextImpl: hook,
@@ -849,7 +854,7 @@ describe('Agent', () => {
 
       // subName 是真实 agent 名（非派发名 agent-writer）；args 为派发入参；ctx 为 deps.ctx
       expect(hook).toHaveBeenCalledTimes(1);
-      expect(hook).toHaveBeenCalledWith('writer', { input: '查' }, { currentUserId: 42 });
+      expect(hook).toHaveBeenCalledWith('writer', { input: '查' }, toolCtx42);
       // 追加不替换：base 在前、产出在后、\n\n 分隔
       expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
         role: 'system',
@@ -1095,7 +1100,11 @@ describe('Agent', () => {
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
       // 钩子收到的是 coerce 后的 value（chapterId 已是 number），注入发生在子循环 system
-      expect(hook).toHaveBeenCalledWith('writer', { novelId: 'n1', chapterId: 3 }, undefined);
+      expect(hook).toHaveBeenCalledWith(
+        'writer',
+        { novelId: 'n1', chapterId: 3 },
+        expect.anything(),
+      );
       expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('coerced');
     });
 
@@ -1173,18 +1182,17 @@ describe('Agent', () => {
 
     it('改写后 args 进子代理首条 user 消息（材料附件）；钩子收（真实 agent 名, args, ctx）；system 原样无追加', async () => {
       const hook = vi.fn(
-        async (
-          subName: string,
-          args: Record<string, unknown>,
-          ctx: Partial<FaapiContext> | undefined,
-        ) => ({ ...args, contextMaterial: `material[${subName}]:${ctx?.currentUserId}` }),
+        async (subName: string, args: Record<string, unknown>, ctx: AgentToolContext) => ({
+          ...args,
+          contextMaterial: `material[${subName}]:${ctx.currentUserId}`,
+        }),
       );
       const afterToolCall = vi.fn();
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
         createDeps({
           provider,
-          ctx: { currentUserId: 42 },
+          ctx: toolCtx42,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
           resolveSubAgentInputImpl: hook,
@@ -1196,7 +1204,7 @@ describe('Agent', () => {
 
       // subName 是真实 agent 名（非派发名 agent-writer）；args 为原始派发入参；ctx 为 deps.ctx
       expect(hook).toHaveBeenCalledTimes(1);
-      expect(hook).toHaveBeenCalledWith('writer', { input: '查' }, { currentUserId: 42 });
+      expect(hook).toHaveBeenCalledWith('writer', { input: '查' }, toolCtx42);
       // 改写后的 args（多字段形状）stringify 为子代理首条 user 消息——材料进 user 通道
       expect(firstUserMessage(completeCalls.mock.calls[1][0].messages)).toBe(
         JSON.stringify({ input: '查', contextMaterial: 'material[writer]:42' }),
@@ -1211,7 +1219,7 @@ describe('Agent', () => {
         'agent-writer',
         { input: '查', contextMaterial: 'material[writer]:42' },
         'sub-answer',
-        { currentUserId: 42 },
+        toolCtx42,
       );
     });
 
@@ -1389,7 +1397,7 @@ describe('Agent', () => {
       expect(contextHook).toHaveBeenCalledWith(
         'writer',
         { input: '查', contextMaterial: 'material' },
-        undefined,
+        expect.anything(),
       );
       // system = base + context 块（追加通道）；user = 改写后 args stringify（user 通道）
       expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
@@ -1483,7 +1491,7 @@ describe('Agent', () => {
       const result = await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('done');
       // handler 签名 (args, ctx)：编程式直调无 ctx 时第二参数为 undefined
-      expect(handler).toHaveBeenCalledWith({ city: '北京' }, undefined);
+      expect(handler).toHaveBeenCalledWith({ city: '北京' }, expect.anything());
     });
 
     it('tool 未找到时抛错,被 reactLoop catch 后回传 LLM', async () => {
@@ -1813,7 +1821,7 @@ describe('Agent', () => {
       );
 
       await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      expect(handler).toHaveBeenCalledWith({ city: '北京' }, undefined);
+      expect(handler).toHaveBeenCalledWith({ city: '北京' }, expect.anything());
     });
 
     it('resolveToolSchema 对同一 tool 只调用一次（schema 缓存）', async () => {
@@ -2036,7 +2044,7 @@ describe('Agent', () => {
       expect(done.messages[1]!.tool_calls?.[0]!.id).toBe('c1');
       expect(done.messages[2]!.tool_call_id).toBe('c1');
       expect(done.messages.at(-1)).toEqual({ role: 'assistant', content: '晴天 25 度' });
-      expect(handler).toHaveBeenCalledWith({ city: '北京' }, undefined);
+      expect(handler).toHaveBeenCalledWith({ city: '北京' }, expect.anything());
     });
   });
 
@@ -3546,6 +3554,7 @@ describe('Agent', () => {
           providers: new Map(),
           llms: {},
           rootDir: '/project',
+          ctx: createStandaloneToolContext(),
           getAgent: (name) => (name === 'researcher' ? agentMeta() : undefined),
           getAgentEntry: () => undefined,
           getTool: () => undefined,
@@ -3615,42 +3624,70 @@ describe('Agent', () => {
   });
 
   describe('鉴权钩子（authHooks）', () => {
-    // 任务侧窄 ctx（Partial 直传，无 cast）——HTTP 完整 ctx 是其超集，透传语义一致
-    const ctx: Partial<FaapiContext> = {
+    // 合规 ctx（createStandaloneToolContext 构造，业务增强字段走 overrides）——
+    // 框架三路径合成之外的第四种合法来源（测试/编程式）
+    const ctx = createStandaloneToolContext({
       method: 'POST',
       path: '/api/agent',
       currentUserId: 42,
-    };
-
-    it('类型契约:AgentDeps.ctx 与钩子 ctx 参数均为 Partial<FaapiContext>（任务侧窄对象免 cast）', () => {
-      expectTypeOf<AgentDeps['ctx']>().toEqualTypeOf<Partial<FaapiContext> | undefined>();
-      // 增强字段随 Partial 保留——窄对象携带业务字段直传
-      expectTypeOf<Partial<FaapiContext>>().toMatchTypeOf<{ currentUserId?: number }>();
-      // AgentRuntimeConfig 钩子签名同步放宽（显式标注 FaapiContext 的钩子实现是迁移点）
-      expectTypeOf<
-        Parameters<NonNullable<AgentRuntimeConfig['beforeToolCall']>>[2]
-      >().toEqualTypeOf<Partial<FaapiContext> | undefined>();
-      expectTypeOf<Parameters<NonNullable<AgentRuntimeConfig['afterToolCall']>>[3]>().toEqualTypeOf<
-        Partial<FaapiContext> | undefined
-      >();
-      expectTypeOf<Parameters<NonNullable<AgentRuntimeConfig['filterTools']>>[1]>().toEqualTypeOf<
-        Partial<FaapiContext> | undefined
-      >();
     });
 
-    it('任务侧窄 ctx 免 cast 直传:硬闸钩子与 handler 读到同一身份字段', async () => {
-      // tool 鉴权硬闸（业务侧形态,fail-closed）——读窄 ctx 的增强字段
+    it('类型契约:AgentDeps.ctx 必填且为 AgentToolContext（钩子 ctx 参数同型）', () => {
+      expectTypeOf<AgentDeps['ctx']>().toEqualTypeOf<AgentToolContext>();
+      // 增强字段经 declare module 合并——窄 overrides 携带业务字段直传
+      expectTypeOf<Partial<AgentToolContext>>().toMatchTypeOf<{ currentUserId?: number }>();
+      // AgentRuntimeConfig 钩子签名同步收紧（显式标注 Partial<FaapiContext> 的钩子实现是迁移点）
+      expectTypeOf<
+        Parameters<NonNullable<AgentRuntimeConfig['beforeToolCall']>>[2]
+      >().toEqualTypeOf<AgentToolContext>();
+      expectTypeOf<
+        Parameters<NonNullable<AgentRuntimeConfig['afterToolCall']>>[3]
+      >().toEqualTypeOf<AgentToolContext>();
+      expectTypeOf<
+        Parameters<NonNullable<AgentRuntimeConfig['filterTools']>>[1]
+      >().toEqualTypeOf<AgentToolContext>();
+    });
+
+    it('beforeToolCall 支持异步（Promise 守卫）——隔离路径 RPC 垫片的接缝', async () => {
+      const handler = vi.fn(async () => ({ ok: true }));
+      const { provider, completeCalls } = toolCallProvider();
+      // 异步守卫：拒绝语义经 Promise 透传（await 化后同步/异步钩子同语义）
+      const beforeToolCall = vi.fn(async () => ({ error: 'unauthenticated (async guard)' }));
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async () => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName: 'getWeather',
+          }),
+          config: { beforeToolCall },
+        }),
+      );
+
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+      expect(handler).not.toHaveBeenCalled();
+      // 异步守卫的 { error } 与同步同语义：回传 LLM（tool 结果消息）
+      const secondRequest = completeCalls.mock.calls[1][0];
+      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
+      expect(JSON.stringify(toolMsg?.content)).toContain('unauthenticated');
+    });
+
+    it('任务侧合规 ctx 直传:硬闸钩子与 handler 读到同一身份字段', async () => {
+      // tool 鉴权硬闸（业务侧形态,fail-closed）——读契约 ctx 的增强字段
       let seenUserId: number | undefined;
-      const handler = vi.fn(async (_args: unknown, hookCtx?: Partial<FaapiContext>) => {
+      const handler = vi.fn(async (_args: unknown, hookCtx?: AgentToolContext) => {
         if (hookCtx?.currentUserId === undefined) return { error: 'unauthenticated' };
         seenUserId = hookCtx.currentUserId;
         return { ok: true };
       });
       const beforeToolCall = vi.fn(
-        (_name: string, _args: Record<string, unknown>, hookCtx?: Partial<FaapiContext>) => {
+        (_name: string, _args: Record<string, unknown>, hookCtx?: AgentToolContext) => {
           if (hookCtx?.currentUserId === undefined) return { error: 'workspace context required' };
         },
       );
+      const toolCtx = createStandaloneToolContext({ currentUserId: 42 });
       const { provider } = toolCallProvider();
       const agent = new Agent(
         createDeps({
@@ -3662,17 +3699,13 @@ describe('Agent', () => {
             functionName: 'getWeather',
           }),
           config: { beforeToolCall },
-          ctx: { currentUserId: 42 },
+          ctx: toolCtx,
         }),
       );
 
       await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      // 硬闸放行（窄 ctx 携带身份）→ handler 读到身份执行
-      expect(beforeToolCall).toHaveBeenCalledWith(
-        'weather_getWeather',
-        { city: '北京' },
-        { currentUserId: 42 },
-      );
+      // 硬闸放行（ctx 携带身份）→ handler 读到身份执行
+      expect(beforeToolCall).toHaveBeenCalledWith('weather_getWeather', { city: '北京' }, toolCtx);
       expect(seenUserId).toBe(42);
       expect(handler).toHaveBeenCalledTimes(1);
     });
@@ -4075,6 +4108,7 @@ describe('Agent — usage / turns 整树上卷', () => {
       providers: new Map([['openai', provider]]),
       llms: defaultLlms(),
       rootDir: '/project',
+      ctx: createStandaloneToolContext(),
       getAgent: (name) => agents[name],
       getAgentEntry: (name) => entries[name],
       getTool: () => undefined,
@@ -4335,7 +4369,7 @@ describe('sub-agent 派发工具命名与路由', () => {
     const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
     expect(result.content).toBe('done');
-    expect(handler).toHaveBeenCalledWith({ q: 'x' }, undefined);
+    expect(handler).toHaveBeenCalledWith({ q: 'x' }, expect.anything());
     // 只有两轮父循环 llm_call——没有子循环启动
     expect(completeCalls).toHaveBeenCalledTimes(2);
   });

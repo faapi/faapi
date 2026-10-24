@@ -1,4 +1,5 @@
 import type { FaapiContext } from '../runtime/contextTypes';
+import { toAgentToolContext } from '../runtime/agentToolContext';
 
 /**
  * agent handle 工厂注册表（单例）
@@ -12,8 +13,14 @@ import type { FaapiContext } from '../runtime/contextTypes';
  * 详见 [agentHandle.md](./agentHandle.md)。
  */
 
-/** agent handle 工厂函数（由 `@faapi/agent` 插件注册） */
-export type AgentHandleFactory = (ctx: FaapiContext) => unknown;
+/**
+ * agent handle 工厂函数（由 `@faapi/agent` 插件注册）
+ *
+ * 与 registries.ts 的定义同型（此处的 re-export 别名保持既有导入路径兼容）。
+ */
+export type { AgentHandleFactory } from './registries';
+
+import type { AgentHandleFactory } from './registries';
 
 import { defaultRegistries } from './registries';
 
@@ -42,9 +49,12 @@ export function registerAgentHandleFactory(factory: AgentHandleFactory | null): 
 
 /**
  * 从默认实例获取 agent handle（工厂未注册时返回 undefined）
+ *
+ * 完整请求 ctx 经 toAgentToolContext 收窄为契约形态后进工厂（与 app 实例链路
+ * 同一收窄，tasks 缺失显式抛错）。
  */
 export function getAgentHandle(ctx: FaapiContext): unknown {
-  return defaultRegistries.agentHandle.get(ctx);
+  return defaultRegistries.agentHandle.get(toAgentToolContext(ctx));
 }
 
 /**

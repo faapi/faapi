@@ -7,6 +7,7 @@ import {
   createToolRegistry,
   createAgentRegistry,
   createAgentHandleStore,
+  createAgentToolRunnerStore,
   createTaskHandleStore,
   createTaskRegistriesView,
   createLlmChannelStore,
@@ -468,6 +469,7 @@ describe('runTaskInWorker', () => {
       agent: agentRegistry,
       task: createTaskRegistry(),
       agentHandle: createAgentHandleStore(),
+      agentToolRunner: createAgentToolRunnerStore(),
       taskHandle: createTaskHandleStore(),
       llm: createLlmChannelStore(),
     });
@@ -1195,5 +1197,66 @@ describe('buildSuspendChannel', () => {
     await expect(channel.suspend({ fn: () => {} })).rejects.toThrow(
       /taskCtx\.suspend state is not cloneable/,
     );
+  });
+});
+
+// ─── buildAgentRpc（workerEntry 纯函数，主线程单测） ─────────────────
+
+describe('buildAgentRpc', () => {
+  it('call 发送 { type: agent-call, seq, kind, payload }，agent-result ok 回 resolve', async () => {
+    const { buildAgentRpc } = await import('./workerEntry');
+    const sent: Array<Record<string, unknown>> = [];
+    const channel = buildAgentRpc((msg) => sent.push(msg));
+    const p = channel.call('tool-call', { toolName: 'weather_getWeather', args: { city: '北京' } });
+    expect(sent).toEqual([
+      {
+        type: 'agent-call',
+        seq: 1,
+        kind: 'tool-call',
+        payload: { toolName: 'weather_getWeather', args: { city: '北京' } },
+      },
+    ]);
+    expect(channel.handleMessage({ type: 'agent-result', seq: 1, ok: true, value: '晴' })).toBe(
+      true,
+    );
+    await expect(p).resolves.toBe('晴');
+  });
+
+  it('agent-result ok:false：reject 并保留错误 name/message（宿主执行错误原样回传）', async () => {
+    const { buildAgentRpc } = await import('./workerEntry');
+    const channel = buildAgentRpc(() => {});
+    const p = channel.call('tool-call', { toolName: 'x', args: {} });
+    channel.handleMessage({
+      type: 'agent-result',
+      seq: 1,
+      ok: false,
+      error: { name: 'RangeError', message: 'boom', stack: undefined, props: {} },
+    });
+    await expect(p).rejects.toMatchObject({ name: 'RangeError', message: 'boom' });
+  });
+
+  it('多调用 seq 递增互不串台；未知/迟到 seq 消费但不影响挂起调用', async () => {
+    const { buildAgentRpc } = await import('./workerEntry');
+    const sent: Array<Record<string, unknown>> = [];
+    const channel = buildAgentRpc((msg) => sent.push(msg));
+    const p1 = channel.call('tool-call', { toolName: 'a', args: {} });
+    const p2 = channel.call('before-tool-call', { toolName: 'b', args: {} });
+    expect(sent.map((m) => m.seq)).toEqual([1, 2]);
+    channel.handleMessage({ type: 'agent-result', seq: 2, ok: true, value: 'guard-ok' });
+    channel.handleMessage({ type: 'agent-result', seq: 1, ok: true, value: 'tool-ok' });
+    await expect(p2).resolves.toBe('guard-ok');
+    await expect(p1).resolves.toBe('tool-ok');
+    expect(channel.handleMessage({ type: 'agent-result', seq: 99, ok: true })).toBe(true);
+    expect(channel.handleMessage({ type: 'other' })).toBe(false);
+  });
+
+  it('payload 不可克隆：send 抛错时 call 同步 reject 克隆指引（不发消息）', async () => {
+    const { buildAgentRpc } = await import('./workerEntry');
+    const channel = buildAgentRpc(() => {
+      throw new Error('() => {} could not be cloned.');
+    });
+    await expect(
+      channel.call('tool-call', { toolName: 'x', args: { fn: () => {} } }),
+    ).rejects.toThrow(/agent RPC "tool-call" payload is not cloneable/);
   });
 });

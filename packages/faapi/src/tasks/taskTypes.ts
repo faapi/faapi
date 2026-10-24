@@ -601,11 +601,21 @@ export interface TaskQueueDeps {
   llms?: Record<string, LlmConfig>;
   /**
    * agent handle 工厂 store（AppRegistries.agentHandle）——进程内执行路径
-   * `taskCtx.agent` 惰性通道的数据源（以 `taskCtx.carry` 为执行 ctx 构造，
+   * `taskCtx.agent` 惰性通道的数据源（以 carry + 任务级能力合成的契约 ctx 构造，
    * 与 HTTP 请求链同一份 baseDeps）；缺省 taskCtx.agent 恒 undefined。
-   * 隔离路径不消费（工厂为宿主闭包不可跨线程）
+   * 隔离路径不消费本 store（工厂为宿主闭包不可跨线程）——隔离的 agent 通道走
+   * `agentToolRunner`（工具/钩子宿主执行 RPC）
    */
   agentHandle?: import('../injection/registries.js').AgentHandleStore;
+  /**
+   * 隔离任务工具执行器 store（AppRegistries.agentToolRunner，`@faapi/agent` 插件
+   * 注册）——隔离 worker 的 agent 编排循环把业务函数面（工具 handler / 钩子 /
+   * 派发钩子）经 RPC 回传宿主执行，宿主以任务合成契约 ctx 调用执行器（与进程内
+   * `taskCtx.agent` 同配方，见 taskToolContext.md）。已注册时 run 消息携带
+   * `agentChannel: true`，worker 内挂载 `taskCtx.agent`；缺省（插件未加载）
+   * worker 内 taskCtx.agent 恒 undefined（能力不存在非降级）
+   */
+  agentToolRunner?: import('../injection/registries.js').AgentToolRunnerStore;
   /**
    * 队列驱动（必填）：`loadTaskDriver` 解析结果（pgboss/bullmq 子包驱动）
    * 或自定义 TaskDriver 实例；无任务清单时由 createAppBase 传入 idleTaskDriver

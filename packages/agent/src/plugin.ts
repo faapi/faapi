@@ -39,10 +39,16 @@
  * 详见 [plugin.md](./plugin.md)。
  */
 
-import { type FaapiPlugin, type PluginContext, type AgentConfig } from '@faapi/faapi';
-import { Agent } from './agent';
+import {
+  type FaapiPlugin,
+  type PluginContext,
+  type AgentConfig,
+  type ToolSchemaResolution,
+} from '@faapi/faapi';
+import { Agent, executeToolCall, type FilterToolsHook } from './agent';
 import { createAgentDeps } from './agentDeps';
 import { createLightComplete } from './lightComplete';
+import { createStandaloneToolContext } from './standaloneToolContext';
 
 /**
  * 从 PluginContext.config 读取 agent 配置
@@ -96,6 +102,9 @@ const agentPlugin: FaapiPlugin = {
       registries,
       rootDir,
       agentConfig: agentConfig ?? {},
+      // ctx 必填契约下的 baseDeps 占位：工厂每次请求以请求 ctx 覆盖（下方 register），
+      // 占位 ctx 不会被任何 tool 调用消费——缺省桩的诚实性由 standaloneToolContext 保证
+      ctx: createStandaloneToolContext(),
     });
 
     // 轻量补全通道注册到 registries.llm——handler 的 `llm` 注入参数与任务执行上下文
@@ -110,6 +119,26 @@ const agentPlugin: FaapiPlugin = {
     // systemPromptFile 读取走主包免传参 readResource（读取根 app 启动时已绑定）
     ctx.registries.agentHandle.register((ctx) => {
       return new Agent({ ...baseDeps, ctx });
+    });
+
+    // 注册隔离任务工具执行器——隔离 worker 的 agent 编排循环经 RPC 把业务函数面
+    // （工具 handler / 钩子 / 派发钩子）回传宿主执行：与 Agent.executeTool 常规
+    // 分支共用 executeToolCall（schema 缓存 setup 闭包级，跨调用复用），worker 侧
+    // 只跑 LLM 循环。插件未加载时 runner store 为空——worker 内 taskCtx.agent
+    // 不挂载（能力不存在非降级，见 taskTypes.md）
+    const runnerSchemaCache = new Map<string, ToolSchemaResolution | undefined>();
+    ctx.registries.agentToolRunner.register({
+      beforeToolCall: async (ctx, toolName, args) =>
+        baseDeps.config?.beforeToolCall?.(toolName, args, ctx),
+      toolCall: (ctx, toolName, args) =>
+        executeToolCall(baseDeps, toolName, args, ctx, runnerSchemaCache),
+      filterTools: async (ctx, tools) =>
+        (await baseDeps.config?.filterTools?.(tools as Parameters<FilterToolsHook>[0], ctx)) ??
+        tools,
+      resolveSubAgentInput: async (ctx, subName, args) =>
+        baseDeps.resolveSubAgentInput?.(subName, args, ctx),
+      resolveSubAgentContext: async (ctx, subName, args) =>
+        baseDeps.resolveSubAgentContext?.(subName, args, ctx),
     });
 
     console.log(

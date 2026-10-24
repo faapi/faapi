@@ -12,11 +12,12 @@ import {
   loadToolModule,
   createToolSchemaResolver,
   type AgentConfig,
-  type FaapiContext,
+  type AgentToolContext,
   type LlmConfig,
   type ToolRegistry,
   type AgentRegistry,
 } from '@faapi/faapi';
+import { AgentError } from './agentErrors';
 import type { AgentDeps, AgentRuntimeConfig } from './agent';
 import { createProvider } from './provider';
 
@@ -36,8 +37,13 @@ export interface CreateAgentDepsOptions {
    * （只读视图）、测试设施的 `harness.registries` 均可直传
    */
   registries: AgentDepsRegistries;
-  /** 请求/任务上下文透传（AgentDeps.ctx：authHooks 与 tool handler 第二参数读取） */
-  ctx?: Partial<FaapiContext>;
+  /**
+   * 执行上下文（必填，[AgentToolContext](../../faapi/src/runtime/agentToolContext.md)
+   * 契约）——authHooks 与 tool handler 第二参数读取。框架三路径由框架合成
+   * （HTTP 经 `toAgentToolContext` 收窄、任务路径 carry + 任务级能力合成）；
+   * 测试/编程式无 app 场景用 `createStandaloneToolContext` 构造
+   */
+  ctx: AgentToolContext;
   /** 项目根目录（loadToolModule 桥接与 schema 解析器定位用；缺省 process.cwd()） */
   rootDir?: string;
   /**
@@ -94,10 +100,19 @@ function toAgentRuntimeConfig(agentConfig: AgentConfig): AgentRuntimeConfig {
  * **空 apiKey 照常注册 provider**（部分网关/本地模型场景无需 key）；「key 未配置」
  * 的启动期显性提示由插件 setup 负责（本工厂可能在任务内调用，不在此处刷警告）。
  *
- * @param options registries 必填，其余可选
+ * @param options registries 与 ctx 必填，其余可选
  */
 export function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps {
   const { registries, ctx, rootDir = process.cwd(), agentConfig, overrides } = options;
+
+  // ctx 必填的运行时保证：TS 层已强制，此处挡住绕过类型检查的 JS 调用——
+  // 无 ctx 的 deps 会让 tool handler 第二参数缺席（契约破坏），显式失败不降级
+  if (ctx == null || typeof ctx !== 'object') {
+    throw new AgentError(
+      'createAgentDeps: ctx 必填（AgentToolContext 契约）——HTTP/任务路径由框架合成，' +
+        '测试与编程式场景用 createStandaloneToolContext 构造',
+    );
+  }
 
   // agentConfig 是唯一配置入口：llms 目录转 providers，旋钮全量拆装
   const resolvedLlms: Record<string, LlmConfig> = agentConfig?.llms ?? {};
@@ -125,7 +140,7 @@ export function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps {
     llms: resolvedLlms,
     rootDir,
     ...(resolvedConfig ? { config: resolvedConfig } : {}),
-    ...(ctx ? { ctx } : {}),
+    ctx,
     getAgent: (name) => registries.agent.getAgent(name),
     getAgentEntry: (name) => registries.agent.getAgentEntry(name),
     getTool: (name) => registries.tool.get(name),

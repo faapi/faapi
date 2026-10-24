@@ -58,17 +58,18 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | `resolveSubAgentContext?(subName, args, ctx)` | —（应用组装层注入） | 派发上下文钩子：`executeSubAgent` 派发边界按派发参数异步供数，返回值由框架追加进子代理 system 消息。见「resolveSubAgentContext 派发上下文钩子」 |
 | `resolveSubAgentInput?(subName, args, ctx)` | —（应用组装层注入） | 派发入参改写钩子：`executeSubAgent` 在派发入参校验之后异步改写派发 args，返回对象整体替换、改写结果进子代理首条 user 消息（交接单附件通道）。见「resolveSubAgentInput 派发入参改写钩子」 |
 
-### `AgentDeps.ctx`（请求上下文透传）
+### `AgentDeps.ctx`（执行上下文契约，必填）
 
-`ctx?: Partial<FaapiContext>`——框架自身零读取，纯透传给鉴权钩子（`beforeToolCall` / `afterToolCall` / `filterTools`）与 tool handler 第二参数。类型为 `Partial` 的原因：上下文的完整性由调用方场景决定，框架不读任何字段，不应强迫调用方构造完整 `FaapiContext`（含 `request` / `headers` 等请求绑定字段，任务侧无法构造）：
+`ctx: AgentToolContext`——tool handler 第二参数与鉴权钩子的统一契约（类型声明在主包 `@faapi/faapi` 的 [agentToolContext.md](../../faapi/src/runtime/agentToolContext.md)，本包 re-export）。**必有，基础字段（`tasks` / `log` / `signal`）由框架在三条约执行路径上合成保证正确**；业务身份字段（`currentUserId` 等）经 `declare module '@faapi/faapi'` 增强 `AgentToolContext` 后强类型读取，在场性由各路径填充规则决定、业务侧 fail-closed 断言消费。请求绑定字段（`request` / `headers` 等）与宿主函数值面（`config` / `registries`）**不进契约**——任务侧物理不存在，访问即编译错误。
 
-| 来源 | 传入 | 场景 |
-| --- | --- | --- |
-| HTTP 请求（@faapi/agent 插件工厂） | 完整 `FaapiContext` | 钩子/handler 可读中间件塞入的全部身份信息（`ctx.user` / `ctx.workspace` 等增强字段） |
-| 任务内组装（`src/tasks/**/task.ts`） | 窄对象（如 `{ currentUserId }`，经 `declare module` 增强的字段免 cast 直传） | 任务无 HTTP 请求，只传 tool handler 鉴权硬闸需要的身份字段 |
-| 编程式直调（测试/自定义启动器） | 不传 | 钩子收到 `undefined`，业务方在钩子里自行决定拒绝与否 |
+| 路径 | ctx 来源 |
+| --- | --- |
+| HTTP 请求（@faapi/agent 插件工厂） | `toAgentToolContext` 从完整请求 ctx 收窄（契约字段 + 全量字段透传） |
+| 进程内任务（`taskCtx.agent` 静默通道） | `createTaskToolContext` 合成：carry 数据字段落顶层 + scoped TaskClient / 任务级 logger / `job.signal` |
+| 隔离任务（worker 内 `taskCtx.agent`） | worker 侧同配方合成；工具与钩子经 RPC 回宿主执行（宿主以同配方合成，见 [taskToolContext.md](../../faapi/src/tasks/taskToolContext.md)） |
+| 测试 / 编程式（无 app 编排） | `createStandaloneToolContext`（诚实缺省：tasks 抛错桩 / console logger / 永不触发 signal） |
 
-`declare module '@faapi/faapi'` 增强的字段随 `Partial` 保留——钩子/`filterTools` 内 `ctx?.user` 等增强字段的类型提示照常可用。sub-agent 递归复用同一 deps，ctx 随行不变。完整传递链见 [authHooks.md](./authHooks.md)，任务侧组装示例见主包 [taskTypes.md](../../faapi/src/tasks/taskTypes.md)「任务内组装 Agent」。
+`AgentDeps.ctx` 为**必填**（类型层强制 + `createAgentDeps` 运行时 invariant）——无 ctx 的 Agent 组装会让 tool handler 第二参数缺席，契约破坏即显式失败。sub-agent 递归复用同一 deps，ctx 随行不变。完整传递链见 [authHooks.md](./authHooks.md)，任务侧组装示例见主包 [taskTypes.md](../../faapi/src/tasks/taskTypes.md)「任务内组装 Agent」。
 
 ### `Agent` 类方法
 

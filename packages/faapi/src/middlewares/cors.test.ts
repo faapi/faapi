@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createThrowingTaskClient } from '../runtime/agentToolContext';
 import { cors } from './cors';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { ResponseMeta } from '../runtime/contextTypes';
@@ -24,6 +25,8 @@ function createMockContext(
 
   return {
     request,
+    signal: request.signal,
+    tasks: createThrowingTaskClient(),
     params: {},
     rawParams: {},
     query: {}, // 新口径：ctx.query 为对象（原始 string 值）

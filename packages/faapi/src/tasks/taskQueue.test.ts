@@ -730,6 +730,90 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
+  it('隔离 agent 通道：agentToolRunner 已注册时注入 onAgentCall 分派（runner 方法收任务合成契约 ctx）；未注册时不注入', async () => {
+    const fake = makeFakeDriver();
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
+    ]);
+
+    // runner 已注册：onAgentCall 注入，按 kind 分派到 runner 方法，ctx 为合成契约 ctx
+    const calls: Array<{ kind: string; ctx: Record<string, unknown> }> = [];
+    const runner = {
+      beforeToolCall: async (ctx: Record<string, unknown>) => {
+        calls.push({ kind: 'before-tool-call', ctx });
+        return undefined;
+      },
+      toolCall: async (ctx: Record<string, unknown>) => {
+        calls.push({ kind: 'tool-call', ctx });
+        return 'tool-ok';
+      },
+      filterTools: async () => [],
+      resolveSubAgentInput: async () => undefined,
+      resolveSubAgentContext: async () => undefined,
+    };
+    const runnerStore = {
+      register: vi.fn(),
+      get: () => runner,
+      clear: vi.fn(),
+    };
+    let capturedOpts: {
+      onAgentCall?: (kind: string, payload: Record<string, unknown>) => Promise<unknown>;
+    } = {};
+    const runIsolated = vi.fn(async (opts: typeof capturedOpts) => {
+      capturedOpts = opts;
+      return 'from-worker';
+    });
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      agentToolRunner: runnerStore as never,
+      loadTaskModule: async () => ({ run: vi.fn() }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('heavy', {}, { carry: { currentUserId: 9 } });
+    await fake.dispatch('heavy', {}, 1, undefined, { carry: { currentUserId: 9 } });
+
+    expect(capturedOpts.onAgentCall).toBeDefined();
+    await expect(
+      capturedOpts.onAgentCall!('tool-call', { toolName: 'test.tool', args: { q: 1 } }),
+    ).resolves.toBe('tool-ok');
+    await expect(
+      capturedOpts.onAgentCall!('before-tool-call', { toolName: 'test.tool', args: {} }),
+    ).resolves.toBeUndefined();
+    // 合成契约 ctx：carry 字段落顶层 + tasks/log/signal 恒在
+    expect(calls[0]!.ctx.currentUserId).toBe(9);
+    expect(calls[0]!.ctx.tasks).toBeDefined();
+    expect(calls[0]!.ctx.log).toBeDefined();
+    expect(calls[0]!.ctx.signal).toBeInstanceOf(AbortSignal);
+    expect(calls.map((c) => c.kind)).toEqual(['tool-call', 'before-tool-call']);
+    await queue.stop();
+
+    // runner 未注册：onAgentCall 不注入（worker 消息不带 agentChannel）
+    const fake2 = makeFakeDriver();
+    const runIsolated2 = vi.fn(async (opts: { onAgentCall?: unknown }) => {
+      expect(opts.onAgentCall).toBeUndefined();
+      return 'ok';
+    });
+    const queue2 = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake2.driver,
+      runIsolated: runIsolated2 as never,
+      loadTaskModule: async () => ({ run: vi.fn() }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue2.start();
+    await queue2.enqueue('heavy');
+    await fake2.dispatch('heavy', {});
+    await queue2.stop();
+  });
+
   it('mode: isolated 的任务走隔离执行器（runIsolated），进程内 run 不被调用', async () => {
     const run = vi.fn(async () => 'in-process');
     const fake = makeFakeDriver();
@@ -1454,7 +1538,7 @@ describe('createTaskQueue — carry 执行上下文管道', () => {
     await queue.stop();
   });
 
-  it('taskCtx.agent 惰性通道：以 carry 为执行 ctx 构造一次缓存复用；store 缺失为 undefined', async () => {
+  it('taskCtx.agent 惰性通道：以合成契约 ctx（carry 字段 + tasks/log/signal）构造一次缓存复用；store 缺失为 undefined', async () => {
     const fake = makeFakeDriver();
     const factoryCtxs: unknown[] = [];
     let factoryCalls = 0;
@@ -1487,9 +1571,18 @@ describe('createTaskQueue — carry 执行上下文管道', () => {
     await queue.enqueue('distill', {}, { carry });
     await fake.dispatch('distill', {}, 1, undefined, { carry });
 
-    // 惰性构造一次 + 缓存复用；工厂收到 carry 内容作执行 ctx
+    // 惰性构造一次 + 缓存复用；工厂收到契约合成 ctx——carry 数据字段落顶层，
+    // 契约字段（tasks/log/signal）恒在（与隔离路径宿主侧同配方，见 taskToolContext）
     expect(factoryCalls).toBe(1);
-    expect(factoryCtxs[0]).toEqual(carry);
+    const synthesized = factoryCtxs[0] as Record<string, unknown> & {
+      tasks: unknown;
+      log: unknown;
+      signal: unknown;
+    };
+    expect(synthesized.currentUserId).toBe(9);
+    expect(synthesized.tasks).toBeDefined();
+    expect(synthesized.log).toBeDefined();
+    expect(synthesized.signal).toBeInstanceOf(AbortSignal);
     expect(agents[0]).toBe(marker);
     expect(agents[1]).toBe(marker);
     await queue.stop();

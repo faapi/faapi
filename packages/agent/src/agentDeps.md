@@ -15,7 +15,7 @@
 
 ## 使用场景
 
-- **任务内组装 agent**（主要场景）：`src/tasks/<name>/task.ts` 中 `new Agent(createAgentDeps({ registries: taskCtx.registries, agentConfig: taskCtx.config.agent }))`——配置经 `taskCtx.config.agent` 读回（faapi.config 单一来源），鉴权身份经 `ctx` 窄对象透传（框架契约：`AgentDeps.ctx` 为 `Partial<FaapiContext>` 纯透传）
+- **任务内组装 agent**（主要场景）：进程内任务用静默通道 `taskCtx.agent`（框架以 carry + 任务级能力合成契约 ctx 构造，见 faapi 的 taskToolContext.md）；手工组装时 `new Agent(createAgentDeps({ registries: taskCtx.registries, ctx: createTaskToolContext({ carry: taskCtx.carry, tasks: taskCtx.tasks, log: taskCtx.log, signal: taskCtx.signal }), agentConfig: taskCtx.config.agent }))`——`AgentDeps.ctx` 为**必填**的 `AgentToolContext` 契约（类型声明在主包，三路径合成规则见 faapi 的 agentToolContext.md）
 - **自组装单点**：业务组装工厂（如 writer 的 `buildAppAgent`）用 `overrides` 叠加差异项——`resolveSystemPrompt` 装饰、`resolveSubAgentContext` 派发上下文供数、schema 富化包装、config 覆盖——访问器拼装不再复刻
 - **插件 setup**：`@faapi/agent` 插件内部同样经本工厂装配（与任务侧单一实现，不出现适配漂移）
 - **测试设施**：`createAgentTestHarness` 的 `registries` + `loadToolModule` 可经 `overrides` 接进同一装配（harness 自带桥接形态与此工厂同构）
@@ -36,8 +36,8 @@ interface CreateAgentDepsOptions {
     agent: Pick<AgentRegistry, 'getAgent' | 'getAgentEntry' | 'resolveAgentTools' | 'resolveSubAgents'>;
     tool: Pick<ToolRegistry, 'get'>;
   };
-  /** 请求/任务上下文透传（AgentDeps.ctx：authHooks 与 tool handler 第二参数读取） */
-  ctx?: Partial<FaapiContext>;
+  /** 执行上下文契约（必填，AgentToolContext——authHooks 与 tool handler 第二参数读取；无 app 场景用 createStandaloneToolContext 构造） */
+  ctx: AgentToolContext;
   /** 项目根目录（loadToolModule 桥接与 schema 解析器定位用；缺省 process.cwd()） */
   rootDir?: string;
   /**
@@ -88,7 +88,7 @@ export async function run(payload, taskCtx: TaskContext) {
     createAgentDeps({
       registries: taskCtx.registries, // 只读视图，最小结构直传
       agentConfig,
-      ctx: { currentUserId: payload.userId }, // 鉴权身份窄对象透传（框架契约）
+      ctx: createTaskToolContext({ carry: payload, tasks: taskCtx.tasks, log: taskCtx.log, signal: taskCtx.signal }), // 契约 ctx 合成（身份在 carry 数据字段落顶层）
     }),
   );
   return agent.run(payload.input, { agent: 'log-analyzer', model: 'gpt-4o' });

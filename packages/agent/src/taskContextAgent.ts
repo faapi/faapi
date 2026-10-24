@@ -11,9 +11,11 @@
  * 以 getter 挂载，类型由本声明合并提供——业务 import `@faapi/agent` 即得强
  * 类型；未安装本包的项目类型与运行时行为一致（字段不存在）。
  *
- * 能力边界：**隔离任务（worker.ts）无此通道**（恒 undefined）——agentHandle
- * 工厂为宿主闭包不可跨线程；隔离任务跑 agent 走 `createAgentDeps` 编程式组装
- * （见 agentDeps.md）。
+ * 隔离任务（worker.ts 声明）同样有 `taskCtx.agent`：run 消息携带 `agentChannel:
+ * true`（宿主 agentToolRunner 已注册）时，worker 内动态加载 `@faapi/agent` 组装
+ * 带 RPC 垫片的 Agent——编排循环在 worker，工具/钩子回传宿主执行（见
+ * faapi 的 workerEntry.ts buildAgentChannel 与 taskTypes.md）；宿主 agentToolRunner
+ * 未注册（插件未加载）时隔离任务恒 undefined——能力不存在非降级。
  */
 
 import type { TaskContext } from '@faapi/faapi';

@@ -5,6 +5,9 @@ import type { MultipartResult } from '../utils/parseMultipart';
 import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
 import { hydrateAgentRegistry, clearAgentRegistry } from './agentRegistry';
 import { createLogger } from '../loggers/logger';
+import { createThrowingTaskClient } from '../runtime/agentToolContext';
+import type { TaskClient } from '../tasks/taskTypes';
+import { createAppRegistries } from './registries';
 
 describe('injectParams', () => {
   beforeEach(() => {
@@ -45,11 +48,37 @@ describe('injectParams', () => {
       getCookie: () => undefined,
       setCookie: () => {},
       deleteCookie: () => {},
+      // 契约/必填字段（as 强转下仍保持 mock 诚实）：取消信号与任务客户端
+      signal: new AbortController().signal,
+      tasks: createThrowingTaskClient(),
       ...overrides,
     } as FaapiContext;
   };
 
   describe('单参数注入', () => {
+    it('注入 tasks：无 registries 时为抛错桩（调用即显式失败，非 undefined）', async () => {
+      const ctx = createMockContext();
+      const fn = eval('(tasks) => tasks');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBe(ctx.tasks);
+      expect(() =>
+        (result as unknown as { enqueue: (n: string, p: unknown) => Promise<unknown> }).enqueue(
+          'x',
+          {},
+        ),
+      ).toThrow(/无任务队列/);
+    });
+
+    it('注入 tasks：有 registries 时为同一 app 实例队列', async () => {
+      const registries = createAppRegistries();
+      const queue = { enqueue: async () => ({ jobId: 'j1' }) } as unknown as TaskClient;
+      registries.taskHandle.register(() => queue);
+      const ctx = createMockContext({ registries, tasks: queue });
+      const fn = eval('(tasks) => tasks');
+      const result = await injectParamsAsync(fn, ctx);
+      expect(result).toBe(queue);
+    });
+
     it('注入 query（ctx.query 同一对象，未过管线时为原始字符串对象）', async () => {
       const ctx = createMockContext();
       const fn = eval('(query) => query');

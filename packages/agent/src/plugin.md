@@ -63,8 +63,9 @@ PluginContext { config.agent, rootDir }
 3. createAgentDeps({ registries, rootDir, agentConfig: agentConfig ?? {} })
    —— agent 块复合形状整体透传,llms → providers 转换与 AgentRuntimeConfig 拆装
    （含 enableTracing 全量字段）都在装配工厂单一实现
-4. registerAgentHandleFactory(() => new Agent({ ...baseDeps, ctx }))
+4. ctx.registries.agentHandle.register((ctx) => new Agent({ ...baseDeps, ctx }))——工厂入参为 AgentToolContext 契约（toAgentToolContext 收窄，HTTP 全量字段随透传）
 5. ctx.registries.llm.register(createLightComplete({ llms, providers }))——轻量补全通道
+6. ctx.registries.agentToolRunner.register({ beforeToolCall / toolCall / filterTools / resolveSubAgentInput / resolveSubAgentContext })——隔离任务工具执行器：worker 内 agent 编排循环经 RPC 把业务函数面回传宿主，toolCall 与 Agent.executeTool 常规分支共用 executeToolCall（schema 缓存 setup 闭包级）
    （与 agent 循环共享同一 providers 单例；llms 未配置时照常注册,调用时报 AgentError）
 ```
 
@@ -73,7 +74,7 @@ PluginContext { config.agent, rootDir }
 
 ### 工厂函数
 
-工厂签名：`(ctx: FaapiContext) => unknown`
+工厂签名：`(ctx: AgentToolContext) => unknown`（主包 AgentHandleFactory 类型）
 
 工厂每次请求时被 `injectParams` 调用,构造一个新的 [Agent](./agent.md) 实例：
 
@@ -85,7 +86,7 @@ PluginContext { config.agent, rootDir }
 const baseDeps = createAgentDeps({ registries, rootDir, agentConfig: agentConfig ?? {} });
 
 registerAgentHandleFactory((ctx) => {
-  // 请求回调只叠加每请求差异项（ctx 透传链：authHooks 与 tool handler 第二参数）
+  // 请求回调只叠加每请求差异项（契约 ctx：authHooks 与 tool handler 第二参数）
   return new Agent({ ...baseDeps, ctx });
 });
 ```

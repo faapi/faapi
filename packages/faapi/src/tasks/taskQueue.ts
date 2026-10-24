@@ -2,6 +2,7 @@ import path from 'node:path';
 import { ValidationError } from '../errors/httpErrors';
 import { runTaskInWorker, TaskCancelledError } from './taskWorker';
 import { collectConfigSnapshot } from './configSnapshot';
+import { createTaskToolContext } from './taskToolContext';
 import { createEmptyTaskRegistriesView } from '../injection/registries';
 import { createLogger, getEffectiveLogLevel, writeLogEntry } from '../loggers/logger';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
@@ -445,8 +446,25 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               'the task manifest is broken (regenerate it with faapi build/dev).',
           );
         }
+        // 隔离 agent 通道：agentToolRunner 已注册（@faapi/agent 插件加载）时注入
+        // RPC 分派——worker 内编排循环的工具调用/钩子回传宿主，宿主以任务合成
+        // 契约 ctx（与进程内 taskCtx.agent 同配方）调执行器。未注册时 run 消息
+        // 不带 agentChannel，worker 内 taskCtx.agent 不挂载（能力不存在非降级）
+        const agentRunner = deps.agentToolRunner?.get();
+        const agentHostCtx = agentRunner
+          ? createTaskToolContext({
+              carry: job.carry ?? {},
+              tasks: createScopedTaskClient(job.id),
+              log: createLogger(`task:${job.name}`, {
+                fields: { jobId: job.id, task: job.name, attempt: job.attempt },
+              }),
+              signal: job.signal,
+            })
+          : undefined;
         result = await (deps.runIsolated ?? runTaskInWorker)({
           taskModulePath: path.resolve(rootDir, meta.filePath),
+          // 隔离 agent 通道的 schema 解析器定位根（随 workerData 下发）
+          rootDir,
           payload: job.payload,
           taskCtx: {
             resourcesDir: deps.resourcesDir,
@@ -523,6 +541,42 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             await persistSuspendEnvelope(driver, job, state);
             suspended = true;
           },
+          // 隔离 agent RPC：按 kind 分派到执行器方法（before-tool-call / tool-call /
+          // filter-tools / resolve-sub-agent-input / resolve-sub-agent-context），
+          // 未知 kind 显式抛错。结果/错误按 seq 回传 worker（克隆边界在 taskWorker
+          // 回传层处理——不可克隆按执行错误回传）
+          onAgentCall: agentRunner
+            ? async (kind, payload) => {
+                const p = payload as {
+                  toolName?: string;
+                  subName?: string;
+                  args?: Record<string, unknown>;
+                  tools?: unknown[];
+                };
+                switch (kind) {
+                  case 'before-tool-call':
+                    return agentRunner.beforeToolCall(agentHostCtx!, p.toolName!, p.args ?? {});
+                  case 'tool-call':
+                    return agentRunner.toolCall(agentHostCtx!, p.toolName!, p.args ?? {});
+                  case 'filter-tools':
+                    return agentRunner.filterTools(agentHostCtx!, p.tools ?? []);
+                  case 'resolve-sub-agent-input':
+                    return agentRunner.resolveSubAgentInput(
+                      agentHostCtx!,
+                      p.subName!,
+                      p.args ?? {},
+                    );
+                  case 'resolve-sub-agent-context':
+                    return agentRunner.resolveSubAgentContext(
+                      agentHostCtx!,
+                      p.subName!,
+                      p.args ?? {},
+                    );
+                  default:
+                    throw new Error(`[faapi] Unknown agent RPC kind "${kind}"`);
+                }
+              }
+            : undefined,
         });
       } else {
         let mod = moduleCache.get(job.name);
@@ -533,12 +587,18 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         if (typeof mod.run !== 'function') {
           throw new Error(`Task "${job.name}" module has no run export`);
         }
+        // 任务级能力先建局部变量：taskCtx 与 agent 执行 ctx 合成共用同一实例
+        // （同一执行内的 tasks/log/signal 全链同源）
+        const scopedTasks = createScopedTaskClient(job.id);
+        const taskLog = createLogger(`task:${job.name}`, {
+          fields: { jobId: job.id, task: job.name, attempt: job.attempt },
+        });
         const taskCtx: TaskContext = {
           signal: job.signal,
           // 执行作用域客户端：委托队列本体（与 ctx.tasks / app.tasks 同一 app 实例），
           // 链式投递自动注入调用方自身 job id（enqueueChain 排除自身）+ 续投
           // 自动继承当前 carry
-          tasks: createScopedTaskClient(job.id),
+          tasks: scopedTasks,
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
           registries: registriesView,
@@ -546,9 +606,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           llm: deps.llm?.get(),
           // enqueue 时携带的执行上下文快照（未携带/旧格式任务为空对象）
           carry: job.carry ?? {},
-          log: createLogger(`task:${job.name}`, {
-            fields: { jobId: job.id, task: job.name, attempt: job.attempt },
-          }),
+          log: taskLog,
           progress: (value) => {
             if (record.status === 'running') record.progress = value;
           },
@@ -567,10 +625,9 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
           ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
         };
         // taskCtx.agent 惰性通道（TaskContext 不声明该字段——类型由 @faapi/agent
-        // declare module 增强为 AgentHandle）：首次访问经 agentHandle 工厂以
-        // carry 为执行 ctx 构造（与 HTTP 请求链同一份 baseDeps），缓存复用；
-        // store 未注入/插件未注册工厂时为 undefined（隔离路径不挂载——工厂为
-        // 宿主闭包不可跨线程，见 taskTypes.md 能力边界）
+        // declare module 增强为 AgentHandle）：首次访问经 agentHandle 工厂构造
+        // （与 HTTP 请求链同一份 baseDeps），缓存复用；store 未注入/插件未注册
+        // 工厂时为 undefined（隔离路径不挂载本 store——见 buildAgentChannel）
         if (deps.agentHandle) {
           const store = deps.agentHandle;
           let cachedAgent: unknown;
@@ -579,11 +636,17 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             enumerable: true,
             get: () => {
               if (!agentResolved) {
-                // 工厂签名收 FaapiContext，但 deps.ctx 为 Partial 纯透传——carry
-                // 合成的执行 ctx 按框架契约传入（插件工厂同款浅透传）
-                cachedAgent = store.get({
-                  ...taskCtx.carry,
-                } as unknown as import('../runtime/contextTypes.js').FaapiContext);
+                // 执行 ctx 按契约合成：carry 数据字段落顶层（身份在 enqueue 处
+                // 声明一次）+ 契约字段（tasks/log/signal）后置——carry 不可覆盖
+                // 框架保证。与隔离路径宿主侧执行器同配方（createTaskToolContext）
+                cachedAgent = store.get(
+                  createTaskToolContext({
+                    carry: taskCtx.carry,
+                    tasks: scopedTasks,
+                    log: taskLog,
+                    signal: job.signal,
+                  }),
+                );
                 agentResolved = true;
               }
               return cachedAgent;

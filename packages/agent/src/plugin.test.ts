@@ -60,6 +60,7 @@ import { createAppRegistries } from '@faapi/faapi';
 import plugin from './plugin';
 import { createProvider, type LLMProvider } from './provider';
 import { Agent, AgentError } from './agent';
+import { createStandaloneToolContext } from './standaloneToolContext';
 import type { AgentHandle } from './agentHandle';
 import { z } from 'zod';
 import { loadToolSchema, getToolSchemaPath } from '@faapi/faapi/src/loaders/loadToolSchema';
@@ -550,5 +551,92 @@ describe('@faapi/agent plugin', () => {
         rmSync(rootDir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe('@faapi/agent plugin — 隔离任务工具执行器（agentToolRunner）注册', () => {
+  it('setup 注册执行器：toolCall 经 executeToolCall 在宿主执行 handler（decorateDeps 注入的 loadToolModule 可达）', async () => {
+    const ctx = makeCtx({
+      ...fullAgentConfig,
+      decorateDeps: (deps: unknown) => ({
+        ...(deps as Record<string, unknown>),
+        loadToolModule: async () => ({ handler: async () => 'tool-ok', functionName: 'fn' }),
+        // 隔离其它用例的 zod schema 缓存（本用例只验执行链路，不验校验）
+        resolveToolSchema: async () => undefined,
+      }),
+    } as AgentConfig);
+    const testTool: ToolMetadata = {
+      name: 'test.tool',
+      functionName: 'fn',
+      filePath: 'dist/tools/test/handler.js',
+    };
+    ctx.registries.agent.hydrate([{ ...testAgentEntry, tools: ['test.tool'] }]);
+    ctx.registries.tool.hydrate([testTool]);
+
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentToolRunner.get();
+    expect(runner).toBeDefined();
+
+    const toolCtx = createStandaloneToolContext({ currentUserId: 7 });
+    const result = await runner!.toolCall(toolCtx, 'test.tool', { q: 'x' });
+    expect(result).toBe('tool-ok');
+  });
+
+  it('beforeToolCall / filterTools / resolveSubAgent* 透传到 baseDeps 配置（ctx 为调用方传入的契约 ctx）', async () => {
+    const seen: Array<[string, unknown, unknown]> = [];
+    const ctx = makeCtx({
+      ...fullAgentConfig,
+      beforeToolCall: (name, args, hookCtx) => {
+        seen.push(['beforeToolCall', args, hookCtx]);
+        return undefined;
+      },
+      filterTools: (tools, hookCtx) => {
+        seen.push(['filterTools', tools, hookCtx]);
+        return tools;
+      },
+      decorateDeps: (deps: unknown) => ({
+        ...(deps as Record<string, unknown>),
+        resolveSubAgentInput: async (
+          subName: string,
+          args: Record<string, unknown>,
+          hookCtx: unknown,
+        ) => {
+          seen.push(['resolveSubAgentInput', args, hookCtx]);
+          return { ...args, material: 'm1' };
+        },
+        resolveSubAgentContext: async (
+          subName: string,
+          args: Record<string, unknown>,
+          hookCtx: unknown,
+        ) => {
+          seen.push(['resolveSubAgentContext', args, hookCtx]);
+          return 'ctx-block';
+        },
+      }),
+    } as AgentConfig);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentToolRunner.get();
+    expect(runner).toBeDefined();
+
+    const toolCtx = createStandaloneToolContext({ currentUserId: 42 });
+    await runner!.beforeToolCall(toolCtx, 'test.tool', { q: 1 });
+    await runner!.filterTools(toolCtx, []);
+    await expect(runner!.resolveSubAgentInput(toolCtx, 'writer', { q: 2 })).resolves.toEqual({
+      q: 2,
+      material: 'm1',
+    });
+    await expect(runner!.resolveSubAgentContext(toolCtx, 'writer', { q: 3 })).resolves.toBe(
+      'ctx-block',
+    );
+
+    // 钩子收到的是调用方传入的契约 ctx（currentUserId 增强字段可读）
+    const beforeCtx = seen[0]![2] as { currentUserId?: number };
+    expect(beforeCtx.currentUserId).toBe(42);
+    expect(seen.map(([k]) => k)).toEqual([
+      'beforeToolCall',
+      'filterTools',
+      'resolveSubAgentInput',
+      'resolveSubAgentContext',
+    ]);
   });
 });

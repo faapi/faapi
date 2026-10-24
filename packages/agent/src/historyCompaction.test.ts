@@ -13,6 +13,7 @@ import type {
   LLMStreamChunk,
 } from './provider';
 import type { AgentCore, AgentMetadata } from '@faapi/faapi';
+import { createStandaloneToolContext } from './standaloneToolContext';
 import type { AgentDeps, AgentRuntimeConfig } from './agent';
 
 // ─── Mock 工具（同 reactLoop.test.ts 形制）──────────────
@@ -345,7 +346,7 @@ describe('historyCompactor 子代理传导', () => {
       llms: { openai: { provider: 'openai', apiKey: 'k', models: { 'gpt-4o': {} } } },
       rootDir: '/project',
       config,
-      ctx: {},
+      ctx: createStandaloneToolContext(),
       getAgent: (name) => (name === 'researcher' ? RESEARCHER : subMeta),
       getAgentEntry: (name) => (name === 'researcher' ? undefined : subEntry),
       getTool: () => undefined,

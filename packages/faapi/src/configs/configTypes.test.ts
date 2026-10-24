@@ -8,7 +8,7 @@ import type {
   LlmModelConfig,
 } from './configTypes';
 import type { RouteManifest } from '../routers/routeTypes';
-import type { FaapiContext } from '../runtime/contextTypes';
+import type { AgentToolContext } from '../runtime/agentToolContext';
 import type { Server } from 'node:http';
 
 describe('configTypes', () => {
@@ -237,16 +237,16 @@ describe('configTypes', () => {
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultLlm');
     });
 
-    it('AgentConfig 鉴权钩子 ctx 参数为 Partial<FaapiContext>（任务侧窄 ctx 免 cast 直传）', () => {
-      expectTypeOf<Parameters<NonNullable<AgentConfig['beforeToolCall']>>[2]>().toEqualTypeOf<
-        Partial<FaapiContext> | undefined
-      >();
-      expectTypeOf<Parameters<NonNullable<AgentConfig['afterToolCall']>>[3]>().toEqualTypeOf<
-        Partial<FaapiContext> | undefined
-      >();
-      expectTypeOf<Parameters<NonNullable<AgentConfig['filterTools']>>[1]>().toEqualTypeOf<
-        Partial<FaapiContext> | undefined
-      >();
+    it('AgentConfig 鉴权钩子 ctx 参数为 AgentToolContext（必有契约，三路径合成）', () => {
+      expectTypeOf<
+        Parameters<NonNullable<AgentConfig['beforeToolCall']>>[2]
+      >().toEqualTypeOf<AgentToolContext>();
+      expectTypeOf<
+        Parameters<NonNullable<AgentConfig['afterToolCall']>>[3]
+      >().toEqualTypeOf<AgentToolContext>();
+      expectTypeOf<
+        Parameters<NonNullable<AgentConfig['filterTools']>>[1]
+      >().toEqualTypeOf<AgentToolContext>();
     });
 
     it('FaapiConfig.agent 类型校验', () => {

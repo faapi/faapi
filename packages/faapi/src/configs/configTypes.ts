@@ -1,4 +1,5 @@
 import type { FaapiContext } from '../runtime/contextTypes';
+import type { AgentToolContext } from '../runtime/agentToolContext';
 import type { FaapiMiddleware } from '../middlewares/middlewareTypes';
 import type { InjectorMap } from '../middlewares/injectorTypes';
 import type { PluginDeclaration } from './pluginTypes';
@@ -394,17 +395,24 @@ export interface AgentConfig {
    * 三种返回：`void` 放行；`{ error }` 拒绝（不执行，error 回传 LLM 调整策略）；
    * `{ args }` 改写后放行（多租户场景强制注入可信值，不信 LLM 传入的标识参数）。
    *
-   * ctx 为请求上下文透传（`Partial<FaapiContext>`，框架零读取）：HTTP 请求是完整
-   * ctx，任务内组装 Agent 时业务方显式传窄对象（如鉴权硬闸需要的
-   * `{ currentUserId }`），编程式直调为 undefined。
+   * ctx 为 [AgentToolContext](../runtime/agentToolContext.md) 契约（必有，框架
+   * 三路径合成、tasks/log/signal 保证正确）：HTTP 请求是完整请求 ctx 的收窄，
+   * 任务路径为 carry + 任务级能力合成。业务身份字段（currentUserId 等）经
+   * `declare module` 增强 AgentToolContext 后在此强类型读取。
+   *
+   * 允许返回 Promise（隔离任务路径钩子经 RPC 转发宿主执行；同步钩子不受影响）。
    *
    * 典型用法：中间件解析 `ctx.workspace` 后在此校验/强制改写 `args.workspaceId`。
    */
   beforeToolCall?: (
     name: string,
     args: Record<string, unknown>,
-    ctx: Partial<FaapiContext> | undefined,
-  ) => void | { error: string } | { args: Record<string, unknown> };
+    ctx: AgentToolContext,
+  ) =>
+    | void
+    | { error: string }
+    | { args: Record<string, unknown> }
+    | Promise<void | { error: string } | { args: Record<string, unknown> }>;
   /**
    * 审计钩子（authHooks）：tool / sub-agent 成功返回后调用，返回值忽略。
    * 用于日志/审计/计量；异常路径不调用。
@@ -413,7 +421,7 @@ export interface AgentConfig {
     name: string,
     args: Record<string, unknown>,
     result: unknown,
-    ctx: Partial<FaapiContext> | undefined,
+    ctx: AgentToolContext,
   ) => void;
   /**
    * 可见性过滤（authHooks）：LLM 可见 tools 清单组装完成后调用，
@@ -422,17 +430,25 @@ export interface AgentConfig {
    *
    * tools 为 OpenAI chat completions 规范形（`type: 'function'` +
    * `function: { name, description?, parameters? }`），按 `tool.function.name` 过滤。
+   * 允许返回 Promise（隔离任务路径钩子经 RPC 转发宿主执行）。
    */
   filterTools?: (
     tools: Array<{
       type: 'function';
       function: { name: string; description?: string; parameters?: Record<string, unknown> };
     }>,
-    ctx: Partial<FaapiContext> | undefined,
-  ) => Array<{
-    type: 'function';
-    function: { name: string; description?: string; parameters?: Record<string, unknown> };
-  }>;
+    ctx: AgentToolContext,
+  ) =>
+    | Array<{
+        type: 'function';
+        function: { name: string; description?: string; parameters?: Record<string, unknown> };
+      }>
+    | Promise<
+        Array<{
+          type: 'function';
+          function: { name: string; description?: string; parameters?: Record<string, unknown> };
+        }>
+      >;
   /**
    * 进程级 deps 配方（装饰钩子）——真实签名为
    * `(deps: AgentDeps) => AgentDeps`（`AgentDeps` 类型定义在 `@faapi/agent`，
