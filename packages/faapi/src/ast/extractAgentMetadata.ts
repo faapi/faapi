@@ -42,8 +42,6 @@ export interface AgentCore {
   tools?: string[];
   /** 可调用的其他 agent 名列表(config 块字面量提取),未声明时为 `undefined`;声明了但含无法静态求值的元素在构建期抛错 */
   agents?: string[];
-  /** LLM 模型名(config 块字面量提取),未声明时为 `undefined`;声明了但非字面量在构建期抛错 */
-  model?: string;
   /** 最大对话轮数(config 块字面量提取),未声明时为 `undefined`;声明了但非数字字面量在构建期抛错 */
   maxTurns?: number;
   /**
@@ -86,7 +84,7 @@ export interface AgentCore {
  * - `name` — `pathMeta.name`(目录路径推导,嵌套段用 `_` 连接)
  * - `filePath` — 由 `pathMeta` 透传
  * - `description` — JSDoc 注释块自由文本(对 LLM 可见)
- * - `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription` — config 块字面量提取
+ * - `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `maxTurns` / `inputDescription` — config 块字面量提取
  */
 export interface AgentMetadata extends AgentCore {
   /** 源码相对路径(从 `pathMeta` 透传)——声明文件定位与清单可观测性用 */
@@ -128,7 +126,7 @@ interface FoundConfig {
  *
  * 提取内容：
  * 1. **JSDoc 描述** — config 导出的 JSDoc 自由文本
- * 2. **config 块字段** — systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription
+ * 2. **config 块字段** — systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription
  * 3. **派发入参 schema 声明** — 顶层 `interface Input` / `type Input` 名字检测（记 `inputTypeName`，
  *    类型提取由 generateAgentArtifacts 阶段完成）
  *
@@ -219,7 +217,7 @@ export function extractAgentMetadata(
   }
 
   // config 块字段提取（extractConfigFields 保证 systemPrompt/systemPromptFile 二选一非空）
-  const { systemPrompt, systemPromptFile, tools, agents, model, maxTurns, inputDescription, vars } =
+  const { systemPrompt, systemPromptFile, tools, agents, maxTurns, inputDescription, vars } =
     extractConfigFields(objectLiteral, sourceFile);
 
   return {
@@ -230,7 +228,6 @@ export function extractAgentMetadata(
     systemPromptFile,
     tools,
     agents,
-    model,
     maxTurns,
     inputDescription,
     vars,
@@ -409,7 +406,6 @@ function extractConfigFields(
   systemPromptFile?: string;
   tools?: string[];
   agents?: string[];
-  model?: string;
   maxTurns?: number;
   inputDescription?: string;
   vars?: Record<string, string | number | boolean>;
@@ -418,7 +414,6 @@ function extractConfigFields(
   let systemPromptFile: string | undefined;
   let tools: string[] | undefined;
   let agents: string[] | undefined;
-  let model: string | undefined;
   let maxTurns: number | undefined;
   let inputDescription: string | undefined;
   let vars: Record<string, string | number | boolean> | undefined;
@@ -456,8 +451,16 @@ function extractConfigFields(
         agents = requireStringArrayValue(prop, 'agents', sourceFile);
         break;
       case 'model':
-        model = requireStringValue(prop, 'model', sourceFile);
-        break;
+        // config.model 已移除——模型档位是调用侧决策（agent.run/stream options.model
+        // 显式传），不是 agent 的静态属性。声明了就报迁移错误（任意值任意形式，含
+        // 字符串属性名 'model'），不静默忽略：静默后声明变无人消费的死配置，与
+        // 声明意图不符
+        throw SchemaExtractionError.at(
+          prop,
+          'config.model',
+          'config.model 已移除——模型档位是调用侧决策：agent.run/stream 显式传 options.model（或 options.provider 外部 provider 自决），sub-agent 派发未声明 model 时沿用父调用模型。请删除 handler 里的 model 声明',
+          sourceFile,
+        );
       case 'maxTurns':
         maxTurns = requireNumberValue(prop, 'maxTurns', sourceFile);
         break;
@@ -473,7 +476,7 @@ function extractConfigFields(
         throw SchemaExtractionError.at(
           prop,
           `config.${propName}`,
-          '未知 config 字段——仅支持 systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription / vars',
+          '未知 config 字段——仅支持 systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars',
           sourceFile,
         );
     }
@@ -505,7 +508,6 @@ function extractConfigFields(
     systemPromptFile,
     tools,
     agents,
-    model,
     maxTurns,
     inputDescription,
     vars,

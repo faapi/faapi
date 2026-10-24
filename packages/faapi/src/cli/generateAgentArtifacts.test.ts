@@ -52,7 +52,6 @@ describe('generateAgentArtifacts', () => {
         systemPrompt: 'You are a researcher',
         tools: ['web-search_search'],
         agents: ['writer'],
-        model: 'gpt-4',
         maxTurns: 10,
         inputDescription: '研究任务交接单,含主题与输出格式',
         inputTypeName: 'Input',
@@ -65,7 +64,6 @@ describe('generateAgentArtifacts', () => {
         systemPrompt: 'You are a researcher',
         tools: ['web-search_search'],
         agents: ['writer'],
-        model: 'gpt-4',
         maxTurns: 10,
         inputDescription: '研究任务交接单,含主题与输出格式',
         inputTypeName: 'Input',
@@ -77,7 +75,7 @@ describe('generateAgentArtifacts', () => {
       const meta: AgentMetadata = {
         name: 'researcher',
         filePath: 'src/agents/researcher/handler.ts',
-        // description / systemPrompt / tools / agents / model / maxTurns / inputDescription 均为 undefined
+        // description / systemPrompt / tools / agents / maxTurns / inputDescription 均为 undefined
       };
       const result = serializeAgents([meta], 'dist');
       expect(result[0].name).toBe('researcher');
@@ -86,7 +84,7 @@ describe('generateAgentArtifacts', () => {
       expect(result[0].systemPrompt).toBeUndefined();
       expect(result[0].tools).toBeUndefined();
       expect(result[0].agents).toBeUndefined();
-      expect(result[0].model).toBeUndefined();
+      expect(result[0].inputDescription).toBeUndefined();
       expect(result[0].maxTurns).toBeUndefined();
       expect(result[0].inputDescription).toBeUndefined();
     });
@@ -132,7 +130,6 @@ describe('generateAgentArtifacts', () => {
           name: 'researcher',
           description: '研究助手',
           filePath: 'src/agents/researcher/handler.ts',
-          model: 'gpt-4',
         },
         {
           name: 'writer',
@@ -160,7 +157,6 @@ describe('generateAgentArtifacts', () => {
           systemPrompt: 'You are a researcher',
           tools: ['web-search_search'],
           agents: ['writer'],
-          model: 'gpt-4',
           maxTurns: 10,
           inputDescription: '研究任务交接单,含主题与输出格式',
           filePath: 'dist/agents/researcher/handler.js',
@@ -175,7 +171,6 @@ describe('generateAgentArtifacts', () => {
         systemPrompt: 'You are a researcher',
         tools: ['web-search_search'],
         agents: ['writer'],
-        model: 'gpt-4',
         maxTurns: 10,
         inputDescription: '研究任务交接单,含主题与输出格式',
       });
@@ -187,7 +182,7 @@ describe('generateAgentArtifacts', () => {
         {
           name: 'researcher',
           filePath: 'dist/agents/researcher/handler.js',
-          // description / systemPrompt / tools / agents / model / maxTurns / inputDescription 缺失
+          // description / systemPrompt / tools / agents / maxTurns / inputDescription 缺失
         },
       ] as unknown as SerializedAgentRecord[];
       const hydrated = hydrateAgents(serialized);
@@ -196,7 +191,7 @@ describe('generateAgentArtifacts', () => {
       expect(hydrated[0].systemPrompt).toBeUndefined();
       expect(hydrated[0].tools).toBeUndefined();
       expect(hydrated[0].agents).toBeUndefined();
-      expect(hydrated[0].model).toBeUndefined();
+      expect(hydrated[0].inputDescription).toBeUndefined();
       expect(hydrated[0].maxTurns).toBeUndefined();
       expect(hydrated[0].inputDescription).toBeUndefined();
     });
@@ -208,7 +203,6 @@ describe('generateAgentArtifacts', () => {
           description: '研究助手',
           filePath: 'src/agents/researcher/handler.ts',
           systemPrompt: 'prompt',
-          model: 'gpt-4',
           inputDescription: '研究任务交接单',
           inputTypeName: 'Input',
         },
@@ -224,7 +218,7 @@ describe('generateAgentArtifacts', () => {
       expect(hydrated[0].name).toBe(original[0].name);
       expect(hydrated[0].description).toBe(original[0].description);
       expect(hydrated[0].systemPrompt).toBe(original[0].systemPrompt);
-      expect(hydrated[0].model).toBe(original[0].model);
+      expect(hydrated[0].maxTurns).toBe(original[0].maxTurns);
       expect(hydrated[0].inputDescription).toBe(original[0].inputDescription);
       expect(hydrated[0].inputTypeName).toBe(original[0].inputTypeName);
       expect(hydrated[1].filePath).toBe('dist/agents/writer/handler.js');
@@ -244,7 +238,6 @@ describe('generateAgentArtifacts', () => {
           name: 'researcher',
           description: '研究助手',
           systemPrompt: 'You are a researcher',
-          model: 'gpt-4',
           maxTurns: 10,
           filePath: 'dist/agents/researcher/handler.js',
         },
@@ -257,7 +250,7 @@ describe('generateAgentArtifacts', () => {
       expect(content).toContain('researcher');
       expect(content).toContain('研究助手');
       expect(content).toContain('You are a researcher');
-      expect(content).toContain('gpt-4');
+      expect(content).toContain('You are a researcher');
       expect(content).toContain('dist/agents/researcher/handler.js');
     });
 
@@ -297,7 +290,6 @@ export const config = {
   systemPrompt: 'You are a researcher',
   tools: ['web-search_search'],
   agents: ['writer'],
-  model: 'gpt-4',
   maxTurns: 10,
 };
 `,
@@ -328,7 +320,6 @@ export const config = {
       expect(metadata[0].systemPrompt).toBe('You are a researcher');
       expect(metadata[0].tools).toEqual(['web-search_search']);
       expect(metadata[0].agents).toEqual(['writer']);
-      expect(metadata[0].model).toBe('gpt-4');
       expect(metadata[0].maxTurns).toBe(10);
 
       // faapi-agents.js 生成
@@ -340,7 +331,7 @@ export const config = {
       expect(content).toContain('研究助手');
       expect(content).toContain('You are a researcher');
       expect(content).toContain('web-search_search');
-      expect(content).toContain('gpt-4');
+      expect(content).toContain('You are a researcher');
       expect(content).toContain('dist/agents/researcher/handler.js');
     });
 
@@ -476,7 +467,7 @@ export async function run(ctx) { return 'done'; }
       writeAgent(
         'src/agents/researcher/handler.ts',
         `/** 研究助手 */
-export const config = { systemPrompt: 'prompt', model: 'gpt-4' };
+export const config = { systemPrompt: 'prompt', maxTurns: 4 };
 `,
       );
 
@@ -499,7 +490,7 @@ export const config = { systemPrompt: 'prompt', model: 'gpt-4' };
       expect(mod.agents[0].name).toBe('researcher');
       expect(mod.agents[0].description).toBe('研究助手');
       expect(mod.agents[0].systemPrompt).toBe('prompt');
-      expect(mod.agents[0].model).toBe('gpt-4');
+      expect(mod.agents[0].maxTurns).toBe(4);
       expect(mod.agents[0].filePath).toBe('dist/agents/researcher/handler.js');
 
       // 用 hydrateAgents 还原
@@ -514,7 +505,7 @@ export const config = { systemPrompt: 'prompt', model: 'gpt-4' };
       writeAgent(
         'src/agents/researcher/handler.ts',
         `/** 研究助手 */
-export const config = { systemPrompt: 'x', model: 'gpt-4' };
+export const config = { systemPrompt: 'x', maxTurns: 4 };
 `,
       );
       writeAgent(
@@ -547,11 +538,10 @@ export const config = { systemPrompt: 'write well' };
       // metadata 各自字段正确
       expect(metadata).toHaveLength(2);
       expect(metadata[0].name).toBe('researcher');
-      expect(metadata[0].model).toBe('gpt-4');
+      expect(metadata[0].maxTurns).toBe(4);
       expect(metadata[1].name).toBe('writer');
       expect(metadata[1].systemPrompt).toBe('write well');
-      expect(metadata[1].systemPrompt).toBe('write well');
-      expect(metadata[1].model).toBeUndefined();
+      expect(metadata[1].maxTurns).toBeUndefined();
     });
 
     it('dev 模式 dist 为 .faapi', async () => {

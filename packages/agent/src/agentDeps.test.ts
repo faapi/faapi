@@ -35,7 +35,6 @@ const agentEntry: AgentMetadata = {
   systemPrompt: '你是研究助手',
   tools: ['weather_getWeather'],
   agents: ['writer'],
-  model: 'gpt-4o',
   maxTurns: 5,
   filePath: 'dist/agents/researcher/handler.js',
 };

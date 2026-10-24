@@ -30,7 +30,6 @@ function agentMeta(opts: { name: string; tools?: string[]; agents?: string[] }):
     systemPrompt: `SYS:${opts.name}`,
     tools: opts.tools,
     agents: opts.agents,
-    model: 'gpt-4o',
   };
 }
 
@@ -206,7 +205,7 @@ describe('getAgentScope', () => {
       }),
     );
 
-    const result = await agent.run('hi', { agent: 'root' });
+    const result = await agent.run('hi', { agent: 'root', model: 'gpt-4o' });
 
     expect(result.content).toBe('done');
     expect(recorder.seen).toEqual([{ agentName: 'root', depth: 1 }]);
@@ -244,7 +243,7 @@ describe('getAgentScope', () => {
       }),
     );
 
-    await agent.run('hi', { agent: 'root' });
+    await agent.run('hi', { agent: 'root', model: 'gpt-4o' });
 
     // leaf 的 record 先于 root 的 record（root 等 mid 返回后才执行自己的 record）
     expect(recorder.seen).toEqual([
@@ -286,7 +285,7 @@ describe('getAgentScope', () => {
       }),
     );
 
-    await agent.run('hi', { agent: 'root' });
+    await agent.run('hi', { agent: 'root', model: 'gpt-4o' });
 
     // 恰两条记录，各归各的 sub——无 root 串入、无 A/B 张冠李戴
     expect(recorder.seen).toHaveLength(2);
@@ -341,7 +340,7 @@ describe('getAgentScope（stream）', () => {
       }),
     );
 
-    const chunks = await collect(agent.stream('hi', { agent: 'root' }));
+    const chunks = await collect(agent.stream('hi', { agent: 'root', model: 'gpt-4o' }));
 
     expect(recorder.seen).toEqual([{ agentName: 'root', depth: 1 }]);
     expect(recorder.seenAfterAwait).toEqual([{ agentName: 'root', depth: 1 }]);
@@ -382,7 +381,7 @@ describe('getAgentScope（stream）', () => {
       }),
     );
 
-    await collect(agent.stream('hi', { agent: 'root' }));
+    await collect(agent.stream('hi', { agent: 'root', model: 'gpt-4o' }));
 
     expect(recorder.seen).toHaveLength(2);
     expect(recorder.seen).toContainEqual({ agentName: 'subA', depth: 2 });
@@ -408,7 +407,7 @@ describe('getAgentScope（stream）', () => {
       }),
     );
 
-    for await (const chunk of agent.stream('hi', { agent: 'root' })) {
+    for await (const chunk of agent.stream('hi', { agent: 'root', model: 'gpt-4o' })) {
       if (chunk.deltaContent) break;
     }
 

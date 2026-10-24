@@ -125,8 +125,9 @@ function materializeProvider(external: LlmConfig | LLMProvider): LLMProvider {
  * [lightComplete](./lightComplete.md) 共用同一解析实现，规则见
  * [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」）
  *
- * 无默认 provider——`key` 未传时用 `fallbackKey`（Agent 场景为 agent 元数据
- * `config.model`，lightComplete 场景为 llms 第一个 key）；两者皆无抛 `AgentError`。
+ * 无默认 provider——`key` 未传时用 `fallbackKey`（lightComplete 场景为 llms 第一个
+ * key；Agent 场景不传 fallback——model 是调用侧决策，未传即抛 `AgentError`）；
+ * 两者皆无抛 `AgentError`。
  * 1. 精确匹配 `deps.providers` 的 key → 该 provider + 其 `models` 第一个 key
  * 2. 含 `/` → `provider/model` 形式（要求该 model 在 `deps.llms[provider].models` 里）
  * 3. 不含 `/` 且非 provider key → 在所有 provider 的 `models` 里按 model 名查找
@@ -145,7 +146,7 @@ export function resolveModelKey(
   const effectiveKey = key ?? fallbackKey;
   if (effectiveKey === undefined) {
     throw new AgentError(
-      'No LLM provider resolved: pass options.model (a provider key / "provider/model" / model name from config.agent.llms), options.provider (external provider), or declare model in the agent config',
+      'No LLM provider resolved: pass options.model (a provider key / "provider/model" / model name from config.agent.llms) or options.provider (external provider)',
     );
   }
 
@@ -245,7 +246,7 @@ function validateResumeHistory(messages: LLMMessage[]): void {
  * 全局 agent 配置覆盖
  *
  * 来自 faapi.config.ts 的 `agent` 块，提供全局默认值。
- * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置。
+ * agent 自身 `config.maxTurns` 优先于全局配置。
  */
 export interface AgentRuntimeConfig {
   /** 默认最大对话轮数（agent 自身 maxTurns 优先） */
@@ -680,15 +681,15 @@ export class Agent {
    *
    * 1. 解析有效 agent 名：`options.agent`（必须显式传——无默认 agent,不传抛 AgentError）
    * 2. 查 agent 元数据（未注册抛 AgentError）——用 `getAgent` 拿 AgentCore
-   *    (LLM-facing 字段:systemPrompt / model / maxTurns)
+   *    (LLM-facing 字段:systemPrompt / maxTurns)
    * 3. buildToolDefinitions 组装 tool 列表（用有效 agent 名查 tools / sub-agents）
    * 4. config 字段优先级（高 → 低）：`options` > agent 元数据 > 全局 AgentRuntimeConfig
    *
    * `options.provider`（外部 provider）存在时由 {@link resolveExternalProvider} 物化,
    * 优先级最高——`options.model` 变为原始 model 名原样透传（不解析 llms key）。
    * 否则 `options.model` 是字符串 key,由 {@link resolveModelKey} 解析为 provider + model
-   * （支持 llms key 精确匹配 / `provider/model` 一体化 / 纯 model 名模糊匹配；
-   * 未传 `options.model` 时用 agent 元数据 `config.model` 作为缺省 key）。
+   * （支持 llms key 精确匹配 / `provider/model` 一体化 / 纯 model 名模糊匹配）；
+   * `options.model` 未传时无 fallback,抛 `AgentError`——模型是调用侧决策。
    * 详见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
    *
    * **输入守卫**（续跑入口,见 [reactLoop.md](./reactLoop.md) 中断恢复章节）：
@@ -763,7 +764,7 @@ export class Agent {
     const { provider, model } =
       options?.provider !== undefined
         ? this.resolveExternalProvider(options.provider, options?.model)
-        : this.resolveModelKey(options?.model, meta);
+        : this.resolveModelKey(options?.model);
 
     // 闭包捕获 enableTracing,通过 executeTool 传递给 executeSubAgent,使其决定是否附带 trace
     // enableTracing 优先级:options > deps.config > 默认 false（opt-in,零开销）
@@ -911,16 +912,15 @@ export class Agent {
 
   /**
    * 解析 `options.model` 字符串 key → provider + model（模块级 [resolveModelKey] 的
-   * Agent 方法包装——meta.model 作缺省 key，与 [lightComplete](./lightComplete.md) 共用同一解析实现）
+   * Agent 方法包装——无 fallback，与 [lightComplete](./lightComplete.md) 共用同一解析实现）
    *
-   * @throws {AgentError} key 与 `meta.model` 均缺省；key 解析失败（provider/model
-   *   不存在或歧义）
+   * @throws {AgentError} `key` 缺省；key 解析失败（provider/model 不存在或歧义）
    */
-  private resolveModelKey(
-    key: string | undefined,
-    meta: AgentCore,
-  ): { provider: LLMProvider; model: string | undefined } {
-    return resolveModelKey(key, this.deps, meta.model);
+  private resolveModelKey(key: string | undefined): {
+    provider: LLMProvider;
+    model: string | undefined;
+  } {
+    return resolveModelKey(key, this.deps);
   }
 
   /**
@@ -1191,11 +1191,15 @@ export class Agent {
     // 其余形状 stringify 兜底;传递 enableTracing 让 sub-agent 采集 trace。
     // traceId 链式续拼（见 traceId.md）：子 ID = 父完整 ID + '.' + 新段;父调用
     // traceId 关闭（undefined）时子调用同样无——关闭语义整树一致
-    const subMeta = this.deps.getAgent(subName);
+    // 继承父调用的 provider 与 model（config.model 已移除——sub-agent 模型恒
+    // 沿用父调用解析结果）。单字段 { input } 直传字符串（与显式入参 schema 形状
+    // 一致),其余形状 stringify 兜底;传递 enableTracing 让 sub-agent 采集 trace。
+    // traceId 链式续拼（见 traceId.md）：子 ID = 父完整 ID + '.' + 新段;父调用
+    // traceId 关闭（undefined）时子调用同样无——关闭语义整树一致
     const subOptions: AgentRunOptions = {
       agent: subName,
       provider: callCtx.provider,
-      model: subMeta?.model ?? callCtx.model,
+      model: callCtx.model,
       enableTracing: callCtx.enableTracing,
       traceId:
         callCtx.traceId !== undefined

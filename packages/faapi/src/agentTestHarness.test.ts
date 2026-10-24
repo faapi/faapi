@@ -54,7 +54,6 @@ export const config = {
   systemPrompt: '你是研究助手',
   tools: ['weather_getWeather', 'calc_calc'],
   agents: ['group_nested'],
-  model: 'gpt-4o',
   maxTurns: 5,
 };
 `,
@@ -172,7 +171,7 @@ describe('createAgentTestHarness', () => {
       expect(core!.systemPrompt).toBe('你是研究助手');
       expect(core!.tools).toEqual(['weather_getWeather', 'calc_calc']);
       expect(core!.agents).toEqual(['group_nested']);
-      expect(core!.model).toBe('gpt-4o');
+      expect(core!.maxTurns).toBeDefined();
       expect(core!.maxTurns).toBe(5);
     });
 

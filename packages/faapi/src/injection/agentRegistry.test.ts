@@ -41,7 +41,6 @@ describe('agentRegistry', () => {
     systemPrompt: 'You are a researcher',
     tools: ['web-search_search'],
     agents: ['writer'],
-    model: 'gpt-4',
     maxTurns: 10,
   };
 
@@ -112,7 +111,6 @@ describe('agentRegistry', () => {
       expect(agent!.systemPrompt).toBe('You are a researcher');
       expect(agent!.tools).toEqual(['web-search_search']);
       expect(agent!.agents).toEqual(['writer']);
-      expect(agent!.model).toBe('gpt-4');
       expect(agent!.maxTurns).toBe(10);
     });
 

@@ -3,7 +3,7 @@
  *
  * 由 [scanAgents](./scanAgents.md) 扫描文件系统生成，描述一个 agent 的元信息。
  * 与 [ToolManifest](../tools/toolTypes.md) 对称——一个目录一个 agent，handler.ts
- * 导出 `config` 块（systemPrompt / tools / agents / model / maxTurns /
+ * 导出 `config` 块（systemPrompt / tools / agents / maxTurns /
  * inputDescription / systemPromptFile）。
  *
  * agent 名来自目录路径推导（如 `src/agents/researcher/handler.ts` → `researcher`，

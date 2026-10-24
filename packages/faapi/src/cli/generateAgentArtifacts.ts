@@ -21,7 +21,7 @@ import { generateZodArtifacts } from './generateZodArtifacts';
  * 与 [AgentMetadata](../ast/extractAgentMetadata.md) 字段一一对应，仅 `filePath`
  * 由源码形式（`src/...`）转为产物形式（`<dist>/...`，打平 `src/` 前缀 + dist 前缀 + `.js`）。
  *
- * `undefined` 字段（description / systemPrompt / tools / agents / model / maxTurns /
+ * `undefined` 字段（description / systemPrompt / tools / agents / maxTurns /
  * inputDescription / inputTypeName）在 JSON.stringify 时自动省略，水合时通过 `??`
  * 兜底为 undefined。
  *
@@ -41,8 +41,6 @@ export interface SerializedAgentRecord {
   tools?: string[];
   /** 可调用的其他 agent 名列表（config 块字面量提取），无/含非字面量元素时省略 */
   agents?: string[];
-  /** LLM 模型名（config 块字面量提取），无/非字面量时省略 */
-  model?: string;
   /** 最大对话轮数（config 块字面量提取），无/非字面量时省略 */
   maxTurns?: number;
   /** agent-as-tool 派发交接单说明（config 块字面量提取），无/非字面量时省略 */
@@ -64,7 +62,7 @@ const AGENTS_FILE = 'faapi-agents.js';
  * 序列化 agent 清单为可写入 JS 模块的结构
  *
  * - `filePath` 转为产物形式（打平 `src/` 前缀 + dist 前缀 + `.js`）
- * - 其他字段（name/description/systemPrompt/tools/agents/model/maxTurns/inputDescription/vars）直接透传
+ * - 其他字段（name/description/systemPrompt/tools/agents/maxTurns/inputDescription/vars）直接透传
  * - `undefined` 字段在 JSON.stringify 时自动省略
  *
  * @param agents AST 增强后的 AgentMetadata[]（由 generateAgentArtifacts 内部从 AgentManifest 增强）
@@ -81,7 +79,6 @@ export function serializeAgents(
     systemPromptFile: a.systemPromptFile,
     tools: a.tools,
     agents: a.agents,
-    model: a.model,
     maxTurns: a.maxTurns,
     inputDescription: a.inputDescription,
     vars: a.vars,
@@ -121,7 +118,6 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
     systemPromptFile: a.systemPromptFile ?? undefined,
     tools: a.tools ?? undefined,
     agents: a.agents ?? undefined,
-    model: a.model ?? undefined,
     maxTurns: a.maxTurns ?? undefined,
     inputDescription: a.inputDescription ?? undefined,
     vars: a.vars ?? undefined,

@@ -424,9 +424,11 @@ export default {
   ],
 
   // agent 子系统全局配置（Phase 2.4，所有字段均可选）
-  // agent 自身 config.maxTurns / config.model 优先于全局配置
+  // agent 自身 config.maxTurns 优先于全局配置
   // 无 defaultAgent / defaultLlm——agent.run(input, { agent, model }) 每次调用
-  // 显式指定 agent 名与 model/provider（agent 元数据 config.model 可作缺省 key）
+  // 显式指定 agent 名与 model/provider（config.model 已移除——模型档位是调用侧
+  // 决策，handler 里声明 model 构建期抛迁移错误；sub-agent 派发未声明 model 时
+  // 沿用父调用解析结果）
   // llms 同源服务两条通道：agent 循环（agent.run）+ 轻量一次性补全（handler `llm`
   // 注入参数 / taskCtx.llm，详见 @faapi/agent 的 lightComplete.md）——项目零新增配置
   agent: {
@@ -642,7 +644,9 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 
 **skillRegistry（DB-driven skill 注册表）已整体下线**——业务实践证明「全局共享、名键唯一」的 skill 模型不成立（技能天然是用户 / 租户维度，业务方最终都自建消费链路）。需要运行时动态 agent 元数据的业务方自行实现「实时查库 + LLM 可见花名册 + tool 按需读取」模式（不进框架注册表）。
 
-**agent 统一为声明式执行（自定义 run 已移除）**：agent = config 声明（systemPrompt / systemPromptFile / tools / agents / model / maxTurns）+ 默认 reactLoop。检测到 handler 导出 `run` 时构建期抛迁移错误。原 run 的两个场景由更强能力承接——**LLM 可调用的编排代码注册 tool**（有 schema 校验、trace 采集、鉴权钩子覆盖，全链路可观测），**多 agent 协作用 config.agents 声明 sub-agent**（继承 provider、delta 冒泡、usage 整树上卷）。
+**agent 统一为声明式执行（自定义 run 已移除）**：agent = config 声明（systemPrompt / systemPromptFile / tools / agents / maxTurns）+ 默认 reactLoop。检测到 handler 导出 `run` 时构建期抛迁移错误。原 run 的两个场景由更强能力承接——**LLM 可调用的编排代码注册 tool**（有 schema 校验、trace 采集、鉴权钩子覆盖，全链路可观测），**多 agent 协作用 config.agents 声明 sub-agent**（继承 provider、delta 冒泡、usage 整树上卷）。
+
+**config.model 已移除（8.0 起）**：模型档位是调用侧决策——`agent.run/stream` 显式传 `options.model`（或 `options.provider` 外部 provider 自决），handler config 里声明 `model` 构建期抛迁移错误；sub-agent 派发未声明 model 时沿用父调用解析结果。详见 `packages/faapi/src/ast/extractAgentMetadata.md` 的「config.model 已移除」。
 
 **派发入参 schema 声明（per-agent 富 schema）**：agent handler.ts 顶层声明 `interface Input` / `type Input` 时，该 agent 被派发（`agent-<name>` 工具）的入参不再是单字段 `{ input: string }` 交接单，而是结构性 JSON Schema（构建期生成 `agents/<name>/zod.js` 导出 `InputSchema`，字段 JSDoc 即主控 LLM 可见参数描述），`executeSubAgent` 执行前校验，失败按工具同语义回灌 `{ error }`。未声明的 agent 保持单字段 `input` + `inputDescription` 行为，完全向后兼容；`inputDescription` 与 `Input` 互斥生效（声明了 `Input` 即以 schema 为准）。详见 `packages/agent/src/agent.md` 的「派发入参 schema 声明」。
 

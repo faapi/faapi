@@ -147,11 +147,6 @@ describe('extractAgentMetadata', () => {
       expect(result!.systemPrompt).toBe('You are a log analyzer.\nAnalyze logs carefully.');
     });
 
-    it('提取 model（无插值模板字符串）', () => {
-      const result = extract('export const config = { systemPrompt: `x`, model: `gpt-4` };\n');
-      expect(result!.model).toBe('gpt-4');
-    });
-
     it('提取 tools（无插值模板字符串元素）', () => {
       const result = extract(
         'export const config = { systemPrompt: `x`, tools: [`weather_getWeather`, `y`] };\n',
@@ -162,11 +157,6 @@ describe('extractAgentMetadata', () => {
     it('空数组 tools → 空数组', () => {
       const result = extract(`export const config = { systemPrompt: 'x', tools: [] };\n`);
       expect(result!.tools).toEqual([]);
-    });
-
-    it('提取 model（字符串）', () => {
-      const result = extract(`export const config = { systemPrompt: 'x', model: 'gpt-4' };\n`);
-      expect(result!.model).toBe('gpt-4');
     });
 
     it('提取 maxTurns（数字）', () => {
@@ -182,7 +172,7 @@ describe('extractAgentMetadata', () => {
     });
 
     it('inputDescription 未声明 → undefined', () => {
-      const result = extract(`export const config = { systemPrompt: 'x', model: 'gpt-4' };\n`);
+      const result = extract(`export const config = { systemPrompt: 'x', maxTurns: 3 };\n`);
       expect(result!.inputDescription).toBeUndefined();
     });
 
@@ -212,24 +202,22 @@ describe('extractAgentMetadata', () => {
           systemPrompt: 'You are a researcher',
           tools: ['weather_getWeather'],
           agents: ['coder'],
-          model: 'gpt-4',
           maxTurns: 15,
         };\n`,
       );
       expect(result!.systemPrompt).toBe('You are a researcher');
       expect(result!.tools).toEqual(['weather_getWeather']);
       expect(result!.agents).toEqual(['coder']);
-      expect(result!.model).toBe('gpt-4');
       expect(result!.maxTurns).toBe(15);
     });
 
     it('部分 config 字段缺失 → 对应字段 undefined', () => {
-      const result = extract(`export const config = { systemPrompt: 'x', model: 'gpt-4' };\n`);
+      const result = extract(`export const config = { systemPrompt: 'x', maxTurns: 3 };\n`);
       expect(result!.systemPrompt).toBe('x');
-      expect(result!.model).toBe('gpt-4');
+      expect(result!.maxTurns).toBe(3);
       expect(result!.tools).toBeUndefined();
       expect(result!.agents).toBeUndefined();
-      expect(result!.maxTurns).toBeUndefined();
+      expect(result!.inputDescription).toBeUndefined();
     });
   });
 
@@ -242,7 +230,7 @@ describe('extractAgentMetadata', () => {
     });
 
     it('vars 未声明 → undefined', () => {
-      const result = extract(`export const config = { systemPrompt: 'x', model: 'gpt-4' };\n`);
+      const result = extract(`export const config = { systemPrompt: 'x', maxTurns: 3 };\n`);
       expect(result!.vars).toBeUndefined();
     });
 
@@ -315,11 +303,10 @@ describe('extractAgentMetadata', () => {
     it('从 export function config() 的 return 提取字段', () => {
       const result = extract(
         `export function config() {
-          return { systemPrompt: 'x', model: 'gpt-4', maxTurns: 5 };
+          return { systemPrompt: 'x', maxTurns: 5 };
         }\n`,
       );
       expect(result!.systemPrompt).toBe('x');
-      expect(result!.model).toBe('gpt-4');
       expect(result!.maxTurns).toBe(5);
     });
   });
@@ -336,7 +323,7 @@ describe('extractAgentMetadata', () => {
     });
 
     it('config 无 systemPrompt 字段（有其他字段）→ 抛错', () => {
-      expect(() => extract(`export const config = { model: 'gpt-4', maxTurns: 5 };\n`)).toThrow(
+      expect(() => extract(`export const config = { maxTurns: 5 };\n`)).toThrow(
         SchemaExtractionError,
       );
     });
@@ -370,7 +357,7 @@ describe('extractAgentMetadata', () => {
 
     it('抛错定位到 config 块 file:line:column', () => {
       try {
-        extract(`/** 自定义 */\nexport const config = { model: 'gpt-4' };\n`);
+        extract(`/** 自定义 */\nexport const config = { maxTurns: 3 };\n`);
         expect.unreachable();
       } catch (err) {
         expect((err as SchemaExtractionError).location?.file).toBe(tempFile);
@@ -390,11 +377,9 @@ describe('extractAgentMetadata', () => {
     });
 
     it('只声明 systemPromptFile 通过二选一必填校验（无内联 systemPrompt）', () => {
-      const result = extract(
-        `export const config = { systemPromptFile: 'p.md', model: 'gpt-4' };\n`,
-      );
+      const result = extract(`export const config = { systemPromptFile: 'p.md', maxTurns: 3 };\n`);
       expect(result).not.toBeNull();
-      expect(result!.model).toBe('gpt-4');
+      expect(result!.maxTurns).toBe(3);
     });
 
     it('模板字符串与 + 拼接同样提取（与 systemPrompt 同源求值）', () => {
@@ -412,6 +397,39 @@ describe('extractAgentMetadata', () => {
       expect(() =>
         extract(`const p = 'p.md';\nexport const config = { systemPromptFile: p };\n`),
       ).toThrow(SchemaExtractionError);
+    });
+  });
+
+  describe('config.model 已移除 → 迁移报错', () => {
+    it('字符串字面量 model → 抛迁移错误含指引', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', model: 'gpt-4' };\n`),
+      ).toThrow(/config\.model 已移除/);
+    });
+
+    it('字符串属性名 model（"model"）同样命中迁移错误', () => {
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', 'model': 'gpt-4' };\n`),
+      ).toThrow(/config\.model 已移除/);
+    });
+
+    it('变量引用 / 拼接等任意值形式都是迁移错误（不再有提取失败语义）', () => {
+      expect(() =>
+        extract(`const m = 'gpt-4';\nexport const config = { systemPrompt: 'x', model: m };\n`),
+      ).toThrow(/config\.model 已移除/);
+      expect(() =>
+        extract(`export const config = { systemPrompt: 'x', model: 'gpt' + '-4' };\n`),
+      ).toThrow(/config\.model 已移除/);
+    });
+
+    it('迁移错误定位到 model 属性所在 file:line:column', () => {
+      try {
+        extract("export const config = {\n  systemPrompt: 'x',\n  model: 'gpt-4',\n};\n");
+        expect.unreachable();
+      } catch (err) {
+        expect((err as SchemaExtractionError).location?.file).toBe(tempFile);
+        expect((err as SchemaExtractionError).location?.line).toBe(3);
+      }
     });
   });
 
@@ -468,7 +486,7 @@ describe('extractAgentMetadata', () => {
 
     it('computed 属性名 → 抛错', () => {
       expect(() =>
-        extract("const k = 'model';\nexport const config = { systemPrompt: 'x', [k]: 'gpt-4' };\n"),
+        extract("const k = 'maxTurn';\nexport const config = { systemPrompt: 'x', [k]: 3 };\n"),
       ).toThrow(/computed/);
     });
 
@@ -480,7 +498,7 @@ describe('extractAgentMetadata', () => {
 
     it('方法形式属性 → 抛错', () => {
       expect(() =>
-        extract(`export const config = { systemPrompt: 'x', model() { return 'gpt-4'; } };\n`),
+        extract(`export const config = { systemPrompt: 'x', maxTurns() { return 3; } };\n`),
       ).toThrow(/仅支持 key: value/);
     });
   });
@@ -510,12 +528,6 @@ describe('extractAgentMetadata', () => {
       expect(() => extract(`export const config = { systemPrompt: 'x', tools: 'a' };\n`)).toThrow(
         SchemaExtractionError,
       );
-    });
-
-    it('变量引用的 model → 抛错', () => {
-      expect(() =>
-        extract(`const m = 'gpt-4';\nexport const config = { systemPrompt: 'x', model: m };\n`),
-      ).toThrow(SchemaExtractionError);
     });
 
     it('非数字的 maxTurns → 抛错', () => {
@@ -575,11 +587,6 @@ describe('extractAgentMetadata', () => {
     it('字面量与无插值模板字符串混合拼接 → 求值合并', () => {
       const result = extract("export const config = { systemPrompt: `line1\n` + 'line2' };\n");
       expect(result!.systemPrompt).toBe('line1\nline2');
-    });
-
-    it('model 支持字面量拼接', () => {
-      const result = extract(`export const config = { systemPrompt: 'x', model: 'gpt' + '-4' };\n`);
-      expect(result!.model).toBe('gpt-4');
     });
 
     it('tools 数组元素支持字面量拼接', () => {
@@ -651,9 +658,9 @@ describe('extractAgentMetadata', () => {
     });
 
     it('config 用字符串键名', () => {
-      const result = extract(`export const config = { 'systemPrompt': 'x', 'model': 'gpt-4' };\n`);
+      const result = extract(`export const config = { 'systemPrompt': 'x', 'maxTurns': 5 };\n`);
       expect(result!.systemPrompt).toBe('x');
-      expect(result!.model).toBe('gpt-4');
+      expect(result!.maxTurns).toBe(5);
     });
   });
 
@@ -714,12 +721,12 @@ describe('extractAgentMetadata', () => {
     it('Input 检测不影响其他字段提取', () => {
       const result = extract(
         `/** 研究员 */\n` +
-          `export const config = { systemPrompt: 'x', model: 'gpt-4', inputDescription: '交接单' };\n` +
+          `export const config = { systemPrompt: 'x', maxTurns: 5, inputDescription: '交接单' };\n` +
           `export interface Input { q: string }\n`,
       );
       expect(result!.description).toBe('研究员');
       expect(result!.systemPrompt).toBe('x');
-      expect(result!.model).toBe('gpt-4');
+      expect(result!.maxTurns).toBe(5);
       expect(result!.inputDescription).toBe('交接单');
       expect(result!.inputTypeName).toBe('Input');
     });

@@ -121,7 +121,7 @@ class Agent {
 | `traceId` | `options.traceId`（显式指定,全局关闭也生效） | — | 自动生成（`AgentRuntimeConfig.traceId` 默认 `true`;显式 `false` 整体关闭）——生成/注入/链式规则详见 [traceId.md](./traceId.md) |
 
 `options.model` 是字符串 key,解析规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
-未传 `options.model` 时用 agent 元数据 `config.model` 作为缺省 key 走同一套解析；
+`options.model` 未传且无 `options.provider` 时抛 `AgentError`——模型是调用侧决策,无 config fallback；
 两者皆无且未传 `options.provider` 时抛 `AgentError`（无默认 provider）。
 
 `options.provider` 传外部 provider（`LlmConfig` 配置对象或 `LLMProvider` 实例）时优先级最高——
@@ -468,7 +468,7 @@ return {
 - **派发上下文钩子**：`deps.resolveSubAgentContext` 已接线时,校验通过后以 `(subName, args, ctx)` 调用（args 为 coerce 后值）,返回值注入本子 Agent 实例——子循环 `buildLoopConfig` 在 `resolveSystemPrompt` 结果之后以 `\n\n` 追加为最终 system 消息（见「resolveSubAgentContext 派发上下文钩子」）。未接线 / 返回 `undefined` / 空串时逐字节现状
 - **派发入参改写钩子**：`deps.resolveSubAgentInput` 已接线时,校验通过后、`resolveSubAgentContext` 之前以 `(subName, args, ctx)` 调用（args 为 coerce 后值）,返回普通对象整体替换 args——改写结果经 `extractSubAgentUserInput` 构造子代理首条 user 消息（交接单附件）,`resolveSubAgentContext` / `afterToolCall` 消费的也是改写后 args（见「resolveSubAgentInput 派发入参改写钩子」）。未接线 / 返回 `undefined` 时逐字节现状;返回非法形状抛 `AgentError`
 - **`getAgentEntry` vs `getAgent`**：`getAgentEntry` 返回 `AgentMetadata`（含 `filePath` + `inputTypeName`）,`getAgent` 返回 `AgentCore`。两者都仅查文件 registry。sub-agent 必须是文件型 agent
-- **默认 reactLoop + provider 继承**：sub-agent 统一走默认循环,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider（外部 provider 或 llms 解析结果）,model 用 sub 元数据声明的 `config.model`、未声明时沿用父 model。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）附在 `SubAgentToolResult` 的 `trace` 字段返回给 reactLoop,reactLoop 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`usage` / `turns` 字段始终携带（子循环整树口径,reactLoop 上卷进父 run 台账,详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）。`usage` / `turns` 缺省（如 provider 不返回用量）时 reactLoop 跳过对应累加
+- **默认 reactLoop + provider 继承**：sub-agent 统一走默认循环,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider 与 model（外部 provider 或 llms 解析结果;config.model 已移除,sub 无自身 model 可声明,恒沿用父调用解析结果）。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）附在 `SubAgentToolResult` 的 `trace` 字段返回给 reactLoop,reactLoop 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`usage` / `turns` 字段始终携带（子循环整树口径,reactLoop 上卷进父 run 台账,详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）。`usage` / `turns` 缺省（如 provider 不返回用量）时 reactLoop 跳过对应累加
 
 ### Tracing
 

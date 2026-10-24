@@ -90,7 +90,7 @@ interface AgentRunOptions {
    * - `provider/model` 一体化（如 'openai/gpt-4o'）→ 在 llms 里按 provider+model 精确匹配
    * - 纯 model 名（如 'gpt-4o'）→ 在所有 provider 的 models 里按 model 名查找,
    *   唯一时切到对应 provider；多个时报错（要求用 `provider/model` 消歧）；无匹配时报错
-   * 不传时用 agent 元数据 `config.model` 作为缺省 key 参与上述解析；
+   * 未传且无 `provider` 时抛 `AgentError`（无 config.model fallback——model 是调用侧决策）；
    * 两者皆无且未传 `options.provider` 时抛 `AgentError`
    */
   model?: string;
@@ -110,7 +110,7 @@ interface AgentRunOptions {
    *
    * 仅影响本次调用——不进 providers Map、agent 状态不变。
    * **sub-agent 递归继承父调用解析出的 provider**（sub 的 model 用其元数据声明的
-   * `config.model`,未声明时沿用父 model）,不继承 options 对象本身。
+   * config.model 已移除）,不继承 options 对象本身。
    */
   provider?: LlmConfig | LLMProvider;
   /** 采样温度（透传给 LLM API,覆盖 provider/model 级 temperature） */
@@ -143,8 +143,8 @@ interface AgentHandle {
 }
 ```
 
-`options.agent` 每次调用必须显式传（无默认 agent）；`options.model` 缺省时回落 agent 元数据
-`config.model` 参与解析。
+`options.agent` 每次调用必须显式传（无默认 agent）；`options.model` 未传且无
+`options.provider` 时抛 `AgentError`——模型档位是调用侧决策，agent 不声明 config.model。
 `input` 为可选（续跑场景不传新输入）——`input` 与 `options.messages` 都为空时抛 `AgentError`。
 传 `options.model` 时按字符串 key 解析规则定位 provider + model,临时覆盖本次调用,
 **不修改 agent 自身状态**。
@@ -156,26 +156,25 @@ interface AgentHandle {
 | 字段 | 优先级 1（最高） | 优先级 2 | 优先级 3（默认） |
 | --- | --- | --- | --- |
 | `agentName` | `options.agent`（必须显式传,不传抛 `AgentError`） | — | — |
-| `provider` | `options.provider` 物化的外部 provider（跳过全部 llms 解析） | `options.model` 解析出的 provider（key 含 provider 时） | agent 元数据 `config.model` 作为缺省 key 解析（无默认 provider） |
-| `model` | `options.model`（外部 provider 时为原始 model 名,原样透传） | `options.model` 解析出的 model / `meta.model`（agent 元数据缺省 key） | — |
+| `provider` | `options.provider` 物化的外部 provider（跳过全部 llms 解析） | `options.model` 解析出的 provider（key 含 provider 时） | —（无缺省,未传 options.model 抛 `AgentError`） |
+| `model` | `options.model`（外部 provider 时为原始 model 名,原样透传） | `options.model` 解析出的 model | — |
 | `temperature` | `options.temperature` | model 级 `models[m].temperature` | provider 级 `LlmConfig.temperature` |
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（全局透传） |
 | `maxTurns` | — | `meta.maxTurns`（agent 元数据） | `AgentRuntimeConfig.maxTurns`（全局） |
 | `traceId` | `options.traceId`（显式指定,全局关闭也生效） | — | 自动生成段（`config.agent.traceId` 默认 `true`;显式 `false` 整体关闭） |
 
-> `provider` / `temperature` / `maxTokens` 没有「agent 元数据」层——agent handler 的 `config` 块只提取 `systemPrompt` / `model` / `maxTurns` / `tools` / `agents`,不提取 provider/temperature/maxTokens。
+> `provider` / `temperature` / `maxTokens` / `model` 没有「agent 元数据」层——agent handler 的 `config` 块只提取 `systemPrompt` / `maxTurns` / `tools` / `agents`,不提取 provider/temperature/maxTokens（model 已移除,模型档位是调用侧决策）。
 
 ### `options.model` 字符串 key 解析规则
 
-`buildLoopConfig` 收到 `options.model` 后按以下顺序解析（命中即停）；未传 `options.model`
-时用 agent 元数据 `config.model` 作为缺省 key 走同一套解析：
+`buildLoopConfig` 收到 `options.model` 后按以下顺序解析（命中即停）；`options.model`
+未传且无 `options.provider` 时抛 `AgentError`（无 config.model fallback）：
 
 0. **外部 provider 接管**：`options.provider` 存在时**跳过下方全部 key 解析**——
    `options.model` 不再是 llms key,而是原始 model 名原样透传给外部 provider
    （详见下方「`options.provider` 外部 provider」章节）
 1. **llms key 精确匹配**：key 等于 `config.agent.llms` 的某个 key（如 `'openai'`）
    → 用该 key 对应的 provider 实例 + 该 provider `models` 的第一个 key 作为 model
-   （该 provider 未声明 `models` 时回落 agent 元数据 `config.model`）
 2. **`provider/model` 一体化**：key 含 `/`,拆成 `[provider, model]`
    → 在 `llms` 里找 `key === provider` 的项 → 用该 provider 实例 + 该 model（要求该 model 在其 `models` 里）
 3. **纯 model 名模糊匹配**：key 不含 `/` 且非 llms key
@@ -184,8 +183,8 @@ interface AgentHandle {
    - 多个匹配 → 抛 `AgentError`（要求用 `provider/model` 消歧）
    - 无匹配 → 抛 `AgentError`（model 不在任何 provider 下,要求在 `llms.*.models` 里声明）
 
-`options.model` 与 agent 元数据 `config.model` 都缺省且未传 `options.provider` 时抛
-`AgentError`（无默认 provider——每次调用显式指定）。
+`options.model` 缺省且未传 `options.provider` 时抛 `AgentError`
+（无默认 provider、无 config fallback——每次调用显式指定）。
 
 ### `options.provider` 外部 provider
 
@@ -205,8 +204,8 @@ interface AgentHandle {
 - **优先级最高**——同时传 `options.provider` + `options.model`（llms 里已声明的 key）时,
   走外部 provider 且 model 原样透传,llms 声明被完全忽略
 - **调用级作用域**——外部 provider 仅本次 `run` / `stream` 生效：不进 `providers Map`、
-  不修改 agent 状态；**sub-agent 递归继承父调用解析出的 provider**（sub 的 model 用其
-  元数据声明的 `config.model`,未声明时沿用父 model）,不继承 options 对象本身
+  不修改 agent 状态；**sub-agent 递归继承父调用解析出的 provider 与 model**
+  （config.model 已移除）,不继承 options 对象本身
 - **透传字段生效**——`LlmConfig` 形式的 provider 级透传字段（`temperature` / `top_p` 等）
   与 `timeoutMs` / `maxRetries` 与内置 provider 行为完全一致（同一 `createProvider` 路径）；
   `options.temperature` / `options.maxTokens` 仍为 request 级最高优先级

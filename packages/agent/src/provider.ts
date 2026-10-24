@@ -87,7 +87,7 @@ export interface LLMToolDefinition {
  * complete / stream 的入参
  *
  * `model` / `temperature` / `maxTokens` 优先级高于 [LlmConfig](../../faapi/src/configs/configTypes.md)
- * （agent 自身 `config.model` 覆盖全局默认）。
+ * （request 侧的值由 Agent 的 `options` 解析而来,已是最终值）。
  */
 export interface LLMCompleteRequest {
   /** 对话消息（含历史 + 当前轮） */

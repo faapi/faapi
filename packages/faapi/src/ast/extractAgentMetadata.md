@@ -1,13 +1,13 @@
 # extractAgentMetadata
 
-一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、config 块字段(systemPrompt / systemPromptFile / tools / agents / model / maxTurns / inputDescription / vars)与派发入参 schema 声明(`Input` 导出检测)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
+一句话概括：从 agent handler.ts 源文件提取 agent 的 JSDoc 描述、config 块字段(systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars)与派发入参 schema 声明(`Input` 导出检测)，产出完整的 `AgentMetadata`(继承 `AgentCore` + 代码加载细节)供产物生成阶段消费。
 
 ## 为什么需要
 
 `scanAgents` 只通过正则检测了 `run` 导出是否存在(Vite 风格零 import)，但生成 `faapi-agents.js` 清单还需要两类信息：
 
 1. **JSDoc 描述**——agent 名由目录路径推导，描述让 LLM 理解 agent 用途。
-2. **config 块字段**——`systemPrompt`(系统提示词,与 `systemPromptFile` 互斥二选一)、`systemPromptFile`(相对产物 resources 目录的提示词文件路径,运行时读文件内容)、`tools`(agent 显式声明可用 tool 引用列表)、`agents`(可调用的其他 agent 列表)、`model`(LLM 模型)、`maxTurns`(最大对话轮数)、`inputDescription`(agent-as-tool 派发交接单说明)、`vars`(提示词模板变量,静态字面量)。这些字段在运行时由 Agent 类/reactLoop 消费。
+2. **config 块字段**——`systemPrompt`(系统提示词,与 `systemPromptFile` 互斥二选一)、`systemPromptFile`(相对产物 resources 目录的提示词文件路径,运行时读文件内容)、`tools`(agent 显式声明可用 tool 引用列表)、`agents`(可调用的其他 agent 列表)、`maxTurns`(最大对话轮数)、`inputDescription`(agent-as-tool 派发交接单说明)、`vars`(提示词模板变量,静态字面量)。这些字段在运行时由 Agent 类/reactLoop 消费。`model` 不是 config 字段——模型档位是调用侧决策（见「config.model 已移除」）。
 3. **派发入参 schema 声明**——handler.ts 顶层声明名为 `Input` 的 interface / type alias 时，`AgentMetadata.inputTypeName` 记为 `'Input'`，[generateAgentArtifacts](../cli/generateAgentArtifacts.md) 据此生成 agent 的 zod.js，`@faapi/agent` 派发该 agent 时用富 JSON Schema 替代默认单字段 `input`。
 
 这些信息必须用 TypeScript AST 提取(JSDoc 和对象字面量在运行时被擦除)。本模块在 dev/build 启动时对每个 `AgentManifest` 调用一次，把路径推导字段(name/filePath)与 AST 提取字段(description/config 块字段)合并为完整的 `AgentMetadata`，供 [generateAgentArtifacts](../cli/generateAgentArtifacts.md) 直接序列化。
@@ -16,7 +16,7 @@
 
 `AgentCore` 描述 LLM 可见字段，`AgentMetadata` 继承 `AgentCore` 额外含 `filePath`：
 
-- **`AgentCore`** —— `name` / `description` / `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `model` / `maxTurns` / `inputDescription` / `vars`。文件型 agent 实现此接口。`agentRegistry.getAgent` 返回此类型。
+- **`AgentCore`** —— `name` / `description` / `systemPrompt` / `systemPromptFile` / `tools` / `agents` / `maxTurns` / `inputDescription` / `vars`。文件型 agent 实现此接口。`agentRegistry.getAgent` 返回此类型。
 - **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`(声明文件定位)与 `inputTypeName`(派发入参 schema 定位,声明 `Input` 时为 `'Input'`)。仅文件型 agent 实现。`agentRegistry.getAgentEntry` 返回此类型。
 
 `inputTypeName` 仅在 handler.ts 顶层声明 `Input` 类型时提取，派发入参 schema 由此定位；未声明时派发走单字段 `input` 交接单模式。
@@ -99,7 +99,6 @@ export function config() {
 | `systemPromptFile` | 同 `systemPrompt`（路径字面量），与 `systemPrompt` 互斥 | `string`（相对产物 resources 目录） | `'prompts/research.md'` |
 | `tools` | `ArrayLiteralExpression` 全元素为字符串字面量 / 无插值模板字符串 / 其 `+` 拼接 | `string[]` | `['weather.getWeather']`、`['weather' + '.getWeather']` |
 | `agents` | `ArrayLiteralExpression` 全元素为字符串字面量 / 无插值模板字符串 / 其 `+` 拼接 | `string[]` | `['coder']` |
-| `model` | `StringLiteral` / `NoSubstitutionTemplateLiteral` / 其 `+` 拼接 | `string` | `'gpt-4'`、`'gpt' + '-4'` |
 | `maxTurns` | `NumericLiteral` | `number` | `10` |
 | `inputDescription` | `StringLiteral` / `NoSubstitutionTemplateLiteral` / 其 `+` 拼接 | `string` | `'章节拆解交接单'` |
 | `vars` | 平面对象字面量,叶子为字符串字面量(含无插值模板字符串/`+` 拼接)/数字/布尔 | `Record<string, string \| number \| boolean>` | `{ role: '情节审稿', maxTurnsHint: 8, strict: true }` |
@@ -152,7 +151,7 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 |------|------|
 | `systemPrompt` 与 `systemPromptFile` 均未声明(无 config 导出、config 无 return 对象、config 里两个 key 都没有) | 抛 `SchemaExtractionError`——**agent 不能没有提示词**，人设是 agent 的必要组成（二选一） |
 | `systemPrompt` 与 `systemPromptFile` 同时声明 | 抛 `SchemaExtractionError`——两个来源语义冲突（互斥） |
-| 其他字段(tools/agents/model/maxTurns/inputDescription/vars)未声明 | `undefined`，合法缺省，运行时按默认值处理（vars 未声明 = 提示词不渲染占位符） |
+| 其他字段(tools/agents/maxTurns/inputDescription/vars)未声明 | `undefined`，合法缺省，运行时按默认值处理（vars 未声明 = 提示词不渲染占位符） |
 | 任意字段声明了但值提取失败(变量引用、含插值模板字符串、拼接混入数字/变量、混合类型数组元素、非数字字面量等) | 抛 `SchemaExtractionError`(带 file:line:column)，`faapi build` 直接失败，dev watcher 输出错误 |
 | config 里声明了未知字段(如拼写错误 `maxTurn`) | 抛 `SchemaExtractionError`——框架不读的字段几乎必然是拼写错误或误解，静默忽略后运行时按默认值跑，与声明意图不符 |
 | config 用了不支持的属性形式(computed 名、shorthand、方法) | 抛 `SchemaExtractionError` |
@@ -164,9 +163,11 @@ config 字段缺失与提取失败是两种语义，处理方式不同：
 
 **自定义 `run` 导出已移除**：agent 统一为声明式执行（config + 默认 reactLoop），检测到 `export function/const run` 抛 `SchemaExtractionError` 迁移错误——编排场景注册 tool（有 schema/trace/鉴权钩子），多 agent 协作用 config.agents 声明 sub-agent。
 
+**`config.model` 已移除**：模型档位是调用侧决策（`agent.run/stream` 的 `options.model` 显式传、`options.provider` 外部 provider 自决），不是 agent 的静态属性——handler config 里声明 `model`（任意值、任意形式，含字符串属性名 `'model'`）抛 `SchemaExtractionError` 迁移错误，指引删除该声明。理由：per-agent model 声明把「哪个岗位用什么模型」散进各 handler（多 agent 同档模型 id 逐处复制、换档逐处改），而任务壳/主控派发本就持有调用侧口径——声明处与调用处双口径必然漂移。sub-agent 派发未声明 model 时统一沿用父调用解析出的 model（原 config.model 优先级位删除）。
+
 `SpreadAssignment`(`...other`)跳过不报错——它不声明任何具名字段，无法静态归属；但 spread 提供不了 `systemPrompt` 时同样触发缺失报错。
 
-除 `systemPrompt` 外的字段全部可选——未声明的字段为 `undefined`，运行时按默认值处理(如 `maxTurns` 默认 10、`model` 缺省时由调用方 `agent.run(input, { model })` 显式指定或作为缺省 key 参与 llms 解析)。
+除 `systemPrompt` 外的字段全部可选——未声明的字段为 `undefined`，运行时按默认值处理(如 `maxTurns` 默认 10；模型由调用方 `agent.run(input, { model })` 显式指定,未传且无外部 provider 时运行时抛 `AgentError`)。
 
 ## API
 
@@ -178,7 +179,6 @@ interface AgentCore {
   systemPrompt?: string;     // 系统提示词;文件型 agent 必填(构建期校验)
   tools?: string[];          // agent 显式声明可用 tool 引用列表
   agents?: string[];         // 可调用的其他 agent 名
-  model?: string;            // LLM 模型名
   maxTurns?: number;         // 最大对话轮数
   inputDescription?: string; // agent-as-tool 派发交接单说明(该工具 input 字段的 schema description)
   vars?: Record<string, string | number | boolean>; // 提示词模板变量(静态字面量,声明即每次 run/派发渲染占位符)

@@ -455,7 +455,6 @@ describe('runTaskInWorker', () => {
         systemPrompt: 'p',
         tools: ['parse', 'missing-tool'],
         agents: ['helper', 'missing-sub'],
-        model: 'gpt-4o',
         maxTurns: 5,
       },
       { name: 'helper', filePath: 'dist/agents/helper/handler.js' },
@@ -675,7 +674,6 @@ describe('runTaskInWorker', () => {
             systemPrompt: 'p',
             tools: ['parse'],
             agents: ['helper'],
-            model: 'gpt-4o',
             maxTurns: 5,
           },
           { name: 'helper', filePath: 'dist/agents/helper/handler.js' },
@@ -694,7 +692,6 @@ describe('runTaskInWorker', () => {
       systemPrompt: 'p',
       tools: ['parse'],
       agents: ['helper'],
-      model: 'gpt-4o',
       maxTurns: 5,
     });
     expect(result.agents).toEqual(['log-analyzer', 'helper']);

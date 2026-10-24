@@ -45,7 +45,6 @@ function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
     systemPromptFile: opts.systemPromptFile,
     tools: opts.tools,
     agents: opts.agents,
-    model: opts.model,
     maxTurns: opts.maxTurns,
     inputDescription: opts.inputDescription,
     vars: opts.vars,
@@ -61,7 +60,6 @@ function agentEntry(opts: Partial<AgentMetadata> = {}): AgentMetadata {
     systemPrompt: opts.systemPrompt,
     tools: opts.tools,
     agents: opts.agents,
-    model: opts.model,
     maxTurns: opts.maxTurns,
     inputDescription: opts.inputDescription,
     inputTypeName: opts.inputTypeName,
@@ -265,12 +263,12 @@ describe('Agent', () => {
         createDeps({
           provider,
           // meta.model 作为缺省 key 参与 llms 解析（defaultLlms 的 openai.models 里已声明）
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o', maxTurns: 5 }),
+          agent: agentMeta({ systemPrompt: 'You are helpful', maxTurns: 5 }),
           tools: [toolMeta()],
         }),
       );
 
-      const result = await agent.run('hi', { agent: 'researcher' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.content).toBe('Hello!');
       expect(result.turns).toBe(1);
@@ -420,11 +418,11 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ model: 'gpt-4o' }),
+          agent: agentMeta({}),
         }),
       );
 
-      const result = await agent.run('hi', { agent: 'researcher' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.reasoning).toBe('思考过程');
       for (const m of result.messages) {
@@ -2637,12 +2635,12 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          agent: agentMeta({ systemPrompt: 'You are helpful' }),
           config: { enableTracing: true },
         }),
       );
 
-      const result = await agent.run('hi', { agent: 'researcher' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.traceId).toMatch(/^[0-9a-f]{12}$/);
       const sys = completeCalls.mock.calls[0][0].messages[0];
@@ -2662,11 +2660,15 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          agent: agentMeta({ systemPrompt: 'You are helpful' }),
         }),
       );
 
-      const result = await agent.run('hi', { agent: 'researcher', traceId: 'req-42' });
+      const result = await agent.run('hi', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+        traceId: 'req-42',
+      });
 
       expect(result.traceId).toBe('req-42');
       expect(completeCalls.mock.calls[0][0].messages[0].content).toContain('trace_id=req-42');
@@ -2679,12 +2681,12 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          agent: agentMeta({ systemPrompt: 'You are helpful' }),
           config: { traceId: false },
         }),
       );
 
-      const result = await agent.run('hi', { agent: 'researcher' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.traceId).toBeUndefined();
       expect(completeCalls.mock.calls[0][0].messages[0].content).toBe('You are helpful');
@@ -2697,12 +2699,12 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          agent: agentMeta({ systemPrompt: 'You are helpful' }),
           config: { traceId: false },
         }),
       );
 
-      const result = await agent.run('hi', { agent: 'researcher', traceId: 'x1' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o', traceId: 'x1' });
 
       expect(result.traceId).toBe('x1');
       expect(completeCalls.mock.calls[0][0].messages[0].content).toContain('trace_id=x1');
@@ -2749,13 +2751,13 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          agent: agentMeta({ systemPrompt: 'You are helpful' }),
           // helper 对未传 config 的用例钉 traceId:false,此处显式开启（默认开启同码路径）
           config: { traceId: true },
         }),
       );
 
-      const chunks = await collect(agent.stream('hi', { agent: 'researcher' }));
+      const chunks = await collect(agent.stream('hi', { agent: 'researcher', model: 'gpt-4o' }));
 
       const done = chunks.find((c) => c.done !== undefined)!.done!;
       expect(done.traceId).toMatch(/^[0-9a-f]{12}$/);
@@ -2771,13 +2773,13 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ model: 'gpt-4o' }),
+          agent: agentMeta({}),
           // helper 对未传 config 的用例钉 traceId:false,此处显式开启（默认开启同码路径）
           config: { traceId: true },
         }),
       );
 
-      const result = await agent.run('hi', { agent: 'researcher' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.traceId).toMatch(/^[0-9a-f]{12}$/);
       const messages: LLMMessage[] = completeCalls.mock.calls[0][0].messages;
@@ -2791,7 +2793,7 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          agent: agentMeta({ systemPrompt: 'You are helpful' }),
           // helper 对未传 config 的用例钉 traceId:false,此处显式开启（默认开启同码路径）
           config: { traceId: true },
         }),
@@ -2799,6 +2801,7 @@ describe('Agent', () => {
 
       const result = await agent.run(undefined, {
         agent: 'researcher',
+        model: 'gpt-4o',
         messages: [
           { role: 'system', content: 'old system' },
           { role: 'user', content: 'hi' },
@@ -2818,12 +2821,12 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ systemPrompt: 'You are helpful', model: 'gpt-4o' }),
+          agent: agentMeta({ systemPrompt: 'You are helpful' }),
           config: { traceIdTemplate: 'T={traceId}' },
         }),
       );
 
-      const result = await agent.run('hi', { agent: 'researcher' });
+      const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(completeCalls.mock.calls[0][0].messages[0].content).toBe(
         `You are helpful\n\nT=${result.traceId}`,
@@ -2848,7 +2851,7 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ model: 'gpt-4o' }),
+          agent: agentMeta({}),
         }),
       );
 
@@ -2858,24 +2861,7 @@ describe('Agent', () => {
       expect(request.model).toBe('gpt-4o-mini');
     });
 
-    it('未传 options.model 时用 agent 元数据 model 作为缺省 key 解析', async () => {
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'ok', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ model: 'gpt-4o' }),
-        }),
-      );
-
-      await agent.run('hi', { agent: 'researcher' });
-
-      const request = completeCalls.mock.calls[0][0];
-      expect(request.model).toBe('gpt-4o');
-    });
-
-    it('options.model 与 agent 元数据 model 均缺省且无 options.provider 时抛 AgentError', async () => {
+    it('options.model 缺省且无 options.provider → 抛 AgentError（model 是调用侧决策,无 config fallback）', async () => {
       const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
       const agent = new Agent(createDeps({ provider, agent: agentMeta() }));
 
@@ -3087,7 +3073,7 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ model: 'gpt-4' }),
+          agent: agentMeta({}),
         }),
       );
 
@@ -3097,7 +3083,7 @@ describe('Agent', () => {
       expect(request.model).toBe('gpt-4o-mini');
     });
 
-    it('options 不修改 agent 状态（下一次 run 仍用元数据 model 解析）', async () => {
+    it('options 不修改 agent 状态（两次 run 的 model 相互独立）', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'first', stopReason: 'stop' }),
         llmResponse({ content: 'second', stopReason: 'stop' }),
@@ -3105,12 +3091,12 @@ describe('Agent', () => {
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ model: 'gpt-4o' }),
+          agent: agentMeta({}),
         }),
       );
 
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o-mini' });
-      await agent.run('hi', { agent: 'researcher' });
+      await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       const firstRequest = completeCalls.mock.calls[0][0];
       const secondRequest = completeCalls.mock.calls[1][0];
@@ -3210,9 +3196,7 @@ describe('Agent', () => {
       );
       vi.stubGlobal('fetch', fetchMock);
 
-      const agent = new Agent(
-        createDeps({ provider: defaultProvider, agent: agentMeta({ model: 'gpt-4' }) }),
-      );
+      const agent = new Agent(createDeps({ provider: defaultProvider, agent: agentMeta({}) }));
 
       const result = await agent.run('hi', {
         agent: 'researcher',
@@ -3258,9 +3242,7 @@ describe('Agent', () => {
         llmResponse({ content: 'from-default', stopReason: 'stop' }),
       ]);
 
-      const agent = new Agent(
-        createDeps({ provider: defaultProvider, agent: agentMeta({ model: 'gpt-4' }) }),
-      );
+      const agent = new Agent(createDeps({ provider: defaultProvider, agent: agentMeta({}) }));
 
       const result = await agent.run('hi', {
         agent: 'researcher',
@@ -3347,9 +3329,7 @@ describe('Agent', () => {
       );
       vi.stubGlobal('fetch', fetchMock);
 
-      const agent = new Agent(
-        createDeps({ provider: defaultProvider, agent: agentMeta({ model: 'gpt-4' }) }),
-      );
+      const agent = new Agent(createDeps({ provider: defaultProvider, agent: agentMeta({}) }));
 
       await agent.run('hi', {
         agent: 'researcher',
@@ -3405,17 +3385,15 @@ describe('Agent', () => {
         llmResponse({ content: 'from-default', stopReason: 'stop' }),
       ]);
 
-      const agent = new Agent(
-        createDeps({ provider: defaultProvider, agent: agentMeta({ model: 'gpt-4o' }) }),
-      );
+      const agent = new Agent(createDeps({ provider: defaultProvider, agent: agentMeta({}) }));
 
       const first = await agent.run('hi', {
         agent: 'researcher',
         provider: externalProvider,
         model: 'm1',
       });
-      // 第二次不传外部 provider——meta.model 作为缺省 key 走 llms 解析（openai）
-      const second = await agent.run('hi', { agent: 'researcher' });
+      // 第二次不传外部 provider——显式 model key 走 llms 解析（openai）
+      const second = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(first.content).toBe('from-external');
       expect(second.content).toBe('from-default');
@@ -3485,7 +3463,7 @@ describe('Agent', () => {
       expect(defaultCalls).not.toHaveBeenCalled();
     });
 
-    it('sub-agent 元数据声明 model 时优先用自身 model（继承父 provider）', async () => {
+    it('sub-agent 恒沿用父调用解析的 model（继承父 provider）', async () => {
       const parentCalls = vi.fn();
       const parentProvider: LLMProvider = {
         complete: async (req) => {
@@ -3521,16 +3499,17 @@ describe('Agent', () => {
         createDeps({
           provider: parentProvider,
           agent: agentMeta({ name: 'researcher' }),
-          subAgents: [agentMeta({ name: 'writer', model: 'gpt-4o-mini' })],
+          subAgents: [agentMeta({ name: 'writer' })],
         }),
       );
 
       const result = await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.content).toBe('parent-done');
-      // turn 2 是 sub-agent 的调用——provider 继承父,model 用 sub 元数据声明的 gpt-4o-mini
+      // turn 2 是 sub-agent 的调用——provider 与 model 都继承父调用解析结果
+      // （config.model 已移除,sub 无自身 model 可声明）
       const subRequest = parentCalls.mock.calls[1][0];
-      expect(subRequest.model).toBe('gpt-4o-mini');
+      expect(subRequest.model).toBe('gpt-4o');
     });
 
     it('stream 也支持外部 provider', async () => {
@@ -4140,7 +4119,7 @@ describe('Agent — usage / turns 整树上卷', () => {
 
     const agent = new Agent(
       createTreeDeps(provider, {
-        researcher: agentMeta({ name: 'researcher', agents: ['writer'], model: 'gpt-4o' }),
+        researcher: agentMeta({ name: 'researcher', agents: ['writer'] }),
         writer: agentMeta({ name: 'writer', agents: ['reviewer'] }),
         reviewer: agentMeta({ name: 'reviewer' }),
       }),
@@ -4176,7 +4155,7 @@ describe('Agent — usage / turns 整树上卷', () => {
 
     const agent = new Agent(
       createTreeDeps(provider, {
-        researcher: agentMeta({ name: 'researcher', agents: ['writer'], model: 'gpt-4o' }),
+        researcher: agentMeta({ name: 'researcher', agents: ['writer'] }),
         writer: agentMeta({ name: 'writer' }),
       }),
     );
@@ -4222,13 +4201,13 @@ describe('sub-agent 派发工具命名与路由', () => {
     const agent = new Agent(
       createDeps({
         provider,
-        agent: agentMeta({ model: 'gpt-4o', tools: ['getWeather'], agents: ['writer'] }),
+        agent: agentMeta({ tools: ['getWeather'], agents: ['writer'] }),
         tools: [toolMeta({ name: 'getWeather' })],
         subAgents: [agentMeta({ name: 'writer' })],
       }),
     );
 
-    await agent.run('hi', { agent: 'researcher' });
+    await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
     const tools = completeCalls.mock.calls[0][0].tools as LLMToolDefinition[];
     const names = tools.map((t) => t.function.name);
@@ -4252,13 +4231,13 @@ describe('sub-agent 派发工具命名与路由', () => {
     const agent = new Agent(
       createDeps({
         provider,
-        agent: agentMeta({ model: 'gpt-4o', agents: ['writer'] }),
+        agent: agentMeta({ agents: ['writer'] }),
         subAgents: [agentMeta({ name: 'writer', systemPrompt: '子系统提示词' })],
         subAgentEntries: [agentEntry({ name: 'writer' })],
       }),
     );
 
-    const result = await agent.run('go', { agent: 'researcher' });
+    const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
     expect(result.content).toBe('父收尾');
     // 第二次 llm_call 是子循环：system 消息为 sub-agent 的 systemPrompt——证明路由进子代理
@@ -4278,13 +4257,13 @@ describe('sub-agent 派发工具命名与路由', () => {
     const agent = new Agent(
       createDeps({
         provider,
-        agent: agentMeta({ model: 'gpt-4o', agents: ['easy-writing_wizard'] }),
+        agent: agentMeta({ agents: ['easy-writing_wizard'] }),
         subAgents: [agentMeta({ name: 'easy-writing_wizard', systemPrompt: '嵌套子' })],
         subAgentEntries: [agentEntry({ name: 'easy-writing_wizard' })],
       }),
     );
 
-    const result = await agent.run('go', { agent: 'researcher' });
+    const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
     expect(result.content).toBe('done');
     const subRequest = completeCalls.mock.calls[1][0];
@@ -4296,7 +4275,7 @@ describe('sub-agent 派发工具命名与路由', () => {
     const agent = new Agent(
       createDeps({
         provider,
-        agent: agentMeta({ model: 'gpt-4o', tools: ['agent-writer'], agents: ['writer'] }),
+        agent: agentMeta({ tools: ['agent-writer'], agents: ['writer'] }),
         tools: [toolMeta({ name: 'agent-writer' })],
         subAgents: [agentMeta({ name: 'writer' })],
       }),
@@ -4318,7 +4297,7 @@ describe('sub-agent 派发工具命名与路由', () => {
     const agent = new Agent(
       createDeps({
         provider,
-        agent: agentMeta({ model: 'gpt-4o', agents: ['writer'] }), // 未声明 tools
+        agent: agentMeta({ agents: ['writer'] }), // 未声明 tools
         subAgents: [agentMeta({ name: 'writer', systemPrompt: '子系统提示词' })],
         subAgentEntries: [agentEntry({ name: 'writer' })],
         // 注册表里存在真工具 agent-writer，但本 agent 未声明它
@@ -4327,7 +4306,7 @@ describe('sub-agent 派发工具命名与路由', () => {
       }),
     );
 
-    const result = await agent.run('go', { agent: 'researcher' });
+    const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
     expect(result.content).toBe('done');
     // 第二次 llm_call 是子循环而非真工具——声明来源决定路由
@@ -4347,13 +4326,13 @@ describe('sub-agent 派发工具命名与路由', () => {
     const agent = new Agent(
       createDeps({
         provider,
-        agent: agentMeta({ model: 'gpt-4o', tools: ['agent-foo'] }),
+        agent: agentMeta({ tools: ['agent-foo'] }),
         tools: [toolMeta({ name: 'agent-foo', filePath: 'dist/tools/agent-foo.js' })],
         loadToolModuleImpl: async () => ({ handler }) as unknown as ToolModule,
       }),
     );
 
-    const result = await agent.run('go', { agent: 'researcher' });
+    const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
     expect(result.content).toBe('done');
     expect(handler).toHaveBeenCalledWith({ q: 'x' }, undefined);
