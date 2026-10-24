@@ -476,6 +476,11 @@ export default {
       // 点号违反 OpenAI 兼容协议的工具名字符集，强校验上游整单 400）
       return tools.filter((t) => t.function.name.startsWith('agent-') || isAllowed(ctx?.workspace, t.function.name));
     },
+    // 进程级 deps 配方（6.51 起可选）：真实签名 (deps: AgentDeps) => AgentDeps
+    // （AgentDeps 从 @faapi/agent 导入标注）。在 createAgentDeps 装配之上、显式
+    // overrides 之前应用——插件注入的 AgentHandle 与业务自组装两路同源；典型
+    // 用途：schema 富化包装 / resolveSubAgentInput 派发材料 / providers 复用
+    // decorateDeps: decorateAgentDeps,
   },
 
   // 自定义业务配置（任意 key，通过 ctx.config 访问）

@@ -150,5 +150,11 @@ export function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps {
     resolveAgentInputSchema: resolveSchema,
   };
 
-  return { ...base, ...overrides };
+  // 进程级 deps 配方（agentConfig.decorateDeps，真实签名 (deps) => deps——
+  // 主包按接受任意函数的手法声明，此处消费时收窄）：base 之上、显式 overrides
+  // 之前应用（config 声明配方居中，显式优先）；抛错原样冒泡（fail fast）
+  const decorate = agentConfig?.decorateDeps as ((deps: AgentDeps) => AgentDeps) | undefined;
+  const decorated = decorate ? decorate(base) : base;
+
+  return { ...decorated, ...overrides };
 }

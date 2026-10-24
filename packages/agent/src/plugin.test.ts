@@ -241,6 +241,28 @@ describe('@faapi/agent plugin', () => {
       expect(result.trace).toBeDefined();
       expect(result.trace!.traceId).toBe(result.traceId);
     });
+
+    it('config.agent.decorateDeps 经插件工厂产物生效——配方装饰的 resolveSystemPrompt 进 system 消息', async () => {
+      // 进程级 deps 配方走 config.agent 声明：插件 setup 装配 baseDeps 时应用,
+      // 工厂产物（HTTP 请求链注入的 AgentHandle）自动携带配方
+      completeRequests.length = 0;
+      const decorate = (deps: import('./agent').AgentDeps) => ({
+        ...deps,
+        resolveSystemPrompt: async (_name: string, _meta: unknown, base: string) =>
+          `${base}\n[配方注入]`,
+      });
+      const factory = setupAndCaptureFactory(
+        makeCtx({ ...fullAgentConfig, decorateDeps: decorate }),
+      );
+      const agent = factory!(makeReqCtx()) as Agent;
+
+      const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
+      expect(result.content).toBe('ok');
+      expect(completeRequests[0]!.messages[0]).toEqual({
+        role: 'system',
+        content: expect.stringContaining('[配方注入]'),
+      });
+    });
   });
 
   describe('setup() — 配置缺失', () => {

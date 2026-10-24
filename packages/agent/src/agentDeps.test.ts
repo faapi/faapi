@@ -26,7 +26,7 @@ vi.mock('./provider', async (importOriginal) => {
 import { createAppRegistries, createTaskRegistriesView } from '@faapi/faapi';
 import type { AgentConfig, AgentMetadata, ToolMetadata } from '@faapi/faapi';
 import { createAgentDeps } from './agentDeps';
-import { Agent } from './agent';
+import { Agent, type AgentDeps } from './agent';
 import { createProvider, type LLMProvider } from './provider';
 import { createScriptLLM } from './scriptLlm';
 
@@ -175,6 +175,52 @@ describe('createAgentDeps', () => {
     // 显式 config 覆盖同名字段，agentConfig 未覆盖字段保留底座
     expect(deps.config?.maxTurns).toBe(7);
     expect(deps.config?.enableTracing).toBe(true);
+  });
+
+  it('agentConfig.decorateDeps 装饰生效：base 之上叠加差异项，其余装配保留', () => {
+    // 业务侧按真实签名 (deps: AgentDeps) => AgentDeps 强类型书写（never[] 声明
+    // 手法兼容任意函数，见 configTypes.ts 的 AgentConfig.decorateDeps JSDoc）
+    const resolveSystemPrompt = async (_name: string, _meta: unknown, base: string) =>
+      `${base}+配方`;
+    const decorate = (deps: AgentDeps): AgentDeps => ({
+      ...deps,
+      resolveSystemPrompt,
+    });
+    const deps = createAgentDeps({
+      registries: makeRegistries(),
+      agentConfig: { decorateDeps: decorate },
+    });
+
+    expect(deps.resolveSystemPrompt).toBe(resolveSystemPrompt);
+    // 未覆盖的装配不受装饰影响
+    expect(deps.getAgent('researcher')?.name).toBe('researcher');
+    expect(deps.resolveToolSchema).toBeDefined();
+  });
+
+  it('显式 overrides 优先于 decorateDeps：同名字段以 overrides 为准，未覆盖字段保留配方', () => {
+    const recipeSchema = async () => undefined;
+    const overrideSchema = async () => undefined;
+    const decorate = (deps: AgentDeps): AgentDeps => ({
+      ...deps,
+      resolveToolSchema: recipeSchema,
+    });
+    const deps = createAgentDeps({
+      registries: makeRegistries(),
+      agentConfig: { decorateDeps: decorate },
+      overrides: { resolveToolSchema: overrideSchema },
+    });
+
+    // 装配次序 base → decorateDeps → overrides（config 声明配方居中，显式优先）
+    expect(deps.resolveToolSchema).toBe(overrideSchema);
+  });
+
+  it('decorateDeps 抛错原样冒泡（fail fast，不静默降级）', () => {
+    const decorate = () => {
+      throw new Error('recipe broken');
+    };
+    expect(() =>
+      createAgentDeps({ registries: makeRegistries(), agentConfig: { decorateDeps: decorate } }),
+    ).toThrow('recipe broken');
   });
 
   it('overrides 浅合并：装饰钩子覆盖默认装配，其余字段不受影响', () => {

@@ -425,6 +425,25 @@ export interface AgentConfig {
     type: 'function';
     function: { name: string; description?: string; parameters?: Record<string, unknown> };
   }>;
+  /**
+   * 进程级 deps 配方（装饰钩子）——真实签名为
+   * `(deps: AgentDeps) => AgentDeps`（`AgentDeps` 类型定义在 `@faapi/agent`，
+   * 主包不反向依赖故此处按接受任意函数的手法声明；业务侧按真实签名书写即
+   * 完全强类型，从 `@faapi/agent` 导入 `AgentDeps` 标注即可）。
+   *
+   * 在 `createAgentDeps` 装配的 base 之上、调用方显式 `overrides` 之前应用
+   * （config 声明配方居中，显式 overrides 优先）——插件 setup 与业务自组装
+   * 都走同一工厂，配方一次声明两路到达。典型用途：
+   * - `resolveToolSchema` / `resolveAgentInputSchema`：schema 富化包装
+   *   （条件必填注入 LLM 可见 JSON Schema，运行时校验链路不变）
+   * - `resolveSubAgentInput`：派发边界按子代理入参预取库内数据
+   *   （服务端合成材料进子代理首条 user 消息）
+   * - `providers` 复用：按 llms 引用缓存的进程级单例
+   *
+   * 装饰函数应当纯组装（spread + 覆盖差异项）；抛错原样冒泡（fail fast，
+   * 不静默降级）。请求级差异不走本钩子——`ctx` 由工厂/组装调用方注入。
+   */
+  decorateDeps?: (...args: never[]) => unknown;
 }
 
 /**

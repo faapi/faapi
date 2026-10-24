@@ -69,6 +69,7 @@ export default {
 - `lifecycle.onReady(ctx)`:服务器启动后(listen 回调内)调用,适合初始化数据库连接、缓存预热等。失败时端口已暴露,启动校验请用 onBoot。
 - `lifecycle.onClose(ctx)`:停机时调用(任务队列 drain 之后),适合清理 DB 连接池等资源。
 - **lifecycle 钩子 ctx（LifecycleContext）携带 `config`**——faapi.config 全量配置的**活引用**,与请求 `ctx.config` / 进程内任务 `taskCtx.config` 同一对象。钩子内可直接读业务配置;`agent` 块复合形状经 `ctx.config.agent` 读回后可整体透传 `@faapi/agent` 的 `createAgentDeps({ agentConfig })`(详见 [agentDeps](../../agent/src/agentDeps.md))——重启续跑等生命周期内组装 agent 的场景不再需要业务侧另立配置常量源。
+- `agent.decorateDeps`:进程级 deps 配方装饰钩子——真实签名 `(deps: AgentDeps) => AgentDeps`(类型在 `@faapi/agent`,主包不反向依赖故按接受任意函数的手法声明,业务侧导入 `AgentDeps` 标注即强类型)。在 `createAgentDeps` 的 base 装配之上、显式 overrides 之前应用,插件注入的 AgentHandle 与业务自组装两路同源;典型用途:schema 富化包装(`resolveToolSchema`/`resolveAgentInputSchema`)、派发材料供数(`resolveSubAgentInput`)、providers 进程级复用。配方抛错原样冒泡(不静默降级);请求级差异(`ctx`)不走本钩子。
 - `lifecycle.onError(error, ctx)`:错误已被处理为响应、响应发出后触发的副作用钩子(参考 Fastify onError 语义)。用于日志/告警/链路追踪,**不修改已生成的响应**。自身抛错 `console.error` 留痕（不影响已发出的响应，但不静默吞掉）。
 - `extendContext(ctx)`:创建上下文后调用,用户可挂载自定义方法/属性到 ctx;配合 `declare module '@faapi/faapi'` 增强 FaapiContext 类型。
 - `FaapiContextConfig`:空 interface,用户可通过声明合并增强 `ctx.config` 的类型。

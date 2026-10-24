@@ -48,8 +48,7 @@ interface CreateAgentDepsOptions {
    * `agentConfig` 提供底座（llms：`options.llms ?? agentConfig.llms`；
    * config：`{ ...拆装结果, ...options.config }`）
    */
-  agentConfig?: AgentConfig;
-  /**
+  agentConfig?: AgentConfig;  /**
    * LLM provider 配置（key 为 provider 名）。提供时逐项 `createProvider` 转换为
    * providers Map 并透传 llms（model key 解析用）；缺省为空 Map + 空 llms
    * （外部 provider 模式——`agent.run(input, { provider })` 每次显式注入）
@@ -74,6 +73,7 @@ function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps;
 - **空 apiKey 照常注册 provider**：部分网关/本地模型场景无需 key；「key 未配置」的启动期显性提示由插件 setup 负责（工厂可能在任务内调用，不在此处刷警告）——上游 401 的错误文案来自上游，可按 provider 名定位
 - **overrides 浅合并**：`{ ...base, ...overrides }`——覆盖单个访问器不影响其余装配；需要深度定制时用完整的编程式组装（`new Agent(deps)` 直拼）
 - **agentConfig 合并语义**：`llms = options.llms ?? agentConfig?.llms ?? {}`；`config` 在提供 `agentConfig` 时为 `{ ...toAgentRuntimeConfig(agentConfig), ...options.config }`（显式 `config` 字段覆盖底座同名字段），未提供时 `options.config` 原样透传——存量 `llms`/`config` 双参数用法逐字节不变
+- **decorateDeps 装配次序**：`base → agentConfig.decorateDeps → overrides`——config 声明的进程级 deps 配方（schema 富化包装 / `resolveSubAgentInput` 派发材料供数 / providers 复用等，真实签名 `(deps: AgentDeps) => AgentDeps`，主包按接受任意函数的手法声明、业务侧从本包导入 `AgentDeps` 强类型书写）在 base 之上叠加，调用方显式 `overrides` 同名字段优先；配方抛错原样冒泡（fail fast）。插件 setup 与业务自组装都走本工厂——配方一次声明两路到达，请求级差异（`ctx`）不归本钩子
 - **不产生 providers/llms 之外的隐式依赖**：`llms` 未提供即外部 provider 模式，与插件「llms 可选」语义一致
 
 ## 示例
@@ -105,24 +105,28 @@ export async function run(payload, taskCtx: TaskContext) {
 
 ### 自组装单点（叠加业务配方）
 
+进程级 deps 配方优先经 `faapi.config.ts` 的 `agent.decorateDeps` 声明（插件路径的注入 AgentHandle 与自组装路径共用同一配方）；仅在调用点才知道的差异项才走 `overrides`：
+
 ```ts
-// src/lib/agent-assembly.ts
-import { Agent, createAgentDeps, type AgentDeps } from '@faapi/agent';
+// faapi.config.ts —— 配方声明（实现函数从 lib 导入，配置在此声明）
+import { decorateAgentDeps } from './src/lib/agent-deps-recipe';
+
+export default {
+  agent: {
+    llms: { openai: { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, models: { 'gpt-4o': {} } } },
+    decorateDeps: decorateAgentDeps, // (deps: AgentDeps) => AgentDeps
+  },
+} satisfies FaapiConfig;
+
+// src/lib/agent-assembly.ts —— 自组装读回同一配置（decorateDeps 已在工厂内应用）
+import { Agent, createAgentDeps } from '@faapi/agent';
 import type { AgentConfig } from '@faapi/faapi';
 
 export function buildAppAgent(ctx: FaapiContext): Agent {
   const agentConfig = ctx.config?.agent as AgentConfig | undefined;
-  const base = createAgentDeps({
-    ctx,
-    registries: ctx.registries,
-    agentConfig,
-    overrides: {
-      resolveSystemPrompt: createSystemPromptResolver(),        // 业务提示词装饰
-      resolveSubAgentContext: createSubAgentContextResolver(),  // 派发边界按参数供数（见 agent.md「resolveSubAgentContext 派发上下文钩子」）
-      resolveToolSchema: enrichToolSchemas(ctx.rootDir),        // 业务 schema 富化
-    },
-  });
-  return new Agent(base);
+  return new Agent(
+    createAgentDeps({ ctx, registries: ctx.registries, agentConfig }),
+  );
 }
 ```
 
