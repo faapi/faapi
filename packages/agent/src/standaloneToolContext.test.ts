@@ -86,6 +86,7 @@ describe('createStandaloneToolContext', () => {
     });
 
     expect(deps.ctx).toBeDefined();
-    expect(deps.ctx.currentUserId).toBe(42);
+    // AgentDeps 契约上 ctx 收窄为 AgentToolContext；业务字段按官方交叉标注形态读取
+    expect((deps.ctx as OrderCtx).currentUserId).toBe(42);
   });
 });

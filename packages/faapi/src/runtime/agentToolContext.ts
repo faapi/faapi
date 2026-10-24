@@ -5,15 +5,17 @@ import type { FaapiContext } from './contextTypes';
  * tool handler ctx 的框架注入字段载体——tasks/log/signal 三字段在三条约 agent
  * 执行路径上（HTTP / 进程内任务 / 隔离任务）由框架保证恒在恒正确。
  *
- * tool handler ctx 的类型由**业务自定义**（框架声明即校验）：第二参声明业务
- * 校验类型（纯数据字段），构建期提取生成 schema，运行时分发点对合成 ctx
- * safeParse——失败不调用 handler（详见 agentToolContext.md 的「tool ctx 声明
- * 即校验」）。需要框架字段时以**交叉标注**携带（框架字段由运行时注入，不参
- * 与校验）：
+ * **刻意声明为 type alias（非 interface）**：拒绝 `declare module` 增强——业务侧
+ * 增强声明会因同名重复标识符编译报错（TS2300）。理由：增强是交叉标注之外的
+ * 第二条业务字段通道，语义分裂（增强侧可选不校验、校验类型侧必填校验）且
+ * 「类型在、运行时路径依赖在场」的中间态靠消费方自觉兜底，与 fail-fast 哲学
+ * 不符；业务字段唯一通道是**交叉标注业务校验类型**（可选字段用 `?:` 表达，
+ * 构建期生成 schema 运行时声明即校验）：
  *
  * ```ts
  * interface OrderCtx {
  *   currentUserId: number;   // 业务校验字段——运行时校验保证在场
+ *   chatNovelId?: number;    // 路径依赖可选字段——缺席通过校验，读取点自断言
  * }
  * export function getOrder(input: Input, ctx: OrderCtx & AgentToolContext) {
  *   ctx.currentUserId;   // 校验保证
@@ -21,14 +23,14 @@ import type { FaapiContext } from './contextTypes';
  * }
  * ```
  *
- * 注意：**不要 extends 本接口**声明业务校验类型——tasks 的 `import('...').TaskClient`
+ * 注意：**不要 extends 本类型**声明业务校验类型——tasks 的 `import('...').TaskClient`
  * 类型语法构建期提取即抛 SchemaExtractionError；交叉标注是唯一的框架字段携带
- * 形态。`declare module` 可选增强（`currentUserId?: number`）仍可用于 authHooks
- * 等不走校验的读取面；必填声明不可用（框架包内编译看不到增强，漏传静默穿透）。
+ * 形态。第二参裸标注本类型（只要框架字段不要业务校验）合法——不生成 schema
+ * 不校验。
  *
  * 三路径填充规则与排除清单见 [agentToolContext.md](./agentToolContext.md)。
  */
-export interface AgentToolContext {
+export type AgentToolContext = {
   /**
    * 任务队列客户端——HTTP: app 实例（registries.taskHandle 注入）；任务:
    * 同一 app 实例的 scoped TaskClient；隔离任务: 工具在宿主执行，收到宿主侧
@@ -47,7 +49,7 @@ export interface AgentToolContext {
    * `fetch(url, { signal: ctx.signal })`
    */
   signal: AbortSignal;
-}
+};
 
 /** tasks 抛错桩的统一消息（调用即失败，指引接真实链路或注入假体） */
 function taskStubMessage(): string {

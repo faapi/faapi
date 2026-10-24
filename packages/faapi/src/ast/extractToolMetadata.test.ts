@@ -266,6 +266,34 @@ describe('extractToolMetadata', () => {
       expect(result!.ctxTypeName).toBe('OrderCtx');
     });
 
+    it('裸标注 AgentToolContext → undefined（只要框架字段，无业务校验类型，不生成 schema）', () => {
+      writeFileSync(
+        tempFile,
+        `${AGENT_CTX_DECL}\n` +
+          `export function ping(input: { echo: string }, ctx: AgentToolContext) { return ''; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'ping', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBeUndefined();
+    });
+
+    it('裸标注跨文件 import 的 AgentToolContext → undefined（按类型名匹配，不依赖本地声明）', () => {
+      writeFileSync(
+        join(tempDir, 'framework.d.ts'),
+        `export interface AgentToolContext {\n  tasks: unknown;\n  log: unknown;\n  signal: unknown;\n}\n`,
+      );
+      writeFileSync(
+        tempFile,
+        `import type { AgentToolContext } from '../../framework.js';\n` +
+          `export function ping(input: { echo: string }, ctx: AgentToolContext) { return ''; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'ping', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBeUndefined();
+    });
+
     it('交叉类型业务侧为内联字面量 → undefined（对齐 input 内联语义）', () => {
       writeFileSync(
         tempFile,

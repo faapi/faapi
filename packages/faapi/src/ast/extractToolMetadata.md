@@ -76,12 +76,13 @@ JSDoc `@tool <name>` 覆盖名功能已移除——tool 名统一由目录路径
 |-------------------|-------------------|
 | `ctx: OrderCtx` | `'OrderCtx'` |
 | `ctx: OrderCtx & AgentToolContext` | `'OrderCtx'`（交叉拆分：跳过 `AgentToolContext` 侧——框架字段由运行时注入，不校验；业务侧唯一成员为校验类型） |
+| `ctx: AgentToolContext`（裸标注） | `undefined`（只要框架注入字段，无业务校验类型——对齐交叉分支「业务侧全为框架侧 → undefined」语义，不生成 schema） |
 | `ctx: { userId: number } & AgentToolContext` | `undefined`（业务侧为内联字面量，无类型名可提取，不生成 schema——对齐 input 的内联语义） |
 | `ctx: A & B & AgentToolContext` | **构建期抛 `SchemaExtractionError`**（交叉含多个业务成员，校验类型无法唯一确定，显式失败不猜） |
 | `ctx: { userId: number }`（内联） | `undefined`（对齐 input 内联语义） |
 | `ctx`（无标注）/ 无第二参 | `undefined`（无 schema 无校验，向后兼容） |
 
-`AgentToolContext` 侧按类型名匹配跳过——它是框架注入字段（tasks/log/signal）的载体，运行时恒有且非纯数据，进 schema 无意义（extends 直接使用会因 `import('...').TaskClient` 类型语法构建期抛错，交叉标注是唯一的框架字段携带形态）。业务校验类型内声明与框架字段同名的属性（如 `log: string`）不特殊处理——运行时校验失败显式暴露，属业务声明与框架注入的名字冲突。
+`AgentToolContext` 侧按类型名匹配跳过——它是框架注入字段（tasks/log/signal）的载体，运行时恒有且非纯数据，进 schema 无意义（extends 直接使用会因 `import('...').TaskClient` 类型语法构建期抛错，业务校验类型携带框架字段仍以交叉标注为唯一形态；只要框架字段不要业务校验时裸标注即合法）。业务校验类型内声明与框架字段同名的属性（如 `log: string`）不特殊处理——运行时校验失败显式暴露，属业务声明与框架注入的名字冲突。
 
 `ctxTypeName` 随清单序列化（`faapi-tools.js`），运行时 `executeToolCall` 据此解析同文件 `zod.js` 的 `${ctxTypeName}Schema` 做 safeParse。
 
@@ -97,7 +98,7 @@ interface ToolCore {
 // 文件型 tool 完整元数据(继承 ToolCore + 代码加载细节)
 interface ToolMetadata extends ToolCore {
   inputTypeName?: string;    // 第一个参数 interface 名,无/内联/无标注时 undefined
-  ctxTypeName?: string;      // 第二个参数业务校验类型名(交叉类型拆分 AgentToolContext 侧后),无/内联时 undefined
+  ctxTypeName?: string;      // 第二个参数业务校验类型名(交叉类型拆分 AgentToolContext 侧后),无/内联/裸标注框架类型时 undefined
   filePath: string;          // 从 pathMeta 透传(相对路径)
   functionName: string;     // 从 pathMeta 透传(源码导出名)
 }

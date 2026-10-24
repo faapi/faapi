@@ -60,7 +60,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 
 ### `AgentDeps.ctx`（执行上下文契约，必填）
 
-`ctx: AgentToolContext`——tool handler 第二参数与鉴权钩子的统一契约（类型声明在主包 `@faapi/faapi` 的 [agentToolContext.md](../../faapi/src/runtime/agentToolContext.md)，本包 re-export）。**必有，基础字段（`tasks` / `log` / `signal`）由框架在三条约执行路径上合成保证正确**；业务身份字段（`currentUserId` 等）经 `declare module '@faapi/faapi'` 增强 `AgentToolContext` 后强类型读取，在场性由各路径填充规则决定、业务侧 fail-closed 断言消费。请求绑定字段（`request` / `headers` 等）与宿主函数值面（`config` / `registries`）**不进契约**——任务侧物理不存在，访问即编译错误。
+`ctx: AgentToolContext`——tool handler 第二参数与鉴权钩子的统一契约（类型声明在主包 `@faapi/faapi` 的 [agentToolContext.md](../../faapi/src/runtime/agentToolContext.md)，本包 re-export）。**必有，基础字段（`tasks` / `log` / `signal`）由框架在三条约执行路径上合成保证正确**；本契约不支持 `declare module` 增强（type alias 拒绝合并）——业务身份字段（`currentUserId` 等）以**业务类型交叉标注**携带（`type CtxWithUser = AgentToolContext & { currentUserId?: number }`，路径依赖字段用可选表达），在场性由各路径填充规则决定、业务侧 fail-closed 断言消费。请求绑定字段（`request` / `headers` 等）与宿主函数值面（`config` / `registries`）**不进契约**——任务侧物理不存在，访问即编译错误。
 
 | 路径 | ctx 来源 |
 | --- | --- |

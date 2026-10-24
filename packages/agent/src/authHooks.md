@@ -38,7 +38,7 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
   └─ createStandaloneToolContext 显式构造   ← 诚实缺省（tasks 抛错桩等）
 ```
 
-- `AgentDeps.ctx` 类型为 `AgentToolContext`（**必填**）——契约字段（`tasks` / `log` / `signal`）由框架在三条约执行路径上合成保证正确；业务身份字段经 `declare module` 增强 `AgentToolContext` 后强类型读取，cron/系统触发无身份时业务侧 fail-closed 断言拒绝。完整填充规则见主包 [agentToolContext.md](../../faapi/src/runtime/agentToolContext.md)
+- `AgentDeps.ctx` 类型为 `AgentToolContext`（**必填**）——契约字段（`tasks` / `log` / `signal`）由框架在三条约执行路径上合成保证正确；本契约不支持 `declare module` 增强（type alias 拒绝合并），业务身份字段以**业务类型交叉标注**携带（`type CtxWithUser = AgentToolContext & { currentUserId?: number }`）后强类型读取，cron/系统触发无身份时业务侧 fail-closed 断言拒绝。完整填充规则见主包 [agentToolContext.md](../../faapi/src/runtime/agentToolContext.md)
 - sub-agent 递归不换 HTTP 请求，ctx 不变——工作区约束一路生效
 
 ## 钩子语义

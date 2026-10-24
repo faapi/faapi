@@ -27,17 +27,18 @@ import type {
 } from './provider';
 import type { SubAgentCallEvent } from './trace';
 
-// 任务侧鉴权字段增强（declare module 声明合并）——与业务方用法同构：
-// AgentToolContext（tool handler 第二参数契约）与 FaapiContext（HTTP ctx）双锚点增强，
-// 窄对象携带增强字段直传 AgentDeps.ctx / createStandaloneToolContext，免 as 断言
+// FaapiContext（HTTP ctx）业务增强——业务扩展面，declare module 增强合法。
+// AgentToolContext（tool handler 第二参数契约）不支持 declare module 增强
+// （刻意声明为 type alias 拒绝合并，业务侧声明即 TS2300）——业务字段唯一
+// 通道是业务类型交叉标注（见下方 CtxWithUser），窄对象经它直传免 as 断言
 declare module '@faapi/faapi' {
-  interface AgentToolContext {
-    currentUserId?: number;
-  }
   interface FaapiContext {
     currentUserId?: number;
   }
 }
+
+/** 业务类型交叉标注：路径依赖可选字段 + 框架契约（AgentToolContext 增强关闭后的合法形态） */
+type CtxWithUser = AgentToolContext & { currentUserId?: number };
 
 // ─── Mock 数据构造器 ─────────────────────────────────
 
@@ -837,7 +838,7 @@ describe('Agent', () => {
 
     it('接线后追加：子代理 system = base + \\n\\n + 产出；钩子收（真实 agent 名, args, ctx）', async () => {
       const hook = vi.fn(
-        async (subName: string, args: Record<string, unknown>, ctx: AgentToolContext) =>
+        async (subName: string, args: Record<string, unknown>, ctx: CtxWithUser) =>
           `ctx[${subName}:${JSON.stringify(args)}:${ctx.currentUserId}]`,
       );
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
@@ -1183,7 +1184,7 @@ describe('Agent', () => {
 
     it('改写后 args 进子代理首条 user 消息（材料附件）；钩子收（真实 agent 名, args, ctx）；system 原样无追加', async () => {
       const hook = vi.fn(
-        async (subName: string, args: Record<string, unknown>, ctx: AgentToolContext) => ({
+        async (subName: string, args: Record<string, unknown>, ctx: CtxWithUser) => ({
           ...args,
           contextMaterial: `material[${subName}]:${ctx.currentUserId}`,
         }),
@@ -3812,8 +3813,8 @@ describe('Agent', () => {
 
     it('类型契约:AgentDeps.ctx 必填且为 AgentToolContext（钩子 ctx 参数同型）', () => {
       expectTypeOf<AgentDeps['ctx']>().toEqualTypeOf<AgentToolContext>();
-      // 增强字段经 declare module 合并——窄 overrides 携带业务字段直传
-      expectTypeOf<Partial<AgentToolContext>>().toMatchTypeOf<{ currentUserId?: number }>();
+      // 业务类型交叉标注满足契约（增强已关闭，交叉标注是业务字段唯一通道）
+      expectTypeOf<CtxWithUser>().toMatchTypeOf<AgentToolContext>();
       // AgentRuntimeConfig 钩子签名同步收紧（显式标注 Partial<FaapiContext> 的钩子实现是迁移点）
       expectTypeOf<
         Parameters<NonNullable<AgentRuntimeConfig['beforeToolCall']>>[2]
@@ -3853,15 +3854,15 @@ describe('Agent', () => {
     });
 
     it('任务侧合规 ctx 直传:硬闸钩子与 handler 读到同一身份字段', async () => {
-      // tool 鉴权硬闸（业务侧形态,fail-closed）——读契约 ctx 的增强字段
+      // tool 鉴权硬闸（业务侧形态,fail-closed）——读契约 ctx 的业务字段
       let seenUserId: number | undefined;
-      const handler = vi.fn(async (_args: unknown, hookCtx?: AgentToolContext) => {
+      const handler = vi.fn(async (_args: unknown, hookCtx?: CtxWithUser) => {
         if (hookCtx?.currentUserId === undefined) return { error: 'unauthenticated' };
         seenUserId = hookCtx.currentUserId;
         return { ok: true };
       });
       const beforeToolCall = vi.fn(
-        (_name: string, _args: Record<string, unknown>, hookCtx?: AgentToolContext) => {
+        (_name: string, _args: Record<string, unknown>, hookCtx?: CtxWithUser) => {
           if (hookCtx?.currentUserId === undefined) return { error: 'workspace context required' };
         },
       );

@@ -50,8 +50,8 @@ export interface ToolMetadata extends ToolCore {
   /** 第一个参数的 interface/type 名(用于生成 zod schema),
    *  无参数/参数无类型标注/参数为内联类型字面量时为 `undefined` */
   inputTypeName?: string;
-  /** 第二个参数的业务校验类型名(用于生成 ctx schema,运行时声明即校验),
-   *  无第二参/无类型标注/内联类型字面量时为 `undefined`;
+  /** 第二个参数的业务校验类型名（用于生成 ctx schema,运行时声明即校验),
+   *  无第二参/无类型标注/内联类型字面量/裸标注框架类型(`AgentToolContext`)时为 `undefined`;
    *  交叉类型(`OrderCtx & AgentToolContext`)拆分后取业务侧(见 getCtxSchemaTypeName) */
   ctxTypeName?: string;
   /** 源码相对路径(从 `pathMeta` 透传) */
@@ -250,6 +250,8 @@ const CTX_FRAMEWORK_TYPE_NAME = 'AgentToolContext';
  * 第二参合法形态与提取结果（语义详见 extractToolMetadata.md）：
  * - `ctx: OrderCtx` → `'OrderCtx'`
  * - `ctx: OrderCtx & AgentToolContext` → `'OrderCtx'`（交叉拆分，跳过框架侧）
+ * - `ctx: AgentToolContext` → `undefined`（裸标注框架类型：只要框架注入字段，
+ *   无业务校验类型——对齐交叉分支「业务侧全为框架侧 → undefined」语义，不生成 schema）
  * - 交叉业务侧全为内联字面量/缺失 → `undefined`（不生成 schema，对齐 input 内联语义）
  * - 交叉含多个业务成员 → 抛 `SchemaExtractionError`（校验类型无法唯一确定，显式失败不猜）
  * - 无第二参 / 无类型标注 / 非交叉非 TypeReference → `undefined`
@@ -280,5 +282,9 @@ function getCtxSchemaTypeName(fn: FunctionLike, sourceFile: ts.SourceFile): stri
   }
 
   if (!ts.isTypeReferenceNode(secondParam.type)) return undefined;
-  return secondParam.type.typeName.getText(sourceFile);
+  const name = secondParam.type.typeName.getText(sourceFile);
+  // 裸标注框架类型：框架注入字段运行时恒有、非纯数据，不参与校验——
+  // 不生成 ctx schema，运行时仅注入框架字段后直接调用 handler
+  if (name === CTX_FRAMEWORK_TYPE_NAME) return undefined;
+  return name;
 }

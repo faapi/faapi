@@ -55,7 +55,7 @@ const bad: OrderCtx & AgentToolContext = createStandaloneToolContext();
 
 字段类型传错的裁决在消费点：构造点流型（传 `'abc'` 流出 string），消费点子类型要求 number 时结构检查报错——构造点负责流型、调用点负责契约检查，分层不重复。
 
-**为什么 declare module 必填声明不可用**（`interface AgentToolContext { currentUserId: number }`）：业务字段是框架不认识的——框架包内编译看不到业务增强，本助手与框架合成点的返回类型一旦标注为 `AgentToolContext`，业务侧编译器就把一切框架产物视为"含必填字段"，漏传静默穿透（类型声称有、运行时 undefined）。必填必须声明在业务自己的校验类型上，由运行时校验 + 调用点结构检查裁决。`declare module` **可选**增强（`currentUserId?: number`）仍是 authHooks 等不走校验读取面的合法用法。
+**不支持 `declare module` 增强**（`AgentToolContext` 刻意声明为 type alias 而非 interface，业务侧增强声明直接编译报错 TS2300，见主包 [agentToolContext](../../faapi/src/runtime/agentToolContext.md)）：业务字段是框架不认识的——增强开了交叉标注之外的第二条通道，语义分裂且「类型在、运行时路径依赖在场」的中间态靠自觉兜底。业务字段唯一通道是**业务自己的校验类型**：必填由运行时校验 + 本助手调用点结构检查裁决，路径依赖的可选读取面用可选字段表达（`chatNovelId?: number`）。
 
 ## 相关模块
 

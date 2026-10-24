@@ -10,7 +10,7 @@ tool handler 历史上收 `Partial<FaapiContext> | undefined`：ctx 有没有、
 
 ## tool ctx 声明即校验（业务字段口径）
 
-业务在 tool handler 第二参声明 ctx 类型，两种形态：
+业务在 tool handler 第二参声明 ctx 类型，三种形态：
 
 ```ts
 // src/tools/order/handler.ts
@@ -32,17 +32,22 @@ export function listOrders(input: {}, ctx: OrderCtx & AgentToolContext) {
   ctx.currentUserId;      // 校验保证
   ctx.log.info('...');    // 框架字段类型在（运行时恒注入）
 }
+
+// 形态 3：裸标注只要框架字段（无业务校验类型——框架字段运行时恒注入，不生成 schema 不校验）
+export function ping(input: {}, ctx: AgentToolContext) {
+  ctx.log.info('...');    // 框架字段类型在（运行时恒注入）
+}
 ```
 
 | 阶段 | 行为 |
 |------|------|
-| 构建期 | AST 提取第二参业务校验类型名（交叉类型拆分跳过 `AgentToolContext` 侧），`ctxTypeName` 进 `faapi-tools.js` 清单，同文件 `zod.js` 追加导出 `${ctxTypeName}Schema`（提取规则详见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「第二个参数的 ctx 校验类型名」） |
+| 构建期 | AST 提取第二参业务校验类型名（交叉类型拆分跳过 `AgentToolContext` 侧，裸标注框架类型同样不提取），`ctxTypeName` 进 `faapi-tools.js` 清单，同文件 `zod.js` 追加导出 `${ctxTypeName}Schema`（提取规则详见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「第二个参数的 ctx 校验类型名」） |
 | 运行时 | `executeToolCall` 在 input 校验后按 `ctxTypeName` 解析 schema（复用 `resolveToolSchema` 同一实例与缓存）对合成 ctx safeParse——失败返回 `{ error }` 回传 LLM，不调用 handler（对齐 input 校验语义；错误消息指明是 ctx 前置条件不满足，非 LLM 入参问题） |
-| 无声明 | 第二参无标注 / 内联字面量 / 无第二参 → 无 schema 无校验，ctx 原样透传（向后兼容） |
+| 无声明 | 第二参无标注 / 内联字面量 / 裸标注 `AgentToolContext` / 无第二参 → 无 schema 无校验，ctx 原样透传（向后兼容） |
 
 「构造不完全就不能调用」的强制点：agent 分发链路在运行时校验（缺字段/错型拒绝执行）；直调链路（测试直调 / 编程式组装）由 `createStandaloneToolContext` 泛型流型在编译期拦截——构造时漏传业务字段，返回类型缺字段，赋给 handler 的 ctx 参数类型编译报错（见 [standaloneToolContext](../../../agent/src/standaloneToolContext.md)）。
 
-**为什么 declare module 必填声明不可用**（往 `AgentToolContext` 接口写 `currentUserId: number`）：框架包内编译看不到业务增强，框架合成点的返回类型会被业务侧视为"含必填字段"——漏传静默穿透（类型声称有、运行时 undefined）。校验类型的必填声明在业务自己的类型上，由运行时校验 + 调用点结构检查裁决。
+**不支持 `declare module` 增强**（本契约刻意声明为 type alias 而非 interface）：业务侧 `declare module '@faapi/faapi' { interface AgentToolContext { ... } }` 直接编译报错（TS2300 同名重复标识符）。增强是交叉标注之外的第二条业务字段通道——语义分裂（增强侧可选不校验、校验类型侧必填校验），且「类型在、运行时路径依赖在场」的中间态靠消费方自觉 fail-closed 兜底，与 fail-fast 哲学不符。业务字段唯一通道是**交叉标注业务校验类型**：路径依赖的可选读取面用可选字段表达（`chatNovelId?: number`），缺席通过校验、读取点自断言；必填字段由运行时校验裁决。HTTP 请求 ctx（`FaapiContext`）的业务增强不受此限——那是业务的扩展面，框架对非契约字段只透传不生产。
 
 ### 三路径填充规则（框架注入字段）
 
