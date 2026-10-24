@@ -92,15 +92,15 @@ describe('createAgentDeps', () => {
     expect(deps.resolveAgentTools('researcher')).toHaveLength(1);
   });
 
-  it('llms 提供时逐项转换 providers 并透传 llms', () => {
-    const deps = createAgentDeps({ registries: makeRegistries(), llms: LLMS });
+  it('agentConfig.llms 提供时逐项转换 providers 并透传 llms', () => {
+    const deps = createAgentDeps({ registries: makeRegistries(), agentConfig: { llms: LLMS } });
 
     expect(vi.mocked(createProvider)).toHaveBeenCalledWith(LLMS.openai);
     expect(deps.providers.get('openai')).toBeDefined();
     expect(deps.llms).toEqual(LLMS);
   });
 
-  it('llms 缺省为外部 provider 模式：空 Map + 空 llms', () => {
+  it('agentConfig 缺省为外部 provider 模式：空 Map + 空 llms', () => {
     const deps = createAgentDeps({ registries: makeRegistries() });
 
     expect(deps.providers.size).toBe(0);
@@ -115,16 +115,15 @@ describe('createAgentDeps', () => {
     );
   });
 
-  it('ctx 与 config 透传', () => {
+  it('ctx 透传；agentConfig 缺省时 deps 不含 config 键', () => {
     const ctx = { currentUserId: 42 };
-    const config = { maxTurns: 7, maxAgentDepth: 2 };
-    const deps = createAgentDeps({ registries: makeRegistries(), ctx, config });
+    const deps = createAgentDeps({ registries: makeRegistries(), ctx });
 
     expect(deps.ctx).toEqual(ctx);
-    expect(deps.config).toEqual(config);
+    expect(deps.config).toBeUndefined();
   });
 
-  it('agentConfig 直收：复合块全量拆装——llms 转 providers，config 含 enableTracing 全字段到达', () => {
+  it('agentConfig 直收：复合块全量拆装——llms 转 providers，config 含 enableTracing/toolTimeoutMs 全字段到达', () => {
     const beforeToolCall = () => undefined;
     const afterToolCall = () => undefined;
     const filterTools = <T extends Array<unknown>>(tools: T) => tools;
@@ -133,6 +132,7 @@ describe('createAgentDeps', () => {
       maxTurns: 12,
       maxAgentDepth: 4,
       maxHistoryTokens: 30000,
+      toolTimeoutMs: 30_000,
       enableTracing: true,
       traceId: false,
       traceIdTemplate: 'trace: {traceId}',
@@ -149,6 +149,7 @@ describe('createAgentDeps', () => {
       maxTurns: 12,
       maxAgentDepth: 4,
       maxHistoryTokens: 30000,
+      toolTimeoutMs: 30_000,
       enableTracing: true,
       traceId: false,
       traceIdTemplate: 'trace: {traceId}',
@@ -156,25 +157,6 @@ describe('createAgentDeps', () => {
       afterToolCall,
       filterTools,
     });
-  });
-
-  it('agentConfig 底座 + 显式 llms/config 优先：llms 整体替换，config 字段级覆盖', () => {
-    const explicitLlms = {
-      openai: { provider: 'openai' as const, apiKey: 'explicit-key', models: { 'gpt-4o': {} } },
-    };
-    const deps = createAgentDeps({
-      registries: makeRegistries(),
-      agentConfig: { llms: LLMS, maxTurns: 12, enableTracing: true },
-      llms: explicitLlms,
-      config: { maxTurns: 7 },
-    });
-
-    // 显式 llms 整体优先（不走 agentConfig.llms）
-    expect(deps.llms).toBe(explicitLlms);
-    expect(deps.llms.openai.apiKey).toBe('explicit-key');
-    // 显式 config 覆盖同名字段，agentConfig 未覆盖字段保留底座
-    expect(deps.config?.maxTurns).toBe(7);
-    expect(deps.config?.enableTracing).toBe(true);
   });
 
   it('agentConfig.decorateDeps 装饰生效：base 之上叠加差异项，其余装配保留', () => {
@@ -228,7 +210,7 @@ describe('createAgentDeps', () => {
       `${base}+装饰`;
     const deps = createAgentDeps({
       registries: makeRegistries(),
-      llms: LLMS,
+      agentConfig: { llms: LLMS },
       overrides: { resolveSystemPrompt },
     });
 
@@ -243,7 +225,7 @@ describe('createAgentDeps', () => {
     const providers = new Map<string, LLMProvider>([['openai', scripted]]);
     const deps = createAgentDeps({
       registries: makeRegistries(),
-      llms: LLMS,
+      agentConfig: { llms: LLMS },
       overrides: { providers },
     });
 
@@ -254,8 +236,8 @@ describe('createAgentDeps', () => {
   });
 
   it('每次调用返回独立 deps（providers Map 不共享）', () => {
-    const a = createAgentDeps({ registries: makeRegistries(), llms: LLMS });
-    const b = createAgentDeps({ registries: makeRegistries(), llms: LLMS });
+    const a = createAgentDeps({ registries: makeRegistries(), agentConfig: { llms: LLMS } });
+    const b = createAgentDeps({ registries: makeRegistries(), agentConfig: { llms: LLMS } });
 
     expect(a.providers).not.toBe(b.providers);
   });

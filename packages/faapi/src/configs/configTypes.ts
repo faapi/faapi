@@ -325,6 +325,14 @@ export interface AgentConfig {
    */
   maxAgentDepth?: number;
   /**
+   * 单次 tool 执行的超时毫秒数（未设置 = 不限时）
+   *
+   * 超时抛 `AgentToolTimeoutError`，被 reactLoop 按既有 tool 错误路径回传 LLM
+   * （LLM 可决定重试或换路）——挂死的 tool handler（如无超时的内部 fetch）
+   * 此前会让整个 run 永久挂起，且 run 的 abort signal 对 tool 执行无效。
+   */
+  toolTimeoutMs?: number;
+  /**
    * 启用 tracing 的全局默认值（默认 false——opt-in,不开启零开销）
    *
    * 开启时 `agent.run()` / `agent.stream()` 返回的 `result.trace` /

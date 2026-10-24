@@ -21,12 +21,16 @@ resolver 参数取最小结构 `{ filePath, inputTypeName? }`（zod.js 定位的
 ```ts
 // src/tasks/log-analysis/task.ts
 import { Agent, createAgentDeps } from '@faapi/agent';
+import type { AgentConfig } from '@faapi/faapi';
 
 export async function run(payload, taskCtx) {
+  // 配置经 faapi.config 的 agent 块读回（未配 llms 即外部 provider 模式,
+  // 经 run options.provider 注入）
+  const agentConfig = taskCtx.config.agent as AgentConfig | undefined;
   const agent = new Agent(
     createAgentDeps({
       registries: taskCtx.registries, // 只读视图直传
-      llms,                           // 缺省空——外部 provider 模式经 run options.provider 注入
+      agentConfig,
     }),
   );
   return agent.run(payload.input, { agent: 'log-analyzer', provider });

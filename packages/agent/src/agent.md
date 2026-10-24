@@ -115,7 +115,8 @@ class Agent {
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（provider 级透传） |
 | `maxTurns` | — | `meta.maxTurns` | `AgentRuntimeConfig.maxTurns` |
 | `maxHistoryTokens` | — | — | `AgentRuntimeConfig.maxHistoryTokens`（未设置 = 不裁剪） |
-| `historyCompactor` | — | — | `AgentRuntimeConfig.historyCompactor`（缺省 = 现行截断；子代理共享根 deps 全树生效，见 [historyCompaction.md](./historyCompaction.md)） |
+| `toolTimeoutMs` | — | — | `AgentRuntimeConfig.toolTimeoutMs`（未设置 = 不限时;`faapi.config` 的 `agent.toolTimeoutMs` 经 `toAgentRuntimeConfig` 拆装到达） |
+| `historyCompactor` | — | — | `AgentRuntimeConfig.historyCompactor`（缺省 = 现行截断；子代理共享根 deps 全树生效，见 [historyCompaction.md](./historyCompaction.md);不进 faapi.config 声明面——经 `agent.decorateDeps` 配方或 `overrides.config` 装配,见 [agentDeps.md](./agentDeps.md)） |
 | `enableTracing` | `options.enableTracing` | — | `AgentRuntimeConfig.enableTracing`（默认 `false`） |
 | `traceId` | `options.traceId`（显式指定,全局关闭也生效） | — | 自动生成（`AgentRuntimeConfig.traceId` 默认 `true`;显式 `false` 整体关闭）——生成/注入/链式规则详见 [traceId.md](./traceId.md) |
 
@@ -214,7 +215,8 @@ import { Agent, createAgentDeps } from '@faapi/agent';
 const agent = new Agent(
   createAgentDeps({
     registries: ctx.registries,
-    llms,
+    // 7.0 起配置唯一入口是 agentConfig 复合块（无 faapi.config 的编程式场景可缺省）
+    agentConfig: undefined,
     overrides: {
       resolveSystemPrompt: async (name, _meta, base) => {
         const protocol = await loadProtocolBlock(name); // 应用层装饰：共享协议块 / 条件块 / DB 运行时层
@@ -252,7 +254,8 @@ import { Agent, createAgentDeps } from '@faapi/agent';
 const agent = new Agent(
   createAgentDeps({
     registries: ctx.registries,
-    llms,
+    // 7.0 起配置唯一入口是 agentConfig 复合块（无 faapi.config 的编程式场景可缺省）
+    agentConfig: undefined,
     overrides: {
       resolveSubAgentContext: async (subName, args, ctx) => {
         if (subName !== 'chapter-writer') return undefined; // 按真实 agent 名路由
@@ -293,7 +296,8 @@ import { Agent, createAgentDeps } from '@faapi/agent';
 const agent = new Agent(
   createAgentDeps({
     registries: ctx.registries,
-    llms,
+    // 7.0 起配置唯一入口是 agentConfig 复合块（无 faapi.config 的编程式场景可缺省）
+    agentConfig: undefined,
     overrides: {
       resolveSubAgentInput: async (subName, args, ctx) => {
         if (subName !== 'chapter-writer') return undefined; // 按真实 agent 名路由

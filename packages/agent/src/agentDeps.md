@@ -11,7 +11,7 @@
 
 框架文档（`agent.md`「派发入参 schema 声明」的编程式组装路径、`toolSchemaResolver.md` 任务侧示例）展示的就是手拼形态——框架亲手把定制业务推向机械。本模块把「从 registries + llms 构造 deps」抽为单一实现：插件 setup 改调它，任务内/自组装也调它，机械只此一份。
 
-复合配置块的拆装同理收进本工厂：`faapi.config.ts` 的 `agent` 块（`AgentConfig`）是 llms 目录与运行时旋钮的复合形状，而 deps 消费的是 `llms` 与 `AgentRuntimeConfig` 双参数——此前插件 setup 与业务自组装各自手工逐字段拆装，框架每新增一个旋钮两处清单都要记得补，漏掉的那侧**静默缺失**（实证：`enableTracing` 曾在插件侧清单漏拼，`faapi.config` 配置后静默不生效）。`agentConfig` 参数直收复合块，拆装清单（含 `enableTracing` 全量字段）只在 `toAgentRuntimeConfig` 一处维护，插件与自组装两路自动到达。
+复合配置块的拆装同理收进本工厂：`faapi.config.ts` 的 `agent` 块（`AgentConfig`）是 llms 目录与运行时旋钮的复合形状，历史上（≤6.4x）deps 装配消费的是 `llms` 与 `config: AgentRuntimeConfig` 双参数——插件 setup 与业务自组装各自手工逐字段拆装，框架每新增一个旋钮两处清单都要记得补，漏掉的那侧**静默缺失**（实证：`enableTracing` 曾在插件侧清单漏拼，`faapi.config` 配置后静默不生效）。`agentConfig` 参数直收复合块（6.50 引入、7.0 起成为唯一入口——分离参数已删除），拆装清单只在 `toAgentRuntimeConfig` 一处维护，插件与自组装两路自动到达。
 
 ## 使用场景
 
@@ -41,24 +41,18 @@ interface CreateAgentDepsOptions {
   /** 项目根目录（loadToolModule 桥接与 schema 解析器定位用；缺省 process.cwd()） */
   rootDir?: string;
   /**
-   * faapi.config 的 `agent` 块复合形状（llms + 运行时旋钮）直收——与
-   * `FaapiConfig['agent']`（AgentConfig）同构，可整体透传 `ctx.config.agent` /
-   * `taskCtx.config.agent` 读回值。拆装清单在本工厂单一维护（含 enableTracing
-   * 全量字段），与显式 `llms` / `config` 的合并语义：显式参数优先，
-   * `agentConfig` 提供底座（llms：`options.llms ?? agentConfig.llms`；
-   * config：`{ ...拆装结果, ...options.config }`）
-   */
-  agentConfig?: AgentConfig;  /**
-   * LLM provider 配置（key 为 provider 名）。提供时逐项 `createProvider` 转换为
-   * providers Map 并透传 llms（model key 解析用）；缺省为空 Map + 空 llms
+   * faapi.config 的 `agent` 块复合形状（llms + 运行时旋钮）——唯一配置入口，
+   * 可整体透传 `ctx.config.agent` / `taskCtx.config.agent` 读回值。llms 逐项
+   * `createProvider` 转换 providers Map（model key 解析用），旋钮经
+   * `toAgentRuntimeConfig` 全量拆装（清单单一维护，含 enableTracing /
+   * toolTimeoutMs）。策略对象（`historyCompactor` 等类型不在声明面的旋钮）经
+   * `decorateDeps` 配方或 `overrides.config` 装配。缺省为空 Map + 无 config
    * （外部 provider 模式——`agent.run(input, { provider })` 每次显式注入）
    */
-  llms?: Record<string, LlmConfig>;
-  /** 全局 agent 运行时配置（maxTurns / maxAgentDepth / maxHistoryTokens / 三鉴权钩子） */
-  config?: AgentRuntimeConfig;
+  agentConfig?: AgentConfig;
   /**
    * 差异项覆盖（浅合并，最后应用、优先级最高）——装饰钩子 / schema 富化 /
-   * 单个访问器定制 / providers 直传（绕过 llms 转换）等
+   * 单个访问器定制 / providers 直传（绕过 llms 转换）/ 测试桥接等编程级差异
    */
   overrides?: Partial<AgentDeps>;
 }
@@ -71,10 +65,10 @@ function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps;
 - **纯装配无副作用**：不注册 handle 工厂、不建 app、不触碰全局状态；每次调用返回独立的 deps 对象（providers Map、schema 解析器缓存均随 deps 生命周期）——**进程级复用由调用方负责**：插件 setup 调一次天然闭包单例；任务侧建议模块级创建一次（进程内任务跨执行复用；隔离 worker 每次执行新模块图，缓存随执行重建）
 - **schema 解析器**：默认内部 `createToolSchemaResolver({ rootDir })`（同一实例注入 `resolveToolSchema` + `resolveAgentInputSchema`，tool 与派发入参共用缓存）；经 `overrides` 覆盖时（如富化包装）以覆盖值为准
 - **空 apiKey 照常注册 provider**：部分网关/本地模型场景无需 key；「key 未配置」的启动期显性提示由插件 setup 负责（工厂可能在任务内调用，不在此处刷警告）——上游 401 的错误文案来自上游，可按 provider 名定位
-- **overrides 浅合并**：`{ ...base, ...overrides }`——覆盖单个访问器不影响其余装配；需要深度定制时用完整的编程式组装（`new Agent(deps)` 直拼）
-- **agentConfig 合并语义**：`llms = options.llms ?? agentConfig?.llms ?? {}`；`config` 在提供 `agentConfig` 时为 `{ ...toAgentRuntimeConfig(agentConfig), ...options.config }`（显式 `config` 字段覆盖底座同名字段），未提供时 `options.config` 原样透传——存量 `llms`/`config` 双参数用法逐字节不变
-- **decorateDeps 装配次序**：`base → agentConfig.decorateDeps → overrides`——config 声明的进程级 deps 配方（schema 富化包装 / `resolveSubAgentInput` 派发材料供数 / providers 复用等，真实签名 `(deps: AgentDeps) => AgentDeps`，主包按接受任意函数的手法声明、业务侧从本包导入 `AgentDeps` 强类型书写）在 base 之上叠加，调用方显式 `overrides` 同名字段优先；配方抛错原样冒泡（fail fast）。插件 setup 与业务自组装都走本工厂——配方一次声明两路到达，请求级差异（`ctx`）不归本钩子
-- **不产生 providers/llms 之外的隐式依赖**：`llms` 未提供即外部 provider 模式，与插件「llms 可选」语义一致
+- **overrides 浅合并**：`{ ...decorated, ...overrides }`——覆盖单个访问器不影响其余装配；需要深度定制时用完整的编程式组装（`new Agent(deps)` 直拼）
+- **agentConfig 是唯一配置入口**（7.0 起删除了历史的 `llms` / `config` 分离参数）：`resolvedLlms = agentConfig?.llms ?? {}`、`resolvedConfig = agentConfig ? toAgentRuntimeConfig(agentConfig) : undefined`——配置数值归 `agentConfig`，进程级配方归 `decorateDeps`，编程级差异归 `overrides`
+- **decorateDeps 装配次序**：`base → agentConfig.decorateDeps → overrides`——config 声明的进程级 deps 配方（schema 富化包装 / `resolveSubAgentInput` 派发材料供数 / providers 复用 / `historyCompactor` 策略注入等，真实签名 `(deps: AgentDeps) => AgentDeps`，主包按接受任意函数的手法声明、业务侧从本包导入 `AgentDeps` 强类型书写）在 base 之上叠加，调用方显式 `overrides` 同名字段优先；配方抛错原样冒泡（fail fast）。插件 setup 与业务自组装都走本工厂——配方一次声明两路到达，请求级差异（`ctx`）不归本钩子
+- **不产生 providers/llms 之外的隐式依赖**：`agentConfig` 未提供（或未配 llms）即外部 provider 模式，与插件「llms 可选」语义一致
 
 ## 示例
 
@@ -129,6 +123,32 @@ export function buildAppAgent(ctx: FaapiContext): Agent {
   );
 }
 ```
+
+### 策略旋钮经 decorateDeps（historyCompactor 等类型不在声明面的旋钮）
+
+`historyCompactor` 的签名引用本包类型（LLMMessage），不进 faapi.config 的声明面——经 `decorateDeps` 配方装配（`deps.config` 已是拆装结果，spread 叠加即可）：
+
+```ts
+// faapi.config.ts
+import { createRollingSummaryCompactor, type AgentDeps } from '@faapi/agent';
+
+const compactor = createRollingSummaryCompactor(/* 摘要回调 */);
+// 真实签名 (deps: AgentDeps) => AgentDeps——业务侧显式标注即强类型
+const decorate = (deps: AgentDeps): AgentDeps => ({
+  ...deps,
+  config: { ...deps.config, historyCompactor: compactor },
+});
+
+export default {
+  agent: {
+    llms: { /* ... */ },
+    maxHistoryTokens: 60000,
+    decorateDeps: decorate,
+  },
+} satisfies FaapiConfig;
+```
+
+编程式组装场景（无 faapi.config）可用 `overrides.config` 整体替换：`createAgentDeps({ registries, overrides: { config: { maxTurns: 5, historyCompactor } } })`。
 
 ## 相关模块
 
