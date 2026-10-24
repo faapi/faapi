@@ -1,26 +1,44 @@
 /**
  * createStandaloneToolContext——无 app 编排场景的合规 AgentToolContext 构造助手
  *
- * `AgentDeps.ctx` 必填（AgentToolContext 契约）后，测试直调 / 编程式脚本 /
+ * `AgentDeps.ctx` 必填（框架注入字段）后，测试直调 / 编程式脚本 /
  * 插件 setup baseDeps 占位没有 app 可依赖，本助手提供诚实缺省：tasks 为
  * 抛错桩（调用即失败并给修复指引，绝不假成功）、log 走框架缺省 console
- * 出口、signal 为永不触发的 AbortSignal；overrides 浅合并注入契约字段与
- * 业务增强字段。
+ * 出口、signal 为永不触发的 AbortSignal。
+ *
+ * 业务字段（currentUserId 等）经 overrides 注入并**流型到返回类型**（泛型 T）——
+ * 构造漏传业务字段时返回裸契约，赋给 handler 的 ctx 参数类型在调用点编译报错
+ * （「构造不完全就不能调用」的直调链路强制；agent 分发链路由 ctx 声明即校验在
+ * 运行时强制，见主包 agentToolContext.md）。overrides 浅合并注入契约字段与
+ * 业务字段。
  *
  * 详见 [standaloneToolContext.md](./standaloneToolContext.md)。
  */
 
 import { createLogger, createThrowingTaskClient, type AgentToolContext } from '@faapi/faapi';
 
-/** createStandaloneToolContext 入参——契约字段覆盖 + 业务增强字段 */
+/** createStandaloneToolContext 入参——契约字段覆盖 + 业务字段 */
 export type StandaloneToolContextOverrides = Partial<AgentToolContext> & Record<string, unknown>;
 
 /**
- * 构造合规 AgentToolContext（测试/编程式/占位场景）
+ * 构造合规 AgentToolContext（测试/编程式/占位场景）——带业务字段时流型
  *
  * @param overrides 浅合并到缺省之上——契约字段（tasks/log/signal）按需替换，
- *   业务增强字段（currentUserId 等）直接落 ctx 顶层
+ *   业务字段（currentUserId 等）直接落 ctx 顶层并流型到返回类型
  */
+
+/**
+ * 重载形态（两个签名）的类型行为经过六个场景 tsc 实测（见 standaloneToolContext.md）：
+ * - 带实参 → 泛型流型（传业务字段流出 `AgentToolContext & T`，缺字段在消费点结构检查报错）
+ * - 无实参 → 精确裸契约（泛型默认值 `Record<string, never>` 的索引签名会让缺字段
+ *   检查穿透——never 对任何目标属性类型可赋，故无参路径必须走非泛型精确返回）
+ */
+export function createStandaloneToolContext<T extends Record<string, unknown>>(
+  overrides: StandaloneToolContextOverrides & T,
+): AgentToolContext & T;
+export function createStandaloneToolContext(
+  overrides?: Partial<AgentToolContext>,
+): AgentToolContext;
 export function createStandaloneToolContext(
   overrides: StandaloneToolContextOverrides = {},
 ): AgentToolContext {

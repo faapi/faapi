@@ -2,25 +2,29 @@ import type { Logger } from '../loggers/loggerTypes';
 import type { FaapiContext } from './contextTypes';
 
 /**
- * tool handler 第二参数的框架契约——必有，基础字段在三条约 agent 执行路径上
- * （HTTP / 进程内任务 / 隔离任务）由框架保证正确。
+ * tool handler ctx 的框架注入字段载体——tasks/log/signal 三字段在三条约 agent
+ * 执行路径上（HTTP / 进程内任务 / 隔离任务）由框架保证恒在恒正确。
  *
- * 与历史契约（`Partial<FaapiContext> | undefined`）的差异：ctx 对象恒有、
- * 下列字段恒正确，工具不再面对"路径决定完整性"的彩票。业务身份字段
- * （currentUserId 等）不在框架保证范围内——经 `declare module '@faapi/faapi'`
- * 增强本接口（与 FaapiContext 同款模式）：
+ * tool handler ctx 的类型由**业务自定义**（框架声明即校验）：第二参声明业务
+ * 校验类型（纯数据字段），构建期提取生成 schema，运行时分发点对合成 ctx
+ * safeParse——失败不调用 handler（详见 agentToolContext.md 的「tool ctx 声明
+ * 即校验」）。需要框架字段时以**交叉标注**携带（框架字段由运行时注入，不参
+ * 与校验）：
  *
  * ```ts
- * declare module '@faapi/faapi' {
- *   interface AgentToolContext {
- *     currentUserId?: number;
- *   }
+ * interface OrderCtx {
+ *   currentUserId: number;   // 业务校验字段——运行时校验保证在场
+ * }
+ * export function getOrder(input: Input, ctx: OrderCtx & AgentToolContext) {
+ *   ctx.currentUserId;   // 校验保证
+ *   ctx.log.info('...'); // 框架字段类型在
  * }
  * ```
  *
- * 增强字段的在场性由各路径的填充规则决定（HTTP 由业务中间件塞入、任务随
- * carry 声明、测试直调显式构造），缺失时业务侧以 fail-closed 断言消费
- * （如 requireUserId）——cron/系统触发没有用户身份是语义，不是缺陷。
+ * 注意：**不要 extends 本接口**声明业务校验类型——tasks 的 `import('...').TaskClient`
+ * 类型语法构建期提取即抛 SchemaExtractionError；交叉标注是唯一的框架字段携带
+ * 形态。`declare module` 可选增强（`currentUserId?: number`）仍可用于 authHooks
+ * 等不走校验的读取面；必填声明不可用（框架包内编译看不到增强，漏传静默穿透）。
  *
  * 三路径填充规则与排除清单见 [agentToolContext.md](./agentToolContext.md)。
  */

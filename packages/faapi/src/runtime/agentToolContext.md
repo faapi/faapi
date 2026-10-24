@@ -1,21 +1,50 @@
 # agentToolContext
 
-一句话概括：`AgentToolContext` 是 tool handler 第二参数的框架契约——必有、基础字段（tasks/log/signal）在三条约 agent 执行路径上由框架保证正确；`toAgentToolContext` 把完整请求 ctx 收窄为该契约。
+一句话概括：tool handler 第二参数（ctx）的类型由**业务自定义**，框架对其实施「声明即校验」——构建期 AST 提取业务校验类型生成 schema，运行时分发点对合成 ctx 做 safeParse，不满足则不调用 handler；`AgentToolContext` 是框架注入字段（tasks/log/signal）的载体，作为交叉标注侧参与 ctx 类型声明。
 
 ## 为什么需要
 
 tool handler 历史上收 `Partial<FaapiContext> | undefined`：ctx 有没有、完整不完整由调用方场景决定（HTTP 传完整 ctx、任务传 carry 窄对象、编程式/测试不传）。类型说谎（handler 声明 `FaapiContext` 而任务路径运行时是 carry），工具读 `ctx.tasks` / `ctx.log` 这类字段在 HTTP 正常、任务里静默 undefined——路径差异在运行时才爆炸。
 
-契约把「工具可以依赖什么」显式化：**框架保证的对象 + 框架能保证的字段**。业务身份字段（currentUserId 等）不在框架保证范围内（框架不认识业务字段），经 `declare module` 增强进契约、由业务 fail-closed 断言消费。
+`AgentToolContext` 契约先解决了框架字段的问题：**框架注入字段（tasks/log/signal）恒在恒正确**，三路径填充规则见下表。业务字段（currentUserId 等）框架不认识、也无法在类型上代为承诺——业务对 ctx 字段的要求由业务自己的类型声明，框架按声明校验。
 
-## 使用场景
+## tool ctx 声明即校验（业务字段口径）
 
-- tool handler 第二参数的类型标注（`@faapi/agent` 的 executeTool 恒传入）
-- HTTP 路径：`injectParams` 的 `agent` 注入与 agentHandle 工厂收到的 ctx（`toAgentToolContext` 收窄）
-- 任务路径：`taskQueue` 以 carry + 任务级能力合成（进程内与隔离同配方）
-- 测试/编程式：`@faapi/agent` 的 `createStandaloneToolContext` 构造合规 ctx
+业务在 tool handler 第二参声明 ctx 类型，两种形态：
 
-### 三路径填充规则（契约字段）
+```ts
+// src/tools/order/handler.ts
+import type { AgentToolContext } from '@faapi/faapi';
+
+// 业务校验类型——纯数据字段（框架字段进不了这里：extends AgentToolContext
+// 会因 import('...').TaskClient 类型语法构建期抛 SchemaExtractionError）
+interface OrderCtx {
+  currentUserId: number;
+}
+
+// 形态 1：只用业务字段
+export function getOrder(input: { orderId: string }, ctx: OrderCtx) {
+  ctx.currentUserId; // 运行时校验保证在场，消费点零断言
+}
+
+// 形态 2：交叉标注携带框架字段（类型层供给，不参与校验）
+export function listOrders(input: {}, ctx: OrderCtx & AgentToolContext) {
+  ctx.currentUserId;      // 校验保证
+  ctx.log.info('...');    // 框架字段类型在（运行时恒注入）
+}
+```
+
+| 阶段 | 行为 |
+|------|------|
+| 构建期 | AST 提取第二参业务校验类型名（交叉类型拆分跳过 `AgentToolContext` 侧），`ctxTypeName` 进 `faapi-tools.js` 清单，同文件 `zod.js` 追加导出 `${ctxTypeName}Schema`（提取规则详见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「第二个参数的 ctx 校验类型名」） |
+| 运行时 | `executeToolCall` 在 input 校验后按 `ctxTypeName` 解析 schema（复用 `resolveToolSchema` 同一实例与缓存）对合成 ctx safeParse——失败返回 `{ error }` 回传 LLM，不调用 handler（对齐 input 校验语义；错误消息指明是 ctx 前置条件不满足，非 LLM 入参问题） |
+| 无声明 | 第二参无标注 / 内联字面量 / 无第二参 → 无 schema 无校验，ctx 原样透传（向后兼容） |
+
+「构造不完全就不能调用」的强制点：agent 分发链路在运行时校验（缺字段/错型拒绝执行）；直调链路（测试直调 / 编程式组装）由 `createStandaloneToolContext` 泛型流型在编译期拦截——构造时漏传业务字段，返回类型缺字段，赋给 handler 的 ctx 参数类型编译报错（见 [standaloneToolContext](../../../agent/src/standaloneToolContext.md)）。
+
+**为什么 declare module 必填声明不可用**（往 `AgentToolContext` 接口写 `currentUserId: number`）：框架包内编译看不到业务增强，框架合成点的返回类型会被业务侧视为"含必填字段"——漏传静默穿透（类型声称有、运行时 undefined）。校验类型的必填声明在业务自己的类型上，由运行时校验 + 调用点结构检查裁决。
+
+### 三路径填充规则（框架注入字段）
 
 | 字段 | HTTP | 任务（进程内） | 任务（隔离） |
 |------|------|--------------|-------------|
@@ -28,7 +57,7 @@ tool handler 历史上收 `Partial<FaapiContext> | undefined`：ctx 有没有、
 恒在、调用即显式失败并给修复指引，见 [createContext.md](./createContext.md) 的
 「ctx.tasks 挂载」）；`@faapi/agent` 的 `createStandaloneToolContext` 复用同一实现。
 
-### 排除清单（不进契约，访问即编译错误）
+### 排除清单（不进 AgentToolContext，访问即编译错误）
 
 - 请求绑定字段：`request` / `headers` / `ip` / `ua` / `cookies` / `params` / `query` / `body`——任务侧物理不存在
 - 宿主函数值面：`config` / `registries`——隔离路径 config 快照不含函数；工具需要配置走模块导入，需要注册表走任务 ctx
@@ -36,7 +65,7 @@ tool handler 历史上收 `Partial<FaapiContext> | undefined`：ctx 有没有、
 
 ## 行为定义（详见 agentToolContext.test.ts）
 
-- `toAgentToolContext`：契约字段（tasks/log/signal）全部在场，值与源 ctx 同引用；ctx 上的业务增强字段原样透传（顶层可读）
+- `toAgentToolContext`：框架字段（tasks/log/signal）全部在场，值与源 ctx 同引用；ctx 上的业务字段原样透传（顶层可读，供校验与 handler 消费）
 - `tasks` 缺失（无队列编排的 ctx）填充抛错桩：字段恒在、调用即显式失败（诚实缺省，不静默假成功）
 - `FaapiContext.signal`：createContext 从 `request.signal` 接线，abort 传播（客户端断开 → `ctx.signal.aborted`）
 
@@ -46,5 +75,6 @@ tool handler 历史上收 `Partial<FaapiContext> | undefined`：ctx 有没有、
 - `../injection/injectParams.ts` - `agent` 参数注入走 `toAgentToolContext` 收窄后进 agentHandle 工厂
 - `../injection/registries.ts` - `AgentHandleFactory` 签名收本契约类型
 - `../tasks/taskQueue.ts` - 任务路径以同配方合成（carry + 任务级能力）
-- `@faapi/agent` 的 `agentDeps.ts` / `agent.ts` - `AgentDeps.ctx` 必填为本类型，executeTool 传给 tool handler 与钩子
-- `@faapi/agent` 的 `standaloneToolContext.ts` - 无 app 场景的合规 ctx 构造助手
+- `../ast/extractToolMetadata.md` - 构建期 `ctxTypeName` 提取（交叉类型拆分规则）
+- `@faapi/agent` 的 `agentDeps.ts` / `agent.ts` - `AgentDeps.ctx` 必填，executeTool 执行 ctx 校验后传给 tool handler 与钩子
+- `@faapi/agent` 的 `standaloneToolContext.ts` - 无 app 场景的合规 ctx 构造助手（泛型流型）

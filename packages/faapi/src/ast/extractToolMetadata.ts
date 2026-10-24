@@ -50,6 +50,10 @@ export interface ToolMetadata extends ToolCore {
   /** 第一个参数的 interface/type 名(用于生成 zod schema),
    *  无参数/参数无类型标注/参数为内联类型字面量时为 `undefined` */
   inputTypeName?: string;
+  /** 第二个参数的业务校验类型名(用于生成 ctx schema,运行时声明即校验),
+   *  无第二参/无类型标注/内联类型字面量时为 `undefined`;
+   *  交叉类型(`OrderCtx & AgentToolContext`)拆分后取业务侧(见 getCtxSchemaTypeName) */
+  ctxTypeName?: string;
   /** 源码相对路径(从 `pathMeta` 透传) */
   filePath: string;
   /** 源码中的导出函数名(从 `pathMeta` 透传,AST 定位用) */
@@ -124,11 +128,13 @@ export function extractToolMetadata(
     );
   }
   const inputTypeName = getFirstParamTypeName(fn, sourceFile);
+  const ctxTypeName = getCtxSchemaTypeName(fn, sourceFile);
 
   return {
     name: pathMeta.name,
     description,
     inputTypeName,
+    ctxTypeName,
     filePath: pathMeta.filePath,
     functionName,
   };
@@ -233,4 +239,46 @@ function getFirstParamTypeName(fn: FunctionLike, sourceFile: ts.SourceFile): str
   if (!firstParam.type) return undefined;
   if (!ts.isTypeReferenceNode(firstParam.type)) return undefined;
   return firstParam.type.typeName.getText(sourceFile);
+}
+
+/** ctx 交叉类型中框架侧的类型名——拆分时跳过（框架注入字段运行时恒有，非纯数据，不参与校验） */
+const CTX_FRAMEWORK_TYPE_NAME = 'AgentToolContext';
+
+/**
+ * 提取第二个参数的业务校验类型名（tool ctx 声明即校验）
+ *
+ * 第二参合法形态与提取结果（语义详见 extractToolMetadata.md）：
+ * - `ctx: OrderCtx` → `'OrderCtx'`
+ * - `ctx: OrderCtx & AgentToolContext` → `'OrderCtx'`（交叉拆分，跳过框架侧）
+ * - 交叉业务侧全为内联字面量/缺失 → `undefined`（不生成 schema，对齐 input 内联语义）
+ * - 交叉含多个业务成员 → 抛 `SchemaExtractionError`（校验类型无法唯一确定，显式失败不猜）
+ * - 无第二参 / 无类型标注 / 非交叉非 TypeReference → `undefined`
+ */
+function getCtxSchemaTypeName(fn: FunctionLike, sourceFile: ts.SourceFile): string | undefined {
+  const secondParam = fn.parameters[1];
+  if (!secondParam?.type) return undefined;
+
+  if (ts.isIntersectionTypeNode(secondParam.type)) {
+    const businessNames: string[] = [];
+    for (const member of secondParam.type.types) {
+      if (!ts.isTypeReferenceNode(member)) continue;
+      const name = member.typeName.getText(sourceFile);
+      if (name === CTX_FRAMEWORK_TYPE_NAME) continue;
+      businessNames.push(name);
+    }
+    if (businessNames.length === 0) return undefined;
+    if (businessNames.length > 1) {
+      throw SchemaExtractionError.at(
+        secondParam.type,
+        secondParam.type.getText(sourceFile),
+        `tool ctx 交叉类型含多个业务成员（${businessNames.join(' & ')}）——ctx 校验类型无法唯一确定。` +
+          `交叉只允许一个业务类型加 ${CTX_FRAMEWORK_TYPE_NAME}：\`ctx: OrderCtx & ${CTX_FRAMEWORK_TYPE_NAME}\``,
+        sourceFile,
+      );
+    }
+    return businessNames[0];
+  }
+
+  if (!ts.isTypeReferenceNode(secondParam.type)) return undefined;
+  return secondParam.type.typeName.getText(sourceFile);
 }

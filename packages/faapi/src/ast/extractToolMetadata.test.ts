@@ -237,6 +237,92 @@ describe('extractToolMetadata', () => {
     });
   });
 
+  describe('第二个参数 ctx 校验类型名', () => {
+    /** 模拟框架契约的本地声明——ctxTypeName 提取按类型名匹配，无需真实类型 */
+    const AGENT_CTX_DECL = `interface AgentToolContext { tasks: unknown; log: unknown; signal: unknown }\n`;
+
+    it('TypeReference 第二参 → ctxTypeName', () => {
+      writeFileSync(
+        tempFile,
+        `export interface OrderCtx { currentUserId: number }\n${AGENT_CTX_DECL}\n` +
+          `export function getOrder(input: { orderId: string }, ctx: OrderCtx) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('OrderCtx');
+      expect(result!.inputTypeName).toBeUndefined();
+    });
+
+    it('交叉类型拆分：业务类型 & AgentToolContext → 提取业务侧类型名', () => {
+      writeFileSync(
+        tempFile,
+        `export interface OrderCtx { currentUserId: number }\n${AGENT_CTX_DECL}\n` +
+          `export function getOrder(input: { orderId: string }, ctx: OrderCtx & AgentToolContext) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('OrderCtx');
+    });
+
+    it('交叉类型业务侧为内联字面量 → undefined（对齐 input 内联语义）', () => {
+      writeFileSync(
+        tempFile,
+        `${AGENT_CTX_DECL}\n` +
+          `export function getOrder(input: { orderId: string }, ctx: { currentUserId: number } & AgentToolContext) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBeUndefined();
+    });
+
+    it('交叉类型含多个业务成员 → 构建期抛 SchemaExtractionError（校验类型无法唯一确定）', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { a: number }\nexport interface B { b: number }\n${AGENT_CTX_DECL}\n` +
+          `export function getOrder(input: { orderId: string }, ctx: A & B & AgentToolContext) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractToolMetadata(program, tempFile, 'getOrder', sharedMeta)).toThrow(
+        /多个业务成员|校验类型/,
+      );
+    });
+
+    it('无第二参 → ctxTypeName 为 undefined', () => {
+      writeFileSync(tempFile, `export function listOrders() { return []; }\n`);
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'listOrders', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBeUndefined();
+    });
+
+    it('第二参无类型标注 → ctxTypeName 为 undefined', () => {
+      writeFileSync(
+        tempFile,
+        `export function listOrders(input: { a: number }, ctx) { return []; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'listOrders', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBeUndefined();
+    });
+
+    it('input 与 ctx 同时声明 → 两者都提取', () => {
+      writeFileSync(
+        tempFile,
+        `export interface OrderInput { orderId: string }\nexport interface OrderCtx { currentUserId: number }\n${AGENT_CTX_DECL}\n` +
+          `export function getOrder(input: OrderInput, ctx: OrderCtx & AgentToolContext) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.inputTypeName).toBe('OrderInput');
+      expect(result!.ctxTypeName).toBe('OrderCtx');
+    });
+  });
+
   describe('导出形式', () => {
     it('export function', () => {
       writeFileSync(

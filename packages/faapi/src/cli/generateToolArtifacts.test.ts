@@ -84,6 +84,21 @@ describe('generateToolArtifacts', () => {
       expect(result[0].inputTypeName).toBeUndefined();
     });
 
+    it('ctxTypeName 一并序列化（声明了 ctx 校验类型的 tool）', () => {
+      const meta: ToolMetadata = {
+        name: 'order_getOrder',
+        functionName: 'getOrder',
+        inputTypeName: 'OrderInput',
+        ctxTypeName: 'OrderCtx',
+        filePath: 'src/tools/order/handler.ts',
+      };
+      const result = serializeTools([meta], 'dist');
+      expect(result[0].ctxTypeName).toBe('OrderCtx');
+      // 往返一致
+      const hydrated = hydrateTools(result);
+      expect(hydrated[0].ctxTypeName).toBe('OrderCtx');
+    });
+
     it('dev 模式 dist 为 .faapi', () => {
       const meta: ToolMetadata = {
         name: 'ping',
@@ -471,6 +486,47 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }
       expect(existsSync(zodPath)).toBe(true);
       const zodContent = readFileSync(zodPath, 'utf-8');
       expect(zodContent).toContain('export const WeatherInputSchema');
+    });
+
+    it('声明 ctx 类型的 tool：zod.js 追加导出 ctxTypeNameSchema + 清单含 ctxTypeName', async () => {
+      writeSharedTool(
+        'src/tools/order/handler.ts',
+        `export interface OrderInput {
+  orderId: string;
+}
+export interface OrderCtx {
+  currentUserId: number;
+}
+interface AgentToolContext { tasks: unknown; log: unknown; signal: unknown }
+export function getOrder(input: OrderInput, ctx: OrderCtx & AgentToolContext) {
+  return { orderId: input.orderId };
+}
+`,
+      );
+
+      const tools: ToolManifest[] = [
+        {
+          name: 'order_getOrder',
+          functionName: 'getOrder',
+          filePath: 'src/tools/order/handler.ts',
+        },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateToolArtifacts(tools, tempDir, dist);
+
+      // AST 增强：ctxTypeName 提取（交叉类型拆分 AgentToolContext 侧）
+      expect(metadata[0].ctxTypeName).toBe('OrderCtx');
+
+      // 清单含 ctxTypeName
+      const toolsContent = readFileSync(join(dist, 'faapi-tools.js'), 'utf-8');
+      expect(toolsContent).toContain('"ctxTypeName": "OrderCtx"');
+
+      // zod.js 同时导出 input schema 与 ctx schema
+      const zodContent = readFileSync(join(dist, 'tools', 'order', 'zod.js'), 'utf-8');
+      expect(zodContent).toContain('export const OrderInputSchema');
+      expect(zodContent).toContain('export const OrderCtxSchema');
+      // ctx schema 含业务字段、不含框架字段
+      expect(zodContent).toContain('currentUserId');
     });
 
     it('无 inputTypeName 的 tool 不生成 zod.js', async () => {

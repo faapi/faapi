@@ -33,6 +33,8 @@ export interface SerializedToolRecord {
   description?: string;
   /** 第一个参数 interface 名(用于从 zod.js 加载 schema) */
   inputTypeName?: string;
+  /** 第二个参数业务校验类型名(用于从 zod.js 加载 ctx schema,运行时声明即校验) */
+  ctxTypeName?: string;
   /** 产物形式路径(如 `dist/tools/weather/handler.js`),供运行时 import tool.js */
   filePath: string;
 }
@@ -88,6 +90,7 @@ export function serializeTools(
     functionName: t.functionName,
     description: t.description,
     inputTypeName: t.inputTypeName,
+    ctxTypeName: t.ctxTypeName,
     filePath: toProdFilePath(t.filePath, dist),
   }));
 }
@@ -120,6 +123,7 @@ export function hydrateTools(manifest: SerializedToolRecord[]): ToolMetadata[] {
     functionName: t.functionName,
     description: t.description ?? undefined,
     inputTypeName: t.inputTypeName ?? undefined,
+    ctxTypeName: t.ctxTypeName ?? undefined,
     filePath: t.filePath,
   }));
 }
@@ -147,10 +151,11 @@ function collectToolSchemaSources(
   sources: ToolSchemaSource[];
   resolversByFile: Map<string, LazyTypeResolver>;
 } {
-  // 按文件分组 tool(同一 handler.ts 多个 tool 合并到一个 zod.js)
+  // 按文件分组 tool(同一 handler.ts 多个 tool 合并到一个 zod.js);
+  // inputTypeName / ctxTypeName 任一在场即收集(只声明 ctx 的 tool 也生成 zod.js)
   const toolsByFile = new Map<string, ToolMetadata[]>();
   for (const tool of tools) {
-    if (!tool.inputTypeName) continue; // 跳过无 inputTypeName 的 tool
+    if (!tool.inputTypeName && !tool.ctxTypeName) continue;
     const absPath = path.resolve(rootDir, tool.filePath);
     let list = toolsByFile.get(absPath);
     if (!list) {
@@ -167,20 +172,34 @@ function collectToolSchemaSources(
     resolversByFile.set(filePath, createLazyTypeResolver(programByFile.get(filePath)!, filePath));
   }
 
-  // 为每个 tool 提取 schema
+  // 为每个 tool 提取 schema(input + ctx 两个 schema 源)
   const sources: ToolSchemaSource[] = [];
   for (const [filePath, fileTools] of toolsByFile) {
     const program = programByFile.get(filePath)!;
+    // 同文件 schemaName 去重——同一 handler.ts 多个 tool 共享同一类型(如同一 Ctx)
+    // 是自然写法,重复提取会产生同名导出(zod.js 语法错误);同名同文件即同一 AST 声明,去重安全
+    const seenSchemaNames = new Set<string>();
     for (const tool of fileTools) {
-      // inputTypeName 已在外层过滤,这里一定非空(防御性兜底)
-      const inputTypeName = tool.inputTypeName!;
-      const typeInfo = extractTypeInfo(program, filePath, inputTypeName); // 入口类型,严格解析
-      sources.push({
-        name: tool.name,
-        filePath,
-        schemaName: inputTypeName, // schema 名 = inputTypeName
-        typeInfo,
-      });
+      if (tool.inputTypeName && !seenSchemaNames.has(tool.inputTypeName)) {
+        seenSchemaNames.add(tool.inputTypeName);
+        const typeInfo = extractTypeInfo(program, filePath, tool.inputTypeName); // 入口类型,严格解析
+        sources.push({
+          name: tool.name,
+          filePath,
+          schemaName: tool.inputTypeName, // schema 名 = inputTypeName
+          typeInfo,
+        });
+      }
+      if (tool.ctxTypeName && !seenSchemaNames.has(tool.ctxTypeName)) {
+        seenSchemaNames.add(tool.ctxTypeName);
+        const typeInfo = extractTypeInfo(program, filePath, tool.ctxTypeName);
+        sources.push({
+          name: `${tool.name} ctx`, // 注释标识区分 ctx schema
+          filePath,
+          schemaName: tool.ctxTypeName, // schema 名 = ctxTypeName(导出 `${ctxTypeName}Schema`)
+          typeInfo,
+        });
+      }
     }
   }
 

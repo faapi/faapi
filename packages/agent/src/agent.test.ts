@@ -81,6 +81,7 @@ function toolMeta(opts: Partial<ToolMetadata> = {}): ToolMetadata {
     functionName: opts.functionName ?? 'getWeather',
     description: opts.description ?? '获取天气',
     inputTypeName: opts.inputTypeName,
+    ctxTypeName: opts.ctxTypeName,
     filePath: opts.filePath ?? 'dist/tools/weather/handler.js',
   };
 }
@@ -1869,6 +1870,183 @@ describe('Agent', () => {
       expect(resolveToolSchemaImpl).toHaveBeenCalledTimes(1);
       // handler 两次 tool_call 都执行
       expect(handler).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('executeTool — ctx 声明即校验', () => {
+    /** ctx 校验 schema 假体——按 resolver 收到的 inputTypeName 区分 input/ctx 校验 */
+    function ctxSchemaImpl(
+      validate: (
+        input: Record<string, unknown>,
+      ) => { ok: true; value: Record<string, unknown> } | { ok: false; error: string },
+    ) {
+      return async (tool: ToolMetadata): Promise<ToolSchemaResolution | undefined> => {
+        if (tool.inputTypeName === 'OrderCtx') {
+          return { jsonSchema: { type: 'object' }, validate };
+        }
+        return undefined; // input schema 无
+      };
+    }
+
+    it('ctx 满足声明类型 → handler 收到原 ctx（含框架字段，校验只做门禁不替换对象）', async () => {
+      const handler = vi.fn(async (_args: Record<string, unknown>, ctx: unknown) => ({
+        ok: true,
+        hasLog: typeof (ctx as { log: { info: unknown } }).log.info === 'function',
+      }));
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'order_getOrder', { orderId: 'o1' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [
+            toolMeta({ name: 'order_getOrder', functionName: 'getOrder', ctxTypeName: 'OrderCtx' }),
+          ],
+          loadToolModuleImpl: async (_filePath, functionName) => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName,
+          }),
+          resolveToolSchemaImpl: ctxSchemaImpl(() => ({
+            ok: true as const,
+            value: {},
+          })),
+        }),
+      );
+
+      await agent.run('query order', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      // 第二参数是合成 ctx：业务字段 + 框架字段（log）都在
+      const receivedCtx = handler.mock.calls[0][1] as { log: unknown; currentUserId?: number };
+      expect(receivedCtx.log).toBeDefined();
+    });
+
+    it('ctx 缺必填字段 → 返回 { error } 不调用 handler，错误指明 ctx 装配问题', async () => {
+      const handler = vi.fn(async () => 'should not be called');
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'order_getOrder', { orderId: 'o1' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'ctx missing', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [
+            toolMeta({ name: 'order_getOrder', functionName: 'getOrder', ctxTypeName: 'OrderCtx' }),
+          ],
+          loadToolModuleImpl: async (_filePath, functionName) => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName,
+          }),
+          resolveToolSchemaImpl: ctxSchemaImpl(() => ({
+            ok: false as const,
+            error: 'currentUserId is required',
+          })),
+        }),
+      );
+
+      await agent.run('query order', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(handler).not.toHaveBeenCalled();
+      // 校验错误回传 LLM，消息指明是 ctx 前置条件问题（非入参问题）
+      const secondRequest = completeCalls.mock.calls[1][0];
+      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
+      expect(toolMsg!.content).toMatch(/currentUserId is required/);
+      expect(toolMsg!.content).toMatch(/ctx/);
+    });
+
+    it('未声明 ctxTypeName 的 tool → 不校验，ctx 原样透传', async () => {
+      const handler = vi.fn(async () => ({ ok: true }));
+      const resolveToolSchemaImpl = vi.fn(
+        async (_tool: ToolMetadata): Promise<ToolSchemaResolution | undefined> => undefined,
+      );
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [toolMeta()],
+          loadToolModuleImpl: async (_filePath, functionName) => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName,
+          }),
+          resolveToolSchemaImpl,
+        }),
+      );
+
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      // 未声明 ctx 校验类型：resolver 只被 input 解析调用（buildToolDefinitions 1 次），无 ctx 解析
+      expect(resolveToolSchemaImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('ctx schema 对同一 tool 只解析一次（缓存，与 input 缓存并存）', async () => {
+      const handler = vi.fn(async () => ({ ok: true }));
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'order_getOrder', { orderId: 'o1' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({
+          toolCalls: [toolCall('c2', 'order_getOrder', { orderId: 'o2' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+
+      const resolveToolSchemaImpl = vi.fn(
+        async (tool: ToolMetadata): Promise<ToolSchemaResolution | undefined> => {
+          if (tool.inputTypeName === 'OrderCtx') {
+            return {
+              jsonSchema: { type: 'object' },
+              validate: () => ({ ok: true as const, value: {} as Record<string, unknown> }),
+            };
+          }
+          return undefined;
+        },
+      );
+
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta(),
+          tools: [
+            toolMeta({ name: 'order_getOrder', functionName: 'getOrder', ctxTypeName: 'OrderCtx' }),
+          ],
+          loadToolModuleImpl: async (_filePath, functionName) => ({
+            handler: handler as (...args: unknown[]) => unknown,
+            functionName,
+          }),
+          resolveToolSchemaImpl,
+        }),
+      );
+
+      await agent.run('query order', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 两次 tool 调用：ctx 解析 1 次 + input 解析（buildToolDefinitions）1 次 = 2 次
+      expect(resolveToolSchemaImpl).toHaveBeenCalledTimes(2);
+      const ctxRefs = resolveToolSchemaImpl.mock.calls
+        .map(([t]) => t)
+        .filter((t) => t.inputTypeName === 'OrderCtx');
+      expect(ctxRefs).toHaveLength(1);
     });
   });
 

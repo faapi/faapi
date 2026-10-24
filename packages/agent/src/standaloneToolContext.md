@@ -1,6 +1,6 @@
 # standaloneToolContext
 
-一句话概括：`createStandaloneToolContext(overrides?)` 为无 app 编排场景（测试直调、编程式脚本）构造合规的 `AgentToolContext`——契约字段给诚实缺省，业务字段经 overrides 显式注入。
+一句话概括：`createStandaloneToolContext(overrides?)` 为无 app 编排场景（测试直调、编程式脚本）构造合规的 `AgentToolContext`——契约字段给诚实缺省，业务字段经 overrides 显式注入并**流型到返回类型**（构造漏传在调用点编译报错）。
 
 ## 为什么需要
 
@@ -22,6 +22,40 @@
 | `signal` | 新建 `AbortController` 的 signal（永不触发） | 无宿主生命周期可挂钩；需要取消语义时显式传入 |
 
 overrides 浅合并到缺省之上，业务增强字段（currentUserId 等）与其他任意键直接落 ctx 顶层。
+
+## 业务字段必填与类型流型
+
+**官方形态：业务定义校验类型（纯数据字段），handler ctx 参数以交叉标注携带（需要框架字段时 `& AgentToolContext`）——运行时框架声明即校验（见主包 [agentToolContext](../../faapi/src/runtime/agentToolContext.md)），消费点零断言；直调链路由本助手泛型流型在编译期拦截漏传。**
+
+```ts
+// 业务校验类型——纯数据字段（不要 extends AgentToolContext：构建期提取会因
+// 框架字段类型语法抛 SchemaExtractionError，交叉标注是唯一的框架字段携带形态）
+interface OrderCtx {
+  currentUserId: number;
+}
+
+// 工具签名声明所需契约——消费点直接用，无 if throw
+export async function getOrder(input: { orderId: string }, ctx: OrderCtx & AgentToolContext) {
+  ctx.currentUserId; // number
+  ctx.log.info('...'); // 框架字段类型在
+}
+```
+
+构造返回类型随 overrides 流型（重载双签名），「构造不完全就不能调用」由**调用点结构检查**强制：
+
+```ts
+const ok: OrderCtx & AgentToolContext = createStandaloneToolContext({ currentUserId: 7 });
+// 带实参重载：返回 AgentToolContext & { currentUserId: number } → 编译通过
+
+const bad: OrderCtx & AgentToolContext = createStandaloneToolContext();
+// 无实参重载：精确返回裸契约（AgentToolContext），缺 currentUserId → 编译报错
+```
+
+无实参路径必须是**非泛型精确返回**——泛型默认值 `Record<string, never>` 的索引签名会让缺字段检查穿透（`never` 对任何目标属性类型可赋，tsc 实测），故重载双签名：带实参走泛型流型、无实参走精确裸契约。显式空对象 `({})` 同样报缺字段。
+
+字段类型传错的裁决在消费点：构造点流型（传 `'abc'` 流出 string），消费点子类型要求 number 时结构检查报错——构造点负责流型、调用点负责契约检查，分层不重复。
+
+**为什么 declare module 必填声明不可用**（`interface AgentToolContext { currentUserId: number }`）：业务字段是框架不认识的——框架包内编译看不到业务增强，本助手与框架合成点的返回类型一旦标注为 `AgentToolContext`，业务侧编译器就把一切框架产物视为"含必填字段"，漏传静默穿透（类型声称有、运行时 undefined）。必填必须声明在业务自己的校验类型上，由运行时校验 + 调用点结构检查裁决。`declare module` **可选**增强（`currentUserId?: number`）仍是 authHooks 等不走校验读取面的合法用法。
 
 ## 相关模块
 
