@@ -97,12 +97,8 @@ describe('analyzeInjection', () => {
         }
       `;
       const result = analyzeInjection(code, 'GET');
-      expect(result.params[0].schema).toBeDefined();
-      expect(result.params[0].schema).toContainEqual({
-        name: 'page',
-        type: 'number',
-        optional: false,
-      });
+      expect(result.params[0].typeName).toBeUndefined();
+      expect(result.params[0].inline).toBe(true);
     });
   });
 
@@ -125,7 +121,7 @@ describe('analyzeInjection', () => {
       `;
       const result = analyzeInjection(code, 'GET');
       expect(result.params[0].typeName).toBeUndefined();
-      expect(result.params[0].schema).toBeUndefined();
+      expect(result.params[0].inline).toBeUndefined();
     });
 
     it('目标函数不存在时返回空 params', () => {

@@ -9,16 +9,10 @@ export interface ParamMeta {
   name: string; // 参数名
   type: InjectionType; // 注入类型
   typeName?: string; // 引用类型名（如 'Query'）
-  schema?: PropertyInfo[]; // 类型结构（内联类型时）
-}
-
-/**
- * 属性信息
- */
-export interface PropertyInfo {
-  name: string;
-  type: string;
-  optional: boolean;
+  /** 形参标注为内联类型字面量（`query: { page: number }`）时为 true——schema 收集
+   *  阶段经 extractInlineParamTypeInfo 从标注节点直接解析（语义见
+   *  collectRouteSchemaSources.md「内联形参标注的收集」） */
+  inline?: boolean;
 }
 
 /**
@@ -84,33 +78,11 @@ function analyzeParam(param: ts.ParameterDeclaration, sourceFile: ts.SourceFile)
       // 引用类型：Query, Body 等
       result.typeName = param.type.typeName.getText(sourceFile);
     } else if (ts.isTypeLiteralNode(param.type)) {
-      // 内联类型：{ page: number }
-      result.schema = extractSchema(param.type, sourceFile);
+      // 内联类型：{ page: number }——校验结构由 schema 收集阶段从标注节点直接解析，
+      // 本模块只负责标记形态（与具名引用同一套 resolveTypeNode 类型管线）
+      result.inline = true;
     }
   }
 
   return result;
-}
-
-/**
- * 从类型字面量提取 schema
- */
-function extractSchema(typeNode: ts.TypeLiteralNode, sourceFile: ts.SourceFile): PropertyInfo[] {
-  const schema: PropertyInfo[] = [];
-
-  for (const member of typeNode.members) {
-    if (ts.isPropertySignature(member) && member.name && ts.isIdentifier(member.name)) {
-      const propName = member.name.text;
-      const optional = !!member.questionToken;
-      const propType = member.type?.getText(sourceFile) || 'unknown';
-
-      schema.push({
-        name: propName,
-        type: propType,
-        optional,
-      });
-    }
-  }
-
-  return schema;
 }

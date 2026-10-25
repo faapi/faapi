@@ -427,6 +427,25 @@ export function GET(query: GETQuery) { return query; }
       expect(content).not.toContain('export const GETQueryProperties');
     });
 
+    it('query 内联标注（{ a: 1 } 写法）生成 GETQuerySchema，coerce 语义与具名一致', async () => {
+      const filePath = join(tempDir, 'src', 'api', 'inline', 'handler.ts');
+      mkdirSync(join(tempDir, 'src', 'api', 'inline'), { recursive: true });
+      writeFileSync(
+        filePath,
+        `export function GET(query: { page: number; name?: string }) { return query; }\n`,
+      );
+
+      const routes = singleFileRoutes('src/api/inline/handler.ts', ['GET'], '/api/inline');
+      const dist = join(tempDir, 'dist');
+      await generateSchemaFiles(routes, tempDir, dist);
+
+      const content = readFileSync(join(dist, 'api', 'inline', 'zod.js'), 'utf-8');
+      expect(content).toContain('export const GETQuerySchema');
+      expect(content).toContain('"page"');
+      // query 来源均为 string，number 字段 coerce 与具名形态一致
+      expect(content).toContain('coerceNumber');
+    });
+
     it('多方法合并到同一 zod.js', async () => {
       const filePath = join(tempDir, 'src', 'api', 'user', 'handler.ts');
       mkdirSync(join(tempDir, 'src', 'api', 'user'), { recursive: true });

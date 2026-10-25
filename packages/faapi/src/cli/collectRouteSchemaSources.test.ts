@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { collectRouteSchemaSources } from './collectRouteSchemaSources';
 import type { RouteManifest } from '../routers/routeTypes';
+import { SchemaExtractionError } from '../ast/resolveTypeNode';
 import { invalidateProgramCache } from '../ast/createProgram';
 
 describe('collectRouteSchemaSources', () => {
@@ -351,5 +352,113 @@ describe('collectRouteSchemaSources', () => {
 
     const { sources } = collectRouteSchemaSources([], undefined, wsRoutes);
     expect(sources).toHaveLength(0);
+  });
+
+  it('query 内联标注（{ a: 1 } 写法）→ 从标注直接解析生成 <METHOD>Query schema 源', () => {
+    const filePath = writeHandler(
+      'inline-query.ts',
+      `export function GET(query: { page: number; pageSize?: number }) { return query; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'GET', urlPath: '/api/inline', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].schemaName).toBe('GETQuery');
+    expect(sources[0].typeInfo).not.toBeNull();
+    expect(sources[0].typeInfo!.name).toBe('GETQuery');
+    expect(sources[0].typeInfo!.properties.map((p) => p.name)).toEqual(['page', 'pageSize']);
+    // coerce 由生成端 schemaName 后缀正则推断，source 上不显式设置
+    expect(sources[0].coerce).toBeUndefined();
+  });
+
+  it('body / form 内联标注 → POSTBody schema 源（form 显式 coerce=true）', () => {
+    const bodyFile = writeHandler(
+      'inline-body.ts',
+      `export function POST(body: { title: string }) { return body; }\n`,
+    );
+    const formFile = writeHandler(
+      'inline-form.ts',
+      `export function POST(form: { username: string }) { return form; }\n`,
+    );
+
+    const { sources: bodySources } = collectRouteSchemaSources([
+      { method: 'POST', urlPath: '/api/b', filePath: bodyFile, paramNames: [], isDynamic: false },
+    ]);
+    expect(bodySources).toHaveLength(1);
+    expect(bodySources[0].schemaName).toBe('POSTBody');
+    expect(bodySources[0].typeInfo!.properties.map((p) => p.name)).toEqual(['title']);
+    expect(bodySources[0].coerce).toBeUndefined();
+
+    const { sources: formSources } = collectRouteSchemaSources([
+      { method: 'POST', urlPath: '/api/f', filePath: formFile, paramNames: [], isDynamic: false },
+    ]);
+    expect(formSources).toHaveLength(1);
+    expect(formSources[0].schemaName).toBe('POSTBody');
+    expect(formSources[0].typeInfo!.properties.map((p) => p.name)).toEqual(['username']);
+    expect(formSources[0].coerce).toBe(true);
+  });
+
+  it('params 内联标注 → GETParams schema 源（主输入无 query 时 typeInfo 为 null）', () => {
+    const filePath = writeHandler(
+      'inline-params.ts',
+      `export function GET(params: { id: number }) { return params; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'GET', urlPath: '/api/inline-params', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources).toHaveLength(2);
+    const paramsSource = sources.find((s) => s.schemaName === 'GETParams');
+    expect(paramsSource).toBeDefined();
+    expect(paramsSource!.typeInfo).not.toBeNull();
+    expect(paramsSource!.typeInfo!.properties.map((p) => p.name)).toEqual(['id']);
+    const mainSource = sources.find((s) => s.schemaName === 'GETQuery');
+    expect(mainSource).toBeDefined();
+    expect(mainSource!.typeInfo).toBeNull();
+  });
+
+  it('body 方法声明内联 query 次输入 → POSTQuery 源', () => {
+    const filePath = writeHandler(
+      'inline-secondary.ts',
+      `export function POST(body: { title: string }, query: { page: number }) { return body; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'POST', urlPath: '/api/inline-2', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    const querySource = sources.find((s) => s.schemaName === 'POSTQuery');
+    expect(querySource).toBeDefined();
+    expect(querySource!.typeInfo).not.toBeNull();
+    expect(querySource!.typeInfo!.properties.map((p) => p.name)).toEqual(['page']);
+  });
+
+  it('内联合成名与文件内已有类型声明同名 → 抛 SchemaExtractionError（fail-fast）', () => {
+    const filePath = writeHandler(
+      'inline-clash.ts',
+      `interface GETQuery { fromDecl: string }\nexport function GET(query: { page: number }) { return query; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'GET', urlPath: '/api/clash', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    expect(() => collectRouteSchemaSources(routes)).toThrow(SchemaExtractionError);
+  });
+
+  it('交叉标注等非 TypeLiteral 内联形态不收集（静默无校验，与既往一致）', () => {
+    const filePath = writeHandler(
+      'inline-cross.ts',
+      `export function GET(query: { page: number } & { size: number }) { return query; }\n`,
+    );
+    const routes: RouteManifest = [
+      { method: 'GET', urlPath: '/api/cross', filePath, paramNames: [], isDynamic: false },
+    ];
+
+    const { sources } = collectRouteSchemaSources(routes);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].typeInfo).toBeNull();
   });
 });

@@ -1,12 +1,13 @@
 import { createPrograms } from '../ast/createProgram';
 import {
   createLazyTypeResolver,
+  extractInlineParamTypeInfo,
   type HandlerTypeInfo,
   type LazyTypeResolver,
 } from '../ast/extractHandlerTypes';
 import { getInputTypeForMethod, hasBody } from '../runtime/inputType';
 import { getSchemaName } from '../validators/schemaName';
-import { analyzeInjectionInSourceFile } from '../injection/analyzeInjection';
+import { analyzeInjectionInSourceFile, type ParamMeta } from '../injection/analyzeInjection';
 import type { RouteManifest, WsRouteManifest } from '../routers/routeTypes';
 import path from 'node:path';
 import ts from 'typescript';
@@ -75,6 +76,32 @@ function findExportedTypeName(sourceFile: ts.SourceFile, name: string): boolean 
   return false;
 }
 
+/**
+ * 形参类型解析：具名引用 → 惰性解析器；内联字面量 → 标注节点直接解析
+ *
+ * - `typeName`（具名引用，如 `query: Query`）→ `resolver.resolve`（入口类型严格解析，
+ *   失败抛 SchemaExtractionError）
+ * - `inline`（TypeLiteral 内联标注，如 `query: { page: number }`）→
+ *   `extractInlineParamTypeInfo` 从标注直接解析（schema 名 = 合成名 `<METHOD>Query` 等，
+ *   语义见本文件对应 md「内联形参标注的收集」）
+ * - 两者皆无（无形参 / 无标注 / 交叉联合等不支持形态）→ `null`，无 schema 即无校验
+ */
+function resolveParamTypeInfo(
+  program: ts.Program,
+  filePath: string,
+  functionName: string,
+  resolver: LazyTypeResolver,
+  param: ParamMeta | undefined,
+  schemaName: string,
+): HandlerTypeInfo | null {
+  if (!param) return null;
+  if (param.typeName) return resolver.resolve(param.typeName);
+  if (param.inline) {
+    return extractInlineParamTypeInfo(program, filePath, functionName, param.name, schemaName);
+  }
+  return null;
+}
+
 export function collectRouteSchemaSources(
   routes: RouteManifest,
   rootDir?: string,
@@ -137,8 +164,9 @@ export function collectRouteSchemaSources(
         meta.params.find((p) => p.type === inputType) ??
         (inputType === 'body' ? meta.params.find((p) => p.type === 'form') : undefined);
       const isForm = param?.type === 'form';
-      // 入口类型：必须严格解析（失败抛 SchemaExtractionError，带文件/类型上下文）
-      const typeInfo = param?.typeName ? resolver.resolve(param.typeName) : null;
+      // 入口类型：必须严格解析（失败抛 SchemaExtractionError，带文件/类型上下文）；
+      // 内联 TypeLiteral 标注从标注节点直接解析（合成 schema 名）
+      const typeInfo = resolveParamTypeInfo(program, filePath, method, resolver, param, schemaName);
       sources.push({
         urlPath: entry.urlPath,
         filePath,
@@ -153,12 +181,20 @@ export function collectRouteSchemaSources(
       // coerce 由命名后缀正则推断（Params → true）。未声明则不生成 schema，
       // 运行时跳过校验，ctx.params 保持原始字符串（与未声明行为一致）。
       const paramsArg = meta.params.find((p) => p.type === 'params');
-      if (paramsArg?.typeName) {
+      if (paramsArg?.typeName || paramsArg?.inline) {
+        const paramsSchemaName = getSchemaName(method, 'params');
         sources.push({
           urlPath: entry.urlPath,
           filePath,
-          schemaName: getSchemaName(method, 'params'),
-          typeInfo: resolver.resolve(paramsArg.typeName) ?? null,
+          schemaName: paramsSchemaName,
+          typeInfo: resolveParamTypeInfo(
+            program,
+            filePath,
+            method,
+            resolver,
+            paramsArg,
+            paramsSchemaName,
+          ),
         });
       }
 
@@ -171,23 +207,39 @@ export function collectRouteSchemaSources(
       //   该声明属无效标注，保持既往行为）
       if (inputType === 'body') {
         const queryArg = meta.params.find((p) => p.type === 'query');
-        if (queryArg?.typeName) {
+        if (queryArg?.typeName || queryArg?.inline) {
+          const querySchemaName = getSchemaName(method, 'query');
           sources.push({
             urlPath: entry.urlPath,
             filePath,
-            schemaName: getSchemaName(method, 'query'),
-            typeInfo: resolver.resolve(queryArg.typeName) ?? null,
+            schemaName: querySchemaName,
+            typeInfo: resolveParamTypeInfo(
+              program,
+              filePath,
+              method,
+              resolver,
+              queryArg,
+              querySchemaName,
+            ),
           });
         }
       } else if (hasBody(method)) {
         const bodyArg =
           meta.params.find((p) => p.type === 'body') ?? meta.params.find((p) => p.type === 'form');
-        if (bodyArg?.typeName) {
+        if (bodyArg?.typeName || bodyArg?.inline) {
+          const bodySchemaName = getSchemaName(method, 'body');
           sources.push({
             urlPath: entry.urlPath,
             filePath,
-            schemaName: getSchemaName(method, 'body'),
-            typeInfo: resolver.resolve(bodyArg.typeName) ?? null,
+            schemaName: bodySchemaName,
+            typeInfo: resolveParamTypeInfo(
+              program,
+              filePath,
+              method,
+              resolver,
+              bodyArg,
+              bodySchemaName,
+            ),
             coerce: bodyArg.type === 'form' || undefined,
           });
         }

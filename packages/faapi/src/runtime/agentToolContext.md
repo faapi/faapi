@@ -45,9 +45,9 @@ export function ping(input: {}, ctx: AgentToolContext) {
 
 | 阶段 | 行为 |
 |------|------|
-| 构建期 | AST 提取第二参业务校验类型名（交叉类型拆分跳过 `AgentToolContext` 侧，裸标注框架类型同样不提取），`ctxTypeName` 进 `faapi-tools.js` 清单，同文件 `zod.js` 追加导出 `${ctxTypeName}Schema`（提取规则详见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「第二个参数的 ctx 校验类型名」） |
+| 构建期 | AST 提取第二参业务校验类型名（交叉类型拆分跳过 `AgentToolContext` 侧；业务侧无法唯一具名——多成员/内联字面量/混合——取默认名：别名名或 `${函数名}Ctx`，内联标注同样生成 schema；裸标注框架类型及仅框架侧交叉不提取），`ctxTypeName` 进 `faapi-tools.js` 清单，同文件 `zod.js` 追加导出 `${ctxTypeName}Schema`（提取规则详见 [extractToolMetadata](../ast/extractToolMetadata.md) 的「第二个参数的 ctx 校验类型名」） |
 | 运行时 | `executeToolCall` 在 input 校验后按 `ctxTypeName` 解析 schema（复用 `resolveToolSchema` 同一实例与缓存）对合成 ctx safeParse——失败返回 `{ error }` 回传 LLM，不调用 handler（对齐 input 校验语义；错误消息指明是 ctx 前置条件不满足，非 LLM 入参问题） |
-| 无声明 | 第二参无标注 / 内联字面量 / 裸标注 `AgentToolContext` / 无第二参 → 无 schema 无校验，ctx 原样透传（向后兼容） |
+| 无声明 | 第二参无标注 / 关键词类型（`unknown` 等） / 裸标注 `AgentToolContext` / 仅框架侧交叉 / 无第二参 → 无 schema 无校验，ctx 原样透传（向后兼容；内联字面量标注已支持——默认名 `${函数名}Ctx` 生成校验，见构建期行） |
 
 「构造不完全就不能调用」的强制点：**tool 的唯一受支持调用路径是真实分发管线 `executeToolCall`**（agent 派发——HTTP / 进程内任务 / 隔离任务三路径），ctx 在运行时校验（缺字段/错型拒绝执行）。测试不走 handler 直调——`@faapi/agent` 的 `callTool`（harness + executeToolCall 真实管线，ctx 装配错误响亮抛错；见 [callTool](../../../agent/src/callTool.md)），对位 HTTP 层 `createTestServer`。直调 `mod.handler(input, ctx)` 不是受支持场景：`ToolModule.handler` 参数为 `unknown[]`，编译期与运行时均无防护，业务字段缺失会静默执行（租户隔离穿底）。编程式 ctx 构造的完整性由 `createStandaloneToolContext` 泛型流型在编译期辅助拦截——构造时漏传业务字段，返回类型缺字段，赋给 handler 的 ctx 参数类型编译报错（见 [standaloneToolContext](../../../agent/src/standaloneToolContext.md)）。
 

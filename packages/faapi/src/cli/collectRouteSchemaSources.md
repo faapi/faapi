@@ -31,6 +31,20 @@ schema key 使用 `urlPath`（如 `/api/hello`）而非 `filePath`，因为 `url
 
 未声明次输入形参则不收集对应 schema：body 方法的 query 注入回退 `queryToObject` 裸字符串、DELETE body 注入原始解析值——与 6.19.x 及之前行为一致。
 
+## 内联形参标注的收集（`{ a: 1 }` 写法）
+
+input 形参标注除具名引用（`query: Query`）外，支持**内联类型字面量**（`query: { page: number }`）：
+
+- `analyzeInjectionInSourceFile` 对 TypeLiteral 标注置 `ParamMeta.inline = true`
+- 收集阶段经 `extractInlineParamTypeInfo`（ast/extractHandlerTypes）从标注节点直接解析，与具名路径同一套类型管线（`resolveTypeNode`）；schema 名仍为合成名 `<METHOD>Query` / `<METHOD>Params` / `<METHOD>Body`——schema 导出名本就不依赖标注具名
+- coerce 语义与具名形态完全一致（schema 名后缀正则推断，form 显式 `coerce=true`）
+
+约束：
+
+- **仅支持纯 TypeLiteral**：交叉（`{ a } & B`）、联合、关键词等其余标注形态不收集（静默无校验，与既往行为一致）；具名引用仍走 `resolver.resolve`
+- **合成名与文件内已有顶层类型声明同名 → 构建期抛 `SchemaExtractionError`**（如 `GET(query: { a: 1 })` 且同文件声明 `interface GETQuery`）——同名意味着校验源歧义，zod.js 会出现双重声明；要求改用具名标注或重命名声明
+- WS 路由不适用（Query/Params 是文件级约定声明，无形参标注可内联）
+
 ## 使用场景
 
 - `generateSchemaFiles` 调用本函数收集 sources，再基于 sources 生成各 `zod.js`（ref 解析用 `resolversByFile`）
@@ -60,7 +74,7 @@ function collectRouteSchemaSources(
 ## 关键行为
 
 - `sourceFile` 缺失时跳过该文件（不产出 sources）
-- `param?.typeName ? resolver.resolve(...) : null`：handler 无 input 类型参数时 `typeInfo` 为 null（不抛错）
+- 形参解析：`typeName` → `resolver.resolve`；`inline`（TypeLiteral 标注）→ `extractInlineParamTypeInfo` 从标注直接解析；两者皆无 → `typeInfo` 为 null（不抛错）
 - 入口类型解析失败（含不支持语法）抛 `SchemaExtractionError`——入口类型是校验的主体，不降级；与入口无关的类型不解析、不受影响
 - POST/PUT/PATCH 方法下，若 handler 声明 `form` 参数（而非 `body`），`collectRouteSchemaSources` 会用 `form` 参数的类型信息填充 `typeInfo`，并在 `RouteSchemaSource` 上设置 `coerce=true`。schema 名仍为 `POSTBody`（与 `body` 共享运行时 schema key），运行时 `validateInput` 无需感知 form/body 差异。
 
