@@ -1597,3 +1597,213 @@ describe('createTaskQueue — carry 执行上下文管道', () => {
     await queue2.stop();
   });
 });
+
+// ─── 全局 worker 并发预算（config.task.maxIsolatedWorkers） ─────────────
+
+describe('createTaskQueue — 全局 worker 并发预算', () => {
+  function hydrateIsolated(names: string[]) {
+    const registry = createTaskRegistry();
+    registry.hydrate(
+      names.map((name) => ({
+        name,
+        filePath: `dist/tasks/${name}/task.js`,
+        mode: 'isolated' as const,
+        timeoutMs: 60_000,
+      })),
+    );
+    return registry;
+  }
+
+  /** 直接构造 TaskDriverJob 调 process（绕开 fake.dispatch 共享 lastId 的并发撞 id 问题） */
+  function dispatchJob(
+    fake: ReturnType<typeof makeFakeDriver>,
+    name: string,
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const worker = fake.workers.get(name);
+    if (!worker) throw new Error(`no worker registered for "${name}"`);
+    return worker.process({
+      id,
+      name,
+      payload: {},
+      attempt: 1,
+      signal: signal ?? new AbortController().signal,
+    });
+  }
+
+  /** 派发链路全是微任务——真实定时器一拍即可跑完到「在跑/排队」稳态 */
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  function makeBudgetQueue(
+    names: string[],
+    maxIsolatedWorkers?: number,
+    runIsolatedImpl?: () => Promise<unknown>,
+  ) {
+    const runIsolated = vi.fn(runIsolatedImpl ?? (async () => 'from-worker'));
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      registry: hydrateIsolated(names),
+      rootDir: '/fake',
+      config: maxIsolatedWorkers !== undefined ? { task: { maxIsolatedWorkers } } : {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    return { queue, fake, runIsolated };
+  }
+
+  it('limit=2：4 个并发隔离派发峰值同时在跑为 2，全部完成后记录 done', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const gates: Array<() => void> = [];
+    const { queue, fake, runIsolated } = makeBudgetQueue(['t1', 't2', 't3', 't4'], 2, async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      inFlight -= 1;
+      return 'ok';
+    });
+    queue.start();
+    for (const name of ['t1', 't2', 't3', 't4']) await queue.enqueue(name);
+    const pending = [
+      dispatchJob(fake, 't1', 'j-1'),
+      dispatchJob(fake, 't2', 'j-2'),
+      dispatchJob(fake, 't3', 'j-3'),
+      dispatchJob(fake, 't4', 'j-4'),
+    ];
+    await flush();
+    expect(runIsolated).toHaveBeenCalledTimes(2);
+    expect(peak).toBe(2);
+    // 释放前两个席位 → 排队的 t3/t4 交接进入
+    gates.splice(0).forEach((release) => release());
+    await flush();
+    expect(runIsolated).toHaveBeenCalledTimes(4);
+    expect(peak).toBe(2);
+    gates.splice(0).forEach((release) => release());
+    await Promise.all(pending);
+    // enqueue 会先建 d-* 的 pending 记录（fake 驱动不自动消费）——按直接派发的 j-* id 断言
+    for (const [idx, name] of ['t1', 't2', 't3', 't4'].entries()) {
+      expect(queue.list(name).find((r) => r.id === `j-${idx + 1}`)).toMatchObject({
+        status: 'done',
+        result: 'ok',
+      });
+    }
+    await queue.stop();
+  });
+
+  it('席位等待超限（30s）：派发显式失败（IsolatedDispatchSaturatedError → failed），占位执行不受影响', async () => {
+    vi.useFakeTimers();
+    try {
+      const gates: Array<() => void> = [];
+      const { queue, fake, runIsolated } = makeBudgetQueue(['slow'], 1, () => {
+        void gates;
+        return new Promise<void>((resolve) => gates.push(() => resolve()));
+      });
+      queue.start();
+      await queue.enqueue('slow');
+      const first = dispatchJob(fake, 'slow', 'j-first');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queue.list('slow').find((r) => r.id === 'j-first')).toMatchObject({
+        status: 'running',
+      });
+      const second = dispatchJob(fake, 'slow', 'j-second').catch((err: Error) => err);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runIsolated).toHaveBeenCalledTimes(1);
+      // 推进到预算等待上限：第二个派发显式失败（不无限排队占坑）
+      await vi.advanceTimersByTimeAsync(30_000);
+      const err = (await second) as Error;
+      expect(err.name).toBe('IsolatedDispatchSaturatedError');
+      expect(err.message).toMatch(/global isolated worker budget/);
+      const failed = queue.list('slow').find((r) => r.id === 'j-second');
+      expect(failed).toMatchObject({ status: 'failed' });
+      expect(failed?.error).toMatch(/global isolated worker budget/);
+      // 占位执行不受波及
+      expect(queue.list('slow').find((r) => r.id === 'j-first')).toMatchObject({
+        status: 'running',
+      });
+      expect(runIsolated).toHaveBeenCalledTimes(1);
+      gates.splice(0).forEach((release) => release());
+      await first;
+      await queue.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('等待席位中 job signal abort：TaskCancelledError 记 cancelled，不占席位', async () => {
+    const gates: Array<() => void> = [];
+    const { queue, fake, runIsolated } = makeBudgetQueue(['slow'], 1, () => {
+      void gates;
+      return new Promise<void>((resolve) => gates.push(() => resolve()));
+    });
+    queue.start();
+    await queue.enqueue('slow');
+    const first = dispatchJob(fake, 'slow', 'j-first');
+    await flush();
+    const ctrl = new AbortController();
+    const second = dispatchJob(fake, 'slow', 'j-second', ctrl.signal).catch((err: Error) => err);
+    await flush();
+    expect(runIsolated).toHaveBeenCalledTimes(1);
+    ctrl.abort();
+    const err = (await second) as Error;
+    expect(err.name).toBe('TaskCancelledError');
+    expect(queue.list('slow').find((r) => r.id === 'j-second')).toMatchObject({
+      status: 'cancelled',
+    });
+    // 失败的等待不消耗席位：占位执行归还后预算清零
+    gates.splice(0).forEach((release) => release());
+    await first;
+    await queue.stop();
+  });
+
+  it('config.task.maxIsolatedWorkers 非法（0/-1/1.5/NaN）：构造队列即抛错（fail fast）', () => {
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() =>
+        createTaskQueue({
+          registry: hydrateIsolated(['t']),
+          rootDir: '/fake',
+          config: { task: { maxIsolatedWorkers: bad } },
+          driver: makeFakeDriver().driver,
+          loadTaskModule: async () => ({}),
+          loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+        }),
+      ).toThrow(/maxIsolatedWorkers/);
+    }
+  });
+
+  it('meta.maxOldGenerationSizeMb 透传 runIsolated；未声明不传该 key', async () => {
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      {
+        name: 'capped',
+        filePath: 'dist/tasks/capped/task.js',
+        mode: 'isolated',
+        timeoutMs: 60_000,
+        maxOldGenerationSizeMb: 256,
+      },
+      { name: 'free', filePath: 'dist/tasks/free/task.js', mode: 'isolated', timeoutMs: 60_000 },
+    ]);
+    const runIsolated = vi.fn(async () => 'ok');
+    const fake = makeFakeDriver();
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      loadTaskModule: async () => ({}),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    await queue.enqueue('capped');
+    await queue.enqueue('free');
+    await dispatchJob(fake, 'capped', 'j-1');
+    await dispatchJob(fake, 'free', 'j-2');
+    const calls = runIsolated.mock.calls as unknown as Array<[Record<string, unknown>]>;
+    expect(calls[0][0]).toMatchObject({ maxOldGenerationSizeMb: 256 });
+    expect(calls[1][0]).not.toHaveProperty('maxOldGenerationSizeMb');
+    await queue.stop();
+  });
+});

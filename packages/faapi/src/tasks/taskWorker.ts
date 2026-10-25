@@ -108,6 +108,13 @@ export interface TaskWorkerOptions {
    */
   graceMs?: number;
   /**
+   * worker 线程 V8 老生代堆上限（MB）——透传 worker_threads
+   * `resourceLimits.maxOldGenerationSizeMb`，超限 V8 终止线程（ERR_WORKER_OUT_OF_MEMORY
+   * 经 error 事件 reject → 任务 failed，驱动按 retries 重试）。来自 task meta
+   * `maxOldGenerationSizeMb`，未声明不传（worker 不设资源限制，与既有行为一致）
+   */
+  maxOldGenerationSizeMb?: number;
+  /**
    * 注册表快照（纯数据，postMessage 结构化克隆传入，worker 内重建只读视图注入
    * taskCtx.registries）——语义层从 `TaskRegistriesView` 生成，缺省为空视图
    */
@@ -217,6 +224,11 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
           rootDir: options.rootDir,
           agentModuleUrl: options.agentModuleUrl,
         } satisfies WorkerEntryData,
+        // 堆上限透传（meta.maxOldGenerationSizeMb）：超限 V8 杀线程，error 事件
+        // reject → 任务 failed；未声明不传——worker 不设资源限制
+        ...(options.maxOldGenerationSizeMb !== undefined
+          ? { resourceLimits: { maxOldGenerationSizeMb: options.maxOldGenerationSizeMb } }
+          : {}),
       });
     } catch (err) {
       reject(err);

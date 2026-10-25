@@ -104,6 +104,15 @@ export interface TaskConfig {
   /** 优雅停机时等待在跑任务的最长时间（毫秒，默认 10000；超时 abort） */
   shutdownTimeoutMs?: number;
   /**
+   * 跨任务全局隔离 worker 并发上限（每进程独立限额）——单任务并发
+   * （meta.concurrency，默认 1）只约束同名任务，N 个隔离任务并发时 worker 线程数
+   * 累加抢核，预算在派发层统一封顶。默认 `max(1, os.availableParallelism() - 1)`
+   * （预留 1 核给宿主事件循环）；超限的派发最多等待 30s，仍无席位则显式失败交驱动
+   * 按 retries 重试（不无限排队——pgboss expire_in 会把等待中的执行判失联重投）。
+   * 非法值（<1 或非整数）启动即报错
+   */
+  maxIsolatedWorkers?: number;
+  /**
    * 任务执行失败/取消钩子——每次 process 抛错后触发（含将重试的失败），
    * `info.willRetry` 按任务 meta.retries 推算、`info.cancelled` 标记框架终止；
    * 用于告警/死信上报等副作用，自身抛错 console.error 留痕

@@ -69,6 +69,7 @@ export async function run(payload, taskCtx) {
 - `taskCtx.suspend(state?)` 挂起（可选能力，与进程内 `TaskContext.suspend` 语义零差）：经 `{ type: 'suspend' }` 消息 RPC 回传宿主（`onSuspend` 回调由语义层注入，与进程内路径共用同一信封写入 `driver.taskState.set`），成功回 `{ type: 'suspend-result', seq, ok }`；宿主拒绝（驱动无 `taskState` 等）错误原样回传 reject。**state 须可结构化克隆**（不可克隆按执行错误处理）；挂起后 run 正常返回、宿主按 suspended 落账（不记 result、组记账不落定）；挂起的 RPC 调用随任务超时两段式取消一并终止。激活用 `tasks.resume`（state 经 `taskCtx.resumed` 回传——信封为纯数据，随 run 消息透传，首跑 `undefined`）。完整语义见 [taskSuspend.md](./taskSuspend.md)
 - `taskCtx.config` 为派发时刻的配置纯数据快照：语义层每次 dispatch 调 `collectConfigSnapshot` 投影（函数值不进快照——lifecycle 钩子/`task.onFailed`/log sink/middlewares 等宿主行为面不跨线程；其余值 `structuredClone` 保真；含非函数不可克隆值派发即显式报错列路径）——与 registries 快照同款边界与快照语义，读数据字段（端口/驱动选项/llms/业务自定义段）不再需要 payload 手工搬运。见 [configSnapshot.md](./configSnapshot.md)
 - 返回值必须可结构化克隆（纯数据）；不可克隆视为执行错误
+- `resourceLimits` 内存上限（可选）：task meta `maxOldGenerationSizeMb`（数字字面量，MB）透传给 Node Worker 的 `resourceLimits.maxOldGenerationSizeMb`——声明后 worker 堆超过该值即被 V8 终止（`ERR_WORKER_OUT_OF_MEMORY` 经 `error` 事件 reject，任务记 `failed` 交驱动按 `retries` 重试），内存失控显式失败而非拖慢整机。未声明不传 resourceLimits（Node 默认堆上限，行为不变）。执行器只透传不校验——值的提取与下限校验在 scanTasks 构建期（见 scanTasks.md）
 
 ## 边界取舍（文档必须显眼）
 
@@ -78,5 +79,5 @@ export async function run(payload, taskCtx) {
 
 ## 相关模块
 
-- `src/tasks/taskQueue.ts` — 语义层按 `meta.mode`（`worker.ts` → isolated）路由到本执行器
+- `src/tasks/taskQueue.ts` — 语义层按 `meta.mode`（`worker.ts` → isolated）路由到本执行器；派发前先获得全局 worker 并发席位（见 [isolatedWorkerBudget.md](./isolatedWorkerBudget.md)）
 - `src/tasks/driverTypes.ts` — externalSignal 来源（驱动停机 abort）

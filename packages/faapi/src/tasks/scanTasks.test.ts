@@ -128,7 +128,7 @@ export function run() {}
 `,
     );
     await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
-      /task\.ts\) declares timeoutMs\/graceMs — in-process tasks \(task\.ts\) do not take timeout settings/,
+      /task\.ts\) declares timeoutMs\/graceMs\/maxOldGenerationSizeMb — in-process tasks \(task\.ts\) do not take timeout or heap settings/,
     );
     await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
       /rename the file to worker\.ts/,
@@ -392,5 +392,76 @@ describe('scanTasks meta 字面量守卫', () => {
       concurrency: 2,
       retries: 3,
     });
+  });
+});
+
+describe('scanTasks maxOldGenerationSizeMb（worker 堆上限，隔离专用）', () => {
+  it('worker.ts 声明数字字面量时提取进清单（下划线分隔同样解析）', async () => {
+    writeTask(
+      'src/tasks/mem-heavy/worker.ts',
+      `export const task = {\n  timeoutMs: 60_000,\n  maxOldGenerationSizeMb: 512,\n};\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks[0]).toMatchObject({
+      mode: 'isolated',
+      timeoutMs: 60_000,
+      maxOldGenerationSizeMb: 512,
+    });
+  });
+
+  it('未声明时清单缺省该字段（Node 默认堆上限，行为不变）', async () => {
+    writeTask(
+      'src/tasks/plain/worker.ts',
+      `export const task = {\n  timeoutMs: 60_000,\n};\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect('maxOldGenerationSizeMb' in tasks[0]!).toBe(false);
+  });
+
+  it('task.ts（进程内）声明时构建期报错（迁移指引：worker.ts 专属声明）', async () => {
+    writeTask(
+      'src/tasks/wrong-file/task.ts',
+      `export const task = { maxOldGenerationSizeMb: 256 };\nexport function run() {}\n`,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /task\.ts\) declares timeoutMs\/graceMs\/maxOldGenerationSizeMb/,
+    );
+  });
+
+  it('task.ts 声明该字段但值为表达式时同样报迁移错（迁移指引优先于字面量守卫）', async () => {
+    writeTask(
+      'src/tasks/wrong-expr/task.ts',
+      `export const task = { maxOldGenerationSizeMb: 128 * 2 };\nexport function run() {}\n`,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /task\.ts\) declares timeoutMs\/graceMs\/maxOldGenerationSizeMb/,
+    );
+  });
+
+  it('worker.ts 声明但值是表达式时构建期抛错（字面量守卫，不静默忽略）', async () => {
+    writeTask(
+      'src/tasks/expr-worker/worker.ts',
+      `export const task = {\n  timeoutMs: 60_000,\n  maxOldGenerationSizeMb: 128 * 2,\n};\nexport function run() {}\n`,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/maxOldGenerationSizeMb/);
+  });
+
+  it('worker.ts 声明低于下限 16 时扫描期报错（冷启动本身需要十余 MB 堆）', async () => {
+    writeTask(
+      'src/tasks/too-small/worker.ts',
+      `export const task = {\n  timeoutMs: 60_000,\n  maxOldGenerationSizeMb: 8,\n};\nexport function run() {}\n`,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /maxOldGenerationSizeMb 8 is below the minimum 16/,
+    );
+  });
+
+  it('worker.ts 恰为下限 16 时通过（边界）', async () => {
+    writeTask(
+      'src/tasks/edge-min/worker.ts',
+      `export const task = {\n  timeoutMs: 60_000,\n  maxOldGenerationSizeMb: 16,\n};\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks[0]).toMatchObject({ maxOldGenerationSizeMb: 16 });
   });
 });

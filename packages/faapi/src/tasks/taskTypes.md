@@ -40,7 +40,7 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 进程内与隔离是**两种外部声明 API**，文件名即语义（扫描期判定，构建期显式失败，不静默降级）：
 
 - `src/tasks/<dir>/task.ts` → **进程内任务**（`mode: 'inline'`）：`FaapiTaskMeta = { concurrency?, retries?, cron? }`——**不收 `timeoutMs` / `graceMs`**（声明即构建期报错，迁移指引：改名 `worker.ts`；超时上限保护不是隔离的理由，进程内需要 deadline 自行 `Promise.race`）
-- `src/tasks/<dir>/worker.ts` → **隔离任务**（`mode: 'isolated'`）：`FaapiWorkerTaskMeta = { timeoutMs, graceMs?, concurrency?, retries?, cron? }`——**`timeoutMs` 必填**（隔离语义即"需要真取消的长任务"，执行预算显式声明；上下限校验见 taskWorker.md）
+- `src/tasks/<dir>/worker.ts` → **隔离任务**（`mode: 'isolated'`）：`FaapiWorkerTaskMeta = { timeoutMs, graceMs?, maxOldGenerationSizeMb?, concurrency?, retries?, cron? }`——**`timeoutMs` 必填**（隔离语义即"需要真取消的长任务"，执行预算显式声明；上下限校验见 taskWorker.md）；`maxOldGenerationSizeMb` 为可选 worker 堆上限（MB，数字字面量，下限 16——透传 Node `resourceLimits`，超限 V8 杀 worker 任务显式失败；扫描期收窄与校验见 scanTasks.md）
 
 `cron` 两种声明通用（cron 到点按任务名入队，与执行路径无关）。清单记录携带 `mode`（TaskManifest / TaskMetadata / SerializedTaskRecord 必填字段），运行时判据即 `mode`（taskQueue.runJob），不再从 timeoutMs 有无推断。声明文件的完整扫描契约见 [scanTasks.md](./scanTasks.md)。
 

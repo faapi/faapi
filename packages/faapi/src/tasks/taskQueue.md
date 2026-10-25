@@ -21,6 +21,7 @@
 - worker 执行（驱动按并发/重试策略调 `process`），按任务 mode（声明文件种类：`task.ts` 进程内 / `worker.ts` 隔离，见 scanTasks.md）分两条路径，**均注入 `taskCtx.registries`（app 注册表只读视图，任务侧组装 agent 用，见 taskTypes.md）**：
   - **进程内**（`task.ts`，默认）：import 任务模块（缓存），调用 `run(payload, { signal, job, config, registries })`——registries 为活引用视图（`createAppBase` 创建队列时传入）；config 为活引用全量配置（`FaapiContextConfig`，与 handler `ctx.config` 同一对象）
   - **隔离执行**（`worker.ts` 声明，`timeoutMs` 必填 60s ~ 23h——扫描期校验，理由见 taskWorker.md）：走 taskWorker 独立线程执行，超时两段式取消（abort 信号宽限 → terminate 硬杀）——判定超时即执行真正终止，宽限期默认 5s、经 task meta `graceMs` 按任务配置（详见 taskWorker.md）；registries 以纯数据快照传入（worker 内重建视图，派发时刻快照语义）；config 以 `collectConfigSnapshot` 纯数据快照随 run 消息下发（函数值不进快照，非函数不可克隆值派发显式报错，见 configSnapshot.md）；`resumed` 随 run 消息透传、`taskCtx.suspend` 经 RPC 回传宿主执行同一信封写入（与进程内路径共用 `persistSuspendEnvelope`，见 taskSuspend.md）
+  - **全局 worker 并发预算**（隔离派发前）：先经 [`IsolatedWorkerBudget`](./isolatedWorkerBudget.md) `acquire(job.signal)` 获得执行席位再调执行器，执行落定（成功/失败/取消）后 `release()`——每进程同时运行的 worker 数不超过上限（`config.task.maxIsolatedWorkers`，默认 `max(1, os.availableParallelism() - 1)`，构造队列时解析，非法值启动即报错）。席位等待上限 30s（低于 pgboss expire_in 的 60s 缓冲，不侵蚀执行预算）：超限抛 `IsolatedDispatchSaturatedError` 记 `failed` 交驱动按 `retries` 重试，等待中 signal abort 记 `cancelled`；**排队等待不计入 `timeoutMs`**（执行预算从获得席位起算）。进程内任务不经预算，meta `maxOldGenerationSizeMb` 随隔离派发透传执行器（resourceLimits，见 taskWorker.md）
 
 - 轻量 LLM 补全通道（`taskCtx.llm`，可选）双路径注入：**进程内**从 `AppRegistries.llm` store 惰性读取（`TaskQueueDeps.llm`，插件晚于队列构造注册，执行时刻取值才可见）；**隔离**传 `agent.llms` 纯数据快照（`TaskQueueDeps.llms`），worker 内重建。详见 taskTypes.md 与 `@faapi/agent` 的 lightComplete.md
   - 每次执行更新记录 `running`（attempts 递增），返回写 `done`（保留 result），抛错写 `failed`（保留 error）后向上传播——是否重试由驱动决定；执行中 `taskCtx.progress(value)` 上报的进度记入记录 `progress` 字段（仅 running 状态生效，两条执行路径语义一致，见 taskTypes.md）；`taskCtx.emit(data)` 发射的过程事件落本层事件缓冲并扇出订阅者（仅 running 状态生效，重试不清事件，随任务记录生命周期淘汰——订阅/查询/保留边界见 [taskEvents.md](./taskEvents.md)）
@@ -36,6 +37,7 @@
 ## 相关模块
 
 - `src/tasks/taskWorker.ts` — 隔离执行器（`worker.ts` 隔离任务）
+- `src/tasks/isolatedWorkerBudget.ts` — 全局 worker 并发预算（信号量 + 有界等待）
 - `src/tasks/driverTypes.ts` — 驱动边界（并发/重试/停机语义在驱动侧）
 - `src/tasks/taskRegistry.ts` — 派发时查任务 meta
 - `src/cli/generateTaskArtifacts.ts` — zod.js 路径规则（与任务模块同目录）

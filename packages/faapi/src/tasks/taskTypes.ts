@@ -47,6 +47,14 @@ export interface FaapiWorkerTaskMeta {
    * 宽限期（判定取消即硬杀）。
    */
   graceMs?: number;
+  /**
+   * worker 线程 V8 老生代堆上限（MB，仅隔离任务生效）：透传 worker_threads
+   * `resourceLimits.maxOldGenerationSizeMb`，超限 V8 以 ERR_WORKER_OUT_OF_MEMORY
+   * 终止线程，任务按执行失败处理（failed，驱动按 retries 重试）。下限 16
+   * （scanTasks 校验），未声明不设限制（继承宿主进程默认）。内存密集任务的
+   * 资源护栏之一（跨任务全局并发预算见 config.task.maxIsolatedWorkers）。
+   */
+  maxOldGenerationSizeMb?: number;
   /** 同名任务的最大并行执行数（默认 1） */
   concurrency?: number;
   /** 失败重试次数（默认 0——失败即 failed，不重试） */
@@ -72,6 +80,8 @@ export interface TaskManifest {
   timeoutMs?: number;
   /** 隔离任务取消宽限期 */
   graceMs?: number;
+  /** 隔离任务 worker 堆上限（MB），未声明不设限制 */
+  maxOldGenerationSizeMb?: number;
 }
 
 /**
@@ -90,6 +100,8 @@ export interface TaskMetadata {
   timeoutMs?: number;
   /** 取消宽限期（毫秒，仅隔离任务生效），未声明用框架默认 5s */
   graceMs?: number;
+  /** worker 堆上限（MB，仅隔离任务生效），未声明不设限制 */
+  maxOldGenerationSizeMb?: number;
 }
 
 /**

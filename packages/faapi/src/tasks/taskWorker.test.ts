@@ -1260,3 +1260,45 @@ describe('buildAgentRpc', () => {
     ).rejects.toThrow(/agent RPC "tool-call" payload is not cloneable/);
   });
 });
+
+// ─── resourceLimits 透传（meta.maxOldGenerationSizeMb → worker_threads） ──
+
+describe('runTaskInWorker · resourceLimits 透传', () => {
+  it('声明 maxOldGenerationSizeMb：worker 内 resourceLimits.maxOldGenerationSizeMb 生效', async () => {
+    const modulePath = writeTaskModule(
+      'mem-limit',
+      `import { resourceLimits } from 'node:worker_threads';
+       export function run() {
+         return { max: resourceLimits ? resourceLimits.maxOldGenerationSizeMb : null };
+       }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      maxOldGenerationSizeMb: 64,
+    });
+    expect(result).toEqual({ max: 64 });
+  });
+
+  it('未声明：不传 resourceLimits（worker 用 Node 默认堆上限，看不到自定义值）', async () => {
+    const modulePath = writeTaskModule(
+      'mem-default',
+      `import { resourceLimits } from 'node:worker_threads';
+       export function run() {
+         return { max: resourceLimits ? resourceLimits.maxOldGenerationSizeMb : null };
+       }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+    });
+    // Node 24：未传 resourceLimits 时 worker 内是默认对象（如 maxOldGenerationSizeMb
+    // 4096）而非 null——断言与声明路径（64）可区分即可，不绑死 Node 版本默认数
+    const { max } = result as { max: number | null };
+    expect(max).not.toBe(64);
+  });
+});

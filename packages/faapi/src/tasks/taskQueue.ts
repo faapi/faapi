@@ -1,11 +1,13 @@
 import path from 'node:path';
 import { ValidationError } from '../errors/httpErrors';
 import { runTaskInWorker, TaskCancelledError } from './taskWorker';
+import { IsolatedWorkerBudget, resolveDefaultIsolatedWorkerLimit } from './isolatedWorkerBudget';
 import { collectConfigSnapshot } from './configSnapshot';
 import { createTaskToolContext } from './taskToolContext';
 import { createEmptyTaskRegistriesView } from '../injection/registries';
 import { createLogger, getEffectiveLogLevel, writeLogEntry } from '../loggers/logger';
 import type { AgentMetadata } from '../ast/extractAgentMetadata';
+import type { TaskConfig } from '../configs/configTypes';
 import type { TaskDriver, TaskDriverJob, TaskResumeState, TaskStateEntry } from './driverTypes';
 import type {
   TaskClient,
@@ -127,6 +129,17 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
 
   /** 任务侧注册表只读视图（缺省空视图——直接构造队列的测试/嵌入场景） */
   const registriesView = deps.registries ?? createEmptyTaskRegistriesView();
+
+  /**
+   * 全局隔离 worker 并发预算（isolatedWorkerBudget.md）：config.task.maxIsolatedWorkers
+   * 配置，默认 `max(1, availableParallelism() - 1)`（预留 1 核给宿主事件循环）。
+   * 配置非法（<1/非整数）构造期即抛错（fail fast——启动失败早于任何任务派发）；
+   * 每 createTaskQueue 一份（每进程一个队列实例 = 每进程一份预算）
+   */
+  const isolatedBudget = new IsolatedWorkerBudget(
+    (deps.config.task as TaskConfig | undefined)?.maxIsolatedWorkers ??
+      resolveDefaultIsolatedWorkerLimit(),
+  );
 
   /** 任务记录（id → job；跨驱动一致的本地快照） */
   const records = new Map<string, TaskJob>();
@@ -461,134 +474,151 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               signal: job.signal,
             })
           : undefined;
-        result = await (deps.runIsolated ?? runTaskInWorker)({
-          taskModulePath: path.resolve(rootDir, meta.filePath),
-          // 隔离 agent 通道的 schema 解析器定位根（随 workerData 下发）
-          rootDir,
-          payload: job.payload,
-          taskCtx: {
-            resourcesDir: deps.resourcesDir,
-            job: { id: job.id, name: job.name, attempt: job.attempt },
-            // config 纯数据快照随 run 消息下发（collectConfigSnapshot 投影——函数
-            // 值不进快照与 registries 快照同边界；非函数不可克隆值派发显式报错，
-            // 见 configSnapshot.md），worker 内 taskCtx.config 读取
-            config: collectConfigSnapshot(deps.config),
-            // 执行上下文快照（enqueue 时刻已校验纯数据）同 run 消息下发
-            carry: job.carry ?? {},
-            // 挂起/激活上下文透传（信封为纯数据；首跑不传）
-            ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
-          },
-          registries: snapshotRegistries(),
-          // agent.llms 纯数据快照随 workerData 下发，worker 内动态加载 @faapi/agent
-          // 重建轻量补全通道（taskCtx.llm）——llms 未配置时不传
-          llms: deps.llms,
-          // 日志配置随 workerData 下发（纯数据），worker 内联重建 taskCtx.log，
-          // 条目回传宿主走统一管道（scope/fields 与进程内路径一致）
-          log: {
-            level: getEffectiveLogLevel(),
-            scope: `task:${job.name}`,
-            fields: { jobId: job.id, task: job.name, attempt: job.attempt },
-          },
-          timeoutMs: meta.timeoutMs,
-          graceMs: meta.graceMs,
-          externalSignal: job.signal,
-          onProgress: (value) => {
-            if (record.status === 'running') record.progress = value;
-          },
-          // 隔离路径事件回传：与进程内 emit 同一落账通道（仅 running 采纳；宽限期内
-          // 的消息在 taskWorker 消息循环即被丢弃——取消判定即终局，与 progress 同口径）
-          onEvent: (value) => {
-            if (record.status === 'running') appendEvent(record, value);
-          },
-          onLog: writeLogEntry,
-          // 隔离路径的 taskCtx.tasks 为 postMessage RPC 代理——宿主侧按方法名
-          // 分派到队列本体（与 ctx.tasks / app.tasks 同一实例），结果/错误按 seq 回传；
-          // 链式投递注入调用方自身 job id（与进程内 scoped 客户端同语义——任务内
-          // 自续投的活跃查证排除自身）
-          onTasksCall: async (method, args) => {
-            if (!TASK_CLIENT_METHODS.has(method)) {
-              throw new Error(`[faapi] Unknown task client method "${method}"`);
-            }
-            let callArgs = args;
-            // enqueue 系方法自动继承当前执行的 carry（与进程内 scoped client 同语义）
-            if (method === 'enqueue' || method === 'enqueueGroup') {
-              const idx = method === 'enqueue' ? 2 : 2;
-              const opts = (args[idx] as { carry?: Record<string, unknown> } | undefined) ?? {};
-              if (opts.carry === undefined && job.carry !== undefined) {
-                callArgs = [...args];
-                callArgs[idx] = { ...opts, carry: job.carry };
+        // 全局 worker 并发预算（config.task.maxIsolatedWorkers，默认预留 1 核）：
+        // 跨任务封顶同时在跑的隔离 worker 数——单任务 concurrency 挡不住多任务
+        // 并发的线程数累加。等待上限 30s，超限显式失败交驱动重试（不无限排队——
+        // pgboss expire_in 会把等待中的执行判失联重投）；等待不计入 timeoutMs
+        // （超时从下面真正派发起算）；等待中 job.signal abort 抛 TaskCancelledError
+        // 记 cancelled。try/finally 保证 runner 调用（含 collectConfigSnapshot 对
+        // 不可克隆配置的同步抛错）任何退出路径都归还席位。语义见 isolatedWorkerBudget.md
+        await isolatedBudget.acquire(job.signal);
+        try {
+          result = await (deps.runIsolated ?? runTaskInWorker)({
+            taskModulePath: path.resolve(rootDir, meta.filePath),
+            // 隔离 agent 通道的 schema 解析器定位根（随 workerData 下发）
+            rootDir,
+            payload: job.payload,
+            taskCtx: {
+              resourcesDir: deps.resourcesDir,
+              job: { id: job.id, name: job.name, attempt: job.attempt },
+              // config 纯数据快照随 run 消息下发（collectConfigSnapshot 投影——函数
+              // 值不进快照与 registries 快照同边界；非函数不可克隆值派发显式报错，
+              // 见 configSnapshot.md），worker 内 taskCtx.config 读取
+              config: collectConfigSnapshot(deps.config),
+              // 执行上下文快照（enqueue 时刻已校验纯数据）同 run 消息下发
+              carry: job.carry ?? {},
+              // 挂起/激活上下文透传（信封为纯数据；首跑不传）
+              ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
+            },
+            registries: snapshotRegistries(),
+            // agent.llms 纯数据快照随 workerData 下发，worker 内动态加载 @faapi/agent
+            // 重建轻量补全通道（taskCtx.llm）——llms 未配置时不传
+            llms: deps.llms,
+            // 日志配置随 workerData 下发（纯数据），worker 内联重建 taskCtx.log，
+            // 条目回传宿主走统一管道（scope/fields 与进程内路径一致）
+            log: {
+              level: getEffectiveLogLevel(),
+              scope: `task:${job.name}`,
+              fields: { jobId: job.id, task: job.name, attempt: job.attempt },
+            },
+            timeoutMs: meta.timeoutMs,
+            graceMs: meta.graceMs,
+            // worker 堆上限透传（meta.maxOldGenerationSizeMb；未声明不传该 key——
+            // worker 不设资源限制，与既有行为一致）
+            ...(meta.maxOldGenerationSizeMb !== undefined
+              ? { maxOldGenerationSizeMb: meta.maxOldGenerationSizeMb }
+              : {}),
+            externalSignal: job.signal,
+            onProgress: (value) => {
+              if (record.status === 'running') record.progress = value;
+            },
+            // 隔离路径事件回传：与进程内 emit 同一落账通道（仅 running 采纳；宽限期内
+            // 的消息在 taskWorker 消息循环即被丢弃——取消判定即终局，与 progress 同口径）
+            onEvent: (value) => {
+              if (record.status === 'running') appendEvent(record, value);
+            },
+            onLog: writeLogEntry,
+            // 隔离路径的 taskCtx.tasks 为 postMessage RPC 代理——宿主侧按方法名
+            // 分派到队列本体（与 ctx.tasks / app.tasks 同一实例），结果/错误按 seq 回传；
+            // 链式投递注入调用方自身 job id（与进程内 scoped 客户端同语义——任务内
+            // 自续投的活跃查证排除自身）
+            onTasksCall: async (method, args) => {
+              if (!TASK_CLIENT_METHODS.has(method)) {
+                throw new Error(`[faapi] Unknown task client method "${method}"`);
               }
-            } else if (method === 'enqueueChain') {
-              const opts = (args[2] as { carry?: Record<string, unknown> } | undefined) ?? {};
-              const needsCarry = opts.carry === undefined && job.carry !== undefined;
-              callArgs = [...args];
-              callArgs[2] = {
-                ...opts,
-                ...(needsCarry ? { carry: job.carry } : {}),
-                excludeJobId: job.id,
-              };
-            }
-            const fn = (queue as unknown as Record<string, (...a: unknown[]) => unknown>)[
-              method
-            ] as (...a: unknown[]) => unknown;
-            return fn.apply(queue, callArgs);
-          },
-          // 隔离路径挂起：worker 内 taskCtx.suspend 经 RPC 回传宿主执行同一信封
-          // 写入（与进程内 suspend 共用 persistSuspendEnvelope，语义零差——见
-          // taskSuspend.md），宿主写入完成后回传 worker 继续执行；成功后落
-          // suspended 标记（完成分支据此转 suspended）
-          onSuspend: async (state?: unknown) => {
-            await persistSuspendEnvelope(driver, job, state);
-            suspended = true;
-          },
-          // 隔离 agent RPC：按 kind 分派到执行器方法（before-tool-call / tool-call /
-          // filter-tools / resolve-sub-agent-input / resolve-sub-agent-context），
-          // 未知 kind 显式抛错。结果/错误按 seq 回传 worker（克隆边界在 taskWorker
-          // 回传层处理——不可克隆按执行错误回传）
-          onAgentCall: agentRunner
-            ? async (kind, payload) => {
-                const p = payload as {
-                  toolName?: string;
-                  subName?: string;
-                  agentName?: string;
-                  depth?: number;
-                  turn?: number;
-                  phase?: string;
-                  args?: Record<string, unknown>;
-                  tools?: unknown[];
-                };
-                switch (kind) {
-                  case 'before-tool-call':
-                    return agentRunner.beforeToolCall(agentHostCtx!, p.toolName!, p.args ?? {});
-                  case 'tool-call':
-                    return agentRunner.toolCall(agentHostCtx!, p.toolName!, p.args ?? {});
-                  case 'filter-tools':
-                    return agentRunner.filterTools(agentHostCtx!, p.tools ?? []);
-                  case 'resolve-sub-agent-input':
-                    return agentRunner.resolveSubAgentInput(
-                      agentHostCtx!,
-                      p.subName!,
-                      p.args ?? {},
-                    );
-                  case 'resolve-sub-agent-context':
-                    return agentRunner.resolveSubAgentContext(
-                      agentHostCtx!,
-                      p.subName!,
-                      p.args ?? {},
-                    );
-                  case 'resolve-reminders':
-                    return agentRunner.resolveReminders(agentHostCtx!, {
-                      agentName: p.agentName!,
-                      depth: p.depth ?? 0,
-                      turn: p.turn ?? 0,
-                      phase: p.phase === 'everyTurn' ? 'everyTurn' : 'once',
-                    });
-                  default:
-                    throw new Error(`[faapi] Unknown agent RPC kind "${kind}"`);
+              let callArgs = args;
+              // enqueue 系方法自动继承当前执行的 carry（与进程内 scoped client 同语义）
+              if (method === 'enqueue' || method === 'enqueueGroup') {
+                const idx = method === 'enqueue' ? 2 : 2;
+                const opts = (args[idx] as { carry?: Record<string, unknown> } | undefined) ?? {};
+                if (opts.carry === undefined && job.carry !== undefined) {
+                  callArgs = [...args];
+                  callArgs[idx] = { ...opts, carry: job.carry };
                 }
+              } else if (method === 'enqueueChain') {
+                const opts = (args[2] as { carry?: Record<string, unknown> } | undefined) ?? {};
+                const needsCarry = opts.carry === undefined && job.carry !== undefined;
+                callArgs = [...args];
+                callArgs[2] = {
+                  ...opts,
+                  ...(needsCarry ? { carry: job.carry } : {}),
+                  excludeJobId: job.id,
+                };
               }
-            : undefined,
-        });
+              const fn = (queue as unknown as Record<string, (...a: unknown[]) => unknown>)[
+                method
+              ] as (...a: unknown[]) => unknown;
+              return fn.apply(queue, callArgs);
+            },
+            // 隔离路径挂起：worker 内 taskCtx.suspend 经 RPC 回传宿主执行同一信封
+            // 写入（与进程内 suspend 共用 persistSuspendEnvelope，语义零差——见
+            // taskSuspend.md），宿主写入完成后回传 worker 继续执行；成功后落
+            // suspended 标记（完成分支据此转 suspended）
+            onSuspend: async (state?: unknown) => {
+              await persistSuspendEnvelope(driver, job, state);
+              suspended = true;
+            },
+            // 隔离 agent RPC：按 kind 分派到执行器方法（before-tool-call / tool-call /
+            // filter-tools / resolve-sub-agent-input / resolve-sub-agent-context /
+            // resolve-reminders），未知 kind 显式抛错。结果/错误按 seq 回传 worker
+            // （克隆边界在 taskWorker 回传层处理——不可克隆按执行错误回传）
+            onAgentCall: agentRunner
+              ? async (kind, payload) => {
+                  const p = payload as {
+                    toolName?: string;
+                    subName?: string;
+                    args?: Record<string, unknown>;
+                    tools?: unknown[];
+                    agentName?: string;
+                    depth?: number;
+                    turn?: number;
+                    phase?: string;
+                  };
+                  switch (kind) {
+                    case 'before-tool-call':
+                      return agentRunner.beforeToolCall(agentHostCtx!, p.toolName!, p.args ?? {});
+                    case 'tool-call':
+                      return agentRunner.toolCall(agentHostCtx!, p.toolName!, p.args ?? {});
+                    case 'filter-tools':
+                      return agentRunner.filterTools(agentHostCtx!, p.tools ?? []);
+                    case 'resolve-sub-agent-input':
+                      return agentRunner.resolveSubAgentInput(
+                        agentHostCtx!,
+                        p.subName!,
+                        p.args ?? {},
+                      );
+                    case 'resolve-sub-agent-context':
+                      return agentRunner.resolveSubAgentContext(
+                        agentHostCtx!,
+                        p.subName!,
+                        p.args ?? {},
+                      );
+                    case 'resolve-reminders':
+                      return agentRunner.resolveReminders(agentHostCtx!, {
+                        agentName: p.agentName!,
+                        depth: p.depth ?? 0,
+                        turn: p.turn ?? 0,
+                        phase: p.phase === 'everyTurn' ? 'everyTurn' : 'once',
+                      });
+                    default:
+                      throw new Error(`[faapi] Unknown agent RPC kind "${kind}"`);
+                  }
+                }
+              : undefined,
+          });
+        } finally {
+          isolatedBudget.release();
+        }
       } else {
         let mod = moduleCache.get(job.name);
         if (!mod) {

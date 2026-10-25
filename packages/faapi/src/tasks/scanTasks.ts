@@ -39,9 +39,20 @@ const CONCURRENCY_RE = new RegExp(`(?:^|\\n)\\s*concurrency:\\s*${NUM_LITERAL}`)
 const RETRIES_RE = new RegExp(`(?:^|\\n)\\s*retries:\\s*${NUM_LITERAL}`);
 const TIMEOUT_MS_RE = new RegExp(`(?:^|\\n)\\s*timeoutMs:\\s*${NUM_LITERAL}`);
 const GRACE_MS_RE = new RegExp(`(?:^|\\n)\\s*graceMs:\\s*${NUM_LITERAL}`);
+const MAX_OLD_GEN_RE = new RegExp(
+  // 值后必须紧跟 `,`/`}`/换行/结尾：`128 * 2` 这类多行表达式不能被前导字面量
+  // 静默截取（128 * 2 意图是 256，截取 128 是静默错值——交给字面量守卫显式抛错）
+  `(?:^|\\n)\\s*maxOldGenerationSizeMb:\\s*${NUM_LITERAL}(?=\\s*(?:,|\\}|\\n|$))`,
+);
 
 /** 数字字面量 meta 字段（字面量守卫的宽松检测清单，cron 单列为字符串字面量） */
-const NUMERIC_META_FIELDS = ['concurrency', 'retries', 'timeoutMs', 'graceMs'] as const;
+const NUMERIC_META_FIELDS = [
+  'concurrency',
+  'retries',
+  'timeoutMs',
+  'graceMs',
+  'maxOldGenerationSizeMb',
+] as const;
 const STRING_META_FIELDS = ['cron'] as const;
 const ALL_META_FIELDS: readonly string[] = [...NUMERIC_META_FIELDS, ...STRING_META_FIELDS];
 
@@ -135,6 +146,14 @@ export const MIN_ISOLATED_TIMEOUT_MS = 60_000;
 export const MAX_ISOLATED_TIMEOUT_MS = 23 * 60 * 60_000;
 
 /**
+ * maxOldGenerationSizeMb 最小值（16MB）：worker 堆上限低于 16MB 时 V8 在任务模块
+ * 加载阶段就会 OOM（ERR_WORKER_OUT_OF_MEMORY）——任务做任何事之前即被杀，声明了
+ * 等于没声明。下限只挡明显失配的声明，不设上限（业务按机器内存自行量体裁衣；
+ * 全局并发预算见 config.task.maxIsolatedWorkers，两者配合兜住 CPU/内存密集场景）
+ */
+export const MIN_WORKER_MAX_OLD_GEN_MB = 16;
+
+/**
  * 从源码相对路径推导任务名
  *
  * `src/tasks/send-email/task.ts` → `'send-email'`
@@ -214,16 +233,23 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
     const retries = RETRIES_RE.exec(source)?.[1];
     const timeoutMs = TIMEOUT_MS_RE.exec(source)?.[1];
     const graceMs = GRACE_MS_RE.exec(source)?.[1];
+    const maxOldGenerationSizeMb = MAX_OLD_GEN_RE.exec(source)?.[1];
     const declared = detectDeclaredMetaFields(source);
 
     // 两种声明 API 的 meta 收窄校验（优先于字面量守卫——迁移指引比"值非法"更有用）
-    if (mode === 'inline' && (declared.has('timeoutMs') || declared.has('graceMs'))) {
+    if (
+      mode === 'inline' &&
+      (declared.has('timeoutMs') ||
+        declared.has('graceMs') ||
+        declared.has('maxOldGenerationSizeMb'))
+    ) {
       throw new Error(
-        `[faapi] Task "${name}" (task.ts) declares timeoutMs/graceMs — in-process tasks (task.ts) ` +
-          'do not take timeout settings. Execution path is decided by the declaration file, not by ' +
-          'timeoutMs: to run isolated with real cancellation, rename the file to worker.ts and declare ' +
-          'a required timeoutMs (60s–23h); for an in-process deadline, race your work against a timer ' +
-          'with Promise.race. Remove timeoutMs/graceMs from task.ts.',
+        `[faapi] Task "${name}" (task.ts) declares timeoutMs/graceMs/maxOldGenerationSizeMb — in-process tasks (task.ts) ` +
+          'do not take timeout or heap settings. Execution path is decided by the declaration file, not by ' +
+          'timeoutMs or maxOldGenerationSizeMb: to run isolated with real cancellation and a worker heap cap, ' +
+          'rename the file to worker.ts and declare a required timeoutMs (60s–23h); for an in-process deadline, ' +
+          'race your work against a timer with Promise.race. ' +
+          'Remove timeoutMs/graceMs/maxOldGenerationSizeMb from task.ts.',
       );
     }
     // 声明了 timeoutMs 但严格提取不到（单行对象写法/表达式/动态值）时不报必填错——
@@ -243,6 +269,7 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
       retries: retries !== undefined,
       timeoutMs: timeoutMs !== undefined,
       graceMs: graceMs !== undefined,
+      maxOldGenerationSizeMb: maxOldGenerationSizeMb !== undefined,
     };
     throwIgnoredMetaFields(name, detectIgnoredMetaFields(source, strictHit));
 
@@ -273,6 +300,18 @@ export async function scanTasks(rootDir: string, patterns: string[]): Promise<Ta
       manifest.timeoutMs = value;
     }
     if (graceMs !== undefined) manifest.graceMs = parseNumericLiteral(graceMs);
+    if (maxOldGenerationSizeMb !== undefined) {
+      const value = parseNumericLiteral(maxOldGenerationSizeMb);
+      if (value < MIN_WORKER_MAX_OLD_GEN_MB) {
+        throw new Error(
+          `[faapi] Task "${name}" maxOldGenerationSizeMb ${value} is below the minimum ${MIN_WORKER_MAX_OLD_GEN_MB} MB. ` +
+            'A worker heap cap below 16 MB gets killed by V8 during module loading, before the task can do ' +
+            'any work. Raise it (memory-heavy workers typically use 512–2048), or remove the field to ' +
+            'inherit the host process default (no cap).',
+        );
+      }
+      manifest.maxOldGenerationSizeMb = value;
+    }
 
     tasks.push(manifest);
   }
