@@ -1,5 +1,30 @@
 # @faapi/faapi
 
+## 7.4.0
+
+### Minor Changes
+
+- 3d9aaf1: tool 调用收口到真实分发管线：新增 `callTool` 测试辅助（agent 包），`createAgentTestHarness` 移除 `loadToolModule` 直调面（faapi 包）。背景：ctx 声明即校验的运行时门禁只在 `executeToolCall`（agent 派发唯一路径），历史测试姿势 `harness.loadToolModule(...)` + `mod.handler(input, ctx)` 完全绕过校验——`ToolModule.handler` 参数为 `unknown[]`（编译期流型检查失效），业务字段（如 `currentUserId`）缺失时 handler 拿到 `undefined` 静默执行，租户隔离在测试层穿底（测试绿但生产路径会拒绝）。与 HTTP 层对齐：路由测试走 `createTestServer` 真实管线，tool 测试走 `callTool` 真实分发管线。
+
+  - **新增 `callTool(harness, name, args, ctx)`**：经 `executeToolCall` 同一条生产分发链（input schema 校验 + ctx 声明即校验 + handler 执行）。ctx 装配错误（缺字段/错型）在调用 handler 前**响亮抛错**（与 `executeToolCall` 共用 `validateToolCtx` 单一实现；测试 ctx 构造问题属编程错误，不得以 `{ error }` 静默返回让测试假绿）；input 校验失败返回 `{ error }`（原样可断言）；handler 结果原样返回。free-form 模式显式抛错指引改用 `generated`（无 schema 可校验不静默放行）。
+  - **`AgentTestHarness` 接口收缩**：移除 `loadToolModule`（直调面）；新增只读 `rootDir`（`callTool` 桥接 loader 与解析 registry 产物形式相对 filePath 用）。组装 `AgentDeps` 用 `createAgentDeps`（自带 loader 桥接）或经 `@faapi/faapi/testing` 导出的 `loadToolModule` 显式桥接。**迁移**：原 `h.loadToolModule(fp, fn)` + `mod.handler(...)` 直调用例改为 `callTool(h, name, args, ctx)`——业务侧现存直调测试若 ctx 不完整会从静默通过变为响亮失败（fail-fast，正是本变更目的）。
+  - 无 ctx 声明的 tool 口径不变：ctx 原样透传不校验（与分发路径一致）。
+
+### Patch Changes
+
+- b7377f7: HTTP 路由 input 形参支持内联类型字面量标注（`query: { page: number }` 写法），与具名引用（`query: Query`）同为「声明即校验」——此前内联标注构建期被静默跳过（无 schema 即无校验）：
+
+  - `analyzeInjection` 对 TypeLiteral 标注置 `ParamMeta.inline = true`；同时删除无生产消费方的 `ParamMeta.schema` / `PropertyInfo` 死代码
+  - schema 收集经新增 `extractInlineParamTypeInfo` 从标注节点直接解析，与具名路径同一套 `resolveTypeNode` 类型管线；schema 名仍为合成名 `<METHOD>Query` / `<METHOD>Params` / `<METHOD>Body`（schema 导出名本就不依赖标注具名），coerce 语义与具名形态完全一致（后缀正则推断 + form 显式覆盖）
+  - 约束：仅支持纯 TypeLiteral（交叉/联合/关键词标注维持静默无校验）；合成 schema 名与文件内已有顶层类型声明同名时构建期抛 `SchemaExtractionError`（校验源歧义 + zod.js 双重声明，fail-fast，与 tool ctx 的 `synthesizeCtxName` 同款）；WS 路由不适用（Query/Params 是文件级约定声明）
+
+- 5130a01: tool handler 第二参 ctx 校验类型补齐全部标注形态（此前仅内联交叉 `ctx: WriterToolCtx & AgentToolContext` 单一合法写法，其余形态构建期撞上 `AgentToolContext` 的 `import('...').TaskClient` 类型语法报错或静默不校验）：
+
+  - 命名别名解引用：别名 `= 唯一具名业务成员 & AgentToolContext` → 取业务名，与内联交叉同路径同 schema 名
+  - 别名默认名：别名 `= A & B & AgentToolContext`（多业务成员）/ `= { userId } & AgentToolContext`（内联业务）→ **默认名 = 别名名**，`extractCtxTypeInfo` 剥离解析：跳过框架侧成员，逐成员解析按交叉合并语义合并为单 schema（导出 `别名名Schema`）；非 object 成员、同名字段冲突显式抛错
+  - 内联标注默认名：纯内联字面量 / 内联交叉（无任何名字）→ **默认名 = `${函数名}Ctx`**，`extractCtxTypeInfo` 内联回退从源码第二参标注直接解析（TypeLiteral 整体解析、交叉剥离框架侧合并，内联字段不丢）；合成名与文件内已有类型声明同名时构建期显式抛错（防校验被同名声明劫持）
+  - 维持不生成 schema：裸标注 `AgentToolContext` / 仅框架侧交叉 / 关键词类型标注（`unknown` 等）；interface extends 框架契约类型仍不支持（交叉标注为唯一携带形态）
+
 ## 7.3.1
 
 ### Patch Changes
