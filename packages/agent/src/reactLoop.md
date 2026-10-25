@@ -123,7 +123,7 @@ export interface SubAgentToolResult {
 - **本地历史不丢**：裁剪只作用于每轮发给 LLM 的消息副本，`messages` 本体与 trace 的 `inputSnapshot` 完整性不受影响（`inputSnapshot` 记录的是实际发送的裁剪后消息）
 - 非流式与流式两条循环行为一致
 
-取舍：被裁掉的旧轮组默认不生成摘要——需要摘要式压缩的场景接 `historyCompactor` 策略位（见 [historyCompaction.md](./historyCompaction.md)），或用可选现货组件 [`createRollingSummaryCompactor`](./rollingSummary.md) 做「会话级持久折叠 + 注入」。
+取舍：被裁掉的旧轮组默认不生成摘要——需要摘要式压缩的场景接 `historyCompactor` 策略位（见 [historyCompaction.md](./historyCompaction.md)）；会话级持久折叠（摘要存业务表、组装发送消息时注入）在业务侧自行实现。
 
 ### 历史压缩策略位（`historyCompactor`）
 

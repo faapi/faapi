@@ -130,13 +130,22 @@ export function buildAppAgent(ctx: FaapiContext): Agent {
 
 ```ts
 // faapi.config.ts
-import { createRollingSummaryCompactor, type AgentDeps } from '@faapi/agent';
+import type { AgentDeps, HistoryCompactor, LLMMessage } from '@faapi/agent';
 
-const compactor = createRollingSummaryCompactor(/* 摘要回调 */);
+// 压缩策略业务自搓（如调 LLM 把被裁轮组折成摘要）；仅在超预算时被调用，
+// 输出经框架不变量守卫（头部保留 / tool 配对 / 至少一轮组）
+const historyCompactor: HistoryCompactor = (input: {
+  messages: LLMMessage[];
+  estimatedTokens: number;
+  budget: number;
+}) => {
+  return input.messages; // 示例骨架：原样返回满足不变量，真实实现在此折叠
+};
+
 // 真实签名 (deps: AgentDeps) => AgentDeps——业务侧显式标注即强类型
 const decorate = (deps: AgentDeps): AgentDeps => ({
   ...deps,
-  config: { ...deps.config, historyCompactor: compactor },
+  config: { ...deps.config, historyCompactor },
 });
 
 export default {

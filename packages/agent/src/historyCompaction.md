@@ -8,7 +8,7 @@
 
 ## 使用场景
 
-- 会话级持久折叠（业务实证形态）：业务用 [`createRollingSummaryCompactor`](./rollingSummary.md) 的 `plan` 在轮终态规划折叠 → 后台任务 `fold` 生成摘要并持久化 → 组装发送消息时 `block` 注入摘要块——策略位此时可完全不接（折叠是会话级持久方案，`maxHistoryTokens` 截断仍是 loop 级背后防线）
+- 会话级持久折叠（业务实证形态）：业务在轮终态自搓折叠规划（溢出 = 总数 − 已折 − 保留，攒批触发）→ 后台任务调 LLM 生成摘要并持久化到业务表 → 组装发送消息时注入摘要块——策略位此时可完全不接（折叠是会话级持久方案，`maxHistoryTokens` 截断仍是 loop 级背后防线）
 - in-loop 压缩（无持久化的项目）：接 `historyCompactor` 让每次发送前的超预算历史现场压缩（如调 LLM 生成摘要替换被裁轮组），结果只作用于发送副本
 
 ## 策略位
@@ -45,5 +45,4 @@ historyCompactor?: (input: {
 ## 相关模块
 
 - [reactLoop.md](./reactLoop.md) - 接缝位置（历史裁剪章节）与轮组原子性语义
-- [rollingSummary.md](./rollingSummary.md) - 可选现货组件（与策略位正交：组件服务会话级持久折叠，不自动接线到策略位）
 - [agentErrors.ts](./agentErrors.ts) - 不变量违反抛 `AgentError`

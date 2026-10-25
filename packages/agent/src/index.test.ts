@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  createRollingSummaryCompactor,
-  AgentError,
-  AgentToolTimeoutError,
-  AgentRecursionError,
-} from './index';
+import { AgentError, AgentToolTimeoutError, AgentRecursionError } from './index';
 
 /**
  * 主入口公开导出防回归（src/index.ts）
@@ -14,12 +9,13 @@ import {
  */
 
 describe('主入口公开导出（历史压缩）', () => {
-  it('createRollingSummaryCompactor 可调用并产出 plan/fold/block', () => {
-    expect(typeof createRollingSummaryCompactor).toBe('function');
-    const compactor = createRollingSummaryCompactor({ complete: async (input) => input });
-    expect(typeof compactor.plan).toBe('function');
-    expect(typeof compactor.fold).toBe('function');
-    expect(typeof compactor.block).toBe('function');
+  it('滚动摘要配方组件已整体移除，不再公开导出（防回归复活）', async () => {
+    const mod = await import('./index');
+    expect('createRollingSummaryCompactor' in mod).toBe(false);
+    expect('RollingSummaryOptions' in mod).toBe(false);
+    expect('RollingSummaryCompactor' in mod).toBe(false);
+    expect('FoldPlan' in mod).toBe(false);
+    expect('SummaryComplete' in mod).toBe(false);
   });
 
   it('错误家族与类型导出可用（AgentError 经 agentErrors 持有、agent re-export）', () => {
