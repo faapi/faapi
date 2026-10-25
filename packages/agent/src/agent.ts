@@ -298,10 +298,10 @@ export interface AgentRuntimeConfig {
   /**
    * 执行守卫（authHooks,见 [authHooks.md](./authHooks.md)）
    *
-   * `executeTool` 最开头调用（`agent.` 分流之前）——同时覆盖常规 tool 与
-   * sub-agent 递归。三种返回：`void` 放行；`{ error }` 拒绝（不执行 handler,
-   * error 回传 LLM）；`{ args }` 改写后放行（多租户场景强制注入可信值,
-   * 不信 LLM 传入的标识参数）。
+   * 在 `executeTool` 的 ctx 声明即校验之后调用（校验先于钩子——ctx 装配错误不流进
+   * 业务钩子）,`agent.` 分流之前——同时覆盖常规 tool 与 sub-agent 递归。三种返回：
+   * `void` 放行；`{ error }` 拒绝（不执行 handler, error 回传 LLM）；`{ args }`
+   * 改写后放行（多租户场景强制注入可信值,不信 LLM 传入的标识参数）。
    */
   beforeToolCall?: ToolCallGuardHook;
   /**
@@ -1047,13 +1047,34 @@ export class Agent {
     callCtx: AgentCallContext,
     deltaEmitter?: SubAgentDeltaEmitter,
   ): Promise<unknown | SubAgentToolResult> {
-    // 执行守卫（authHooks）：在 sub-agent 分流之前——一个钩子同时覆盖常规 tool
-    // 与 sub-agent 递归。拒绝时不执行目标,守卫的 error 回传 LLM;
+    const name = rawName;
+    let args = rawArgs;
+
+    // ctx 声明即校验（先于 beforeToolCall 守卫）：ctx 装配错误是编程/装配问题，
+    // 不应流进业务钩子——钩子只应面对合成正确的 ctx 做业务鉴权。仅真工具派发
+    // 校验（sub-agent 派发名不入 tool 表，其入参校验在 executeSubAgent）；未声明
+    // 工具同样先过 ctx 门禁（装配问题优先暴露，白名单拒绝仍在钩子后兜底）。
+    // schemaCache 传实例缓存——与 executeToolCall 的二次校验共用「同一 tool 只
+    // 解析一次」语义
+    if (!callCtx.agentToolNames.has(name)) {
+      const tool = this.deps.getTool(name);
+      if (tool) {
+        const ctxError = await validateToolCtx(
+          this.deps,
+          name,
+          tool,
+          this.deps.ctx,
+          this.schemaCache,
+        );
+        if (ctxError) return { error: ctxError };
+      }
+    }
+
+    // 执行守卫（authHooks）：在 ctx 声明即校验之后、sub-agent 分流之前——一个钩子
+    // 同时覆盖常规 tool 与 sub-agent 递归。拒绝时不执行目标,守卫的 error 回传 LLM;
     // 改写时以守卫返回的 args 继续（多租户场景强制注入可信值）。
     // await 兼容：隔离任务路径的钩子经 RPC 垫片转发宿主执行（异步）；同步钩子
     // 返回值 await 后原样透传，语义不变
-    const name = rawName;
-    let args = rawArgs;
     const guard = await this.deps.config?.beforeToolCall?.(name, args, this.deps.ctx);
     if (guard) {
       if ('error' in guard) return { error: guard.error };

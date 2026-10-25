@@ -45,7 +45,7 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
 
 ### `beforeToolCall(name, args, ctx)`
 
-`executeTool` 最开头调用（sub-agent 派发分流**之前**）——一个钩子同时覆盖常规 tool（`name = 'weather_getWeather'`）与 sub-agent 递归（`name = 'agent-researcher'`,派发工具名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)），业务方按前缀区分策略（用主包导出的 `SUB_AGENT_TOOL_PREFIX` 判别,不硬编码字符串）。不需要平行的 `beforeAgentCall`。
+`executeTool` 在 **ctx 声明即校验之后**调用（sub-agent 派发分流**之前**）——校验先于钩子：ctx 装配错误是编程/装配问题（前置条件不满足），不流进业务钩子，钩子只面对合成正确的 ctx 做业务鉴权。一个钩子同时覆盖常规 tool（`name = 'weather_getWeather'`）与 sub-agent 递归（`name = 'agent-researcher'`,派发工具名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)），业务方按前缀区分策略（用主包导出的 `SUB_AGENT_TOOL_PREFIX` 判别,不硬编码字符串）。不需要平行的 `beforeAgentCall`。
 
 允许返回 Promise（`await` 语义）——隔离任务路径的钩子经 RPC 垫片转发宿主执行；同步钩子不受影响。
 
