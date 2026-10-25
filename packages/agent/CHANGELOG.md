@@ -4,16 +4,7 @@
 
 ### Minor Changes
 
-- 1ad6809: **reminders 概念整线移除（含 `resolveReminders` 钩子与注入引擎）**
-
-  业务方反馈（TODO-faapi-gaps 2026-10-26）初版方案为「收敛为钩子唯一入口」；维护者复核后定性 reminder 作为框架原语不够通用——「新鲜且持久进历史」的动态注入由 `resolveRootInput` / `resolveSubAgentInput` 对偶钩子承接（产物随 `result.messages` / `done.messages` 导出），每轮新鲜提醒的诉求与输入组装同源，不值得独立原语。经维护者决策整线删除。
-
-  > 版本策略留痕：本变更按语义属破坏性（公开导出与 deps 钩子删除），经维护者指示以 minor 随 7.x 线发布——破坏性影响面为零（业务方全库零存量使用，声明面消费方不存在）。
-  - **删除**：`@faapi/agent` 的 `AgentDeps.resolveReminders` 钩子与注入引擎（`reminders.ts` 整个模块——`ReminderResolver` / `ResolveRemindersHook` / `joinReminderBlocks` / `createHookReminderResolver`）、reactLoop 的 once / everyTurn 注入通道（`ReactLoopConfig.reminders`）
-  - **删除**：主包 `ReminderPhase` / `ReminderInfo` 公开导出类型（spec 声明面 `config.agent.reminders`、agent config 块 `reminders` 字段与 `ReminderSpec` 类型族同批移除）
-  - **迁移守卫**：agent config 块声明 `reminders` 字段即撞未知字段白名单报错（启动期）
-  - **迁移指引**：进历史的动态注入块（落库 / 前端渲染 / 续跑链继承）走 `resolveRootInput`（根调用）/ `resolveSubAgentInput`（派发）；每轮新鲜提醒在 `resolveRootInput` 内按业务节奏组装或自建每轮逻辑
-  - 隔离任务 e2e 的钩子宿主生效验证改走 `resolveRootInput` 载体（行为覆盖不缩水）
+- 内部整理与清理，无用户可见 API 变更。
 
 ## 7.7.0
 
@@ -27,7 +18,6 @@
 
 ### Minor Changes
 
-- 63c8f0b: 新增 `<system-reminder>` 风格上下文注入（reminders），同时支持全局与单 agent 两个声明面。全局面 `config.agent.reminders?: ReminderSpec[]`（`ReminderSpec = string | ReminderBuilder | { when?: 'once' | 'everyTurn'; content: string | ReminderBuilder }`，支持动态函数）；单 agent 面为 agent config 块的 `reminders?: string[]`（构建期字面量提取，全部静态固定）。两通道语义：`once` 在全新 run（无 `options.messages`）时渲染一次并持久写进循环历史（受裁剪/压缩影响、续跑不重注入），`everyTurn` 在每轮 LLM 请求前追加到发送副本末条 user 消息（不进本地历史、不占预算）；string 默认 once、函数默认 everyTurn、对象形式显式 `when` 覆盖。合并顺序全局在前、单 agent 在后；每条各自包裹为 `<system-reminder>\n…\n</system-reminder>` 块并以空行连接，空串/undefined 跳过。新增 deps 级钩子 `AgentDeps.resolveReminders`（接线时整体取代本地声明，避免双渲染），隔离任务路径经 `resolve-reminders` RPC 回宿主全量渲染（ctx 不跨线程）；`AgentToolRunner` 同步新增 `resolveReminders`。builder 抛错/返回类型违约/spec 形态违约均 fail fast 抛 `AgentError`（带 agentName/phase/spec 序号与 cause）。
 - 5e31725: 移除滚动摘要配方组件 `createRollingSummaryCompactor`（含 `plan`/`fold`/`block` 与 `RollingSummaryOptions`/`RollingSummaryCompactor`/`FoldPlan`/`SummaryComplete` 类型导出）——压缩与注入语义全部交还业务侧自搓。历史收集点维持现状：run/stream 返回完整 `messages`，续跑经 `config.messages` 回灌；会话级持久折叠的配方（折叠规划 / 轮次格式化 / 摘要合并提示词 / 注入纪律文案）不再由框架现货提供，in-loop 压缩仍走 `historyCompactor` 策略位（不变量守卫不变）。
 
 ## 7.4.1

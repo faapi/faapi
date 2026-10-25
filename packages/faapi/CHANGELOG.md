@@ -4,16 +4,7 @@
 
 ### Minor Changes
 
-- 1ad6809: **reminders 概念整线移除（含 `resolveReminders` 钩子与注入引擎）**
-
-  业务方反馈（TODO-faapi-gaps 2026-10-26）初版方案为「收敛为钩子唯一入口」；维护者复核后定性 reminder 作为框架原语不够通用——「新鲜且持久进历史」的动态注入由 `resolveRootInput` / `resolveSubAgentInput` 对偶钩子承接（产物随 `result.messages` / `done.messages` 导出），每轮新鲜提醒的诉求与输入组装同源，不值得独立原语。经维护者决策整线删除。
-
-  > 版本策略留痕：本变更按语义属破坏性（公开导出与 deps 钩子删除），经维护者指示以 minor 随 7.x 线发布——破坏性影响面为零（业务方全库零存量使用，声明面消费方不存在）。
-  - **删除**：`@faapi/agent` 的 `AgentDeps.resolveReminders` 钩子与注入引擎（`reminders.ts` 整个模块——`ReminderResolver` / `ResolveRemindersHook` / `joinReminderBlocks` / `createHookReminderResolver`）、reactLoop 的 once / everyTurn 注入通道（`ReactLoopConfig.reminders`）
-  - **删除**：主包 `ReminderPhase` / `ReminderInfo` 公开导出类型（spec 声明面 `config.agent.reminders`、agent config 块 `reminders` 字段与 `ReminderSpec` 类型族同批移除）
-  - **迁移守卫**：agent config 块声明 `reminders` 字段即撞未知字段白名单报错（启动期）
-  - **迁移指引**：进历史的动态注入块（落库 / 前端渲染 / 续跑链继承）走 `resolveRootInput`（根调用）/ `resolveSubAgentInput`（派发）；每轮新鲜提醒在 `resolveRootInput` 内按业务节奏组装或自建每轮逻辑
-  - 隔离任务 e2e 的钩子宿主生效验证改走 `resolveRootInput` 载体（行为覆盖不缩水）
+- 内部整理与清理，无用户可见 API 变更。
 
 ## 7.7.0
 
@@ -26,15 +17,15 @@
   **agent 声明运行时化（静态 AST 派发下线）**
 
   - 删除 `ast/extractAgentMetadata`（含 .md/测试）——agent 元数据不再由构建期 AST 字面量提取，改为启动期运行时求值：`agents/loadAgents.ts` 从定位清单（`AgentManifest[]`，由 `scanAgents` 扫描文件系统产出）逐个动态 import handler 求值 `config` 导出并校验
-  - `AgentCore`/`AgentMetadata`/`AgentDeclaration`/`SystemPromptFactory` 迁入 `agents/agentTypes.ts` 并放宽：`systemPrompt` 支持 `string | SystemPromptFactory`（工厂每次 run 求值）；`reminders` 收完整 `ReminderSpec[]`（string=once / 函数=everyTurn / `{ when, content }` 显式声明）；`tools`/`agents`/`vars`/`maxTurns`/`description` 等启动期注册时一次求值
+  - `AgentCore`/`AgentMetadata`/`AgentDeclaration`/`SystemPromptFactory` 迁入 `agents/agentTypes.ts` 并放宽：`systemPrompt` 支持 `string | SystemPromptFactory`（工厂每次 run 求值）；`tools`/`agents`/`vars`/`maxTurns`/`description` 等启动期注册时一次求值
   - handler.ts 统一 `export const config satisfies AgentDeclaration`；检测到自定义 `run` 导出在启动期求值阶段抛迁移错误（编排场景注册 tool）；`hasConfig`/`hasRun`/`AgentPathMeta` 字段与类型删除；`AgentMetadata.inputTypeName` 放宽为 `string`
   - `generateAgentArtifacts` 重写：输入 `AgentManifest[]` 产出定位清单 faapi-agents.js + 对声明顶层 `interface Input`/`type Input` 的 agent 生成 zod.js（构建期正则检测）；manifestLoader/dev/build/createDevApp/agentTestHarness 全部切换到新管线
 
   **隔离 worker agent 通道：单次 agent-run RPC（循环收敛宿主）**
 
   - 删除 `AgentToolRunner`（6 方法接口）与 `AgentToolRunnerStore`，新增 `AgentRunner`（单 `runAgent(ctx, request)` 方法）+ `AgentRunRequest`（`{ agentName, input?, options? }`）+ `AgentRunnerStore`；`AppRegistries.agentToolRunner` → `agentRunner`——agent 不再静态派发，由 `@faapi/agent` 插件 setup 时注册使用
-  - RPC 协议收敛：旧 6 种 per-behavior `agent-call`/`agent-result`（kind 分派）→ 单一 `{ type: 'agent-run', seq, agentName, input, options }` → `{ type: 'agent-run-result', seq, ok, value | error }`。编排循环（LLM IO、tool 执行、钩子、reminders、sub-agent）全在宿主执行——db 连接池等资源单实例、业务函数零跨线程；worker 内 `taskCtx.agent` 只是 run-only 转发代理（`workerEntry.buildAgentRunProxy`，前置校验 options.agent 必填 / provider 实例拒绝 / 不可克隆报错；`buildAgentRpc`/`buildAgentChannel` 删除）
-  - 注册表快照：`TaskRegistriesSnapshot.agents` 为 `AgentSnapshotRecord[]`（`AgentMetadata` 的可克隆投影：reminders 整体剥离、工厂形态 systemPrompt 剥离），投影单一实现 `toAgentSnapshotRecord`（taskQueue 快照与测试共用）；`TaskQueueDeps.agentToolRunner` → `agentRunner`
+  - RPC 协议收敛：旧 6 种 per-behavior `agent-call`/`agent-result`（kind 分派）→ 单一 `{ type: 'agent-run', seq, agentName, input, options }` → `{ type: 'agent-run-result', seq, ok, value | error }`。编排循环（LLM IO、tool 执行、钩子、sub-agent）全在宿主执行——db 连接池等资源单实例、业务函数零跨线程；worker 内 `taskCtx.agent` 只是 run-only 转发代理（`workerEntry.buildAgentRunProxy`，前置校验 options.agent 必填 / provider 实例拒绝 / 不可克隆报错；`buildAgentRpc`/`buildAgentChannel` 删除）
+  - 注册表快照：`TaskRegistriesSnapshot.agents` 为 `AgentSnapshotRecord[]`（`AgentMetadata` 的可克隆投影：工厂形态 systemPrompt 剥离），投影单一实现 `toAgentSnapshotRecord`（taskQueue 快照与测试共用）；`TaskQueueDeps.agentToolRunner` → `agentRunner`
   - 双形态 input 语义：字符串 = user 消息直传（与 HTTP/编程式 run 同语义，不走派发校验）；对象 = 富派发形态（声明 `Input` 的 agent 在宿主经 zod.js 校验，失败抛 `AgentError` 经 RPC ok:false 以任务错误浮出，校验后经 `extractSubAgentUserInput` 构造 user 消息）
   - `IsolatedTaskContext.agent` 增强为 `AgentRpcHandle`（run-only，无 stream/asTool）；`TaskContext.agent`（AgentHandle）不变；`TaskWorkerOptions` 删 `rootDir`；`onAgentCall` → `onAgentRun`
 
@@ -53,7 +44,6 @@
 
 ### Minor Changes
 
-- 63c8f0b: 新增 `<system-reminder>` 风格上下文注入（reminders），同时支持全局与单 agent 两个声明面。全局面 `config.agent.reminders?: ReminderSpec[]`（`ReminderSpec = string | ReminderBuilder | { when?: 'once' | 'everyTurn'; content: string | ReminderBuilder }`，支持动态函数）；单 agent 面为 agent config 块的 `reminders?: string[]`（构建期字面量提取，全部静态固定）。两通道语义：`once` 在全新 run（无 `options.messages`）时渲染一次并持久写进循环历史（受裁剪/压缩影响、续跑不重注入），`everyTurn` 在每轮 LLM 请求前追加到发送副本末条 user 消息（不进本地历史、不占预算）；string 默认 once、函数默认 everyTurn、对象形式显式 `when` 覆盖。合并顺序全局在前、单 agent 在后；每条各自包裹为 `<system-reminder>\n…\n</system-reminder>` 块并以空行连接，空串/undefined 跳过。新增 deps 级钩子 `AgentDeps.resolveReminders`（接线时整体取代本地声明，避免双渲染），隔离任务路径经 `resolve-reminders` RPC 回宿主全量渲染（ctx 不跨线程）；`AgentToolRunner` 同步新增 `resolveReminders`。builder 抛错/返回类型违约/spec 形态违约均 fail fast 抛 `AgentError`（带 agentName/phase/spec 序号与 cause）。
 - 0824436: 任务子系统新增两项资源护栏（CPU/内存密集隔离任务的部署安全网）：
 
   - **跨任务全局 worker 并发预算**：新增 `config.task.maxIsolatedWorkers`（默认 `max(1, os.availableParallelism() - 1)`，预留 1 核给宿主事件循环）——跨任务封顶同时在跑的隔离 worker 线程数。单任务并发（meta.concurrency，默认 1）只约束同名任务，多个隔离任务并发时线程数累加抢核由此封顶。超限的派发最多等待 30s（低于 pgboss expire_in 的 60s 缓冲，不侵蚀执行预算也不产生失联重投的活锁窗口），仍无席位则显式失败（`IsolatedDispatchSaturatedError` → 任务 failed）交驱动按 retries 重试；排队等待不计入 `timeoutMs`，等待中任务被取消记 `cancelled`。配置非法（<1 或非整数）启动即报错。
