@@ -42,7 +42,7 @@ export async function POST(llm: LlmComplete, body: { title: string }) {
 }
 ```
 
-任务经 `taskCtx.llm`（两条执行路径均注入；`@faapi/agent` 未安装/未加载时 `undefined`）：
+任务经 `taskCtx.llm`（两条执行路径均注入；宿主 `AppRegistries.llm` 通道未注册时 `undefined`——通常即 `@faapi/agent` 插件未加载，能力不存在非降级）：
 
 ```ts
 // src/tasks/distill/task.ts
@@ -52,7 +52,7 @@ export async function run(payload, taskCtx) {
 }
 ```
 
-编程式 / worker 内重建：`createLightComplete({ llms, providers? })`——`providers` 缺省时按 `llms` 逐项 `createProvider` 现场构建（隔离 worker 即此形态：`llms` 纯数据跨线程，worker 内重建实例）。
+编程式使用：`createLightComplete({ llms, providers? })`——`providers` 缺省时按 `llms` 逐项 `createProvider` 现场构建。官方消费方仅插件 setup 的宿主侧注册（见下文相关模块）；隔离任务的 `taskCtx.llm` 是纯转发代理（complete 经 llm-complete RPC 回宿主执行——worker 不加载本包、不重建实例，见 [taskWorker](../../faapi/src/tasks/taskWorker.md)）。
 
 ## 行为契约
 
@@ -74,4 +74,4 @@ export async function run(payload, taskCtx) {
 - [plugin](./plugin.md)——setup 时构建 channel（共享 providers 单例）注册到 `registries.llm`
 - 主包 [llmTypes](../../faapi/src/injection/llmTypes.md)——`LlmComplete` / `LlmCompleteOptions` 规范类型（主包持有：`TaskContext` 等主包类型需引用，主包不反向依赖本包）
 - 主包 [registries](../../faapi/src/injection/registries.md)——`LlmChannelStore`；[injectParams](../../faapi/src/injection/injectParams.md)——`llm` 注入参数
-- 主包 task 子系统——`taskCtx.llm` 双路径注入（进程内活引用 / 隔离 worker 快照重建，见 [taskTypes](../../faapi/src/tasks/taskTypes.md)）
+- 主包 task 子系统——`taskCtx.llm` 双路径注入（进程内活引用 / 隔离 worker 纯转发代理——complete 经 RPC 回宿主执行，见 [taskTypes](../../faapi/src/tasks/taskTypes.md)）

@@ -70,7 +70,7 @@ RPC 协议与 worker 侧 run-only 句柄（`buildAgentRunProxy`）详见 [taskWo
 
 `createTaskRegistriesView(registries)` 把 AppRegistries 投影为**只读视图**（agent 的 get/getEntry/list/asTool/resolve* + tool 的 get/list），注入任务执行上下文（`TaskContext.registries`）——任务执行侧（进程内或隔离 worker）不在 handler 请求链路上，拿不到 `FaapiContext.registries`；`getApp()` 在隔离线程内也不可用（worker globalThis 独立）。视图刻意不暴露 `hydrate`/`clear` 写接口：任务不是注册表的所有者。隔离路径经 `TaskRegistriesSnapshot` 纯数据快照跨线程、worker 内重建视图（agent 条目经 `toAgentSnapshotRecord` 投影，详见 `../tasks/taskTypes.md`）。
 
-轻量补全通道不走该视图：`TaskContext.llm` 由任务队列从 `AppRegistries.llm` 单独接线（进程内惰性读 store；隔离路径传 `agent.llms` 纯数据快照、worker 内重建）。agent 循环执行器同理不走该视图：`TaskQueueDeps.agentRunner` 单独接线（每次派发时惰性取值）。
+轻量补全通道不走该视图：`TaskContext.llm` 由任务队列从 `AppRegistries.llm` 单独接线（进程内惰性读 store；隔离路径为纯转发代理——worker 内 complete 经 llm-complete RPC 回宿主、由宿主从本注册表取派发时刻注册的通道执行，worker 不加载 `@faapi/agent`）。agent 循环执行器同理不走该视图：`TaskQueueDeps.agentRunner` 单独接线（每次派发时惰性取值）。
 
 ## 相关模块
 

@@ -39,7 +39,7 @@ export function run(payload, taskCtx) {
 
 ```ts
 // src/tasks/log-analysis/worker.ts
-export const task = { timeoutMs: 1_800_000 }; // 30 分钟；必须是数字字面量（含 1_800_000 下划线分隔），表达式如 30 * 60_000 不被扫描识别
+export const task = { timeoutMs: 1_800_000 }; // 30 分钟；必须是数字字面量（含 1_800_000 下划线分隔），表达式如 30 * 60_000 构建期报错（值后边界校验防前导截取，见 scanTasks.md）
 export async function run(payload, taskCtx) {
   if (!taskCtx.agent) throw new Error('agent 通道不可用（@faapi/agent 插件未加载？）');
   // input 字符串 = user 消息直传；对象 = 富派发形态（宿主按 agent 声明的 Input schema 校验）

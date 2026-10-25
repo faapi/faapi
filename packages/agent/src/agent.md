@@ -148,8 +148,8 @@ class Agent {
 
 ### systemPromptFile（提示词文件）
 
-agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resources 目录的字面量,
-构建期 AST 提取,与 `systemPrompt` 互斥——两者都声明构建期抛错,二选一必填）时,`buildLoopConfig`
+agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resources 目录的字符串,
+启动期随 config 导出求值进 AgentCore,与 `systemPrompt` 互斥——两者都声明或都缺失启动期抛错,二选一必填）时,`buildLoopConfig`
 在**每次 run/stream 时读文件内容**作为 system 消息,不走缓存——dev 改 prompt 文件经 watcher
 增量复制进 `.faapi/resources/` 后立即生效,无需 reload。
 
