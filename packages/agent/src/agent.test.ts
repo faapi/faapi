@@ -216,6 +216,11 @@ function createDeps(opts: {
     args: Record<string, unknown>,
     ctx: AgentToolContext,
   ) => Promise<Record<string, unknown> | undefined>;
+  resolveRootInputImpl?: (
+    agentName: string,
+    input: string,
+    ctx: AgentToolContext,
+  ) => Promise<string | undefined>;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
 }): AgentDeps {
   const toolsByName = new Map<string, ToolMetadata>();
@@ -261,6 +266,7 @@ function createDeps(opts: {
     resolveSystemPrompt: opts.resolveSystemPromptImpl,
     resolveSubAgentContext: opts.resolveSubAgentContextImpl,
     resolveSubAgentInput: opts.resolveSubAgentInputImpl,
+    resolveRootInput: opts.resolveRootInputImpl,
   };
 }
 
@@ -1447,6 +1453,262 @@ describe('Agent', () => {
       expect(userMsg!.content).toBe(
         JSON.stringify({ input: '查', contextMaterial: 'stream-material' }),
       );
+    });
+  });
+
+  describe('resolveRootInput 根调用输入组装钩子', () => {
+    /** 组装示例：动态块在前 + 真实输入收尾（业务收尾形态自定） */
+    function composeAssembled(input: string): string {
+      return `<memory>动态块</memory>\n\n<user_input>\n${input}\n</user_input>`;
+    }
+
+    /** 续跑历史（纯 user/assistant 消息,tool 配对无关） */
+    function resumeHistory(): LLMMessage[] {
+      return [
+        { role: 'user', content: '第一轮输入' },
+        { role: 'assistant', content: '第一轮回复' },
+      ];
+    }
+
+    it('fresh run：钩子收（agent 名, 原始 input, ctx），组装产物为首条 user 消息并持久进 result.messages', async () => {
+      const hook = vi.fn(async (agentName: string, input: string, ctx: CtxWithUser) => {
+        expect(agentName).toBe('researcher');
+        expect(input).toBe('go');
+        expect(ctx.currentUserId).toBe(42);
+        return composeAssembled(input);
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          ctx: toolCtx42,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveRootInputImpl: hook,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(hook).toHaveBeenCalledTimes(1);
+      // LLM 请求的首条 user 消息 = 组装产物（system 原样在前）
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[0]).toEqual({ role: 'system', content: 'base' });
+      expect(request.messages[1]).toEqual({ role: 'user', content: composeAssembled('go') });
+      // 产物持久进循环历史并随 result.messages 导出（业务落库依据）
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe(composeAssembled('go'));
+    });
+
+    it('续跑轮：历史 + 新 input，组装产物为历史末尾追加的 user 消息并进 result.messages', async () => {
+      const hook = vi.fn(async (_name: string, input: string) => composeAssembled(input));
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: '第二轮回复', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveRootInputImpl: hook,
+        }),
+      );
+
+      const result = await agent.run('第二轮输入', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+        messages: resumeHistory(),
+      });
+
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(hook).toHaveBeenCalledWith('researcher', '第二轮输入', expect.anything());
+      // LLM 请求:历史(无 system 时自动补齐) + 末尾组装后的新 user 消息
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({
+        role: 'user',
+        content: composeAssembled('第二轮输入'),
+      });
+      // 产物持久进 result.messages——块随历史继承（落库后下轮经 options.messages 传回）
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe(composeAssembled('第二轮输入'));
+    });
+
+    it('纯续跑（messages + 无 input）不触发钩子', async () => {
+      const hook = vi.fn(async () => composeAssembled('不应被调用'));
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: '续答', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveRootInputImpl: hook,
+        }),
+      );
+
+      await agent.run(undefined, {
+        agent: 'researcher',
+        model: 'gpt-4o',
+        messages: resumeHistory(),
+      });
+
+      expect(hook).not.toHaveBeenCalled();
+      // 历史原样发送,无新 user 消息
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.filter((m: LLMMessage) => m.role === 'user')).toHaveLength(1);
+    });
+
+    it('返回 undefined 原样放行：user 消息为原始 input', async () => {
+      const hook = vi.fn(async () => undefined);
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveRootInputImpl: hook,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({ role: 'user', content: 'go' });
+      expect(result.messages[1]).toEqual({ role: 'user', content: 'go' });
+    });
+
+    it('派发路径不触发：根钩子仅根调用一次，子代理组装仍归 resolveSubAgentInput', async () => {
+      const rootHook = vi.fn(async (_name: string, input: string) => composeAssembled(input));
+      const subHook = vi.fn(async (_subName: string, args: Record<string, unknown>) => ({
+        ...args,
+        contextMaterial: 'dispatch-material',
+      }));
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          resolveRootInputImpl: rootHook,
+          resolveSubAgentInputImpl: subHook,
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 根钩子仅触发一次（根调用）,不随派发进入子循环
+      expect(rootHook).toHaveBeenCalledTimes(1);
+      expect(rootHook).toHaveBeenCalledWith('researcher', 'go', expect.anything());
+      expect(subHook).toHaveBeenCalledTimes(1);
+      // 子代理首条 user 消息 = 派发钩子的改写产物,无根组装痕迹
+      const childRequest = completeCalls.mock.calls[1][0];
+      const childUser = childRequest.messages.find((m: LLMMessage) => m.role === 'user');
+      expect(childUser!.content).toBe(
+        JSON.stringify({ input: '查', contextMaterial: 'dispatch-material' }),
+      );
+    });
+
+    it.each([
+      ['null', null],
+      ['数字', 42],
+      ['对象', { block: 'x' }],
+      ['数组', ['a']],
+      ['空串', ''],
+      ['空白串', '   \n\t '],
+    ])('形状守卫：返回 %s 抛 AgentError，且不发 LLM 请求', async (_label, bad) => {
+      const hook = vi.fn(async () => bad as unknown as string | undefined);
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveRootInputImpl: hook,
+        }),
+      );
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        AgentError,
+      );
+      // 组装在循环启动前 fail fast——LLM 请求未发出
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('钩子抛错：原样上抛走 run 既有错误链（发起 LLM 请求前显式失败）', async () => {
+      const hook = vi.fn(async () => {
+        throw new Error('root assembly exploded');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveRootInputImpl: hook,
+        }),
+      );
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        'root assembly exploded',
+      );
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('流式一致：组装产物进 stream 请求首条 user 消息并随 done.messages 导出', async () => {
+      const hook = vi.fn(async (_name: string, input: string) => composeAssembled(input));
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'ok', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveRootInputImpl: hook,
+        }),
+      );
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      expect(hook).toHaveBeenCalledTimes(1);
+      const request = streamCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({ role: 'user', content: composeAssembled('go') });
+      const done = chunks.at(-1)!.done!;
+      const lastUser = [...done.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe(composeAssembled('go'));
+    });
+
+    it('reminders once 叠放：once 块追加在组装产物之后（组装产物为基底）', async () => {
+      const hook = vi.fn(async (_name: string, input: string) => composeAssembled(input));
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          resolveRootInputImpl: hook,
+          // spec 为未包裹内容串——包裹由引擎统一做（joinReminderBlocks）
+          config: { traceId: false, reminders: ['global-rule'] },
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({
+        role: 'user',
+        content: `${composeAssembled('go')}\n\n<system-reminder>\nglobal-rule\n</system-reminder>`,
+      });
     });
   });
 

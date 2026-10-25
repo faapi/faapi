@@ -57,6 +57,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | `resolveSystemPrompt?(name, meta, base)` | —（应用组装层注入） | systemPrompt 装饰钩子：包装框架解析好的 base（内联字面量 / `systemPromptFile` 文件内容），返回值即最终 system 消息。见「resolveSystemPrompt 装饰钩子」 |
 | `resolveSubAgentContext?(subName, args, ctx)` | —（应用组装层注入） | 派发上下文钩子：`executeSubAgent` 派发边界按派发参数异步供数，返回值由框架追加进子代理 system 消息。见「resolveSubAgentContext 派发上下文钩子」 |
 | `resolveSubAgentInput?(subName, args, ctx)` | —（应用组装层注入） | 派发入参改写钩子：`executeSubAgent` 在派发入参校验之后异步改写派发 args，返回对象整体替换、改写结果进子代理首条 user 消息（交接单附件通道）。见「resolveSubAgentInput 派发入参改写钩子」 |
+| `resolveRootInput?(agentName, input, ctx)` | —（应用组装层注入） | 根调用输入组装钩子：`run`/`stream` 入口对非空 `input` 异步组装，返回串整体替换本次 user 输入，产物进循环历史并随 `result.messages` / `done.messages` 导出。见「resolveRootInput 根调用输入组装钩子」 |
 
 ### `AgentDeps.ctx`（执行上下文契约，必填）
 
@@ -309,6 +310,54 @@ const agent = new Agent(
     },
   }),
 );
+```
+
+### resolveRootInput 根调用输入组装钩子（请求级动态上下文进 user 消息）
+
+`AgentDeps.resolveRootInput?: (agentName, input, ctx) => Promise<string | undefined>`——根调用（对话轮）边界的输入组装 seam：`run`/`stream` 在 `buildLoopConfig` 内（`agentName` 解析与注册校验之后）对**非空 `input`** 调用钩子，**返回字符串整体替换本次 user 输入**——组装产物作为本次 run 的 user 消息进循环历史，随 `result.messages`（非流式）/ `done.messages`（流式）导出。`undefined` 原样放行。未声明钩子 = 现状逐字节。
+
+为什么需要：长对话 agent 的每轮对话需要把请求级动态上下文（按业务 id 现查库的注入块：记忆 / 规则 / 滚动摘要 / 工作台快照）组装进本次 user 消息，且块要**随消息持久进历史**——落业务表、续跑链继承、前端按标记渲染全依赖历史里的内容。既有扩展面无处安放：reminders `once` 仅 fresh run 渲染一次（续跑轮不刷新，动态块定格首轮快照）、`everyTurn` 每轮渲染但只改发送副本（不进本地历史 → 不随 `done.messages` 导出、无法落库与前端渲染）；`resolveSystemPrompt` 只装饰 system 侧（身份 / 纪律所在，数据混入会模糊「每轮不变的纪律 vs 每轮变的数据」边界）。派发侧已有 `resolveSubAgentInput`（交接单附件通道）证明「输入组装可插槽化」，本钩子补上根调用这一层的对偶面——业务声明「怎么组装」（供数、块清单、顺序、收尾形态全是业务决策），框架统一「何时调用」（run 入口）与「产物去向」（进历史、随结果导出）。分层取向与 7.5.0 一致：块语义 / 落库 / 前端渲染留在业务层，框架不收编内容。
+
+语义细则：
+
+| 项 | 语义 |
+| --- | --- |
+| 调用时机 | 仅 `buildLoopConfig` 内、`agentName` 解析与注册校验之后调用；仅 `depth === 1` 的根调用且传入非空 `input` 时触发——纯续跑（`options.messages` + 无 `input`）不触发；sub-agent 派发路径（`executeSubAgent` → `subAgent.run`，depth ≥ 2）不触发 |
+| 对偶互斥 | 派发侧组装走 `resolveSubAgentInput`、根调用侧组装走本钩子——同一次 run 内两者至多各触发一次、互不叠加（派发调用的子循环 depth ≥ 2，本钩子恒不触发；根调用的本钩子先于任何派发发生） |
+| 参数 | `agentName` 为本次调用的 agent 名（`options.agent`，多 agent 应用按名路由组装逻辑）；`input` 为原始非空 user 输入；`ctx` 为 `deps.ctx` 请求上下文透传（与鉴权钩子 / 派发钩子同款） |
+| 替换语义 | 返回非空字符串 → **整体替换**本次 user 输入（不与原 input 拼接——业务需要保留原文自行拼接）；典型形态：请求级动态块在前 + `<user_input>` 真实输入收尾（包裹格式业务自定） |
+| 放行规则 | 返回 `undefined` → 原样放行（input 不变） |
+| 形状守卫 | 返回非 `undefined` 且非非空字符串（`null` / 数字 / 对象 / 空串 / 空白串）→ 抛 `AgentError`（含钩子名与 agentName 的可行动错误信息，fail fast——业务代码 bug 不静默忽略；空白串按空处理，避免续跑轮输入被静默丢弃） |
+| 产物去向 | 组装产物即 `reactLoop`/`reactLoopStream` 收到的 `input`——fresh run 成为首条 user 消息、续跑 run 成为历史末尾追加的新 user 消息，**均持久进循环历史**并随 `result.messages` / `done.messages` 导出（业务落库、续跑链继承、前端渲染全链可见） |
+| trace 一致 | 组装发生在循环启动前——trace 的 `inputSnapshot` 如实反映组装后的 LLM 输入（与「trace 如实反映发送内容」纪律一致） |
+| 错误传播 | 抛错原样上抛，走 run / stream 既有错误链（发起 LLM 请求前显式失败，不吞不降级——与 `resolveSystemPrompt` 同路径，无 per-tool 回灌语义） |
+| 树级传导 | deps 全树共享，但仅根调用触发（depth 1）——子代理经 `resolveSubAgentInput` 组装派发入参，两钩子各司其职 |
+| 流式一致 | 流式 / 非流式同一接线（`buildLoopConfig` 单点应用，run / stream 共用） |
+| reminders 叠放 | `once` 块追加在组装产物之后（fresh run）、`everyTurn` 块追加在发送副本末条 user 消息（组装产物为其基底）——组装语义不受 reminders 通道影响 |
+
+使用示例（编程式组装 / 自组装 `overrides`）：
+
+```ts
+import { Agent, createAgentDeps } from '@faapi/agent';
+
+const agent = new Agent(
+  createAgentDeps({
+    registries: ctx.registries,
+    overrides: {
+      resolveRootInput: async (agentName, input, ctx) => {
+        if (agentName !== 'chapter-writer') return undefined; // 按 agent 名路由
+        // 请求级现查库供数,块在前 + 真实输入收尾;包裹/顺序/收尾形态全是业务决策
+        const blocks = await buildContextBlocks(input, ctx?.currentUserId);
+        return [...blocks, `<user_input>\n${input}\n</user_input>`].join('\n\n');
+      },
+    },
+  }),
+);
+
+// 每轮对话:组装产物作为新 user 消息进历史,随 result.messages 导出 → 业务落库 →
+// 续跑轮经 options.messages 传回,块随历史继承
+const result = await agent.run(userInput, { agent: 'chapter-writer', messages: history });
+await persistMessages(result.messages);
 ```
 
 ### sub-agent 派发工具命名（subAgentToolName）

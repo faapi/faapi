@@ -536,6 +536,36 @@ export interface AgentDeps {
     ctx: AgentToolContext,
   ) => Promise<Record<string, unknown> | undefined>;
   /**
+   * 根调用输入组装钩子（可选,缺省 = 原样放行——现状行为）
+   *
+   * 根调用（`run`/`stream` 顶层,depth 1）传入非空 `input` 时在 run 入口调用
+   * （`buildLoopConfig` 内,`agentName` 解析与注册校验之后）,返回字符串**整体替换**
+   * 本次 user 输入——组装产物作为本次 run 的 user 消息进循环历史,随
+   * `result.messages`（非流式）/ `done.messages`（流式）导出（业务侧落库、续跑链
+   * 继承、前端渲染全链可见）。`undefined` 原样放行。
+   *
+   * - 与 `resolveSubAgentInput` 对偶:派发路径（`executeSubAgent` → `subAgent.run`,
+   *   depth ≥ 2）不触发本钩子——派发侧组装走 `resolveSubAgentInput`,两者互斥不叠加;
+   *   纯续跑（`options.messages` + 无 `input`）无新输入,同样不触发
+   * - 纯插槽原语:块语义/顺序/收尾形态全是业务决策（如请求级动态块在前 +
+   *   `<user_input>` 真实输入收尾）,框架统一「何时调用」与「产物去向」
+   * - `agentName` 为本次调用的 agent 名（`options.agent`,多 agent 应用按名路由）;
+   *   `input` 为原始非空 user 输入;`ctx` 为 `deps.ctx` 请求上下文透传
+   * - 返回非 `undefined` 且非非空字符串（null / 数字 / 对象 / 空串 / 空白串）抛
+   *   `AgentError`（fail fast,业务代码 bug 不静默忽略;空白串按空处理,避免续跑轮
+   *   输入被静默丢弃）
+   * - 抛错原样上抛,走 run / stream 既有错误链（发起 LLM 请求前显式失败,不吞不降级）
+   * - deps 全树共享但仅根调用触发（depth 1）;流式 / 非流式同一接线
+   *   （`buildLoopConfig` 单点应用）;reminders `once` 块追加在组装产物之后
+   *
+   * 详见 [agent.md](./agent.md)「resolveRootInput 根调用输入组装钩子」。
+   */
+  resolveRootInput?: (
+    agentName: string,
+    input: string,
+    ctx: AgentToolContext,
+  ) => Promise<string | undefined>;
+  /**
    * 提醒供数钩子（可选,缺省 = 本地 specs 引擎——见 [reminders.md](./reminders.md)）
    *
    * 按 `{ agentName, depth, turn, phase, ctx }` 返回该通道的**未包裹内容串数组**
@@ -618,12 +648,17 @@ export class Agent {
    * @throws {Error} provider.complete 抛错时立即传播
    */
   async run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult> {
-    const { agentName, config, traceId } = await this.buildLoopConfig(input, options);
+    const {
+      agentName,
+      config,
+      traceId,
+      input: effectiveInput,
+    } = await this.buildLoopConfig(input, options);
     // 执行作用域挂载（详见 [agentScope](./agentScope.md)）：整条 reactLoop promise 链在
     // 当前 agent 作用域内——ALS 随 promise 传播，同轮 Promise.all 并发派发的每个分支
     // 各自继承；sub 换栈经 executeSubAgent → subAgent.run/stream 统一发生
     const result = await runWithAgentScope({ agentName, depth: this.depth }, () =>
-      reactLoop(input, config),
+      reactLoop(effectiveInput, config),
     );
     // reactLoop 不知 agent 名,在此填充顶层 trace.agentName（sub-agent 调本方法时也走此路径）
     if (result.trace) {
@@ -653,12 +688,17 @@ export class Agent {
    * @throws {Error} provider.stream 抛错时立即传播
    */
   async *stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk> {
-    const { agentName, config, traceId } = await this.buildLoopConfig(input, options);
+    const {
+      agentName,
+      config,
+      traceId,
+      input: effectiveInput,
+    } = await this.buildLoopConfig(input, options);
     // 执行作用域挂载（详见 [agentScope](./agentScope.md)）。ALS 语义：async generator
     // 体内不捕获创建时上下文——体内段落随消费方每次 next() 的上下文执行。因此逐次在
     // 作用域内驱动内层迭代器（等价 yield*，背压保持：仅消费方拉动时推进），chunk 原样
     // 转发；sub 换栈经 executeSubAgent → subAgent.stream 同一机制发生
-    const iterator = reactLoopStream(input, config)[Symbol.asyncIterator]();
+    const iterator = reactLoopStream(effectiveInput, config)[Symbol.asyncIterator]();
     try {
       for (;;) {
         const { value, done } = await runWithAgentScope({ agentName, depth: this.depth }, () =>
@@ -777,7 +817,13 @@ export class Agent {
   private async buildLoopConfig(
     input: string | undefined,
     options?: AgentRunOptions,
-  ): Promise<{ agentName: string; config: ReactLoopConfig; traceId: string | undefined }> {
+  ): Promise<{
+    agentName: string;
+    /** 根调用输入组装钩子应用后的最终 user 输入（undefined = 纯续跑） */
+    input: string | undefined;
+    config: ReactLoopConfig;
+    traceId: string | undefined;
+  }> {
     // 输入守卫：全新对话必须有 input,续跑必须有 messages（空 input + messages = 纯续跑）
     if (!input && !options?.messages?.length) {
       throw new AgentError(
@@ -798,6 +844,31 @@ export class Agent {
     const meta = this.deps.getAgent(agentName);
     if (!meta) {
       throw new AgentError(`Agent "${agentName}" is not registered`);
+    }
+
+    // 根调用输入组装钩子（resolveRootInput,见 agent.md 同名章节）：仅 depth=1 的
+    // 根调用且传入非空 input 时触发（派发路径走 resolveSubAgentInput,对偶互斥;
+    // 纯续跑无新输入不触发）。返回字符串整体替换本次 user 输入——组装产物作为本次
+    // run 的 user 消息进循环历史并随 result.messages / done.messages 导出;undefined
+    // 原样放行;非非空字符串（null/数字/对象/空串/空白串）抛 AgentError（fail fast,
+    // 空白串按空处理避免续跑轮输入被静默丢弃）;抛错原样上抛走 run/stream 既有错误链
+    let effectiveInput = input;
+    if (this.deps.resolveRootInput && input && this.depth === 1) {
+      const assembled = await this.deps.resolveRootInput(agentName, input, this.deps.ctx);
+      if (assembled !== undefined) {
+        if (typeof assembled !== 'string' || assembled.trim() === '') {
+          throw new AgentError(
+            `resolveRootInput hook for agent "${agentName}" must return a non-empty string (the assembled root user input) or undefined, got ${
+              assembled === null
+                ? 'null'
+                : typeof assembled === 'string'
+                  ? 'whitespace-only string'
+                  : typeof assembled
+            }`,
+          );
+        }
+        effectiveInput = assembled;
+      }
     }
 
     // 声明集合先于 tool 列表构建——派发名冲突 / agent 名非法在发起 LLM 请求前显式失败
@@ -881,6 +952,7 @@ export class Agent {
     return {
       agentName,
       traceId,
+      input: effectiveInput,
       config: {
         provider,
         systemPrompt: finalSystemPrompt,
