@@ -9,6 +9,7 @@ import type {
   LLMUsage,
 } from './provider';
 import { assertCompactedHistory, type HistoryCompactor } from './historyCompaction';
+import type { ReminderResolver } from './reminders';
 import {
   isTracingToolResult,
   type AgentTrace,
@@ -168,6 +169,18 @@ export interface ReactLoopConfig {
    * 优先级 options > 全局 config > 默认 false。
    */
   enableTracing?: boolean;
+  /**
+   * 提醒注入解析器（由 [Agent.buildLoopConfig](./reminders.md) 装配；缺省 = 无注入）
+   *
+   * - **once 通道**：仅 fresh run（未传 `messages`）时调用一次，返回的包裹块追加到
+   *   初始 user 消息 content 末尾并持久进循环历史（续跑历史已带，不重注入）
+   * - **everyTurn 通道**：每轮 LLM 请求前调用（在历史裁剪/压缩之后），返回的包裹块
+   *   追加到发送副本末条 user 消息 content 末尾——不进本地历史、不占 token 预算；
+   *   无 user 消息（纯续跑边角）跳过。追加发生在 trace inputSnapshot 之前
+   *
+   * 语义规格见 [reminders.md](./reminders.md)。
+   */
+  reminders?: ReminderResolver;
 }
 
 /**
@@ -369,6 +382,49 @@ function initLoopMessages(input: string | undefined, config: ReactLoopConfig): L
   return buildInitialMessages(input ?? '', config.systemPrompt);
 }
 
+/**
+ * reminders once 通道注入：fresh run 时把提醒块持久追加到初始 user 消息
+ *
+ * 仅在 fresh run（未传 `config.messages`）时调用——续跑历史已带 once 内容，
+ * 重注入会重复。注入修改本地 messages（持久进循环历史，后续轮次随历史自然带上，
+ * 视为普通内容受裁剪/压缩影响）；无 user 消息（空输入防御）跳过。
+ * 语义规格见 [reminders.md](./reminders.md)。
+ */
+async function attachOnceReminders(messages: LLMMessage[], config: ReactLoopConfig): Promise<void> {
+  if (!config.reminders || config.messages?.length) return;
+  const block = await config.reminders.once();
+  if (!block) return;
+  const target = messages.find((m) => m.role === 'user');
+  if (!target) return;
+  target.content = `${target.content}\n\n${block}`;
+}
+
+/**
+ * reminders everyTurn 通道注入：每轮请求前把提醒块追加到发送副本末条 user 消息
+ *
+ * 必须在 `resolveOutgoingMessages`（裁剪/压缩）之后调用——不占 token 预算、
+ * 不被裁剪，本地 messages 不变（仅发送副本）。无 user 消息（纯续跑边角）跳过。
+ * 返回新数组（调用方以返回值为准）。
+ */
+async function attachEveryTurnReminders(
+  outgoing: LLMMessage[],
+  config: ReactLoopConfig,
+  turn: number,
+): Promise<LLMMessage[]> {
+  if (!config.reminders) return outgoing;
+  const block = await config.reminders.everyTurn(turn);
+  if (!block) return outgoing;
+  for (let i = outgoing.length - 1; i >= 0; i--) {
+    const message = outgoing[i];
+    if (message && message.role === 'user') {
+      const attached = [...outgoing];
+      attached[i] = { ...message, content: `${message.content}\n\n${block}` };
+      return attached;
+    }
+  }
+  return outgoing;
+}
+
 /** 构造 LLM complete/stream 请求参数（除 messages 外的公共字段） */
 /** 近似 token 估算：字符数 / 2（中英混合保守值，不引入 tokenizer 依赖） */
 function estimateTokens(chars: number): number {
@@ -500,6 +556,7 @@ export async function reactLoop(
 ): Promise<ReactLoopResult> {
   const enableTracing = config.enableTracing ?? false;
   const messages = initLoopMessages(input, config);
+  await attachOnceReminders(messages, config);
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
@@ -524,14 +581,17 @@ export async function reactLoop(
     const llmStartedAt = enableTracing ? nowMs() : 0;
     // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变
     const outgoing = await resolveOutgoingMessages(messages, config);
+    // reminders everyTurn 注入：在裁剪/压缩之后追加到发送副本末条 user 消息
+    // （不占预算、不被裁剪、本地历史不变；发生在 inputSnapshot 之前——trace 如实反映 LLM 输入）
+    const outgoingMessages = await attachEveryTurnReminders(outgoing, config, loopTurns);
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
-    const inputSnapshot = enableTracing ? [...outgoing] : undefined;
+    const inputSnapshot = enableTracing ? [...outgoingMessages] : undefined;
     // 执行中取消由 provider 请求中断传播——附上断点历史重抛（不含未完成的 assistant 消息，
     // 轮组原子性见 reactLoop.md 中断恢复章节）
     let response: LLMResponse;
     try {
       response = await config.provider.complete({
-        messages: [...outgoing],
+        messages: [...outgoingMessages],
         ...extras,
         signal: config.signal,
       });
@@ -745,6 +805,7 @@ export async function* reactLoopStream(
 ): AsyncIterable<ReactLoopStreamChunk> {
   const enableTracing = config.enableTracing ?? false;
   const messages = initLoopMessages(input, config);
+  await attachOnceReminders(messages, config);
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
@@ -763,8 +824,11 @@ export async function* reactLoopStream(
     const llmStartedAt = enableTracing ? nowMs() : 0;
     // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变
     const outgoing = await resolveOutgoingMessages(messages, config);
+    // reminders everyTurn 注入：在裁剪/压缩之后追加到发送副本末条 user 消息
+    // （不占预算、不被裁剪、本地历史不变；发生在 inputSnapshot 之前——trace 如实反映 LLM 输入）
+    const outgoingMessages = await attachEveryTurnReminders(outgoing, config, loopTurns);
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
-    const inputSnapshot = enableTracing ? [...outgoing] : undefined;
+    const inputSnapshot = enableTracing ? [...outgoingMessages] : undefined;
     let turnContent = '';
     let turnReasoning = '';
     let toolCalls: LLMToolCall[] | undefined;
@@ -775,7 +839,7 @@ export async function* reactLoopStream(
     // deltaContent 属于未完成轮组，不入历史（轮组原子性见 reactLoop.md 中断恢复章节）
     try {
       for await (const chunk of config.provider.stream({
-        messages: [...outgoing],
+        messages: [...outgoingMessages],
         ...extras,
         signal: config.signal,
       })) {

@@ -48,6 +48,7 @@ import {
 import { Agent, executeToolCall, type FilterToolsHook } from './agent';
 import { createAgentDeps } from './agentDeps';
 import { createLightComplete } from './lightComplete';
+import { collectReminderSpecs, renderReminderSpecs } from './reminders';
 import { createStandaloneToolContext } from './standaloneToolContext';
 
 /**
@@ -139,6 +140,18 @@ const agentPlugin: FaapiPlugin = {
         baseDeps.resolveSubAgentInput?.(subName, args, ctx),
       resolveSubAgentContext: async (ctx, subName, args) =>
         baseDeps.resolveSubAgentContext?.(subName, args, ctx),
+      // 提醒供数（reminders，见 reminders.md）：宿主侧全量合并（config.agent.reminders
+      // + agent meta.reminders——与本地 buildLoopConfig 同一 collectReminderSpecs 语义）
+      // 并渲染指定通道，返回未包裹内容串数组；worker 侧引擎负责包裹。ctx 为任务合成
+      // 上下文（builder 的 info.ctx——worker 垫片不外传 ctx，此处注入）
+      resolveReminders: async (ctx, info) => {
+        const specs = collectReminderSpecs(
+          baseDeps.config?.reminders,
+          baseDeps.getAgent(info.agentName)?.reminders,
+        );
+        if (specs.length === 0) return undefined;
+        return renderReminderSpecs(specs, { ...info, ctx }, info.phase);
+      },
     });
 
     console.log(

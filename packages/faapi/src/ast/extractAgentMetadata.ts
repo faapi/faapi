@@ -63,6 +63,17 @@ export interface AgentCore {
    * (占位符不渲染)。运行时渲染见 `@faapi/agent` 的 promptTemplate.md
    */
   vars?: Record<string, string | number | boolean>;
+  /**
+   * 提醒注入（config 块字面量提取,静态字符串数组),未声明时为 `undefined`;
+   * 声明了但含无法静态求值的元素在构建期抛错
+   *
+   * 单 agent 固定提醒——每条在该 agent 的对话首轮 user 消息上持久注入
+   * `<system-reminder>` 包裹块（once 通道,见 `@faapi/agent` 的 reminders.md）。
+   * 与全局声明面（faapi.config `agent.reminders`,支持动态函数）合并时排在其后
+   * （更靠近上下文末端）。声明是 string[]（全 once）——AST 字面量提取只能给
+   * 静态文本,动态提醒走全局声明面的函数 spec 按 agentName 分支
+   */
+  reminders?: string[];
 }
 
 /**
@@ -126,7 +137,7 @@ interface FoundConfig {
  *
  * 提取内容：
  * 1. **JSDoc 描述** — config 导出的 JSDoc 自由文本
- * 2. **config 块字段** — systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription
+ * 2. **config 块字段** — systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars / reminders
  * 3. **派发入参 schema 声明** — 顶层 `interface Input` / `type Input` 名字检测（记 `inputTypeName`，
  *    类型提取由 generateAgentArtifacts 阶段完成）
  *
@@ -217,8 +228,16 @@ export function extractAgentMetadata(
   }
 
   // config 块字段提取（extractConfigFields 保证 systemPrompt/systemPromptFile 二选一非空）
-  const { systemPrompt, systemPromptFile, tools, agents, maxTurns, inputDescription, vars } =
-    extractConfigFields(objectLiteral, sourceFile);
+  const {
+    systemPrompt,
+    systemPromptFile,
+    tools,
+    agents,
+    maxTurns,
+    inputDescription,
+    vars,
+    reminders,
+  } = extractConfigFields(objectLiteral, sourceFile);
 
   return {
     name: pathMeta.name,
@@ -231,6 +250,7 @@ export function extractAgentMetadata(
     maxTurns,
     inputDescription,
     vars,
+    reminders,
     inputTypeName: findInputDeclaration(sourceFile) ? 'Input' : undefined,
   };
 }
@@ -409,6 +429,7 @@ function extractConfigFields(
   maxTurns?: number;
   inputDescription?: string;
   vars?: Record<string, string | number | boolean>;
+  reminders?: string[];
 } {
   let systemPrompt: string | undefined;
   let systemPromptFile: string | undefined;
@@ -417,6 +438,7 @@ function extractConfigFields(
   let maxTurns: number | undefined;
   let inputDescription: string | undefined;
   let vars: Record<string, string | number | boolean> | undefined;
+  let reminders: string[] | undefined;
 
   for (const prop of objLit.properties) {
     // 跳过 SpreadAssignment（...other）
@@ -470,13 +492,16 @@ function extractConfigFields(
       case 'vars':
         vars = requireVarsValue(prop, sourceFile);
         break;
+      case 'reminders':
+        reminders = requireStringArrayValue(prop, 'reminders', sourceFile);
+        break;
       default:
         // 框架不读的字段几乎必然是拼写错误或误解——静默忽略后运行时按默认值
         // 跑，与声明意图不符（如 maxTurn 拼错后轮数走默认值）
         throw SchemaExtractionError.at(
           prop,
           `config.${propName}`,
-          '未知 config 字段——仅支持 systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars',
+          '未知 config 字段——仅支持 systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars / reminders',
           sourceFile,
         );
     }
@@ -511,6 +536,7 @@ function extractConfigFields(
     maxTurns,
     inputDescription,
     vars,
+    reminders,
   };
 }
 

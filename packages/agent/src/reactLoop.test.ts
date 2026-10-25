@@ -2258,3 +2258,174 @@ describe('usage / turns 整树上卷（SubAgentToolResult）', () => {
     });
   });
 });
+
+// ─── reminders 注入（once / everyTurn 两通道，见 reminders.md）──────────
+
+describe('reminders 注入', () => {
+  const block = (content: string) => `<system-reminder>\n${content}\n</system-reminder>`;
+
+  it('once：fresh run 时追加到初始 user 消息并持久进历史', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'ok', stopReason: 'stop' }),
+    ]);
+    const once = vi.fn(async () => block('首轮提醒'));
+
+    const result = await reactLoop('hi', {
+      provider,
+      executeTool: baseConfig.executeTool,
+      reminders: { once, everyTurn: async () => undefined },
+    });
+
+    expect(once).toHaveBeenCalledTimes(1);
+    // 发送给 LLM 的初始 user 消息带提醒块
+    const sent = completeCalls.mock.calls[0][0].messages as LLMMessage[];
+    expect(sent.find((m) => m.role === 'user')!.content).toBe(`hi\n\n${block('首轮提醒')}`);
+    // 持久进结果历史
+    expect(result.messages.find((m) => m.role === 'user')!.content).toBe(
+      `hi\n\n${block('首轮提醒')}`,
+    );
+  });
+
+  it('once：续跑（config.messages）时不注入', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'ok', stopReason: 'stop' }),
+    ]);
+    const once = vi.fn(async () => block('首轮提醒'));
+
+    await reactLoop(undefined, {
+      provider,
+      executeTool: baseConfig.executeTool,
+      messages: [
+        { role: 'user', content: '旧消息' },
+        { role: 'assistant', content: '旧回答' },
+      ],
+      reminders: { once, everyTurn: async () => undefined },
+    });
+
+    expect(once).not.toHaveBeenCalled();
+    const sent = completeCalls.mock.calls[0][0].messages as LLMMessage[];
+    expect(sent.find((m) => m.role === 'user')!.content).toBe('旧消息');
+  });
+
+  it('everyTurn：追加到发送副本末条 user 消息，不进本地历史与结果', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'ok', stopReason: 'stop' }),
+    ]);
+    const turns: number[] = [];
+
+    const result = await reactLoop('hi', {
+      provider,
+      executeTool: baseConfig.executeTool,
+      reminders: {
+        once: async () => undefined,
+        everyTurn: async (turn) => {
+          turns.push(turn);
+          return block(`第${turn}轮快照`);
+        },
+      },
+    });
+
+    expect(turns).toEqual([1]);
+    const sent = completeCalls.mock.calls[0][0].messages as LLMMessage[];
+    expect(sent.find((m) => m.role === 'user')!.content).toBe(`hi\n\n${block('第1轮快照')}`);
+    // 结果历史不含提醒（仅发送副本）
+    expect(result.messages.find((m) => m.role === 'user')!.content).toBe('hi');
+  });
+
+  it('everyTurn：多轮 tool 循环中每轮刷新，落在末条 user 消息（tool 消息不受影响）', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        content: '',
+        toolCalls: [toolCall('call_1', 'search', { q: 'foo' })],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'Found foo', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop('search for foo', {
+      provider,
+      executeTool: vi.fn(async () => 'result-foo'),
+      reminders: {
+        once: async () => undefined,
+        everyTurn: async (turn) => block(`快照${turn}`),
+      },
+    });
+
+    const first = completeCalls.mock.calls[0][0].messages as LLMMessage[];
+    expect(first.find((m) => m.role === 'user')!.content).toBe(
+      `search for foo\n\n${block('快照1')}`,
+    );
+
+    const second = completeCalls.mock.calls[1][0].messages as LLMMessage[];
+    // 末条 user 消息仍是初始输入（tool 消息在其后）——提醒追加到该 user 消息
+    expect(second.find((m) => m.role === 'user')!.content).toBe(
+      `search for foo\n\n${block('快照2')}`,
+    );
+    // tool 消息不受提醒污染
+    expect(second.find((m) => m.role === 'tool')!.content).toBe('result-foo');
+  });
+
+  it('everyTurn：历史无 user 消息时跳过注入', async () => {
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'ok', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop(undefined, {
+      provider,
+      executeTool: baseConfig.executeTool,
+      messages: [{ role: 'assistant', content: '只有 assistant 的历史' }],
+      reminders: {
+        once: async () => undefined,
+        everyTurn: async () => block('不应出现'),
+      },
+    });
+
+    const sent = completeCalls.mock.calls[0][0].messages as LLMMessage[];
+    expect(sent.some((m) => m.content.includes('system-reminder'))).toBe(false);
+  });
+
+  it('tracing：inputSnapshot 含提醒块（trace 如实反映 LLM 输入）', async () => {
+    const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+
+    const result = await reactLoop('hi', {
+      provider,
+      executeTool: baseConfig.executeTool,
+      enableTracing: true,
+      reminders: {
+        once: async () => undefined,
+        everyTurn: async () => block('快照'),
+      },
+    });
+
+    const llmCall = result.trace!.events.find((e) => e.type === 'llm_call')!;
+    expect(
+      llmCall.type === 'llm_call' &&
+        llmCall.inputMessages.some((m) => m.content.includes('system-reminder')),
+    ).toBe(true);
+  });
+
+  it('流式：once 持久注入 + everyTurn 仅发送副本', async () => {
+    const { provider, streamCalls } = createMockStreamProvider([
+      [{ deltaContent: 'done', finishReason: 'stop' }],
+    ]);
+    const once = vi.fn(async () => block('首轮提醒'));
+
+    const chunks = await collect(
+      reactLoopStream('hi', {
+        provider,
+        executeTool: baseConfig.executeTool,
+        reminders: { once, everyTurn: async (turn) => block(`快照${turn}`) },
+      }),
+    );
+
+    expect(once).toHaveBeenCalledTimes(1);
+    const done = chunks.at(-1)!.done!;
+    const sent = streamCalls.mock.calls[0][0].messages as LLMMessage[];
+    expect(sent.find((m) => m.role === 'user')!.content).toBe(
+      `hi\n\n${block('首轮提醒')}\n\n${block('快照1')}`,
+    );
+    expect(done.messages.find((m) => m.role === 'user')!.content).toBe(
+      `hi\n\n${block('首轮提醒')}`,
+    );
+  });
+});

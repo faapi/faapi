@@ -218,6 +218,42 @@ describe('extractAgentMetadata', () => {
       expect(result!.tools).toBeUndefined();
       expect(result!.agents).toBeUndefined();
       expect(result!.inputDescription).toBeUndefined();
+      expect(result!.reminders).toBeUndefined();
+    });
+
+    it('提取 reminders（全字符串字面量数组，单 agent 固定提醒）', () => {
+      const result = extract(
+        `export const config = { systemPrompt: 'x', reminders: ['写作规范', '字数上限 2000'] };\n`,
+      );
+      expect(result!.reminders).toEqual(['写作规范', '字数上限 2000']);
+    });
+
+    it('reminders 元素支持无插值模板字符串与 + 拼接（与 tools 同规则）', () => {
+      const result = extract(
+        "export const config = { systemPrompt: 'x', reminders: [`模板提醒`, '拼接' + '提醒'] };\n",
+      );
+      expect(result!.reminders).toEqual(['模板提醒', '拼接提醒']);
+    });
+
+    it('reminders 空数组 → 空数组', () => {
+      const result = extract(`export const config = { systemPrompt: 'x', reminders: [] };\n`);
+      expect(result!.reminders).toEqual([]);
+    });
+
+    it('reminders 含函数元素 → 抛 SchemaExtractionError（单 agent 声明面仅静态字面量，动态函数走全局声明面）', () => {
+      expect(() =>
+        extract(
+          "export const config = { systemPrompt: 'x', reminders: ['静态', () => `轮次提醒`] };\n",
+        ),
+      ).toThrow(SchemaExtractionError);
+    });
+
+    it('reminders 含变量引用元素 → 抛 SchemaExtractionError（构建期无法静态求值）', () => {
+      expect(() =>
+        extract(
+          "const dynamic = '提醒';\nexport const config = { systemPrompt: 'x', reminders: [dynamic] };\n",
+        ),
+      ).toThrow(SchemaExtractionError);
     });
   });
 

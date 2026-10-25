@@ -69,6 +69,8 @@ import {
   type PluginContext,
   type AgentCore,
   type AgentMetadata,
+  type ReminderInfo,
+  type ReminderPhase,
   type ToolMetadata,
 } from '@faapi/faapi';
 
@@ -638,5 +640,73 @@ describe('@faapi/agent plugin — 隔离任务工具执行器（agentToolRunner�
       'resolveSubAgentInput',
       'resolveSubAgentContext',
     ]);
+  });
+
+  it('resolveReminders：config.agent.reminders 与单 agent reminders 全量合并（全局在前）、phase 过滤、ctx 注入', async () => {
+    const builderInfos: Array<{
+      agentName: string;
+      depth: number;
+      turn: number;
+      phase: string;
+      ctx: unknown;
+    }> = [];
+    const ctx = makeCtx({
+      ...fullAgentConfig,
+      reminders: [
+        '全局固定',
+        {
+          when: 'everyTurn',
+          content: (info) => {
+            builderInfos.push(info as ReminderInfo & { phase: ReminderPhase });
+            return `全局轮${info.turn}`;
+          },
+        },
+      ],
+    } as AgentConfig);
+    ctx.registries.agent.hydrate([{ ...testAgentEntry, reminders: ['单agent固定'] }]);
+
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentToolRunner.get();
+    expect(runner).toBeDefined();
+
+    const toolCtx = createStandaloneToolContext({ currentUserId: 7 });
+    // once：全局字符串 + 单 agent 字符串（everyTurn spec 过滤掉），未包裹内容串数组
+    await expect(
+      runner!.resolveReminders(toolCtx, {
+        agentName: 'researcher',
+        depth: 1,
+        turn: 0,
+        phase: 'once',
+      }),
+    ).resolves.toEqual(['全局固定', '单agent固定']);
+    // everyTurn：函数 spec 渲染（once 声明过滤掉）
+    await expect(
+      runner!.resolveReminders(toolCtx, {
+        agentName: 'researcher',
+        depth: 1,
+        turn: 2,
+        phase: 'everyTurn',
+      }),
+    ).resolves.toEqual(['全局轮2']);
+    // builder 收到运行时信息（agentName/depth/turn/phase/ctx 为调用方契约 ctx）
+    expect(builderInfos).toEqual([
+      { agentName: 'researcher', depth: 1, turn: 2, phase: 'everyTurn', ctx: toolCtx },
+    ]);
+  });
+
+  it('resolveReminders：无任何声明时返回 undefined（不凭空产空数组）', async () => {
+    const ctx = makeCtx(fullAgentConfig);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentToolRunner.get();
+
+    const toolCtx = createStandaloneToolContext();
+    await expect(
+      runner!.resolveReminders(toolCtx, {
+        agentName: 'researcher',
+        depth: 1,
+        turn: 0,
+        phase: 'once',
+      }),
+    ).resolves.toBeUndefined();
   });
 });

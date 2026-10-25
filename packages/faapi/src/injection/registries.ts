@@ -2,6 +2,7 @@ import type { ToolMetadata } from '../ast/extractToolMetadata';
 import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { AgentToolContext } from '../runtime/agentToolContext';
+import type { ReminderPhase } from '../configs/configTypes';
 import type { TaskRegistry } from '../tasks/taskRegistry';
 import { createTaskRegistry } from '../tasks/taskRegistry';
 import type { LlmComplete } from './llmTypes';
@@ -292,6 +293,19 @@ export interface AgentToolRunner {
     subName: string,
     args: Record<string, unknown>,
   ): Promise<string | undefined>;
+  /**
+   * 提醒供数钩子（reminders，见 `@faapi/agent` 的 reminders.md）
+   *
+   * 宿主侧全量合并（`config.agent.reminders` + agent meta.reminders）并渲染指定
+   * 通道，返回**未包裹内容串数组**（包裹由 worker 侧引擎统一做；`undefined` = 该
+   * 通道无提醒）。`info.phase`：`'once'`（fresh run 循环启动一次，turn=0）|
+   * `'everyTurn'`（每轮 LLM 请求前，turn 为当轮序号 1 起）。`info.ctx` 不跨线程
+   * ——worker 垫片不外传 ctx，此处以任务合成 ctx 调用 builder。
+   */
+  resolveReminders(
+    ctx: AgentToolContext,
+    info: { agentName: string; depth: number; turn: number; phase: ReminderPhase },
+  ): Promise<string[] | undefined>;
 }
 
 /** 隔离任务工具执行器 store（app 实例级，随 app 生命周期；与 LlmChannelStore 同形态） */

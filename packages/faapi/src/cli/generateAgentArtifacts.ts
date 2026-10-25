@@ -47,6 +47,8 @@ export interface SerializedAgentRecord {
   inputDescription?: string;
   /** 提示词模板变量（config 块字面量提取，静态值），无/非字面量叶子时省略 */
   vars?: Record<string, string | number | boolean>;
+  /** 提醒注入（config 块字面量提取，静态字符串数组，全部 once 通道），无/含非字面量元素时省略 */
+  reminders?: string[];
   /** 派发入参 schema 声明（handler.ts 顶层 Input 导出检测），无则省略 */
   inputTypeName?: string;
   /** 产物形式路径（如 `dist/agents/researcher/handler.js`），声明文件定位与可观测性用 */
@@ -62,7 +64,7 @@ const AGENTS_FILE = 'faapi-agents.js';
  * 序列化 agent 清单为可写入 JS 模块的结构
  *
  * - `filePath` 转为产物形式（打平 `src/` 前缀 + dist 前缀 + `.js`）
- * - 其他字段（name/description/systemPrompt/tools/agents/maxTurns/inputDescription/vars）直接透传
+ * - 其他字段（name/description/systemPrompt/tools/agents/maxTurns/inputDescription/vars/reminders）直接透传
  * - `undefined` 字段在 JSON.stringify 时自动省略
  *
  * @param agents AST 增强后的 AgentMetadata[]（由 generateAgentArtifacts 内部从 AgentManifest 增强）
@@ -82,6 +84,7 @@ export function serializeAgents(
     maxTurns: a.maxTurns,
     inputDescription: a.inputDescription,
     vars: a.vars,
+    reminders: a.reminders,
     inputTypeName: a.inputTypeName,
     filePath: toProdFilePath(a.filePath, dist),
   }));
@@ -121,6 +124,7 @@ export function hydrateAgents(manifest: SerializedAgentRecord[]): AgentMetadata[
     maxTurns: a.maxTurns ?? undefined,
     inputDescription: a.inputDescription ?? undefined,
     vars: a.vars ?? undefined,
+    reminders: a.reminders ?? undefined,
     inputTypeName: a.inputTypeName ?? undefined,
   }));
 }

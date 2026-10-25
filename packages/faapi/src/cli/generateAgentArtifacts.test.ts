@@ -106,6 +106,22 @@ describe('generateAgentArtifacts', () => {
       expect(hydrated[0].systemPrompt).toBeUndefined();
     });
 
+    it('reminders 透传序列化，hydrate 往返还原（单 agent 固定提醒）', () => {
+      const meta: AgentMetadata = {
+        name: 'researcher',
+        filePath: 'src/agents/researcher/handler.ts',
+        systemPrompt: 'x',
+        reminders: ['写作规范', '字数上限 2000'],
+      };
+      const serialized = serializeAgents([meta], 'dist');
+      expect(serialized[0].reminders).toEqual(['写作规范', '字数上限 2000']);
+
+      const hydrated = hydrateAgents(
+        JSON.parse(JSON.stringify(serialized)) as SerializedAgentRecord[],
+      );
+      expect(hydrated[0].reminders).toEqual(['写作规范', '字数上限 2000']);
+    });
+
     it('dev 模式 dist 为 .faapi', () => {
       const meta: AgentMetadata = {
         name: 'researcher',

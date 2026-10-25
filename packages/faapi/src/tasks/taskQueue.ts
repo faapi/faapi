@@ -550,6 +550,10 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
                 const p = payload as {
                   toolName?: string;
                   subName?: string;
+                  agentName?: string;
+                  depth?: number;
+                  turn?: number;
+                  phase?: string;
                   args?: Record<string, unknown>;
                   tools?: unknown[];
                 };
@@ -572,6 +576,13 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
                       p.subName!,
                       p.args ?? {},
                     );
+                  case 'resolve-reminders':
+                    return agentRunner.resolveReminders(agentHostCtx!, {
+                      agentName: p.agentName!,
+                      depth: p.depth ?? 0,
+                      turn: p.turn ?? 0,
+                      phase: p.phase === 'everyTurn' ? 'everyTurn' : 'once',
+                    });
                   default:
                     throw new Error(`[faapi] Unknown agent RPC kind "${kind}"`);
                 }

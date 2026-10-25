@@ -216,6 +216,8 @@ describe('隔离任务 agent 通道（真实 worker 线程 + RPC 宿主执行）
       filterTools: async (_ctx: unknown, tools: unknown[]) => tools,
       resolveSubAgentInput: async () => undefined,
       resolveSubAgentContext: async () => undefined,
+      // 宿主无 reminders 声明（config 快照未配置 agent.reminders）——undefined
+      resolveReminders: async () => undefined,
     };
 
     // 宿主执行 ctx：与生产同配方（createTaskToolContext——carry 字段 + 契约字段）
@@ -227,7 +229,16 @@ describe('隔离任务 agent 通道（真实 worker 线程 + RPC 宿主执行）
         log: createLogger('task:weather-task'),
         signal: new AbortController().signal,
       });
-      const p = payload as { toolName?: string; args?: Record<string, unknown>; tools?: unknown[] };
+      const p = payload as {
+        toolName?: string;
+        args?: Record<string, unknown>;
+        tools?: unknown[];
+        subName?: string;
+        agentName?: string;
+        depth?: number;
+        turn?: number;
+        phase?: string;
+      };
       switch (kind) {
         case 'before-tool-call':
           return runner.beforeToolCall(hostCtx, p.toolName!, p.args ?? {});
@@ -235,6 +246,17 @@ describe('隔离任务 agent 通道（真实 worker 线程 + RPC 宿主执行）
           return runner.toolCall(hostCtx, p.toolName!, p.args ?? {});
         case 'filter-tools':
           return runner.filterTools(hostCtx, p.tools ?? []);
+        case 'resolve-sub-agent-input':
+          return runner.resolveSubAgentInput(hostCtx, p.subName!, p.args ?? {});
+        case 'resolve-sub-agent-context':
+          return runner.resolveSubAgentContext(hostCtx, p.subName!, p.args ?? {});
+        case 'resolve-reminders':
+          return runner.resolveReminders(hostCtx, {
+            agentName: p.agentName!,
+            depth: p.depth ?? 0,
+            turn: p.turn ?? 0,
+            phase: p.phase === 'everyTurn' ? 'everyTurn' : 'once',
+          });
         default:
           throw new Error(`unexpected kind ${kind}`);
       }

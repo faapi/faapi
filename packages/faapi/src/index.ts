@@ -17,6 +17,11 @@ export type {
   TaskConfig,
   TaskPgBossOptions,
   TaskBullMqOptions,
+  ReminderPhase,
+  ReminderInfo,
+  ReminderBuilder,
+  ReminderSpec,
+  ReminderSpecObject,
 } from './configs/configTypes';
 export type {
   FaapiPlugin,

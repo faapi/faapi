@@ -485,6 +485,23 @@ export async function buildAgentChannel(input: {
           | undefined,
       resolveSubAgentContext: async (subName: string, args: Record<string, unknown>) =>
         (await input.rpc('resolve-sub-agent-context', { subName, args })) as string | undefined,
+      // 提醒供数垫片（reminders，见 @faapi/agent 的 reminders.md）：宿主 runner
+      // 全量合并（config.agent.reminders + agent meta.reminders）并渲染指定通道，
+      // 返回未包裹内容串数组——包裹由 agent 包引擎在本垫片之上统一做。ctx 不外传，
+      // 宿主以任务合成 ctx 调用 builder
+      resolveReminders: async (info: {
+        agentName: string;
+        depth: number;
+        turn: number;
+        phase: string;
+        ctx?: unknown;
+      }) =>
+        (await input.rpc('resolve-reminders', {
+          agentName: info.agentName,
+          depth: info.depth,
+          turn: info.turn,
+          phase: info.phase,
+        })) as string[] | undefined,
     },
   });
   return new mod.Agent(deps!);
