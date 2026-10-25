@@ -211,10 +211,11 @@ it('WS /api/chat 收到 onOpen 消息', async () => {
 
 ### createAgentTestHarness（agent 流程测试）
 
-agent 流程测试（真 reactLoop + 真工具 + 假 LLM）的官方设施——测试进程内扫描 agent/tool 源码、水合出与生产同接口的注册表视图、出可拼装 `AgentDeps` 的 loader 桥接，对位 HTTP 层的 `createTestServer`：
+agent 流程测试（真 reactLoop + 真工具 + 假 LLM）的官方设施——测试进程内扫描 agent/tool 源码、水合出与生产同接口的注册表视图，对位 HTTP 层的 `createTestServer`。tool 单测走 `@faapi/agent` 的 `callTool`（经真实分发管线，ctx 声明即校验生效），不走 handler 直调：
 
 ```ts
-import { createAgentTestHarness } from '@faapi/faapi/testing';
+import { isAbsolute, resolve } from 'node:path';
+import { createAgentTestHarness, loadToolModule } from '@faapi/faapi/testing';
 import { Agent, createScriptLLM } from '@faapi/agent';
 
 const h = await createAgentTestHarness({ rootDir: process.cwd() });
@@ -231,7 +232,12 @@ const agent = new Agent({
   getTool: h.registries.tool.get,
   resolveAgentTools: h.registries.agent.resolveAgentTools,
   resolveSubAgents: h.registries.agent.resolveSubAgents,
-  loadToolModule: h.loadToolModule,
+  loadToolModule: (filePath, functionName) =>
+    loadToolModule(
+      isAbsolute(filePath) ? filePath : resolve(process.cwd(), filePath),
+      functionName,
+      process.cwd(),
+    ),
 });
 const result = await agent.run('北京天气', { agent: 'researcher', provider: llm });
 ```

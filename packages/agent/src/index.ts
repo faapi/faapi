@@ -56,6 +56,8 @@ export {
   createStandaloneToolContext,
   type StandaloneToolContextOverrides,
 } from './standaloneToolContext';
+// 经真实分发管线的 tool 测试辅助（对位 HTTP 的 createTestServer，详见 callTool.md）
+export { callTool } from './callTool';
 // 规范类型主包持有（TaskContext 等主包类型引用），此处 re-export 供业务方统一标注
 export type { LlmComplete, LlmCompleteOptions } from '@faapi/faapi';
 // tool handler 第二参数契约（主包声明、三路径合成保证），re-export 供业务方统一标注

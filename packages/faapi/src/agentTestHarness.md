@@ -1,6 +1,6 @@
 # agentTestHarness
 
-一句话概括：公开导出 `createAgentTestHarness`，测试进程内扫描 agent/tool 源码 → AST 增强 → 水合出与生产同接口的注册表视图 + 可拼装 `AgentDeps` 的 loader 桥接——agent 流程测试（真 reactLoop + 真工具 + 假 LLM）的官方设施，对位 HTTP 层的 `createTestServer`。
+一句话概括：公开导出 `createAgentTestHarness`，测试进程内扫描 agent/tool 源码 → AST 增强 → 水合出与生产同接口的注册表视图——agent 流程测试（真 reactLoop + 真工具 + 假 LLM）的官方设施，对位 HTTP 层的 `createTestServer`。tool 的单测调用走 `@faapi/agent` 的 `callTool`（经真实分发管线，ctx 声明即校验生效）。
 
 ## 为什么需要
 
@@ -11,6 +11,7 @@ agent 的进程内流程测试此前没有官方设施。真注册表只能由 d
 ## 使用场景
 
 - agent 流程集成测试：真 `reactLoop`（`@faapi/agent` 的 `Agent` 类）+ 真 tool handler + 脚本假 LLM，测派发路由、交接单传导、鉴权门禁、状态推进等编排行为（文本质量不在覆盖范围）
+- tool 单测：`@faapi/agent` 的 `callTool(h, name, args, ctx)`——经 `executeToolCall` 真实分发管线（input schema + ctx 声明即校验在生产口径下生效），见 [callTool](../../../agent/src/callTool.md)
 - harness 的注册表视图整体塞进 `ctx.registries` 桩，供 HTTP 层集成测试走生产注入路径
 - 断言 agent 注册名 / tool 最终名（目录路径推导名）/ sub-agent 集合与生产一致（与 dev 水合同管线，阴性对照见测试）
 
@@ -41,8 +42,8 @@ import { createAgentTestHarness, type AgentTestHarness, type AgentTestHarnessOpt
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
+| `rootDir` | `string` | 项目根目录（创建入参回读）——`@faapi/agent` 的 `callTool` 桥接 loader 与解析 registry 产物形式 filePath（相对形态）用 |
 | `registries` | `Pick<AppRegistries, 'agent' \| 'tool'>` | 与生产同接口的注册表视图（`createToolRegistry` + `createAgentRegistry` 实例级工厂创建后 `hydrate`，查询方法全量可用：`getAgent` / `getAgentEntry` / `listAgents` / `asTool` / `resolveAgentTools` / `resolveSubAgents` / `get` / `list`），可整体塞 `ctx.registries` 桩 |
-| `loadToolModule` | `(filePath, functionName) => Promise<ToolModule>` | 满足 `AgentDeps['loadToolModule']` 签名——registry 中的产物形式 `filePath` 已在内部转绝对路径，业务方直接拼进 deps，无需自己处理路径 |
 | `resolveToolSchema` | `AgentDeps['resolveToolSchema']`（仅 `generated`） | 生产口径 schema 解析（zod.js → JSON Schema + safeParse 校验函数），实现即 `createToolSchemaResolver`（带 dist），free-form 时为 `undefined` |
 | `resolveAgentInputSchema` | `AgentDeps['resolveAgentInputSchema']`（仅 `generated`） | 与 `resolveToolSchema` 同一实例（tool 入参与 agent 派发入参共用缓存），free-form 时为 `undefined` |
 | `agentNames` | `string[]` | 扫描水合后的 agent 注册名清单（目录路径推导名），测试按名取 core / 断言集合 |
@@ -54,7 +55,8 @@ import { createAgentTestHarness, type AgentTestHarness, type AgentTestHarnessOpt
 
 - **扫描与水合同生产管线**：`scanAgents` / `scanTools`（零 import 扫描 + 字符集校验）→ `generateAgentArtifacts` / `generateToolArtifacts`（AST 增强 + 清单级校验）→ 实例级注册表工厂 `hydrate`。与 dev 启动的唯一差异是不写全局/不建 app——产物写到临时目录、水合到独立实例，对进程内单 app 强制零占用。
 - **handler 装载走源码侧（自封性）**：创建时经 `collectRelativeImports` 收集 tool 源码的 src 内依赖闭包（相对 import + tsconfig paths 别名），`compileDevRoutes` 逐文件编译到临时目录——测试进程不要求先跑过 build。agent 源码不编译（声明式 agent 运行时不 import handler.js，人设走 `systemPromptFile` 的 readResource 直读、入参 schema 走 AST 管线的 zod.js）。
-- **vitest 下模块加载走 Vite SSR pipeline**（与 `createTestServer` 同款）：`loadToolModule` 内部经 `importWithCacheBust`，识别 tsconfig paths 别名、`vi.mock` 在加载的 tool handler 内生效。前置条件同 `createTestServer`（`test.globals: true` 或显式挂 `globalThis.vi`）。
+- **vitest 下模块加载走 Vite SSR pipeline**（与 `createTestServer` 同款）：tool handler 经 `loadToolModule` → `importWithCacheBust` 装载，识别 tsconfig paths 别名、`vi.mock` 在加载的 tool handler 内生效。前置条件同 `createTestServer`（`test.globals: true` 或显式挂 `globalThis.vi`）。
+- **不暴露 loadToolModule 直调面**：tool 的受支持调用路径是真实分发管线——`callTool`（单测）与 Agent 派发（流程测试）。直调 `mod.handler(input, ctx)` 绕过 ctx 声明即校验（`ToolModule.handler` 参数为 `unknown[]`，编译期与运行时均无防护，业务字段缺失静默执行）。组装 AgentDeps 用 `createAgentDeps`（自带 loader 桥接）。
 - **不带 LLM**：providers 恒由测试侧组装（假 LLM 经 `agent.run(input, { agent, provider })` 的 `options.provider` 注入，或 `createScriptLLM` 官方件）——这是配方不是机械，harness 不掺业务语义。
 - **资源读取根不绑定**：agent 声明 `systemPromptFile` 时运行时经免传参 `readResource` 直读，读取根仍是测试配方（`createTestContext({ path: '/', resourcesDir })` 绑定，不建 app 不挂 ctx）——与生产同一函数同一形态，缺文件时 run 显式抛 `AgentError`，不会静默跑在空提示词上。
 - **编译失败即创建失败**：tool 源码闭包编译错误在 `createAgentTestHarness` 调用时响亮抛错（带原始 cause）——构建期失败优于首次 tool 调用失败。
@@ -66,9 +68,14 @@ import { createAgentTestHarness, type AgentTestHarness, type AgentTestHarnessOpt
 
 ```ts
 import { describe, it, expect, afterAll } from 'vitest';
-import { createAgentTestHarness } from '@faapi/faapi/testing';
-import { createScriptLLM } from '@faapi/agent';
-import { Agent } from '@faapi/agent';
+import { isAbsolute, resolve } from 'node:path';
+import { createAgentTestHarness, loadToolModule } from '@faapi/faapi/testing';
+import { createScriptLLM, Agent } from '@faapi/agent';
+```
+
+> 注：组装 `AgentDeps` 时 `loadToolModule` 显式桥接（registry 产物形式 filePath
+> 转绝对后装载）；生产运行时由 `createAgentDeps` 内置同款桥接。tool 单测不走
+> handler 直调——用 `@faapi/agent` 的 `callTool`。
 
 const h = await createAgentTestHarness({ rootDir: process.cwd() });
 afterAll(() => h.close());
@@ -93,7 +100,12 @@ it('真 reactLoop + 真工具 + 脚本假 LLM', async () => {
     getTool: h.registries.tool.get,
     resolveAgentTools: h.registries.agent.resolveAgentTools,
     resolveSubAgents: h.registries.agent.resolveSubAgents,
-    loadToolModule: h.loadToolModule,
+    loadToolModule: (filePath, functionName) =>
+      loadToolModule(
+        isAbsolute(filePath) ? filePath : resolve(process.cwd(), filePath),
+        functionName,
+        process.cwd(),
+      ),
   });
   const result = await agent.run('北京天气', { agent: 'researcher', provider: llm });
   expect(result.messages.at(-1)?.content).toBe('北京晴');

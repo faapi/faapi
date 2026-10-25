@@ -1284,6 +1284,46 @@ export class Agent {
 }
 
 /**
+ * ctx 声明即校验的共享实现——executeToolCall（失败 `{ error }` 回传 LLM 重试语义）
+ * 与 callTool（测试辅助，失败 throw 语义）共用，错误消息单一来源。
+ *
+ * tool 声明 `ctxTypeName` 时解析 ctx schema（复用 resolveToolSchema 同一实例；
+ * schemaCache 传缓存时以 `ctx:` 前缀 key 与 input 缓存并存——resolver 以换名 ref
+ * （inputTypeName = ctxTypeName）解析，zodPath#typeName 键天然区分）对合成 ctx
+ * safeParse。校验只做门禁，不用校验后的 value 替换 ctx——schema strip 会丢掉
+ * 框架注入字段（tasks/log/signal）。
+ *
+ * 失败返回错误消息（指明是 ctx 装配问题——前置条件不满足，修正入参无法解决），
+ * 通过返回 undefined；未声明 ctxTypeName / 无 resolver / 解析为空均视为无校验。
+ */
+export async function validateToolCtx(
+  deps: Pick<AgentDeps, 'resolveToolSchema'>,
+  name: string,
+  tool: ToolMetadata,
+  ctx: AgentToolContext,
+  schemaCache?: Map<string, ToolSchemaResolution | undefined>,
+): Promise<string | undefined> {
+  if (!tool.ctxTypeName || !deps.resolveToolSchema) return undefined;
+  const ctxCacheKey = `ctx:${name}`;
+  let ctxSchemaRes: ToolSchemaResolution | undefined;
+  if (schemaCache?.has(ctxCacheKey)) {
+    ctxSchemaRes = schemaCache.get(ctxCacheKey);
+  } else {
+    ctxSchemaRes = await deps.resolveToolSchema({ ...tool, inputTypeName: tool.ctxTypeName });
+    schemaCache?.set(ctxCacheKey, ctxSchemaRes);
+  }
+  if (!ctxSchemaRes) return undefined;
+  const ctxResult = ctxSchemaRes.validate(ctx as unknown as Record<string, unknown>);
+  if (!ctxResult.ok) {
+    return (
+      `Tool "${name}" ctx 校验失败（工具执行前置条件不满足——这是 ctx 装配问题，` +
+      `修正入参无法解决，请勿重试）: ${ctxResult.error}`
+    );
+  }
+  return undefined;
+}
+
+/**
  * 单次 tool 调用的执行半段（getTool → 可选 input 校验 → loadToolModule → handler →
  * afterToolCall）——模块级独立函数
  *
@@ -1332,32 +1372,10 @@ export async function executeToolCall(
     callArgs = result.value ?? args;
   }
 
-  // ctx 声明即校验（tool 声明 ctxTypeName 时）：对合成 ctx safeParse，失败不调用
-  // handler。与 input 校验同语义返回 { error } 回传 LLM，但错误消息指明是 ctx
-  // 装配问题（前置条件不满足）——LLM 无法修正入参解决，不应盲目重试。
-  // 校验只做门禁，不用校验后的 value 替换 ctx——schema strip 会丢掉框架注入字段
-  // （tasks/log/signal）。缓存复用 schemaCache（`ctx:` 前缀 key 与 input 缓存并存）：
-  // resolver 以换名 ref（inputTypeName = ctxTypeName）解析，zodPath#typeName 键天然区分
-  if (tool.ctxTypeName && deps.resolveToolSchema) {
-    const ctxCacheKey = `ctx:${name}`;
-    let ctxSchemaRes: ToolSchemaResolution | undefined;
-    if (schemaCache?.has(ctxCacheKey)) {
-      ctxSchemaRes = schemaCache.get(ctxCacheKey);
-    } else {
-      ctxSchemaRes = await deps.resolveToolSchema({ ...tool, inputTypeName: tool.ctxTypeName });
-      schemaCache?.set(ctxCacheKey, ctxSchemaRes);
-    }
-    if (ctxSchemaRes) {
-      const ctxResult = ctxSchemaRes.validate(ctx as unknown as Record<string, unknown>);
-      if (!ctxResult.ok) {
-        return {
-          error:
-            `Tool "${name}" ctx 校验失败（工具执行前置条件不满足——这是 ctx 装配问题，` +
-            `修正入参无法解决，请勿重试）: ${ctxResult.error}`,
-        };
-      }
-    }
-  }
+  // ctx 声明即校验（tool 声明 ctxTypeName 时）：失败返回 { error } 不调用 handler
+  // （错误语义与消费方处理见 validateToolCtx 注释）
+  const ctxError = await validateToolCtx(deps, name, tool, ctx, schemaCache);
+  if (ctxError) return { error: ctxError };
 
   const mod = await deps.loadToolModule(tool.filePath, tool.functionName);
   const toolTimeoutMs = deps.config?.toolTimeoutMs;

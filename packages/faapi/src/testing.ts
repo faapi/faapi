@@ -36,3 +36,6 @@ export {
   type AgentTestHarness,
   type AgentTestHarnessOptions,
 } from './agentTestHarness';
+// loader（测试组装 AgentDeps 时显式桥接用——harness 不暴露 loadToolModule 直调面，
+// tool 单测走 @faapi/agent 的 callTool 经真实分发管线）
+export { loadToolModule } from './loaders/loadToolModule';

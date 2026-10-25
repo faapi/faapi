@@ -1,14 +1,14 @@
 # standaloneToolContext
 
-一句话概括：`createStandaloneToolContext(overrides?)` 为无 app 编排场景（测试直调、编程式脚本）构造合规的 `AgentToolContext`——契约字段给诚实缺省，业务字段经 overrides 显式注入并**流型到返回类型**（构造漏传在调用点编译报错）。
+一句话概括：`createStandaloneToolContext(overrides?)` 为无 app 编排场景（测试调用、编程式脚本）构造合规的 `AgentToolContext`——契约字段给诚实缺省，业务字段经 overrides 显式注入并**流型到返回类型**（构造漏传在调用点编译报错）。
 
 ## 为什么需要
 
-`AgentDeps.ctx` 收紧为必填后，每一条 AgentDeps 装配路径都要提供契约 ctx：HTTP/任务路径由框架合成，但测试直调 tool handler、编程式 `new Agent(deps)`、插件 setup 的 baseDeps 占位没有 app 编排可依赖——手工拼 `{ tasks: ???, log: ???, signal: ??? }` 既啰嗦又容易造出假字段。本助手是这些场景的官方构造入口：缺省值诚实（tasks 桩调用即抛错并给修复指引，绝不静默假成功），业务身份字段显式声明。
+`AgentDeps.ctx` 收紧为必填后，每一条 AgentDeps 装配路径都要提供契约 ctx：HTTP/任务路径由框架合成，但测试调用 tool、编程式 `new Agent(deps)`、插件 setup 的 baseDeps 占位没有 app 编排可依赖——手工拼 `{ tasks: ???, log: ???, signal: ??? }` 既啰嗦又容易造出假字段。本助手是这些场景的官方构造入口：缺省值诚实（tasks 桩调用即抛错并给修复指引，绝不静默假成功），业务身份字段显式声明。
 
 ## 使用场景
 
-- 测试直调 tool handler：`handler(input, createStandaloneToolContext({ currentUserId: 7 }))`
+- 测试调用 tool（走真实分发管线）：`callTool(h, 'order_getOrder', args, createStandaloneToolContext({ currentUserId: 7 }))`——ctx 装配错误由声明即校验在测试现场响亮抛错；**直调 `mod.handler(input, ctx)` 不是受支持场景**（绕过校验，业务字段缺失静默执行）
 - 测试组装 deps：`createAgentDeps({ registries: harness.registries, ctx: createStandaloneToolContext({ currentUserId: 7 }) })`
 - 编程式脚本（无 HTTP 请求、无队列）组装 Agent
 - `@faapi/agent` 插件 setup 的 baseDeps 占位（每次请求工厂以请求 ctx 覆盖）
@@ -25,7 +25,7 @@ overrides 浅合并到缺省之上，业务增强字段（currentUserId 等）�
 
 ## 业务字段必填与类型流型
 
-**官方形态：业务定义校验类型（纯数据字段），handler ctx 参数以交叉标注携带（需要框架字段时 `& AgentToolContext`）——运行时框架声明即校验（见主包 [agentToolContext](../../faapi/src/runtime/agentToolContext.md)），消费点零断言；直调链路由本助手泛型流型在编译期拦截漏传。**
+**官方形态：业务定义校验类型（纯数据字段），handler ctx 参数以交叉标注携带（需要框架字段时 `& AgentToolContext`）——运行时框架声明即校验（见主包 [agentToolContext](../../faapi/src/runtime/agentToolContext.md)），消费点零断言；本助手泛型流型在编译期辅助拦截构造漏传（运行时强制在真实分发管线，测试调用走 [callTool](./callTool.md)）。**
 
 ```ts
 // 业务校验类型——纯数据字段（不要 extends AgentToolContext：构建期提取会因

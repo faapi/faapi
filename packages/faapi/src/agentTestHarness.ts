@@ -16,9 +16,7 @@ import {
   type ToolRegistry,
   type AgentRegistry,
 } from './injection/registries';
-import { loadToolModule as loadToolModuleImpl } from './loaders/loadToolModule';
 import { createToolSchemaResolver, type ToolSchemaResolution } from './loaders/toolSchemaResolver';
-import type { ToolModule } from './loaders/loadToolModule';
 import type { ToolMetadata } from './ast/extractToolMetadata';
 import type { AgentMetadata } from './ast/extractAgentMetadata';
 
@@ -64,15 +62,15 @@ export interface AgentTestHarnessOptions {
  */
 export interface AgentTestHarness {
   /**
+   * 项目根目录（创建入参回读）——`@faapi/agent` 的 `callTool` 桥接 loader 与
+   * 解析 registry 产物形式 filePath（相对形态）用
+   */
+  rootDir: string;
+  /**
    * 与生产同接口的注册表视图（实例级工厂创建后 hydrate，查询方法全量可用），
    * 可整体塞 `ctx.registries` 桩
    */
   registries: Pick<AppRegistries, 'agent' | 'tool'>;
-  /**
-   * 满足 `AgentDeps['loadToolModule']` 签名——registry 中的产物形式 `filePath`
-   * 已在内部转绝对路径，业务方直接拼进 deps
-   */
-  loadToolModule: (filePath: string, functionName: string) => Promise<ToolModule>;
   /** 生产口径 schema 解析（仅 `schemaMode: 'generated'` 提供，free-form 为 undefined） */
   resolveToolSchema?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   /** 与 `resolveToolSchema` 同一实例（仅 `schemaMode: 'generated'` 提供） */
@@ -179,16 +177,10 @@ export async function createAgentTestHarness(
   const agentRegistry: AgentRegistry = createAgentRegistry(toolRegistry);
   agentRegistry.hydrate(hydrateAgents(serializeAgents(agentMetadata, schemaDist)));
 
-  // 6. loader 桥接：registry 中的产物形式 filePath（临时目录前缀）转绝对路径后走
-  //    生产 loadToolModule（vitest 下经 importWithCacheBust 走 Vite SSR pipeline——
-  //    tsconfig paths 别名与 vi.mock 与 createTestServer 同行为）
-  const bridgeLoadToolModule = async (
-    filePath: string,
-    functionName: string,
-  ): Promise<ToolModule> => {
-    const absPath = path.isAbsolute(filePath) ? filePath : path.resolve(rootDir, filePath);
-    return loadToolModuleImpl(absPath, functionName, rootDir);
-  };
+  // 6. 不暴露 loadToolModule 直调面：tool 的受支持调用路径是真实分发管线
+  //    （`@faapi/agent` 的 callTool / Agent 派发），直调 handler 绕过 ctx 声明即
+  //    校验（ToolModule.handler 参数为 unknown[]，编译期与运行时均无防护）。
+  //    组装 AgentDeps 用 createAgentDeps（自带 loader 桥接）
 
   // schema 解析器（仅 generated）：显式 dist 指向临时产物目录——不读 dev on demand /
   // FAAPI_DIST 全局状态，与同进程的生产路径互不干扰
@@ -200,8 +192,8 @@ export async function createAgentTestHarness(
   let closed = false;
 
   const harness: AgentTestHarness = {
+    rootDir,
     registries: { agent: agentRegistry, tool: toolRegistry },
-    loadToolModule: bridgeLoadToolModule,
     ...(resolveSchema
       ? { resolveToolSchema: resolveSchema, resolveAgentInputSchema: resolveSchema }
       : {}),

@@ -7,10 +7,10 @@
  * 出口、signal 为永不触发的 AbortSignal。
  *
  * 业务字段（currentUserId 等）经 overrides 注入并**流型到返回类型**（泛型 T）——
- * 构造漏传业务字段时返回裸契约，赋给 handler 的 ctx 参数类型在调用点编译报错
- * （「构造不完全就不能调用」的直调链路强制；agent 分发链路由 ctx 声明即校验在
- * 运行时强制，见主包 agentToolContext.md）。overrides 浅合并注入契约字段与
- * 业务字段。
+ * 构造漏传业务字段时返回裸契约，赋给声明了业务校验类型的 ctx 参数在调用点编译报错
+ * （编译期辅助拦截；运行时强制在真实分发管线 executeToolCall 的 ctx 声明即校验，
+ * 测试调用走 callTool——直调 handler 不是受支持场景，见主包 agentToolContext.md）。
+ * overrides 浅合并注入契约字段与业务字段。
  *
  * 详见 [standaloneToolContext.md](./standaloneToolContext.md)。
  */

@@ -33,6 +33,10 @@ export function listOrders(input: {}, ctx: OrderCtx & AgentToolContext) {
   ctx.log.info('...');    // 框架字段类型在（运行时恒注入）
 }
 
+// 形态 2 的命名别名等价写法（拆分规则同内联交叉，构建期对别名解引用）
+type OrderToolCtx = OrderCtx & AgentToolContext;
+export function listOrders2(input: {}, ctx: OrderToolCtx) { /* 同上 */ }
+
 // 形态 3：裸标注只要框架字段（无业务校验类型——框架字段运行时恒注入，不生成 schema 不校验）
 export function ping(input: {}, ctx: AgentToolContext) {
   ctx.log.info('...');    // 框架字段类型在（运行时恒注入）
@@ -45,7 +49,7 @@ export function ping(input: {}, ctx: AgentToolContext) {
 | 运行时 | `executeToolCall` 在 input 校验后按 `ctxTypeName` 解析 schema（复用 `resolveToolSchema` 同一实例与缓存）对合成 ctx safeParse——失败返回 `{ error }` 回传 LLM，不调用 handler（对齐 input 校验语义；错误消息指明是 ctx 前置条件不满足，非 LLM 入参问题） |
 | 无声明 | 第二参无标注 / 内联字面量 / 裸标注 `AgentToolContext` / 无第二参 → 无 schema 无校验，ctx 原样透传（向后兼容） |
 
-「构造不完全就不能调用」的强制点：agent 分发链路在运行时校验（缺字段/错型拒绝执行）；直调链路（测试直调 / 编程式组装）由 `createStandaloneToolContext` 泛型流型在编译期拦截——构造时漏传业务字段，返回类型缺字段，赋给 handler 的 ctx 参数类型编译报错（见 [standaloneToolContext](../../../agent/src/standaloneToolContext.md)）。
+「构造不完全就不能调用」的强制点：**tool 的唯一受支持调用路径是真实分发管线 `executeToolCall`**（agent 派发——HTTP / 进程内任务 / 隔离任务三路径），ctx 在运行时校验（缺字段/错型拒绝执行）。测试不走 handler 直调——`@faapi/agent` 的 `callTool`（harness + executeToolCall 真实管线，ctx 装配错误响亮抛错；见 [callTool](../../../agent/src/callTool.md)），对位 HTTP 层 `createTestServer`。直调 `mod.handler(input, ctx)` 不是受支持场景：`ToolModule.handler` 参数为 `unknown[]`，编译期与运行时均无防护，业务字段缺失会静默执行（租户隔离穿底）。编程式 ctx 构造的完整性由 `createStandaloneToolContext` 泛型流型在编译期辅助拦截——构造时漏传业务字段，返回类型缺字段，赋给 handler 的 ctx 参数类型编译报错（见 [standaloneToolContext](../../../agent/src/standaloneToolContext.md)）。
 
 **不支持 `declare module` 增强**（本契约刻意声明为 type alias 而非 interface）：业务侧 `declare module '@faapi/faapi' { interface AgentToolContext { ... } }` 直接编译报错（TS2300 同名重复标识符）。增强是交叉标注之外的第二条业务字段通道——语义分裂（增强侧可选不校验、校验类型侧必填校验），且「类型在、运行时路径依赖在场」的中间态靠消费方自觉 fail-closed 兜底，与 fail-fast 哲学不符。业务字段唯一通道是**交叉标注业务校验类型**：路径依赖的可选读取面用可选字段表达（`chatNovelId?: number`），缺席通过校验、读取点自断言；必填字段由运行时校验裁决。HTTP 请求 ctx（`FaapiContext`）的业务增强不受此限——那是业务的扩展面，框架对非契约字段只透传不生产。
 

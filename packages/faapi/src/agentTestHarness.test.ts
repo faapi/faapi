@@ -3,7 +3,7 @@
  *
  * fixture 项目在临时目录搭建（ agents + tools + src 内依赖闭包），
  * 覆盖：free-form/generated 两模式、扫描水合与生产管线一致（目录推导名/嵌套命名）、
- * loadToolModule 真实装载（含 src 内依赖闭包编译）、close 幂等清理、
+ * loader 基建装载（含 src 内依赖闭包编译）、close 幂等清理、
  * 构建期错误冒泡。
  *
  * 详见 [agentTestHarness.md](./agentTestHarness.md)。
@@ -11,9 +11,10 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import path, { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createAgentTestHarness, type AgentTestHarness } from './agentTestHarness';
+import { loadToolModule } from './loaders/loadToolModule';
 import type { ToolMetadata } from './ast/extractToolMetadata';
 
 // ─── fixture 项目搭建 ─────────────────────────────────────────────
@@ -202,17 +203,25 @@ describe('createAgentTestHarness', () => {
       expect(asTool!.agentName).toBe('researcher');
     });
 
-    it('loadToolModule 真实装载 handler 并可调用', async () => {
+    it('loader 基建：registry 产物形式 filePath 可被生产 loadToolModule 装载', async () => {
       const meta = h.registries.tool.get('weather_getWeather')!;
       expect(meta).toBeDefined();
-      const mod = await h.loadToolModule(meta.filePath, meta.functionName);
+      // loader 基建验证（编译产物可装载可执行）——tool 行为测试走 @faapi/agent 的
+      // callTool（真实分发管线，ctx 声明即校验生效），不走 mod.handler 直调
+      const fp = path.isAbsolute(meta.filePath)
+        ? meta.filePath
+        : path.resolve(projectRoot, meta.filePath);
+      const mod = await loadToolModule(fp, meta.functionName, projectRoot);
       const result = (await mod.handler({ city: '北京' })) as { temperature: number };
       expect(result.temperature).toBe(22);
     });
 
     it('src 内依赖闭包随装载编译（handler import 项目模块）', async () => {
       const meta = h.registries.tool.get('calc_calc')!;
-      const mod = await h.loadToolModule(meta.filePath, meta.functionName);
+      const fp = path.isAbsolute(meta.filePath)
+        ? meta.filePath
+        : path.resolve(projectRoot, meta.filePath);
+      const mod = await loadToolModule(fp, meta.functionName, projectRoot);
       const result = mod.handler({ base: 5 }) as { total: number };
       expect(result.total).toBe(15);
     });

@@ -182,7 +182,12 @@ describe('createAgentTestHarness e2e', () => {
         getTool: h.registries.tool.get,
         resolveAgentTools: h.registries.agent.resolveAgentTools,
         resolveSubAgents: h.registries.agent.resolveSubAgents,
-        loadToolModule: h.loadToolModule,
+        loadToolModule: (filePath, functionName) =>
+          loadToolModuleImpl(
+            path.isAbsolute(filePath) ? filePath : path.resolve(tempDir, filePath),
+            functionName,
+            tempDir,
+          ),
         // generated 模式的 schema 解析（free-form 时为 undefined——不拼）
         ...(h.resolveToolSchema ? { resolveToolSchema: h.resolveToolSchema } : {}),
         ...(h.resolveAgentInputSchema
@@ -266,10 +271,9 @@ describe('createAgentTestHarness e2e', () => {
     it('loadToolModule 桥接与生产 loader 等价（产物形式 filePath 直装）', async () => {
       const h = await createAgentTestHarness({ rootDir: tempDir });
       const meta = h.registries.tool.get('calculator_calc')!;
-      const mod = await h.loadToolModule(meta.filePath, meta.functionName);
-      const result = (await mod.handler({ expression: '6*7' })) as { result: number };
-      expect(result.result).toBe(42);
-      // 桥接内部已转绝对路径——与主包 loadToolModule 直接调用等价
+      // harness 不暴露 loadToolModule 直调面（tool 行为测试走 callTool）——
+      // 桥接等价性由 AgentDeps 组装方的内联桥接与生产 loader 的等价覆盖：
+      // registry 产物形式 filePath 转绝对后直接可装载
       const direct = await loadToolModuleImpl(
         path.isAbsolute(meta.filePath) ? meta.filePath : path.resolve(tempDir, meta.filePath),
         meta.functionName,
