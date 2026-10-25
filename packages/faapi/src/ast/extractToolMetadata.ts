@@ -5,7 +5,7 @@ import {
   getJSDocFromNode,
   hasExportModifier,
 } from './jsDocMetadata';
-import { SchemaExtractionError } from './resolveTypeNode';
+import { SchemaExtractionError, findTopLevelDecl } from './resolveTypeNode';
 
 /**
  * Tool 的 LLM 可见核心字段
@@ -52,7 +52,9 @@ export interface ToolMetadata extends ToolCore {
   inputTypeName?: string;
   /** 第二个参数的业务校验类型名（用于生成 ctx schema,运行时声明即校验),
    *  无第二参/无类型标注/内联类型字面量/裸标注框架类型(`AgentToolContext`)时为 `undefined`;
-   *  交叉类型(`OrderCtx & AgentToolContext`)拆分后取业务侧(见 getCtxSchemaTypeName) */
+   *  交叉类型(`OrderCtx & AgentToolContext`)拆分后取业务侧;命名别名指向含框架侧
+   *  成员的交叉时解引用——唯一具名业务成员取业务名,否则默认名 = 别名名
+   *  (由 extractCtxTypeInfo 剥离解析,见 getCtxSchemaTypeName 与 extractHandlerTypes.md) */
   ctxTypeName?: string;
   /** 源码相对路径(从 `pathMeta` 透传) */
   filePath: string;
@@ -73,7 +75,7 @@ export interface ToolPathMeta {
 }
 
 /** 函数节点联合类型(FunctionDeclaration / ArrowFunction / FunctionExpression) */
-type FunctionLike = ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression;
+export type FunctionLike = ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression;
 
 /**
  * 从 tool handler.ts 提取单个 tool 的元数据
@@ -128,7 +130,7 @@ export function extractToolMetadata(
     );
   }
   const inputTypeName = getFirstParamTypeName(fn, sourceFile);
-  const ctxTypeName = getCtxSchemaTypeName(fn, sourceFile);
+  const ctxTypeName = getCtxSchemaTypeName(fn, sourceFile, program, functionName);
 
   return {
     name: pathMeta.name,
@@ -141,7 +143,7 @@ export function extractToolMetadata(
 }
 
 /** 函数查找结果:函数节点 + JSDoc 持有节点 */
-interface FoundFunction {
+export interface FoundFunction {
   /** 函数节点(FunctionDeclaration / ArrowFunction / FunctionExpression) */
   fn: FunctionLike;
   /** JSDoc 持有节点(FunctionDeclaration 时为函数本身;箭头/函数表达式时为外层 VariableStatement) */
@@ -160,8 +162,10 @@ interface FoundFunction {
  * 故改在遍历时直接绑定 JSDoc 持有节点。
  *
  * 非 export 的同名函数不被识别。
+ *
+ * extractHandlerTypes 的 extractCtxTypeInfo 内联回退（定位第二参标注）共用，故导出。
  */
-function findExportedFunction(
+export function findExportedFunction(
   sourceFile: ts.SourceFile,
   functionName: string,
 ): FoundFunction | null {
@@ -241,50 +245,183 @@ function getFirstParamTypeName(fn: FunctionLike, sourceFile: ts.SourceFile): str
   return firstParam.type.typeName.getText(sourceFile);
 }
 
-/** ctx 交叉类型中框架侧的类型名——拆分时跳过（框架注入字段运行时恒有，非纯数据，不参与校验） */
-const CTX_FRAMEWORK_TYPE_NAME = 'AgentToolContext';
+/**
+ * ctx 交叉类型中框架侧的类型名——拆分时跳过（框架注入字段运行时恒有，非纯数据，不参与校验）
+ *
+ * extractHandlerTypes 的 extractCtxTypeInfo 剥离解析依赖同一口径，故导出。
+ */
+export const CTX_FRAMEWORK_TYPE_NAME = 'AgentToolContext';
 
 /**
  * 提取第二个参数的业务校验类型名（tool ctx 声明即校验）
  *
  * 第二参合法形态与提取结果（语义详见 extractToolMetadata.md）：
  * - `ctx: OrderCtx` → `'OrderCtx'`
- * - `ctx: OrderCtx & AgentToolContext` → `'OrderCtx'`（交叉拆分，跳过框架侧）
- * - `ctx: AgentToolContext` → `undefined`（裸标注框架类型：只要框架注入字段，
- *   无业务校验类型——对齐交叉分支「业务侧全为框架侧 → undefined」语义，不生成 schema）
- * - 交叉业务侧全为内联字面量/缺失 → `undefined`（不生成 schema，对齐 input 内联语义）
- * - 交叉含多个业务成员 → 抛 `SchemaExtractionError`（校验类型无法唯一确定，显式失败不猜）
- * - 无第二参 / 无类型标注 / 非交叉非 TypeReference → `undefined`
+ * - `ctx: OrderCtx & AgentToolContext` → `'OrderCtx'`（唯一非框架侧成员且具名 → 业务名）
+ * - `ctx: WriterToolContext` 且别名 = `WriterToolCtx & AgentToolContext` →
+ *   `'WriterToolCtx'`（命名别名解引用——唯一具名业务成员取业务名，与标注层同路径）
+ * - 业务侧无法唯一具名（多成员/含内联字面量/纯内联标注）→ **默认名**：
+ *   别名形态取别名名，标注形态取 `${函数名}Ctx`——下游 extractCtxTypeInfo
+ *   剥离解析（别名）或内联回退解析（标注）生成 schema，内联字段不丢
+ * - `ctx: AgentToolContext` 裸标注 / 仅框架侧交叉 → `undefined`（无业务成员可校验）
+ * - 关键词类型标注（`unknown`/`string` 等）→ `undefined`（无字段可校验，向后兼容）
+ * - 合成名与文件内已有类型声明同名 → 抛 `SchemaExtractionError`（避免校验被同名声明劫持）
+ * - 无第二参 / 无类型标注 → `undefined`
  */
-function getCtxSchemaTypeName(fn: FunctionLike, sourceFile: ts.SourceFile): string | undefined {
+function getCtxSchemaTypeName(
+  fn: FunctionLike,
+  sourceFile: ts.SourceFile,
+  program: ts.Program,
+  functionName: string,
+): string | undefined {
   const secondParam = fn.parameters[1];
   if (!secondParam?.type) return undefined;
+  // 提升为 const——回调内属性路径窄化丢失（defaultName 闭包需引用标注节点）
+  const annotation = secondParam.type;
 
-  if (ts.isIntersectionTypeNode(secondParam.type)) {
-    const businessNames: string[] = [];
-    for (const member of secondParam.type.types) {
-      if (!ts.isTypeReferenceNode(member)) continue;
-      const name = member.typeName.getText(sourceFile);
-      if (name === CTX_FRAMEWORK_TYPE_NAME) continue;
-      businessNames.push(name);
-    }
-    if (businessNames.length === 0) return undefined;
-    if (businessNames.length > 1) {
-      throw SchemaExtractionError.at(
-        secondParam.type,
-        secondParam.type.getText(sourceFile),
-        `tool ctx 交叉类型含多个业务成员（${businessNames.join(' & ')}）——ctx 校验类型无法唯一确定。` +
-          `交叉只允许一个业务类型加 ${CTX_FRAMEWORK_TYPE_NAME}：\`ctx: OrderCtx & ${CTX_FRAMEWORK_TYPE_NAME}\``,
-        sourceFile,
-      );
-    }
-    return businessNames[0];
+  if (ts.isIntersectionTypeNode(annotation)) {
+    return splitCtxAnnotationName(annotation, sourceFile, () =>
+      synthesizeCtxName(annotation, sourceFile, functionName),
+    );
   }
 
-  if (!ts.isTypeReferenceNode(secondParam.type)) return undefined;
-  const name = secondParam.type.typeName.getText(sourceFile);
+  // 纯内联字面量标注：整标注解析生成 schema（默认名 = 函数名 Ctx）
+  if (ts.isTypeLiteralNode(annotation)) {
+    return synthesizeCtxName(annotation, sourceFile, functionName);
+  }
+
+  if (!ts.isTypeReferenceNode(annotation)) return undefined;
+  const name = annotation.typeName.getText(sourceFile);
   // 裸标注框架类型：框架注入字段运行时恒有、非纯数据，不参与校验——
   // 不生成 ctx schema，运行时仅注入框架字段后直接调用 handler
   if (name === CTX_FRAMEWORK_TYPE_NAME) return undefined;
+
+  // 命名别名解引用：别名声明指向含框架侧成员的交叉（`type Ctx = Business & AgentToolContext`）
+  // 与内联交叉语义等价，不解引用则别名整体进 schema 会撞上框架字段的
+  // import('...').TaskClient 类型语法构建期报错。拆分规则与标注层交叉一致
+  // （splitCtxAnnotationName）。无框架侧成员的别名不解引用：整体可被
+  // extractTypeInfo 解析合并，拆分反而丢成员
+  const aliasDecl = findTypeAliasDeclaration(program, sourceFile, name);
+  if (
+    aliasDecl &&
+    ts.isIntersectionTypeNode(aliasDecl.decl.type) &&
+    hasFrameworkMember(aliasDecl.decl.type, aliasDecl.sourceFile)
+  ) {
+    return splitCtxAnnotationName(aliasDecl.decl.type, aliasDecl.sourceFile, () => name);
+  }
+
   return name;
+}
+
+/**
+ * 交叉类型按「非框架侧成员」确定 ctx 校验类型名（标注层与别名解引用共用）
+ *
+ * - 唯一非框架侧成员且为具名 TypeReference → 该成员名（与 extractTypeInfo 同路径）
+ * - 仅框架侧（无业务成员）→ `undefined`（对齐裸标注框架类型语义）
+ * - 其余（多成员/含内联字面量，无论是否含框架侧）→ `defaultName()`（默认名形态，
+ *   下游 extractCtxTypeInfo 剥离解析合并全部非框架侧成员——内联字段不丢）
+ */
+function splitCtxAnnotationName(
+  node: ts.IntersectionTypeNode,
+  sourceFile: ts.SourceFile,
+  defaultName: () => string,
+): string | undefined {
+  const members = collectNonFrameworkCtxMembers(node, sourceFile);
+  if (members.length === 0) return undefined;
+  const first = members[0];
+  if (members.length === 1 && first && ts.isTypeReferenceNode(first)) {
+    return first.typeName.getText(sourceFile);
+  }
+  return defaultName();
+}
+
+/**
+ * 内联标注的合成 schema 名（默认名）：`${函数名}Ctx`
+ *
+ * 与文件内已有类型声明同名时显式抛错——合成名若被同名声明占据，解析侧
+ * 「声明优先」会拿到无关类型的 schema（校验被同名声明劫持），fail-fast 要求
+ * 为 ctx 校验类型命名或重命名冲突声明。
+ */
+function synthesizeCtxName(
+  errorNode: ts.Node,
+  sourceFile: ts.SourceFile,
+  functionName: string,
+): string {
+  const synthesized = `${functionName}Ctx`;
+  if (findTopLevelDecl(sourceFile, synthesized)) {
+    throw SchemaExtractionError.at(
+      errorNode,
+      errorNode.getText(sourceFile),
+      `tool ctx 内联标注的合成 schema 名 "${synthesized}" 与文件内已有类型声明同名，` +
+        `校验会被同名声明劫持。请为 ctx 校验类型命名（如 interface ${synthesized}），或重命名冲突声明`,
+      sourceFile,
+    );
+  }
+  return synthesized;
+}
+
+/**
+ * 收集交叉类型节点的非框架侧成员节点（按成员名跳过 `AgentToolContext`）
+ *
+ * 内联字面量成员保留在结果中——剥离解析合并时不可丢（`A & { b: 1 } & AgentToolContext`
+ * 的 b 必须参与校验）。extractHandlerTypes 的 extractCtxTypeInfo 剥离/内联回退共用，故导出。
+ */
+export function collectNonFrameworkCtxMembers(
+  node: ts.IntersectionTypeNode,
+  sourceFile: ts.SourceFile,
+): readonly ts.TypeNode[] {
+  return node.types.filter(
+    (member) =>
+      !(
+        ts.isTypeReferenceNode(member) &&
+        member.typeName.getText(sourceFile) === CTX_FRAMEWORK_TYPE_NAME
+      ),
+  );
+}
+
+/**
+ * 交叉类型是否含框架侧成员（按类型名匹配，与拆分跳过同名口径）
+ *
+ * 框架侧类型名与 extractToolMetadata 的标注层拆分共用——extractHandlerTypes 的
+ * extractCtxTypeInfo 剥离解析依赖同一判定，故导出。
+ */
+export function hasFrameworkMember(
+  node: ts.IntersectionTypeNode,
+  sourceFile: ts.SourceFile,
+): boolean {
+  return node.types.some(
+    (member) =>
+      ts.isTypeReferenceNode(member) &&
+      member.typeName.getText(sourceFile) === CTX_FRAMEWORK_TYPE_NAME,
+  );
+}
+
+/**
+ * 查找类型名对应的顶层 type alias 声明（命名别名解引用用）
+ *
+ * 本文件优先；查不到回退 program 其他源文件（跳过 node_modules / TypeScript lib，
+ * 与 extractTypeInfo 的跨文件回退同构）。同名 interface / enum 不是别名，返回
+ * `undefined`（维持 TypeReference 直取语义，由 extractTypeInfo 按现有规则解析）。
+ * 返回声明所在 sourceFile——别名声明可能不在 handler.ts，错误定位需用其自身文件。
+ */
+function findTypeAliasDeclaration(
+  program: ts.Program,
+  sourceFile: ts.SourceFile,
+  typeName: string,
+): { decl: ts.TypeAliasDeclaration; sourceFile: ts.SourceFile } | undefined {
+  const local = findTopLevelDecl(sourceFile, typeName);
+  if (local) {
+    return local.kind === 'typeAlias' ? { decl: local.node, sourceFile } : undefined;
+  }
+  for (const sf of program.getSourceFiles()) {
+    if (sf === sourceFile) continue;
+    if (sf.fileName.includes('/node_modules/') || sf.fileName.includes('typescript/lib/')) {
+      continue;
+    }
+    const found = findTopLevelDecl(sf, typeName);
+    if (found) {
+      return found.kind === 'typeAlias' ? { decl: found.node, sourceFile: sf } : undefined;
+    }
+  }
+  return undefined;
 }

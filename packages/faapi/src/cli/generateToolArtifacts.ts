@@ -8,6 +8,7 @@ import { toProdFilePath } from '../utils/prodPaths';
 import { atomicWriteFile } from '../utils/atomicWrite';
 import {
   extractTypeInfo,
+  extractCtxTypeInfo,
   createLazyTypeResolver,
   type HandlerTypeInfo,
   type LazyTypeResolver,
@@ -192,7 +193,9 @@ function collectToolSchemaSources(
       }
       if (tool.ctxTypeName && !seenSchemaNames.has(tool.ctxTypeName)) {
         seenSchemaNames.add(tool.ctxTypeName);
-        const typeInfo = extractTypeInfo(program, filePath, tool.ctxTypeName);
+        // ctx 校验类型三段式解析：别名默认名剥离框架侧成员、合成默认名内联回退、
+        // 其余情况与 extractTypeInfo 行为一致（语义见 extractHandlerTypes.md）
+        const typeInfo = extractCtxTypeInfo(program, filePath, tool.ctxTypeName, tool.functionName);
         sources.push({
           name: `${tool.name} ctx`, // 注释标识区分 ctx schema
           filePath,

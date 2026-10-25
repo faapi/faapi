@@ -3,7 +3,11 @@ import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createProgram, invalidateProgramCache } from './createProgram';
-import { extractTypeInfo } from './extractHandlerTypes';
+import {
+  extractTypeInfo,
+  extractCtxTypeInfo,
+  extractInlineParamTypeInfo,
+} from './extractHandlerTypes';
 import { SchemaExtractionError } from './resolveTypeNode';
 
 describe('extractTypeInfo', () => {
@@ -1279,6 +1283,235 @@ export interface GETQuery {
       const merged = rt.properties.find((p) => p.name === 'merged')!;
       const names = merged.type.properties.map((p) => p.name);
       expect(names).toEqual(['a', 'b']); // a 只出现一次
+    });
+  });
+
+  describe('extractCtxTypeInfo（tool ctx 剥离解析）', () => {
+    /** 模拟框架契约的本地声明——剥离按类型名匹配，无需真实类型 */
+    const AGENT_CTX_DECL = `interface AgentToolContext { tasks: unknown; log: unknown; signal: unknown }\n`;
+
+    it('别名 = 多业务成员 & AgentToolContext → 剥离框架侧，合并业务成员', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { a: number; shared: string }\nexport interface B { b: boolean }\n${AGENT_CTX_DECL}` +
+          `type Combined = A & B & AgentToolContext\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'Combined');
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('Combined');
+      expect(info!.runtimeType.kind).toBe('object');
+      const names = info!.properties.map((p) => p.name);
+      expect(names).toEqual(['a', 'shared', 'b']); // 框架侧 tasks/log/signal 不在内
+    });
+
+    it('别名 = 内联业务字面量 & AgentToolContext → 剥离框架侧，按内联字面量生成', () => {
+      writeFileSync(
+        tempFile,
+        `${AGENT_CTX_DECL}type OrderToolCtx = { currentUserId: number } & AgentToolContext\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'OrderToolCtx');
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('OrderToolCtx');
+      expect(info!.properties).toEqual([
+        { name: 'currentUserId', type: { kind: 'number' }, optional: false },
+      ]);
+    });
+
+    it('普通业务类型名 → 回退 extractTypeInfo 原路径，行为不变', () => {
+      writeFileSync(tempFile, `export interface OrderCtx { currentUserId: number }\n`);
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'OrderCtx');
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('OrderCtx');
+      expect(info!.properties).toHaveLength(1);
+    });
+
+    it('别名无框架侧成员（A & B）→ 回退原路径，交叉合并', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { a: number }\nexport interface B { b: number }\ntype Combined = A & B\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'Combined');
+      expect(info).not.toBeNull();
+      const names = info!.properties.map((p) => p.name);
+      expect(names).toEqual(['a', 'b']);
+    });
+
+    it('剥离后含非 object 成员 → 显式抛 SchemaExtractionError（不降级）', () => {
+      writeFileSync(tempFile, `${AGENT_CTX_DECL}type Bad = string & AgentToolContext\n`);
+      const program = createProgram(tempFile);
+      expect(() => extractCtxTypeInfo(program, tempFile, 'Bad')).toThrow(SchemaExtractionError);
+    });
+
+    it('剥离合并时业务成员同名字段冲突（TS never）→ 显式抛 SchemaExtractionError', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { x: string }\nexport interface B { x: number }\n${AGENT_CTX_DECL}` +
+          `type Combined = A & B & AgentToolContext\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractCtxTypeInfo(program, tempFile, 'Combined')).toThrow(
+        SchemaExtractionError,
+      );
+    });
+
+    it('剥离合并时同名字段类型一致 → 去重保留一份', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { x: string }\nexport interface B { x: string; y: number }\n${AGENT_CTX_DECL}` +
+          `type Combined = A & B & AgentToolContext\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'Combined');
+      expect(info).not.toBeNull();
+      const names = info!.properties.map((p) => p.name);
+      expect(names).toEqual(['x', 'y']);
+    });
+
+    it('interface extends 框架契约类型 → 不剥离，走原路径在框架字段语法上显式抛错', () => {
+      // 真实框架字段 tasks: import('...').TaskClient——extends 后框架字段混入业务类型,
+      // 原路径解析该 import type 语法显式抛错（业务校验类型携带框架字段以交叉标注为唯一形态）
+      writeFileSync(
+        tempFile,
+        `interface FrameworkCtx { tasks: import('faapi-runtime').TaskClient }\n` +
+          `interface BadCtx extends FrameworkCtx { extra: number }\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractCtxTypeInfo(program, tempFile, 'BadCtx')).toThrow(SchemaExtractionError);
+    });
+
+    it('别名声明跨文件（import type）→ 剥离解析生效', () => {
+      writeFileSync(
+        join(tempDir, 'ctx-types.ts'),
+        `${AGENT_CTX_DECL}export interface A { a: number }\n` +
+          `export type Combined = A & AgentToolContext & { b: number }\n`,
+      );
+      writeFileSync(
+        tempFile,
+        `import type { Combined } from './ctx-types.js';\nexport type Local = Combined;\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'Combined');
+      expect(info).not.toBeNull();
+      const names = info!.properties.map((p) => p.name);
+      expect(names).toEqual(['a', 'b']);
+    });
+
+    it('纯内联标注 + functionName → 内联回退解析（第二参 TypeLiteral）', () => {
+      writeFileSync(
+        tempFile,
+        `export function getOrder(input: { orderId: string }, ctx: { tenantId: number }) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'getOrderCtx', 'getOrder');
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('getOrderCtx');
+      expect(info!.properties).toEqual([
+        { name: 'tenantId', type: { kind: 'number' }, optional: false },
+      ]);
+    });
+
+    it('内联交叉标注 + functionName → 剥离框架侧解析', () => {
+      writeFileSync(
+        tempFile,
+        `${AGENT_CTX_DECL}export function getOrder(input: { orderId: string }, ctx: { tenantId: number } & AgentToolContext) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'getOrderCtx', 'getOrder');
+      expect(info).not.toBeNull();
+      const names = info!.properties.map((p) => p.name);
+      expect(names).toEqual(['tenantId']);
+    });
+
+    it('内联交叉多业务成员 + functionName → 内联回退合并具名与内联成员', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { a: number }\n${AGENT_CTX_DECL}` +
+          `export function getOrder(input: { orderId: string }, ctx: A & { b: number } & AgentToolContext) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'getOrderCtx', 'getOrder');
+      expect(info).not.toBeNull();
+      const names = info!.properties.map((p) => p.name);
+      expect(names).toEqual(['a', 'b']);
+    });
+
+    it('同名声明存在时优先声明路径，不走内联回退', () => {
+      writeFileSync(
+        tempFile,
+        `export interface getOrderCtx { fromDecl: string }\n` +
+          `export function getOrder(input: { orderId: string }, ctx: getOrderCtx) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractCtxTypeInfo(program, tempFile, 'getOrderCtx', 'getOrder');
+      expect(info).not.toBeNull();
+      expect(info!.properties.map((p) => p.name)).toEqual(['fromDecl']);
+    });
+
+    it('内联回退需 functionName——缺失时不解析（返回 null）', () => {
+      writeFileSync(
+        tempFile,
+        `export function getOrder(input: { orderId: string }, ctx: { tenantId: number }) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(extractCtxTypeInfo(program, tempFile, 'getOrderCtx')).toBeNull();
+    });
+  });
+
+  describe('extractInlineParamTypeInfo（HTTP 形参内联标注）', () => {
+    it('TypeLiteral 内联标注 → 整体解析（name 用调用方合成名）', () => {
+      writeFileSync(
+        tempFile,
+        `export function GET(query: { page: number; pageSize?: number }) { return query; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const info = extractInlineParamTypeInfo(program, tempFile, 'GET', 'query', 'GETQuery');
+      expect(info).not.toBeNull();
+      expect(info!.name).toBe('GETQuery');
+      expect(info!.runtimeType.kind).toBe('object');
+      expect(info!.properties.map((p) => p.name)).toEqual(['page', 'pageSize']);
+      expect(info!.properties.map((p) => p.optional)).toEqual([false, true]);
+    });
+
+    it('TypeReference 标注 → null（具名引用由 resolver.resolve 负责）', () => {
+      writeFileSync(
+        tempFile,
+        `export interface Query { page: number }\nexport function GET(query: Query) { return query; }\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(extractInlineParamTypeInfo(program, tempFile, 'GET', 'query', 'GETQuery')).toBeNull();
+    });
+
+    it('交叉标注 → null（仅支持纯 TypeLiteral）', () => {
+      writeFileSync(
+        tempFile,
+        `export function GET(query: { page: number } & { size: number }) { return query; }\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(extractInlineParamTypeInfo(program, tempFile, 'GET', 'query', 'GETQuery')).toBeNull();
+    });
+
+    it('函数 / 形参不存在 → null', () => {
+      writeFileSync(tempFile, `export function GET(query: { page: number }) { return query; }\n`);
+      const program = createProgram(tempFile);
+      expect(
+        extractInlineParamTypeInfo(program, tempFile, 'POST', 'query', 'POSTQuery'),
+      ).toBeNull();
+      expect(extractInlineParamTypeInfo(program, tempFile, 'GET', 'body', 'GETBody')).toBeNull();
+    });
+
+    it('合成名与文件内已有类型声明同名 → 抛 SchemaExtractionError（校验源歧义 fail-fast）', () => {
+      writeFileSync(
+        tempFile,
+        `interface GETQuery { fromDecl: string }\nexport function GET(query: { page: number }) { return query; }\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(() =>
+        extractInlineParamTypeInfo(program, tempFile, 'GET', 'query', 'GETQuery'),
+      ).toThrow(SchemaExtractionError);
     });
   });
 });

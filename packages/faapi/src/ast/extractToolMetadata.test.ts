@@ -266,6 +266,75 @@ describe('extractToolMetadata', () => {
       expect(result!.ctxTypeName).toBe('OrderCtx');
     });
 
+    it('命名别名解引用：别名 = 业务 & AgentToolContext（同文件声明）→ 提取业务侧类型名', () => {
+      writeFileSync(
+        tempFile,
+        `export interface OrderCtx { currentUserId: number }\n${AGENT_CTX_DECL}\n` +
+          `type OrderToolCtx = OrderCtx & AgentToolContext\n` +
+          `export function getOrder(input: { orderId: string }, ctx: OrderToolCtx) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('OrderCtx');
+    });
+
+    it('命名别名跨文件声明（import type）→ 解引用拆分', () => {
+      writeFileSync(
+        join(tempDir, 'ctx-types.ts'),
+        `${AGENT_CTX_DECL}export interface OrderCtx { currentUserId: number }\n` +
+          `export type OrderToolCtx = OrderCtx & AgentToolContext\n`,
+      );
+      writeFileSync(
+        tempFile,
+        `import type { OrderToolCtx } from './ctx-types.js';\n` +
+          `export function getOrder(input: { orderId: string }, ctx: OrderToolCtx) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('OrderCtx');
+    });
+
+    it('命名别名业务侧为内联字面量 → 默认名 = 别名名（下游剥离解析生成 schema）', () => {
+      writeFileSync(
+        tempFile,
+        `${AGENT_CTX_DECL}\n` +
+          `type OrderToolCtx = { currentUserId: number } & AgentToolContext\n` +
+          `export function getOrder(input: { orderId: string }, ctx: OrderToolCtx) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('OrderToolCtx');
+    });
+
+    it('命名别名含多个业务成员 → 默认名 = 别名名（下游剥离解析合并），不抛错', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { a: number }\nexport interface B { b: number }\n${AGENT_CTX_DECL}\n` +
+          `type Combined = A & B & AgentToolContext\n` +
+          `export function getOrder(input: { orderId: string }, ctx: Combined) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('Combined');
+    });
+
+    it('命名别名无框架侧成员（A & B）→ 不解引用，维持别名整体语义', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { a: number }\nexport interface B { b: number }\n` +
+          `type Combined = A & B\n` +
+          `export function getOrder(input: { orderId: string }, ctx: Combined) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('Combined');
+    });
+
     it('裸标注 AgentToolContext → undefined（只要框架字段，无业务校验类型，不生成 schema）', () => {
       writeFileSync(
         tempFile,
@@ -294,7 +363,7 @@ describe('extractToolMetadata', () => {
       expect(result!.ctxTypeName).toBeUndefined();
     });
 
-    it('交叉类型业务侧为内联字面量 → undefined（对齐 input 内联语义）', () => {
+    it('内联交叉标注（内联字面量 & 框架侧）→ 默认名 = 函数名 Ctx（下游内联回退解析）', () => {
       writeFileSync(
         tempFile,
         `${AGENT_CTX_DECL}\n` +
@@ -303,19 +372,67 @@ describe('extractToolMetadata', () => {
       const program = createProgram(tempFile);
       const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
       expect(result).not.toBeNull();
-      expect(result!.ctxTypeName).toBeUndefined();
+      expect(result!.ctxTypeName).toBe('getOrderCtx');
     });
 
-    it('交叉类型含多个业务成员 → 构建期抛 SchemaExtractionError（校验类型无法唯一确定）', () => {
+    it('内联交叉标注多业务成员（含框架侧）→ 默认名 = 函数名 Ctx（下游内联回退合并），不抛错', () => {
       writeFileSync(
         tempFile,
         `export interface A { a: number }\nexport interface B { b: number }\n${AGENT_CTX_DECL}\n` +
           `export function getOrder(input: { orderId: string }, ctx: A & B & AgentToolContext) { return {}; }\n`,
       );
       const program = createProgram(tempFile);
-      expect(() => extractToolMetadata(program, tempFile, 'getOrder', sharedMeta)).toThrow(
-        /多个业务成员|校验类型/,
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('getOrderCtx');
+    });
+
+    it('纯内联标注（无框架侧）→ 默认名 = 函数名 Ctx，整标注解析生成 schema', () => {
+      writeFileSync(
+        tempFile,
+        `export function getOrder(input: { orderId: string }, ctx: { tenantId: number }) { return {}; }\n`,
       );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('getOrderCtx');
+    });
+
+    it('内联交叉仅框架侧 → undefined（无业务成员可校验）', () => {
+      writeFileSync(
+        tempFile,
+        `${AGENT_CTX_DECL}\n` +
+          `export function getOrder(input: { orderId: string }, ctx: AgentToolContext & AgentToolContext) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBeUndefined();
+    });
+
+    it('合成名与文件内已有类型声明同名 → 构建期抛错（避免 schema 被同名声明劫持）', () => {
+      writeFileSync(
+        tempFile,
+        `interface getOrderCtx { rogue: string }\n` +
+          `export function getOrder(input: { orderId: string }, ctx: { tenantId: number }) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      expect(() => extractToolMetadata(program, tempFile, 'getOrder', sharedMeta)).toThrow(
+        /getOrderCtx|同名/,
+      );
+    });
+
+    it('命名别名混合成员（具名 + 内联字面量 + 框架侧）→ 默认名 = 别名名（不丢内联字段）', () => {
+      writeFileSync(
+        tempFile,
+        `export interface A { a: number }\n${AGENT_CTX_DECL}\n` +
+          `type Ctx = A & { b: number } & AgentToolContext\n` +
+          `export function getOrder(input: { orderId: string }, ctx: Ctx) { return {}; }\n`,
+      );
+      const program = createProgram(tempFile);
+      const result = extractToolMetadata(program, tempFile, 'getOrder', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.ctxTypeName).toBe('Ctx');
     });
 
     it('无第二参 → ctxTypeName 为 undefined', () => {

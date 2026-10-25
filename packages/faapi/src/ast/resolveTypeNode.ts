@@ -24,6 +24,56 @@ export function setProgramContext(program: ts.Program | null): void {
 }
 
 /**
+ * 将已解析的交叉成员属性合并进 propMap(交叉类型同名字段语义的单一来源)
+ *
+ * 由 resolveTypeNode 的交叉分支与 extractCtxTypeInfo 的 ctx 剥离解析共用:
+ * - 成员非 object(branded `string & {...}` 等混合交叉)在运行时无对应校验物——
+ *   静默丢弃会放宽校验,按约定显式抛错(见 AGENTS.md §6.3)
+ * - 同名字段类型或可选性不一致即 TS 语义下的 never——显式抛错；
+ *   一致则去重(优先保留带约束的声明,更严格)
+ *
+ * @param propMap 合并目标(键为字段名)
+ * @param resolved 已解析的成员类型
+ * @param errorNode 错误定位节点(交叉节点本身)
+ * @param sourceFile errorNode 所在源文件——交叉节点可能不在入口文件
+ *   (ctx 别名解引用剥离解析),无 parent 指针时用于错误定位
+ */
+export function mergeObjectMember(
+  propMap: Map<string, PropertyType>,
+  resolved: RuntimeType,
+  errorNode: ts.Node,
+  sourceFile?: ts.SourceFile,
+): void {
+  if (resolved.kind !== 'object') {
+    throw new SchemaExtractionError(
+      errorNode.getText(),
+      `交叉类型包含非 object 成员（${resolved.kind}）,运行时无法校验——branded 类型建议改用具体类型或 unknown`,
+    );
+  }
+  for (const prop of resolved.properties) {
+    const existing = propMap.get(prop.name);
+    if (!existing) {
+      propMap.set(prop.name, prop);
+      continue;
+    }
+    if (
+      JSON.stringify(existing.type) !== JSON.stringify(prop.type) ||
+      existing.optional !== prop.optional
+    ) {
+      throw SchemaExtractionError.at(
+        errorNode,
+        errorNode.getText(),
+        `交叉类型成员的同名字段 "${prop.name}" 类型冲突（TS 中为 never）,运行时无法校验`,
+        sourceFile,
+      );
+    }
+    if (!existing.constraints?.length && prop.constraints?.length) {
+      propMap.set(prop.name, prop);
+    }
+  }
+}
+
+/**
  * Schema 提取错误
  *
  * 遇到无法解析或不支持运行时校验的类型时抛出，
@@ -304,37 +354,7 @@ export function resolveTypeNode(
   if (ts.isIntersectionTypeNode(typeNode)) {
     const propMap = new Map<string, PropertyType>();
     for (const t of typeNode.types) {
-      const resolved = resolveTypeNode(t, checker, visited, bindings);
-      if (resolved.kind !== 'object') {
-        // branded 类型（string & {...}）等混合交叉在运行时无对应校验物——
-        // 静默丢弃非 object 成员会放宽校验,按约定显式抛错（见 AGENTS.md §6.3）
-        throw new SchemaExtractionError(
-          typeNode.getText(),
-          `交叉类型包含非 object 成员（${resolved.kind}）,运行时无法校验——branded 类型建议改用具体类型或 unknown`,
-        );
-      }
-      for (const prop of resolved.properties) {
-        const existing = propMap.get(prop.name);
-        if (!existing) {
-          propMap.set(prop.name, prop);
-          continue;
-        }
-        // 同名字段：类型或可选性不一致即 TS 语义下的 never——运行时无法校验,
-        // 显式抛错；一致则去重（优先保留带约束的声明,更严格）
-        if (
-          JSON.stringify(existing.type) !== JSON.stringify(prop.type) ||
-          existing.optional !== prop.optional
-        ) {
-          throw SchemaExtractionError.at(
-            typeNode,
-            typeNode.getText(),
-            `交叉类型成员的同名字段 "${prop.name}" 类型冲突（TS 中为 never）,运行时无法校验`,
-          );
-        }
-        if (!existing.constraints?.length && prop.constraints?.length) {
-          propMap.set(prop.name, prop);
-        }
-      }
+      mergeObjectMember(propMap, resolveTypeNode(t, checker, visited, bindings), typeNode);
     }
     return { kind: 'object', properties: [...propMap.values()] };
   }

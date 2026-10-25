@@ -76,11 +76,23 @@ JSDoc `@tool <name>` 覆盖名功能已移除——tool 名统一由目录路径
 |-------------------|-------------------|
 | `ctx: OrderCtx` | `'OrderCtx'` |
 | `ctx: OrderCtx & AgentToolContext` | `'OrderCtx'`（交叉拆分：跳过 `AgentToolContext` 侧——框架字段由运行时注入，不校验；业务侧唯一成员为校验类型） |
+| `ctx: WriterToolContext`，且 `type WriterToolContext = WriterToolCtx & AgentToolContext` | `'WriterToolCtx'`（**命名别名解引用**：别名声明指向含框架侧成员的交叉时拆分——唯一具名业务成员取业务名，与内联交叉标注同路径同 schema 名） |
+| `ctx: Combined`，且别名 = `A & B & AgentToolContext` | `'Combined'`（**默认名 = 别名名**：多业务成员无唯一业务名，下游 `extractCtxTypeInfo` 剥离框架侧逐成员解析合并，生成 `CombinedSchema`） |
+| `ctx: X`，且别名 = `{ userId: number } & AgentToolContext` | `'X'`（默认名 = 别名名：内联业务成员经 `extractCtxTypeInfo` 剥离框架侧后生成 schema） |
+| `ctx: Ctx`，且别名 = `A & { b: 1 } & AgentToolContext`（具名+内联混合成员） | `'Ctx'`（默认名 = 别名名：剥离解析合并全部非框架侧成员，不丢内联字段） |
+| `ctx: Ctx`，且别名 = `AgentToolContext & AgentToolContext`（仅框架侧） | `undefined`（无业务成员可校验——对齐裸标注语义） |
+| `ctx: Combined`，且别名 = `A & B`（无框架侧成员） | `'Combined'`（**不解引用**：无框架字段时别名整体可被 extractTypeInfo 解析合并，拆分反而丢成员） |
 | `ctx: AgentToolContext`（裸标注） | `undefined`（只要框架注入字段，无业务校验类型——对齐交叉分支「业务侧全为框架侧 → undefined」语义，不生成 schema） |
-| `ctx: { userId: number } & AgentToolContext` | `undefined`（业务侧为内联字面量，无类型名可提取，不生成 schema——对齐 input 的内联语义） |
-| `ctx: A & B & AgentToolContext` | **构建期抛 `SchemaExtractionError`**（交叉含多个业务成员，校验类型无法唯一确定，显式失败不猜） |
-| `ctx: { userId: number }`（内联） | `undefined`（对齐 input 内联语义） |
+| `ctx: { userId: number } & AgentToolContext`（内联标注） | `'getOrderCtx'`（**默认名 = \`${函数名}Ctx\`**：剥离框架侧生成 schema） |
+| `ctx: A & B & AgentToolContext`（内联标注） | `'getOrderCtx'`（默认名 = 函数名 Ctx：剥离框架侧合并 A、B） |
+| `ctx: { userId: number }`（纯内联） | `'getOrderCtx'`（默认名 = 函数名 Ctx：整标注解析生成 schema——内联不再意味着不校验） |
+| `ctx: AgentToolContext & AgentToolContext`（内联仅框架侧） | `undefined`（无业务成员可校验） |
+| `ctx: unknown` / `ctx: string` 等关键词标注 | `undefined`（关键词类型无字段可校验，向后兼容；`ctx: A & string` 等混合交叉会在解析期因非 object 成员显式抛错） |
 | `ctx`（无标注）/ 无第二参 | `undefined`（无 schema 无校验，向后兼容） |
+
+**默认名规则（合成名）**：业务侧无法唯一具名时（多成员/内联字面量/混合），schema 名取**别名名**（别名形态）或**`${函数名}Ctx`**（纯标注形态）。合成名与文件内已有类型声明同名时**构建期抛错**（fail-fast：请为校验类型命名或重命名，避免 schema 被同名声明劫持）。解析侧（[extractCtxTypeInfo](./extractHandlerTypes.md)）按第二参标注形态重新判定内联性——同名声明搜不到才走内联回退，因此合成名永不与真实声明混淆。
+
+命名别名解引用的查找范围：标注名先查 handler.ts 本文件的顶层 type alias 声明，查不到再回退 program 其他源文件（跳过 node_modules / TypeScript lib，与 extractTypeInfo 的跨文件回退同构）；同名 interface / enum 声明不是别名，不解引用，维持 TypeReference 直取语义。解引用结果：**唯一非框架侧成员且为具名 TypeReference** → 取业务名（普通 extractTypeInfo 路径）；**否则** → 默认名（别名名），下游 `extractCtxTypeInfo` 剥离解析——跳过框架侧成员，逐成员解析（TypeReference 与内联字面量均可）合并为单 schema，非 object 成员 / 同名字段冲突显式抛错。命名约定仍是「schema 导出名 = ctxTypeName」。interface extends AgentToolContext 不在支持范围（语义见 [agentToolContext](../runtime/agentToolContext.md)——业务校验类型携带框架字段以交叉标注为唯一形态）。
 
 `AgentToolContext` 侧按类型名匹配跳过——它是框架注入字段（tasks/log/signal）的载体，运行时恒有且非纯数据，进 schema 无意义（extends 直接使用会因 `import('...').TaskClient` 类型语法构建期抛错，业务校验类型携带框架字段仍以交叉标注为唯一形态；只要框架字段不要业务校验时裸标注即合法）。业务校验类型内声明与框架字段同名的属性（如 `log: string`）不特殊处理——运行时校验失败显式暴露，属业务声明与框架注入的名字冲突。
 

@@ -529,6 +529,144 @@ export function getOrder(input: OrderInput, ctx: OrderCtx & AgentToolContext) {
       expect(zodContent).toContain('currentUserId');
     });
 
+    it('ctx 为命名别名（= 业务 & AgentToolContext）：构建成功，schema 取业务侧', async () => {
+      writeSharedTool(
+        'src/tools/writer/handler.ts',
+        `export interface WriterInput {
+  title: string;
+}
+export interface WriterToolCtx {
+  authorId: number;
+}
+interface AgentToolContext { tasks: unknown; log: unknown; signal: unknown }
+type WriterToolContext = WriterToolCtx & AgentToolContext;
+export function createDraft(input: WriterInput, ctx: WriterToolContext) {
+  return { title: input.title };
+}
+`,
+      );
+
+      const tools: ToolManifest[] = [
+        {
+          name: 'writer_createDraft',
+          functionName: 'createDraft',
+          filePath: 'src/tools/writer/handler.ts',
+        },
+      ];
+      const dist = join(tempDir, 'dist');
+      // 修复前：别名整体进 extractTypeInfo，解析 AgentToolContext 字段构建期抛错
+      const metadata = await generateToolArtifacts(tools, tempDir, dist);
+
+      // 别名解引用：ctxTypeName 为业务侧类型名
+      expect(metadata[0].ctxTypeName).toBe('WriterToolCtx');
+
+      const zodContent = readFileSync(join(dist, 'tools', 'writer', 'zod.js'), 'utf-8');
+      // 导出业务侧 schema（非别名名）
+      expect(zodContent).toContain('export const WriterToolCtxSchema');
+      expect(zodContent).not.toContain('export const WriterToolContextSchema');
+      // ctx schema 含业务字段、不含框架字段
+      expect(zodContent).toContain('authorId');
+    });
+
+    it('ctx 别名含多个业务成员（默认名 = 别名名）：剥离框架侧合并生成 CombinedSchema', async () => {
+      writeSharedTool(
+        'src/tools/order/handler.ts',
+        `export interface OrderBase {
+  orderId: string;
+}
+export interface OrderAudit {
+  operatorId: number;
+}
+interface AgentToolContext { tasks: unknown; log: unknown; signal: unknown }
+type OrderToolCtx = OrderBase & OrderAudit & AgentToolContext;
+export function shipOrder(input: { channel: string }, ctx: OrderToolCtx) {
+  return { ok: true };
+}
+`,
+      );
+
+      const tools: ToolManifest[] = [
+        {
+          name: 'order_shipOrder',
+          functionName: 'shipOrder',
+          filePath: 'src/tools/order/handler.ts',
+        },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateToolArtifacts(tools, tempDir, dist);
+
+      // 默认名 = 别名名
+      expect(metadata[0].ctxTypeName).toBe('OrderToolCtx');
+      expect(readFileSync(join(dist, 'faapi-tools.js'), 'utf-8')).toContain(
+        '"ctxTypeName": "OrderToolCtx"',
+      );
+
+      const zodContent = readFileSync(join(dist, 'tools', 'order', 'zod.js'), 'utf-8');
+      // 两个业务成员字段都在，框架侧不在
+      expect(zodContent).toContain('export const OrderToolCtxSchema');
+      expect(zodContent).toContain('orderId');
+      expect(zodContent).toContain('operatorId');
+    });
+
+    it('ctx 别名业务侧为内联字面量（默认名 = 别名名）：剥离框架侧生成 schema', async () => {
+      writeSharedTool(
+        'src/tools/note/handler.ts',
+        `interface AgentToolContext { tasks: unknown; log: unknown; signal: unknown }
+type NoteToolCtx = { authorId: number } & AgentToolContext;
+export function createNote(input: { title: string }, ctx: NoteToolCtx) {
+  return { ok: true };
+}
+`,
+      );
+
+      const tools: ToolManifest[] = [
+        {
+          name: 'note_createNote',
+          functionName: 'createNote',
+          filePath: 'src/tools/note/handler.ts',
+        },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateToolArtifacts(tools, tempDir, dist);
+
+      expect(metadata[0].ctxTypeName).toBe('NoteToolCtx');
+
+      const zodContent = readFileSync(join(dist, 'tools', 'note', 'zod.js'), 'utf-8');
+      expect(zodContent).toContain('export const NoteToolCtxSchema');
+      expect(zodContent).toContain('authorId');
+    });
+
+    it('ctx 纯内联标注（默认名 = 函数名 Ctx）：剥离框架侧生成 schema', async () => {
+      writeSharedTool(
+        'src/tools/task/handler.ts',
+        `interface AgentToolContext { tasks: unknown; log: unknown; signal: unknown }
+export function runTask(input: { title: string }, ctx: { tenantId: number } & AgentToolContext) {
+  return { ok: true };
+}
+`,
+      );
+
+      const tools: ToolManifest[] = [
+        {
+          name: 'task_runTask',
+          functionName: 'runTask',
+          filePath: 'src/tools/task/handler.ts',
+        },
+      ];
+      const dist = join(tempDir, 'dist');
+      const metadata = await generateToolArtifacts(tools, tempDir, dist);
+
+      // 默认名 = 函数名 Ctx，随清单序列化
+      expect(metadata[0].ctxTypeName).toBe('runTaskCtx');
+      expect(readFileSync(join(dist, 'faapi-tools.js'), 'utf-8')).toContain(
+        '"ctxTypeName": "runTaskCtx"',
+      );
+
+      const zodContent = readFileSync(join(dist, 'tools', 'task', 'zod.js'), 'utf-8');
+      expect(zodContent).toContain('export const runTaskCtxSchema');
+      expect(zodContent).toContain('tenantId');
+    });
+
     it('无 inputTypeName 的 tool 不生成 zod.js', async () => {
       writeSharedTool(
         'src/tools/handler.ts',
