@@ -659,7 +659,7 @@ export interface TaskQueueDeps {
    * agent 循环执行器 store（AppRegistries.agentRunner，`@faapi/agent` 插件注册）
    * ——隔离 worker 调 agent 收敛为单次 agent-run RPC：worker 侧 `taskCtx.agent.run`
    * 转发请求，宿主以任务合成契约 ctx 构造 Agent 跑完整编排循环（LLM IO、tool
-   * 执行、钩子、reminders、sub-agent 全在宿主，见 taskToolContext.md）。已注册时
+   * 执行、钩子、sub-agent 全在宿主，见 taskToolContext.md）。已注册时
    * run 消息携带 `agentChannel: true`，worker 内挂载 `taskCtx.agent`（run-only
    * 句柄）；缺省（插件未加载）worker 内 taskCtx.agent 恒 undefined（能力不存在非降级）
    */

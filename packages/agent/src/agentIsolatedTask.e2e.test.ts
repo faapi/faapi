@@ -4,13 +4,13 @@
  * worker 侧 `taskCtx.agent.run` 仅转发请求（run-only 代理，workerEntry 自包含，
  * 不动态加载 @faapi/agent）；编排循环收敛宿主：`onAgentRun` 以任务合成契约 ctx
  * （carry 合成 currentUserId）构造 Agent 跑完整循环——LLM IO、工具执行、鉴权钩子、
- * reminders 钩子渲染全在宿主（db 连接池等资源单实例、业务函数零跨线程）。
+ * 输入组装钩子全在宿主（db 连接池等资源单实例、业务函数零跨线程）。
  *
  * 覆盖（三条都是真实 worker 线程 + 真实 @faapi/agent 插件 runner，仅 LLM 端点 mock）：
  * 1. 工具与守卫在宿主执行（carry 身份传导）——beforeToolCall 守卫 / handler marker /
  *    afterToolCall 审计同轮触发；循环结果按 agent-run-result 回传 worker 收敛
- * 2. resolveReminders 钩子（decorateDeps 接线）在宿主生效——LLM 请求消息含提醒文本
- *    与钩子渲染的任务合成 ctx 身份
+ * 2. resolveRootInput 钩子（decorateDeps 接线）在宿主生效——LLM 请求消息含钩子
+ *    组装的输入与任务合成 ctx 身份（carry 身份可读）
  * 3. Input 校验失败以任务错误浮出——声明 Input 的 agent 派发形态对象入参校验不过，
  *    runAgent 抛 AgentError → RPC ok:false → worker 侧 reject → 任务失败（真实 zod.js
  *    产物加载 + safeParse，非 mock 校验）
@@ -137,19 +137,14 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
   });
 
   /** 真实 @faapi/agent 插件 setup（生产装配路径）——返回宿主侧 agentRunner */
-  function setupHost(
-    llms: Record<string, LlmConfig>,
-    meta: AgentMetadata,
-    tools: ToolMetadata[],
-    decorateDeps?: (deps: AgentDeps) => AgentDeps,
-  ) {
+  function setupHost(llms: Record<string, LlmConfig>, meta: AgentMetadata, tools: ToolMetadata[]) {
     const ctx = {
       rootDir: dir,
       registries: createAppRegistries(),
       routes: [],
       getRoutes: () => [],
       server: {} as Server,
-      config: { agent: { llms, maxTurns: 5, ...(decorateDeps ? { decorateDeps } : {}) } },
+      config: { agent: { llms, maxTurns: 5 } },
       options: undefined,
     } as unknown as PluginContext;
     ctx.registries.agent.hydrate([meta]);
@@ -250,7 +245,7 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
     mockLlm.server.close();
   }, 25000);
 
-  it('resolveReminders 钩子（decorateDeps 接线）在宿主生效（钩子不可克隆但循环在宿主）', async () => {
+  it('resolveRootInput 钩子（decorateDeps 接线）在宿主生效（钩子不可克隆但循环在宿主）', async () => {
     const mockLlm = await startMockLlm([
       { choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] },
     ]);
@@ -272,14 +267,31 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
       filePath: path.join(dir, 'agent.js'),
       systemPrompt: '你是天气助手',
     };
-    const runner = setupHost(llms, agentMeta, [toolMeta], (deps) => ({
-      ...deps,
-      // 钩子引用宿主闭包（读 ctx 身份）——不可跨线程；循环在宿主，全量可见
-      resolveReminders: async (info) =>
-        info.phase === 'once'
-          ? [`固定提醒:${(info.ctx as { currentUserId?: number }).currentUserId}`]
-          : undefined,
-    }));
+    // 钩子引用宿主闭包（读 ctx 身份）——不可跨线程；循环在宿主，全量可见。
+    // decorateDeps 由插件 setup 经 createAgentDeps 应用（config 声明钩子的生产路径）
+    const ctx = {
+      rootDir: dir,
+      registries: createAppRegistries(),
+      routes: [],
+      getRoutes: () => [],
+      server: {} as Server,
+      config: {
+        agent: {
+          llms,
+          maxTurns: 5,
+          decorateDeps: (deps: AgentDeps): AgentDeps => ({
+            ...deps,
+            resolveRootInput: async (_name, input, hookCtx) =>
+              `${input}\n\n[宿主注入:${(hookCtx as { currentUserId?: number }).currentUserId}]`,
+          }),
+        },
+      },
+      options: undefined,
+    } as unknown as PluginContext;
+    ctx.registries.agent.hydrate([agentMeta]);
+    ctx.registries.tool.hydrate([toolMeta]);
+    agentPlugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get() as AgentRunner;
 
     await runTaskInWorker({
       taskModulePath: path.join(dir, 'task-run.js'),
@@ -300,9 +312,10 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
       onAgentRun: buildOnAgentRun(runner),
     });
 
-    // LLM 请求消息含钩子渲染的提醒（ctx 为宿主任务合成契约 ctx，carry 身份可读）
+    // LLM 请求消息含钩子组装的输入（ctx 为宿主任务合成契约 ctx，carry 身份可读）
     const messagesJson = JSON.stringify(mockLlm.requests[0]?.messages ?? []);
-    expect(messagesJson).toContain('固定提醒:42');
+    expect(messagesJson).toContain('weather?');
+    expect(messagesJson).toContain('宿主注入:42');
     mockLlm.server.close();
   }, 25000);
 

@@ -119,7 +119,7 @@ const agentPlugin: FaapiPlugin = {
 
     // 注册 agent 循环执行器——隔离 worker 调 agent 收敛为单次 agent-run RPC：
     // worker 侧 taskCtx.agent.run 转发请求，宿主在此以任务合成契约 ctx 构造 Agent
-    // 跑完整编排循环（LLM IO、tool 执行、钩子、reminders、sub-agent 全在宿主——
+    // 跑完整编排循环（LLM IO、tool 执行、钩子、sub-agent 全在宿主——
     // db 连接池等资源单实例、业务函数零跨线程）。插件未加载时 runner store 为空
     // ——worker 内 taskCtx.agent 不挂载（能力不存在非降级，见 taskTypes.md）
     ctx.registries.agentRunner.register({
@@ -148,7 +148,7 @@ const agentPlugin: FaapiPlugin = {
         } else {
           runInput = request.input;
         }
-        // 完整循环：与 HTTP 请求链同一份 baseDeps（工具/钩子/reminders 单一实现）
+        // 完整循环：与 HTTP 请求链同一份 baseDeps（工具/钩子单一实现）
         const agent = new Agent({ ...baseDeps, ctx });
         return agent.run(runInput, {
           ...(options as AgentRunOptions | undefined),

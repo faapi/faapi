@@ -8,7 +8,7 @@ agent 声明此前由构建期 TS AST 提取（该机制已整体下线）从源
 
 声明运行时化后，handler 模块在启动期被真实 import 执行——**单 agent 声明获得与全局声明面完全等价的动态能力**：`systemPrompt` 支持工厂函数（每次 run 求值）、`config` 可以是返回对象的函数（闭包/env 组装声明）。清单（[generateAgentArtifacts](../cli/generateAgentArtifacts.md)）因此降级为**定位清单**——只携带扫描期可定的静态事实（name / filePath / inputTypeName），声明数据不再进清单。
 
-> **8.0 起 `reminders` 声明面已移除**（全局 `config.agent.reminders` 与单 agent config 块 `reminders` 同步删除）——提醒注入收敛为 `@faapi/agent` 的 `resolveReminders` deps 级钩子唯一入口，见 [reminders](../../agent/src/reminders.md)。声明 `reminders` 字段即撞本模块的白名单报错（迁移守卫）。
+> **8.0 起 `reminders` 已整线移除**（框架不再提供提醒注入原语——声明面、`@faapi/agent` 的 `resolveReminders` 钩子与注入引擎一并删除）。声明 `reminders` 字段即撞本模块的白名单报错（迁移守卫）；进历史的动态注入块走 `resolveRootInput` / `resolveSubAgentInput`。
 
 ## 使用场景
 
@@ -59,7 +59,7 @@ export const config = {
 | 检测到 `run` 导出 | 抛迁移错误（编排场景注册 tool） |
 | 无 `config` 导出 | 抛错（含修复指引） |
 | config 非 object / 数组 / 函数返回非对象 | 抛错（`got <describeValue>`） |
-| 未知 config 字段 | 抛错（白名单：description / systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars——`reminders` 声明面已移除，声明即撞本条报错）——静默忽略会掩盖拼写错误 |
+| 未知 config 字段 | 抛错（白名单：description / systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars——`reminders` 已移除，声明即撞本条报错）——静默忽略会掩盖拼写错误 |
 | `systemPrompt` 与 `systemPromptFile` 同声明 | 抛错（互斥） |
 | 两者都未声明 | 抛错（二选一必填——提示词是 agent 的最小必需声明） |
 | `systemPrompt` 非 string/函数、`systemPromptFile` 非 string | 抛错 |

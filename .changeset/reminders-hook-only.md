@@ -3,16 +3,12 @@
 '@faapi/agent': major
 ---
 
-**reminders spec 声明面整线移除——`resolveReminders` 钩子收敛为唯一入口**
+**reminders 概念整线移除（含 `resolveReminders` 钩子与注入引擎）**
 
-移除（声明即撞 config 白名单报错，充当迁移守卫）：
+业务方反馈（TODO-faapi-gaps 2026-10-26）初版方案为「收敛为钩子唯一入口」；维护者复核后定性 reminder 作为框架原语不够通用——「新鲜且持久进历史」的动态注入由 `resolveRootInput` / `resolveSubAgentInput` 对偶钩子承接（产物随 `result.messages` / `done.messages` 导出），每轮新鲜提醒的诉求与输入组装同源，不值得独立原语。经维护者决策整线删除：
 
-- 全局声明面 `config.agent.reminders`（`AgentConfig.reminders` 字段）
-- 单 agent config 块 `reminders` 字段（`AgentDeclaration` / `AgentCore.reminders`）及其启动期校验
-- `ReminderSpec` / `ReminderSpecObject` / `ReminderBuilder` 公开导出类型及 spec 渲染器（`reminderPhaseOf` / `renderReminderSpecs` / `createSpecReminderResolver` / `collectReminderSpecs`）
-
-保留（引擎双通道语义不变）：`resolveReminders` deps 级钩子（`createAgentDeps` overrides / `config.agent.decorateDeps` 接线）与 once（首轮持久进历史）/ everyTurn（每轮刷新发送副本）注入通道、`<system-reminder>` 统一包裹与空渲染跳过、sub-agent 派发注入时序。钩子契约类型 `ReminderPhase` / `ReminderInfo` 继续从 `@faapi/faapi` 导出。
-
-顺手收紧（钩子路径防护拉齐原 spec 路径水准）：钩子抛错包 `AgentError`（含 agent 名与 phase，`{ cause }` 保留原始错误）；返回值非 `string[]`（非数组或数组含非 string 元素）显式抛 `AgentError`，不再于 `contents.map` 处炸晦涩 TypeError 或把坏值静默渲染进提醒块。
-
-迁移指引：「新鲜且持久进历史」的动态注入块走 `resolveRootInput`（根调用）/ `resolveSubAgentInput`（派发）；「不进历史本体的每轮新鲜提醒」走 `resolveReminders` 钩子。隔离任务快照投影（`AgentSnapshotRecord`）同步删除 reminders 剥离逻辑（字段不复存在）。
+- **删除**：`@faapi/agent` 的 `AgentDeps.resolveReminders` 钩子与注入引擎（`reminders.ts` 整个模块——`ReminderResolver` / `ResolveRemindersHook` / `joinReminderBlocks` / `createHookReminderResolver`）、reactLoop 的 once / everyTurn 注入通道（`ReactLoopConfig.reminders`）
+- **删除**：主包 `ReminderPhase` / `ReminderInfo` 公开导出类型（spec 声明面 `config.agent.reminders`、agent config 块 `reminders` 字段与 `ReminderSpec` 类型族已在前一批移除）
+- **迁移守卫**：agent config 块声明 `reminders` 字段即撞未知字段白名单报错（启动期）
+- **迁移指引**：进历史的动态注入块（落库 / 前端渲染 / 续跑链继承）走 `resolveRootInput`（根调用）/ `resolveSubAgentInput`（派发）；每轮新鲜提醒在 `resolveRootInput` 内按业务节奏组装或自建每轮逻辑
+- 隔离任务 e2e 的钩子宿主生效验证改走 `resolveRootInput` 载体（行为覆盖不缩水）

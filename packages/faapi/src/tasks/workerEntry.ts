@@ -416,7 +416,7 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
  *
  * `taskCtx.agent.run(input, options)` 经单次 `{ type: 'agent-run', seq, agentName,
  * input, options }` 消息回传宿主，宿主构造 Agent 跑完整编排循环（工具/钩子/
- * reminders/sub-agent 全在宿主），以 `{ type: 'agent-run-result', seq, ok,
+ * sub-agent 全在宿主），以 `{ type: 'agent-run-result', seq, ok,
  * value | error }` 回传——按 seq 匹配挂起调用。流式不支持（句柄 run-only）。
  *
  * worker 侧前置校验（本地报错，不发 RPC）：

@@ -310,25 +310,6 @@ export interface LlmConfig {
  *
  * 详见 `src/configs/configTypes.md` agent 配置块章节。
  */
-// ─── agent reminders（提醒注入钩子契约）────────────────────────────────────
-// 8.0 起 spec 声明面已移除（config.agent.reminders 与 agent config 块 reminders、
-// ReminderSpec 类型族同步删除）——提醒注入收敛为 @faapi/agent 的 resolveReminders
-// deps 级钩子唯一入口，本节仅保留钩子契约类型（见 @faapi/agent 的 reminders.md）。
-
-/** 提醒渲染通道：once = 首轮持久注入 / everyTurn = 每轮发送副本注入 */
-export type ReminderPhase = 'once' | 'everyTurn';
-
-/** 提醒渲染入参（ctx 为触发执行的任务/请求上下文——宿主侧合成，worker RPC 路径不跨线程） */
-export interface ReminderInfo {
-  /** 触发渲染的 agent 名（root 与 sub-agent 均为其自身名） */
-  agentName: string;
-  /** agent 嵌套深度（root = 0） */
-  depth: number;
-  /** once 固定 0；everyTurn 为当轮序号（1 起） */
-  turn: number;
-  ctx: AgentToolContext;
-}
-
 export interface AgentConfig {
   /**
    * LLM provider 配置映射（Phase 3.5 改为嵌套级联结构，key 是 provider 名）

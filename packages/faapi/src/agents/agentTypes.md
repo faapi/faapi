@@ -48,7 +48,7 @@ export interface AgentCore {
 }
 ```
 
-> **8.0 起 `reminders` 字段已移除**——提醒注入收敛为 `@faapi/agent` 的 `resolveReminders` deps 级钩子唯一入口（供数在 deps 层，不在 agent 声明上），见 `@faapi/agent` 的 [reminders.md](../../../agent/src/reminders.md)。
+> **8.0 起 `reminders` 字段已移除**——框架不再提供提醒注入原语（reminders 概念整线删除，含 `@faapi/agent` 的 `resolveReminders` 钩子与注入引擎）；进历史的动态注入块走 `resolveRootInput` / `resolveSubAgentInput`。
 
 **字段求值时机**（启动期运行时求值语义，替代旧 AST 字面量提取）：
 

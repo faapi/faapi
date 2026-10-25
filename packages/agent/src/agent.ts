@@ -14,7 +14,6 @@ import { AgentError, AgentRecursionError, AgentToolTimeoutError } from './agentE
 import { runWithAgentScope } from './agentScope';
 import type { HistoryCompactor } from './historyCompaction';
 import { renderPromptTemplate } from './promptTemplate';
-import { createHookReminderResolver, type ResolveRemindersHook } from './reminders';
 import { createProvider } from './provider';
 import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
@@ -538,7 +537,7 @@ export interface AgentDeps {
    *   输入被静默丢弃）
    * - 抛错原样上抛,走 run / stream 既有错误链（发起 LLM 请求前显式失败,不吞不降级）
    * - deps 全树共享但仅根调用触发（depth 1）;流式 / 非流式同一接线
-   *   （`buildLoopConfig` 单点应用）;reminders `once` 块追加在组装产物之后
+   *   （`buildLoopConfig` 单点应用）
    *
    * 详见 [agent.md](./agent.md)「resolveRootInput 根调用输入组装钩子」。
    */
@@ -547,21 +546,6 @@ export interface AgentDeps {
     input: string,
     ctx: AgentToolContext,
   ) => Promise<string | undefined>;
-  /**
-   * 提醒供数钩子（提醒注入唯一入口——见 [reminders.md](./reminders.md)）
-   *
-   * 按 `{ agentName, depth, turn, phase, ctx }` 返回该通道的**未包裹内容串数组**
-   * （包裹由引擎统一做;`undefined`/空 = 无提醒）。8.0 起 spec 声明面已移除,
-   * 钩子是唯一供数源（业务 decorateDeps 接线 / 隔离任务 RPC 垫片同走此路）。
-   *
-   * - `phase`: `'once'`（fresh run 循环启动调用一次,turn=0）| `'everyTurn'`（每轮
-   *   LLM 请求前调用,turn 为当轮序号 1 起）
-   * - `ctx` 为 `deps.ctx` 透传;worker 垫片不外传 ctx——宿主以任务合成 ctx 调用
-   * - 钩子抛错包 `AgentError`（含 agent 名与 phase）上抛;返回值非 `string[]`
-   *   同样抛 `AgentError`（返回类型违约,fail fast 不静默降级）
-   * - deps 全树共享——一次接线覆盖 root 与全部可达子代理（agentName/depth 各自值）
-   */
-  resolveReminders?: ResolveRemindersHook;
 }
 
 // Agent 系统级错误家族持有于 agentErrors.ts（reactLoop 的历史压缩守卫需要抛
@@ -907,15 +891,6 @@ export class Agent {
         ? `${withContextBlock}\n\n${buildTraceIdBlock(traceId, this.deps.config?.traceIdTemplate)}`
         : withContextBlock;
 
-    // reminders 解析器装配（见 reminders.md）：钩子是唯一供数入口,未接线即无注入
-    const reminders = this.deps.resolveReminders
-      ? createHookReminderResolver(this.deps.resolveReminders, {
-          agentName,
-          depth: this.depth,
-          ctx: this.deps.ctx,
-        })
-      : undefined;
-
     return {
       agentName,
       traceId,
@@ -933,7 +908,6 @@ export class Agent {
         signal: options?.signal,
         messages: options?.messages,
         enableTracing,
-        ...(reminders ? { reminders } : {}),
         executeTool: async (name, args, deltaEmitter) =>
           this.executeTool(name, args, callCtx, deltaEmitter),
       },

@@ -277,10 +277,10 @@ export interface AgentRunRequest {
  * agent 循环执行器（由 `@faapi/agent` 插件注册）
  *
  * 隔离 worker 调 agent 收敛为**一次 agent-run RPC**：编排循环（LLM IO + tool
- * 调度 + reminders 渲染 + sub-agent 递归）整体在宿主执行，worker 只负责转发请求
+ * 调度 + sub-agent 递归）整体在宿主执行，worker 只负责转发请求
  * 与回传结果——此前「IO 在 worker、CPU 在宿主」的 6 种 per-behavior RPC 垫片
  * 整体下线（beforeToolCall/toolCall/filterTools/resolveSubAgentInput/
- * resolveSubAgentContext/resolveReminders）。
+ * resolveSubAgentContext）。
  *
  * 执行器以任务合成契约 ctx（carry + scoped TaskClient + 任务级 logger +
  * job.signal，与进程内 `taskCtx.agent` 同配方，见 taskToolContext.md）构造

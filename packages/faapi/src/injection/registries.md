@@ -20,7 +20,7 @@
 
 ## AgentRunner（agent 循环执行器）
 
-隔离任务调 agent 的通道：worker 侧 `taskCtx.agent.run` 经**单次 `agent-run` RPC** 转发请求，宿主经本执行器跑**完整编排循环**（LLM IO + tool 调度 + beforeToolCall/afterToolCall 钩子 + reminders 渲染 + sub-agent 递归）——worker 只负责转发与回传，业务函数面与资源零跨线程。此前「IO 在 worker、CPU 在宿主」的 6 种 per-behavior RPC 垫片整体下线。
+隔离任务调 agent 的通道：worker 侧 `taskCtx.agent.run` 经**单次 `agent-run` RPC** 转发请求，宿主经本执行器跑**完整编排循环**（LLM IO + tool 调度 + beforeToolCall/afterToolCall 钩子 + sub-agent 递归）——worker 只负责转发与回传，业务函数面与资源零跨线程。此前「IO 在 worker、CPU 在宿主」的 6 种 per-behavior RPC 垫片整体下线。
 
 ```ts
 export interface AgentRunRequest {

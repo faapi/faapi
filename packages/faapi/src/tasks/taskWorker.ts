@@ -354,7 +354,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         }
         if (msg?.type === 'agent-run') {
           // agent-run RPC：worker 内 taskCtx.agent.run 转发请求，宿主构造 Agent
-          // 跑完整编排循环（单次 RPC 收敛——工具/钩子/reminders/sub-agent 全在宿主）。
+          // 跑完整编排循环（单次 RPC 收敛——工具/钩子/sub-agent 全在宿主）。
           // running/grace 两阶段都处理（与 tasks-call 同口径——调用随任务超时两段式
           // 取消一并终止）；settled 后不会再有消息。signal 由宿主侧 AbortController
           // 注入（语义层经 AgentRunner 第三参 execution 合入 run options，宿主侧

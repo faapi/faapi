@@ -13,7 +13,7 @@
  *
  * 隔离任务（worker.ts 声明）的 `taskCtx.agent` 是 **run-only RPC 句柄**
  * （{@link AgentRpcHandle}）：`run` 经单次 agent-run 消息回传宿主，宿主构造
- * Agent 跑完整编排循环（LLM IO、tool 执行、钩子、reminders、sub-agent 全在
+ * Agent 跑完整编排循环（LLM IO、tool 执行、钩子、sub-agent 全在
  * 宿主，见 faapi 的 workerEntry.ts buildAgentRunProxy 与 taskTypes.md）；流式
  * 不支持。宿主 agentRunner 未注册（插件未加载）时隔离任务恒 undefined——能力
  * 不存在非降级。调用形态与进程内一致：`taskCtx.agent.run(input, { agent })`。

@@ -65,7 +65,7 @@ PluginContext { config.agent, rootDir }
    （含 enableTracing 全量字段）都在装配工厂单一实现
 4. ctx.registries.agentHandle.register((ctx) => new Agent({ ...baseDeps, ctx }))——工厂入参为 AgentToolContext 契约（toAgentToolContext 收窄，HTTP 全量字段随透传）
 5. ctx.registries.llm.register(createLightComplete({ llms, providers }))——轻量补全通道
-6. ctx.registries.agentRunner.register({ runAgent })——agent 循环执行器：隔离 worker 调 agent 收敛为**单次 agent-run RPC**，宿主在此以任务合成契约 ctx 构造 Agent（`new Agent({ ...baseDeps, ctx })`）跑**完整编排循环**（LLM IO、tool 执行、钩子、reminders、sub-agent 全在宿主——业务函数面与资源零跨线程）。`execution.signal`（宿主任务取消控制器）合入 run options 的 `signal`（宿主侧优先——ReactLoop 每轮预检查 + provider 请求中断，任务取消传播宿主不白烧 tokens）。对象入参为富派发形态（先经 `entry.inputTypeName` + `resolveAgentInputSchema` 校验、失败抛 AgentError 浮出为任务错误，再 extractSubAgentUserInput）；字符串入参 user 消息直传
+6. ctx.registries.agentRunner.register({ runAgent })——agent 循环执行器：隔离 worker 调 agent 收敛为**单次 agent-run RPC**，宿主在此以任务合成契约 ctx 构造 Agent（`new Agent({ ...baseDeps, ctx })`）跑**完整编排循环**（LLM IO、tool 执行、钩子、sub-agent 全在宿主——业务函数面与资源零跨线程）。`execution.signal`（宿主任务取消控制器）合入 run options 的 `signal`（宿主侧优先——ReactLoop 每轮预检查 + provider 请求中断，任务取消传播宿主不白烧 tokens）。对象入参为富派发形态（先经 `entry.inputTypeName` + `resolveAgentInputSchema` 校验、失败抛 AgentError 浮出为任务错误，再 extractSubAgentUserInput）；字符串入参 user 消息直传
    （与 agent 循环共享同一 providers 单例；插件未加载时 runner store 为空——worker 内 `taskCtx.agent` 不挂载，能力不存在非降级）
 ```
 
