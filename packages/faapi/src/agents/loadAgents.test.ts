@@ -83,6 +83,12 @@ describe('loadAgents', () => {
       ).toThrow(/未知 config 字段 "systemPromt"/);
     });
 
+    it('非白名单字段撞白名单报错', () => {
+      expect(() =>
+        evaluateAgentDeclaration({ config: { systemPrompt: 'x', model: 'gpt-4o' } }, locator),
+      ).toThrow(/未知 config 字段 "model"/);
+    });
+
     it('systemPrompt 与 systemPromptFile 互斥', () => {
       expect(() =>
         evaluateAgentDeclaration(
@@ -133,15 +139,6 @@ describe('loadAgents', () => {
           locator,
         ),
       ).toThrow(/vars\.nested 必须是 string \| number \| boolean/);
-    });
-
-    it('reminders 非白名单字段：声明即撞未知字段白名单报错', () => {
-      expect(() =>
-        evaluateAgentDeclaration(
-          { config: { systemPrompt: 'x', reminders: ['先查资料'] } },
-          locator,
-        ),
-      ).toThrow(/未知 config 字段 "reminders"/);
     });
 
     it('tools 含非 string 元素抛错', () => {
