@@ -310,7 +310,10 @@ export interface LlmConfig {
  *
  * 详见 `src/configs/configTypes.md` agent 配置块章节。
  */
-// ─── agent reminders（提醒注入）──────────────────────────────────────────
+// ─── agent reminders（提醒注入钩子契约）────────────────────────────────────
+// 8.0 起 spec 声明面已移除（config.agent.reminders 与 agent config 块 reminders、
+// ReminderSpec 类型族同步删除）——提醒注入收敛为 @faapi/agent 的 resolveReminders
+// deps 级钩子唯一入口，本节仅保留钩子契约类型（见 @faapi/agent 的 reminders.md）。
 
 /** 提醒渲染通道：once = 首轮持久注入 / everyTurn = 每轮发送副本注入 */
 export type ReminderPhase = 'once' | 'everyTurn';
@@ -325,25 +328,6 @@ export interface ReminderInfo {
   turn: number;
   ctx: AgentToolContext;
 }
-
-/**
- * 动态提醒渲染函数
- *
- * 返回 `undefined`/`null`/空串 = 该条本轮跳过；抛错或返回其他类型 →
- * 包 `AgentError` 中止本次 run/stream（fail fast，见 @faapi/agent 的 reminders.md）。
- */
-export type ReminderBuilder = (
-  info: ReminderInfo,
-) => string | null | undefined | Promise<string | null | undefined>;
-
-/** 对象形式显式声明通道（string 默认 once、函数默认 everyTurn 的反例出口） */
-export interface ReminderSpecObject {
-  when?: ReminderPhase;
-  content: string | ReminderBuilder;
-}
-
-/** 单条提醒声明：字符串（once）、渲染函数（everyTurn）或对象形式显式声明 */
-export type ReminderSpec = string | ReminderBuilder | ReminderSpecObject;
 
 export interface AgentConfig {
   /**
@@ -369,17 +353,6 @@ export interface AgentConfig {
    * 默认值由 Phase 3.x 的 @faapi/agent 插件定义（如 3）。
    */
   maxAgentDepth?: number;
-  /**
-   * 提醒注入（全局声明面，见 @faapi/agent 的 [reminders](../../agent/src/reminders.md) 文档）
-   *
-   * 对所有 agent 生效（root 与 sub-agent），在对话 user 消息上注入
-   * `<system-reminder>` 包裹的上下文提醒。字符串默认 once（首轮持久）、函数默认
-   * everyTurn（每轮刷新），对象形式 `{ when, content }` 显式声明。
-   *
-   * 单 agent 固定提醒走 agent config 块的 `reminders: string[]`（构建期字面量
-   * 提取，全部 once）。合并顺序：全局在前、单 agent 在后。
-   */
-  reminders?: ReminderSpec[];
   /**
    * 单次 tool 执行的超时毫秒数（未设置 = 不限时）
    *

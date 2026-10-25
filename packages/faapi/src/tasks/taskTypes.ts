@@ -225,7 +225,7 @@ export interface TaskEvent {
  * 投影保证可克隆。
  */
 export interface TaskRegistriesSnapshot {
-  /** agent 投影元数据（纯数据——函数形态 systemPrompt 剥离、reminders 整体剥离） */
+  /** agent 投影元数据（纯数据——工厂形态 systemPrompt 剥离） */
   agents: AgentSnapshotRecord[];
   tools: ToolMetadata[];
 }
@@ -233,13 +233,12 @@ export interface TaskRegistriesSnapshot {
 /**
  * 隔离快照内的 agent 投影（`AgentMetadata` 的可结构化克隆子集）
  *
- * agent 声明运行时化后 `AgentCore` 含函数形态字段（systemPrompt 工厂、reminders
- * builder），不可跨线程。循环在宿主执行（真实声明全量可见），快照只服务 worker
- * 侧只读查询：systemPrompt 仅保留字符串形态（工厂剥离——查询方在隔离侧拿不到
- * 动态人设是快照语义的一部分），reminders 整体剥离（builder 不可克隆，供数在
- * 宿主 runAgent 内完成）。
+ * agent 声明运行时化后 `AgentCore` 含函数形态字段（systemPrompt 工厂），不可跨
+ * 线程。循环在宿主执行（真实声明全量可见），快照只服务 worker 侧只读查询：
+ * systemPrompt 仅保留字符串形态（工厂剥离——查询方在隔离侧拿不到动态人设是
+ * 快照语义的一部分）。
  */
-export interface AgentSnapshotRecord extends Omit<AgentCore, 'systemPrompt' | 'reminders'> {
+export interface AgentSnapshotRecord extends Omit<AgentCore, 'systemPrompt'> {
   filePath: string;
   inputTypeName?: string;
   /** 字符串形态人设（工厂函数剥离后不出现——隔离侧查询仅见静态事实） */
@@ -249,17 +248,15 @@ export interface AgentSnapshotRecord extends Omit<AgentCore, 'systemPrompt' | 'r
 /**
  * AgentMetadata → AgentSnapshotRecord 投影（宿主与测试共用的单一实现）
  *
- * 剥离不可跨线程的函数形态字段：reminders 整体剥离（builder 不可克隆，供数在
- * 宿主 runAgent 内完成）、工厂形态 systemPrompt 剥离（字符串形态原样保留）。
- * taskQueue 快照与 taskWorker 视图一致性测试共用，防止两处投影漂移。
+ * 剥离不可跨线程的函数形态字段：工厂形态 systemPrompt 剥离（字符串形态原样
+ * 保留）。taskQueue 快照与 taskWorker 视图一致性测试共用，防止两处投影漂移。
  */
 export function toAgentSnapshotRecord(entry: AgentMetadata): AgentSnapshotRecord {
-  const { reminders: _reminders, ...rest } = entry;
   if (typeof entry.systemPrompt === 'function') {
-    const { systemPrompt: _sp, ...noPrompt } = rest;
+    const { systemPrompt: _sp, ...noPrompt } = entry;
     return noPrompt;
   }
-  return { ...rest, systemPrompt: entry.systemPrompt };
+  return { ...entry, systemPrompt: entry.systemPrompt };
 }
 
 /**

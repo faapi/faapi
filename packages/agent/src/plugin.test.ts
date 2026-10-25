@@ -58,6 +58,7 @@ vi.mock('./provider', async (importOriginal) => {
 // ─── 导入（mock 后）─────────────────────────────────
 import { createAppRegistries } from '@faapi/faapi';
 import plugin from './plugin';
+import type { AgentDeps } from './agent';
 import { createProvider, type LLMProvider } from './provider';
 import { Agent, AgentError } from './agent';
 import { createStandaloneToolContext } from './standaloneToolContext';
@@ -714,26 +715,23 @@ describe('@faapi/agent plugin — 隔离 agent 通道（agentRunner 注册）', 
     expect(completeRequests.length).toBeGreaterThan(before);
   });
 
-  it('runAgent 契约 ctx 透传：reminders builder 收到调用方传入的 ctx（增强字段可读）', async () => {
+  it('runAgent 契约 ctx 透传：resolveReminders 钩子收到调用方传入的 ctx（增强字段可读）', async () => {
     const captured: Array<{ turn: number; currentUserId?: number }> = [];
-    const ctx = makeCtx(fullAgentConfig);
-    ctx.registries.agent.hydrate([
-      {
-        ...testAgentEntry,
-        reminders: [
-          {
-            when: 'once',
-            content: (info) => {
-              captured.push({
-                turn: info.turn,
-                currentUserId: (info.ctx as { currentUserId?: number }).currentUserId,
-              });
-              return 'r';
-            },
-          },
-        ],
-      },
-    ]);
+    const ctx = makeCtx({
+      ...fullAgentConfig,
+      // decorateDeps 是 config 声明钩子的生产装配路径（createAgentDeps 应用）——
+      // 按真实签名标注（config 声明为 (...args: never[]) => unknown 宽松形态）
+      decorateDeps: (deps: AgentDeps): AgentDeps => ({
+        ...deps,
+        resolveReminders: async (info) => {
+          captured.push({
+            turn: info.turn,
+            currentUserId: (info.ctx as { currentUserId?: number }).currentUserId,
+          });
+          return ['r'];
+        },
+      }),
+    });
     plugin.setup(ctx);
     const runner = ctx.registries.agentRunner.get()!;
 
@@ -743,7 +741,11 @@ describe('@faapi/agent plugin — 隔离 agent 通道（agentRunner 注册）', 
       input: '研究量子',
       options: { model: 'gpt-4o' },
     });
-    expect(captured).toEqual([{ turn: 0, currentUserId: 7 }]);
+    // once（turn=0）与 everyTurn（turn=1）两通道都触发，ctx 均为调用方传入实例
+    expect(captured).toEqual([
+      { turn: 0, currentUserId: 7 },
+      { turn: 1, currentUserId: 7 },
+    ]);
   });
 
   it('runAgent 未知 agent 名：循环侧 AgentError 原样抛出', async () => {

@@ -5,22 +5,17 @@
  * - **once（首轮持久）**：fresh run 时渲染一次，追加到初始 user 消息并持久进循环历史
  * - **everyTurn（每轮刷新）**：每轮 LLM 请求前渲染，追加到发送副本末条 user 消息（本地历史不变）
  *
- * 语义规格见 [reminders.md](./reminders.md)。类型（ReminderSpec 族）定义在主包
- * `configs/configTypes.ts`（与 AgentConfig 同侧），此处 re-export 供消费方统一导入。
+ * 语义规格见 [reminders.md](./reminders.md)。类型（ReminderInfo / ReminderPhase）
+ * 定义在主包 `configs/configTypes.ts`，此处 re-export 供消费方统一导入。
  *
- * reactLoop 只消费 ReminderResolver（保持循环层纯消息管线）；本模块同时提供
- * 本地 specs 解析器与钩子解析器（隔离任务 RPC 垫片 / 业务 decorateDeps 接线）。
+ * reactLoop 只消费 ReminderResolver（保持循环层纯消息管线）；供数收敛为
+ * `resolveReminders` deps 级钩子唯一入口（业务 decorateDeps 接线 / 隔离任务
+ * RPC 垫片同走此路）——spec 声明面已整体移除（8.0，迁移守卫为 config 白名单报错）。
  */
-import type {
-  AgentToolContext,
-  ReminderBuilder,
-  ReminderInfo,
-  ReminderPhase,
-  ReminderSpec,
-} from '@faapi/faapi';
+import type { AgentToolContext, ReminderInfo, ReminderPhase } from '@faapi/faapi';
 import { AgentError } from './agentErrors';
 
-export type { ReminderBuilder, ReminderInfo, ReminderPhase, ReminderSpec } from '@faapi/faapi';
+export type { ReminderInfo, ReminderPhase } from '@faapi/faapi';
 
 /** reactLoop 消费的提醒解析器（once = 首轮持久块 / everyTurn = 每轮发送副本块） */
 export interface ReminderResolver {
@@ -35,122 +30,57 @@ export type ResolveRemindersHook = (
   info: ReminderInfo & { phase: ReminderPhase },
 ) => Promise<string[] | undefined>;
 
-/** 解析 spec 的生效通道：string → once、函数 → everyTurn、对象形式 when 显式覆盖 */
-export function reminderPhaseOf(spec: ReminderSpec): ReminderPhase {
-  if (typeof spec === 'string') return 'once';
-  if (typeof spec === 'function') return 'everyTurn';
-  if (typeof spec !== 'object' || spec === null || !('content' in spec)) {
-    throw new AgentError(
-      `invalid reminder spec: expected string, function, or { when?, content } object — got ${typeof spec}`,
-    );
-  }
-  if (spec.when !== undefined && spec.when !== 'once' && spec.when !== 'everyTurn') {
-    throw new AgentError(
-      `invalid reminder spec: when must be "once" or "everyTurn" — got "${String(spec.when)}"`,
-    );
-  }
-  if (spec.when) return spec.when;
-  return typeof spec.content === 'function' ? 'everyTurn' : 'once';
-}
-
-/**
- * 渲染指定 phase 的 specs 为未包裹内容串数组
- *
- * - 未命中 phase 的声明跳过；builder 返回 undefined/null/trim 空串的条目跳过
- * - builder 抛错 / 返回类型违约 / spec 形态违约 → 包 AgentError（fail fast，含定位）
- */
-export async function renderReminderSpecs(
-  specs: readonly ReminderSpec[],
-  info: ReminderInfo,
-  phase: ReminderPhase,
-): Promise<string[]> {
-  const out: string[] = [];
-  for (const [index, spec] of specs.entries()) {
-    let content: string | ReminderBuilder;
-    try {
-      if (reminderPhaseOf(spec) !== phase) continue;
-      content = typeof spec === 'object' ? spec.content : spec;
-    } catch (err) {
-      throw wrapReminderError(err, info.agentName, phase, index);
-    }
-    if (typeof content === 'function') {
-      let rendered: string | null | undefined;
-      try {
-        rendered = await (content as ReminderBuilder)(info);
-      } catch (err) {
-        throw wrapReminderError(err, info.agentName, phase, index);
-      }
-      if (rendered === undefined || rendered === null) continue;
-      if (typeof rendered !== 'string') {
-        throw new AgentError(
-          `reminder builder must return string | undefined | null (agent "${info.agentName}", phase=${phase}, spec index ${index})`,
-        );
-      }
-      if (rendered.trim() === '') continue;
-      out.push(rendered);
-    } else {
-      if (content.trim() === '') continue;
-      out.push(content);
-    }
-  }
-  return out;
-}
-
-function wrapReminderError(
-  err: unknown,
-  agentName: string,
-  phase: ReminderPhase,
-  index: number,
-): AgentError {
-  const message = err instanceof Error ? err.message : String(err);
-  const wrapped = new AgentError(
-    `reminder rendering failed (agent "${agentName}", phase=${phase}, spec index ${index}): ${message}`,
-  );
-  wrapped.cause = err;
-  return wrapped;
-}
-
 /** 内容串数组 → 完整包裹块（每条各自 `<system-reminder>` 包裹，`\n\n` 连接）；空数组 undefined */
 export function joinReminderBlocks(contents: readonly string[]): string | undefined {
   if (contents.length === 0) return undefined;
   return contents.map((c) => `<system-reminder>\n${c}\n</system-reminder>`).join('\n\n');
 }
 
-/** 合并全局与单 agent 声明（全局在前——agent 特定内容更靠近上下文末端；各自保持声明序） */
-export function collectReminderSpecs(
-  globalSpecs: readonly ReminderSpec[] | undefined,
-  agentSpecs: readonly ReminderSpec[] | undefined,
-): ReminderSpec[] {
-  return [...(globalSpecs ?? []), ...(agentSpecs ?? [])];
-}
-
-/** 本地 specs 解析器（buildLoopConfig 无钩子接线时的默认实现） */
-export function createSpecReminderResolver(
-  specs: readonly ReminderSpec[],
-  base: { agentName: string; depth: number; ctx: AgentToolContext },
-): ReminderResolver {
-  return {
-    once: async () =>
-      joinReminderBlocks(await renderReminderSpecs(specs, { ...base, turn: 0 }, 'once')),
-    everyTurn: async (turn) =>
-      joinReminderBlocks(await renderReminderSpecs(specs, { ...base, turn }, 'everyTurn')),
-  };
-}
-
 /**
- * 钩子解析器（AgentDeps.resolveReminders 接线时使用）
+ * 钩子解析器（AgentDeps.resolveReminders 接线时使用——唯一供数入口）
  *
- * 钩子是唯一供数源（本地 specs 整体忽略，避免双渲染）；钩子抛错原样传播
- * （与 resolveSubAgentContext 等 deps 级钩子同款——worker RPC 路径的错误回传
- * 由 RPC 层统一处理）。
+ * 运行时防护与原 spec 路径拉齐：钩子抛错包 `AgentError`（含 agent 名与 phase，
+ * `{ cause }` 保留原始错误）；返回值非 `string[]`（非数组或数组含非 string 元素）
+ * 抛 `AgentError`（返回类型违约，fail fast——静默渲染会让坏数据伪装成提醒内容）。
  */
 export function createHookReminderResolver(
   hook: ResolveRemindersHook,
   base: { agentName: string; depth: number; ctx: AgentToolContext },
 ): ReminderResolver {
-  return {
-    once: async () => joinReminderBlocks((await hook({ ...base, turn: 0, phase: 'once' })) ?? []),
-    everyTurn: async (turn) =>
-      joinReminderBlocks((await hook({ ...base, turn, phase: 'everyTurn' })) ?? []),
+  const resolve = async (phase: ReminderPhase, turn: number): Promise<string | undefined> => {
+    let contents: string[] | undefined;
+    try {
+      contents = await hook({ ...base, turn, phase });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const wrapped = new AgentError(
+        `resolveReminders hook failed (agent "${base.agentName}", phase=${phase}): ${message}`,
+      );
+      wrapped.cause = err;
+      throw wrapped;
+    }
+    if (contents !== undefined && (!Array.isArray(contents) || !isStringArray(contents))) {
+      throw new AgentError(
+        `resolveReminders must return string[] | undefined (agent "${base.agentName}", phase=${phase}) — got ${describeReturnValue(contents)}`,
+      );
+    }
+    return joinReminderBlocks(contents ?? []);
   };
+  return {
+    once: () => resolve('once', 0),
+    everyTurn: (turn) => resolve('everyTurn', turn),
+  };
+}
+
+function isStringArray(v: readonly unknown[]): v is string[] {
+  return v.every((c) => typeof c === 'string');
+}
+
+function describeReturnValue(v: unknown): string {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) {
+    const nonString = v.findIndex((c) => typeof c !== 'string');
+    return `array with non-string element at index ${nonString} (${typeof v[nonString]})`;
+  }
+  return typeof v;
 }

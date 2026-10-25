@@ -4,13 +4,13 @@
  * worker 侧 `taskCtx.agent.run` 仅转发请求（run-only 代理，workerEntry 自包含，
  * 不动态加载 @faapi/agent）；编排循环收敛宿主：`onAgentRun` 以任务合成契约 ctx
  * （carry 合成 currentUserId）构造 Agent 跑完整循环——LLM IO、工具执行、鉴权钩子、
- * reminders 全在宿主（db 连接池等资源单实例、业务函数零跨线程）。
+ * reminders 钩子渲染全在宿主（db 连接池等资源单实例、业务函数零跨线程）。
  *
  * 覆盖（三条都是真实 worker 线程 + 真实 @faapi/agent 插件 runner，仅 LLM 端点 mock）：
  * 1. 工具与守卫在宿主执行（carry 身份传导）——beforeToolCall 守卫 / handler marker /
  *    afterToolCall 审计同轮触发；循环结果按 agent-run-result 回传 worker 收敛
- * 2. 声明面 reminders（含 builder 函数）在宿主生效——builder 不可克隆（快照剥离），
- *    但循环在宿主，真实声明全量可见；LLM 请求消息含提醒文本与 builder 渲染的 ctx 身份
+ * 2. resolveReminders 钩子（decorateDeps 接线）在宿主生效——LLM 请求消息含提醒文本
+ *    与钩子渲染的任务合成 ctx 身份
  * 3. Input 校验失败以任务错误浮出——声明 Input 的 agent 派发形态对象入参校验不过，
  *    runAgent 抛 AgentError → RPC ok:false → worker 侧 reject → 任务失败（真实 zod.js
  *    产物加载 + safeParse，非 mock 校验）
@@ -27,6 +27,7 @@ import { runTaskInWorker } from '@faapi/faapi/src/tasks/taskWorker';
 import { createAppRegistries, createLogger, createTaskToolContext } from '@faapi/faapi';
 import type { AgentMetadata, LlmConfig, PluginContext, ToolMetadata } from '@faapi/faapi';
 import agentPlugin from './plugin';
+import type { AgentDeps } from './agent';
 import type { AgentRunner } from '@faapi/faapi';
 
 // 宿主侧 provider fetch 走本机 127.0.0.1——绕过开发机代理（同主包 e2e 约定）
@@ -136,14 +137,19 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
   });
 
   /** 真实 @faapi/agent 插件 setup（生产装配路径）——返回宿主侧 agentRunner */
-  function setupHost(llms: Record<string, LlmConfig>, meta: AgentMetadata, tools: ToolMetadata[]) {
+  function setupHost(
+    llms: Record<string, LlmConfig>,
+    meta: AgentMetadata,
+    tools: ToolMetadata[],
+    decorateDeps?: (deps: AgentDeps) => AgentDeps,
+  ) {
     const ctx = {
       rootDir: dir,
       registries: createAppRegistries(),
       routes: [],
       getRoutes: () => [],
       server: {} as Server,
-      config: { agent: { llms, maxTurns: 5 } },
+      config: { agent: { llms, maxTurns: 5, ...(decorateDeps ? { decorateDeps } : {}) } },
       options: undefined,
     } as unknown as PluginContext;
     ctx.registries.agent.hydrate([meta]);
@@ -244,7 +250,7 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
     mockLlm.server.close();
   }, 25000);
 
-  it('声明面 reminders（含 builder 函数）在宿主生效（builder 不可克隆但循环在宿主）', async () => {
+  it('resolveReminders 钩子（decorateDeps 接线）在宿主生效（钩子不可克隆但循环在宿主）', async () => {
     const mockLlm = await startMockLlm([
       { choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] },
     ]);
@@ -265,16 +271,15 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
       name: 'assistant',
       filePath: path.join(dir, 'agent.js'),
       systemPrompt: '你是天气助手',
-      // builder 引用宿主闭包（读 ctx 身份）——不可跨线程，快照剥离；宿主执行全量可见
-      reminders: [
-        '固定提醒',
-        {
-          when: 'once',
-          content: (info) => `构建提醒:${(info.ctx as { currentUserId?: number }).currentUserId}`,
-        },
-      ],
     };
-    const runner = setupHost(llms, agentMeta, [toolMeta]);
+    const runner = setupHost(llms, agentMeta, [toolMeta], (deps) => ({
+      ...deps,
+      // 钩子引用宿主闭包（读 ctx 身份）——不可跨线程；循环在宿主，全量可见
+      resolveReminders: async (info) =>
+        info.phase === 'once'
+          ? [`固定提醒:${(info.ctx as { currentUserId?: number }).currentUserId}`]
+          : undefined,
+    }));
 
     await runTaskInWorker({
       taskModulePath: path.join(dir, 'task-run.js'),
@@ -284,9 +289,8 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
         carry: { currentUserId: 42 },
       },
       timeoutMs: 20000,
-      // 快照投影：reminders（含 builder）剥离后才可结构化克隆——宿主侧真实声明不受影响
       registries: {
-        agents: [{ ...agentMeta, reminders: undefined }],
+        agents: [agentMeta],
         tools: [toolMeta],
       },
       log: {
@@ -296,10 +300,9 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
       onAgentRun: buildOnAgentRun(runner),
     });
 
-    // LLM 请求消息含声明面提醒：静态串 + builder 渲染（builder 拿到宿主合成 ctx 身份）
+    // LLM 请求消息含钩子渲染的提醒（ctx 为宿主任务合成契约 ctx，carry 身份可读）
     const messagesJson = JSON.stringify(mockLlm.requests[0]?.messages ?? []);
-    expect(messagesJson).toContain('固定提醒');
-    expect(messagesJson).toContain('构建提醒:42');
+    expect(messagesJson).toContain('固定提醒:42');
     mockLlm.server.close();
   }, 25000);
 

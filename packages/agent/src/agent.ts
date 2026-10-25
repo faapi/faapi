@@ -5,7 +5,6 @@ import type {
   AgentToolContext,
   AgentToolDescriptor,
   LlmConfig,
-  ReminderSpec,
   ToolMetadata,
   ToolModule,
   ToolSchemaResolution,
@@ -15,12 +14,7 @@ import { AgentError, AgentRecursionError, AgentToolTimeoutError } from './agentE
 import { runWithAgentScope } from './agentScope';
 import type { HistoryCompactor } from './historyCompaction';
 import { renderPromptTemplate } from './promptTemplate';
-import {
-  collectReminderSpecs,
-  createHookReminderResolver,
-  createSpecReminderResolver,
-  type ResolveRemindersHook,
-} from './reminders';
+import { createHookReminderResolver, type ResolveRemindersHook } from './reminders';
 import { createProvider } from './provider';
 import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
@@ -326,18 +320,6 @@ export interface AgentRuntimeConfig {
    * 调用,返回过滤后的数组。每次 `run` / `stream` 生效,含 agent-as-tool 项。
    */
   filterTools?: FilterToolsHook;
-  /**
-   * 提醒注入（全局声明面,见 [reminders.md](./reminders.md)）
-   *
-   * 对所有 agent（root 与 sub-agent）生效：在对话 user 消息上注入
-   * `<system-reminder>` 包裹的上下文提醒。字符串默认 once（首轮持久）、函数默认
-   * everyTurn（每轮刷新）、对象形式显式声明。单 agent 固定提醒走 agent config 块
-   * 的 `reminders: string[]`（全部 once）；合并顺序全局在前、单 agent 在后。
-   *
-   * `deps.resolveReminders` 钩子接线时（隔离任务 RPC 垫片 / 业务 decorateDeps）
-   * 本声明整体忽略——钩子是唯一供数源（避免双渲染）。
-   */
-  reminders?: ReminderSpec[];
 }
 
 /**
@@ -566,18 +548,17 @@ export interface AgentDeps {
     ctx: AgentToolContext,
   ) => Promise<string | undefined>;
   /**
-   * 提醒供数钩子（可选,缺省 = 本地 specs 引擎——见 [reminders.md](./reminders.md)）
+   * 提醒供数钩子（提醒注入唯一入口——见 [reminders.md](./reminders.md)）
    *
    * 按 `{ agentName, depth, turn, phase, ctx }` 返回该通道的**未包裹内容串数组**
-   * （包裹由引擎统一做;`undefined`/空 = 无提醒）。接线时（隔离任务 RPC 垫片 /
-   * 业务 decorateDeps）**取代本地声明供数**：`config.agent.reminders` 与 agent
-   * `meta.reminders` 整体忽略,合并语义由钩子实现方负责（插件 runner 在宿主侧
-   * 全量合并——业务函数零跨线程,与 beforeToolCall 同款配方）。
+   * （包裹由引擎统一做;`undefined`/空 = 无提醒）。8.0 起 spec 声明面已移除,
+   * 钩子是唯一供数源（业务 decorateDeps 接线 / 隔离任务 RPC 垫片同走此路）。
    *
    * - `phase`: `'once'`（fresh run 循环启动调用一次,turn=0）| `'everyTurn'`（每轮
    *   LLM 请求前调用,turn 为当轮序号 1 起）
    * - `ctx` 为 `deps.ctx` 透传;worker 垫片不外传 ctx——宿主以任务合成 ctx 调用
-   * - 钩子抛错原样上抛,走 run / stream 既有错误链（不吞不降级）
+   * - 钩子抛错包 `AgentError`（含 agent 名与 phase）上抛;返回值非 `string[]`
+   *   同样抛 `AgentError`（返回类型违约,fail fast 不静默降级）
    * - deps 全树共享——一次接线覆盖 root 与全部可达子代理（agentName/depth 各自值）
    */
   resolveReminders?: ResolveRemindersHook;
@@ -926,28 +907,14 @@ export class Agent {
         ? `${withContextBlock}\n\n${buildTraceIdBlock(traceId, this.deps.config?.traceIdTemplate)}`
         : withContextBlock;
 
-    // reminders 解析器装配（见 reminders.md）：deps.resolveReminders 钩子接线时
-    // 钩子是唯一供数源（本地声明整体忽略,避免双渲染——隔离任务 RPC 垫片 / 业务
-    // decorateDeps 走此路,合并语义由钩子实现方在宿主侧负责）;否则本地引擎合并
-    // 全局声明（config.agent.reminders）与单 agent 声明（meta.reminders,启动期
-    // 运行时求值,完整 ReminderSpec 形态——string 默认 once / 函数默认 everyTurn）。
-    // specs 为空时不装配（逐字节现状）
+    // reminders 解析器装配（见 reminders.md）：钩子是唯一供数入口,未接线即无注入
     const reminders = this.deps.resolveReminders
       ? createHookReminderResolver(this.deps.resolveReminders, {
           agentName,
           depth: this.depth,
           ctx: this.deps.ctx,
         })
-      : (() => {
-          const specs = collectReminderSpecs(this.deps.config?.reminders, meta.reminders);
-          return specs.length > 0
-            ? createSpecReminderResolver(specs, {
-                agentName,
-                depth: this.depth,
-                ctx: this.deps.ctx,
-              })
-            : undefined;
-        })();
+      : undefined;
 
     return {
       agentName,

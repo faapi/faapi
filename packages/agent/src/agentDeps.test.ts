@@ -163,7 +163,6 @@ describe('createAgentDeps', () => {
       beforeToolCall,
       afterToolCall,
       filterTools,
-      reminders: ['全局固定'],
     };
     const deps = createAgentDeps({ registries: makeRegistries(), ctx: toolCtx, agentConfig });
 
@@ -181,7 +180,6 @@ describe('createAgentDeps', () => {
       beforeToolCall,
       afterToolCall,
       filterTools,
-      reminders: ['全局固定'],
     });
   });
 

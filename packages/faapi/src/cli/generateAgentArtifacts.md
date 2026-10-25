@@ -8,7 +8,7 @@ agent 声明运行时化后，构建期与运行时的分工是「静态事实�
 
 - `name` / `filePath` 是扫描期可定的静态事实——运行时需要它们定位并 import handler 模块
 - `inputTypeName` 必须由清单携带——TS 类型编译期擦除，运行时无法从 handler.js 反射「是否声明了 `Input`」；它是 `@faapi/agent` sub-agent 富 schema 派发的运行时判据。prod 运行时只有 dist 产物、无法重扫 src，清单因此保留（与 faapi-routes.js / faapi-tools.js 同构：只携带扫描期事实，不含声明数据）
-- config 块字段（systemPrompt / tools / agents / vars / maxTurns / description 等）**不再 AST 提取**——AST 只能拿字面量，函数声明（systemPrompt 工厂、reminders builder）无法跨构建期存活。它们由运行时启动期动态 import handler 模块求值，见 [loadAgents](../agents/loadAgents.md)
+- config 块字段（systemPrompt / tools / agents / vars / maxTurns / description 等）**不再 AST 提取**——AST 只能拿字面量，函数声明（systemPrompt 工厂）无法跨构建期存活。它们由运行时启动期动态 import handler 模块求值，见 [loadAgents](../agents/loadAgents.md)
 
 `Input` 检测属于类型→zod 通用 schema 域（与 tool 第一参类型提取同构），不在「config 块提取下线」范围内——删除 `inputTypeName` 即静默降级为自由文本交接单。
 

@@ -4,9 +4,11 @@
 
 ## 为什么需要
 
-agent 声明此前由构建期 TS AST 提取（该机制已整体下线）从源码字面量搬运进清单——单 agent config 只能是静态字面量：reminders 仅 `string[]`（全 once）、systemPrompt 仅静态串、description 仅 JSDoc 注释，业务动态需求（按 env/DB 切人设、每轮提醒刷新）被迫绕道全局面。
+agent 声明此前由构建期 TS AST 提取（该机制已整体下线）从源码字面量搬运进清单——单 agent config 只能是静态字面量：systemPrompt 仅静态串、description 仅 JSDoc 注释，业务动态需求（按 env/DB 切人设）被迫绕道全局面。
 
-声明运行时化后，handler 模块在启动期被真实 import 执行——**单 agent 声明获得与全局声明面完全等价的动态能力**：`systemPrompt` 支持工厂函数（每次 run 求值）、`reminders` 支持完整 ReminderSpec 形态（string / builder 函数 / 对象）、`config` 可以是返回对象的函数（闭包/env 组装声明）。清单（[generateAgentArtifacts](../cli/generateAgentArtifacts.md)）因此降级为**定位清单**——只携带扫描期可定的静态事实（name / filePath / inputTypeName），声明数据不再进清单。
+声明运行时化后，handler 模块在启动期被真实 import 执行——**单 agent 声明获得与全局声明面完全等价的动态能力**：`systemPrompt` 支持工厂函数（每次 run 求值）、`config` 可以是返回对象的函数（闭包/env 组装声明）。清单（[generateAgentArtifacts](../cli/generateAgentArtifacts.md)）因此降级为**定位清单**——只携带扫描期可定的静态事实（name / filePath / inputTypeName），声明数据不再进清单。
+
+> **8.0 起 `reminders` 声明面已移除**（全局 `config.agent.reminders` 与单 agent config 块 `reminders` 同步删除）——提醒注入收敛为 `@faapi/agent` 的 `resolveReminders` deps 级钩子唯一入口，见 [reminders](../../agent/src/reminders.md)。声明 `reminders` 字段即撞本模块的白名单报错（迁移守卫）。
 
 ## 使用场景
 
@@ -42,7 +44,6 @@ export const config = {
   systemPrompt: () => `今天是 ${new Date().toISOString().slice(0, 10)}。${loadPersona()}`, // 工厂：每次 run 求值
   tools: ['web_search'],
   agents: ['writer'],
-  reminders: ['引用来源', ({ turn }) => (turn > 3 ? '注意收敛' : undefined)], // 完整 ReminderSpec 形态
 } satisfies AgentDeclaration;
 ```
 
@@ -58,7 +59,7 @@ export const config = {
 | 检测到 `run` 导出 | 抛迁移错误（编排场景注册 tool） |
 | 无 `config` 导出 | 抛错（含修复指引） |
 | config 非 object / 数组 / 函数返回非对象 | 抛错（`got <describeValue>`） |
-| 未知 config 字段 | 抛错（白名单：description / systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars / reminders）——静默忽略会掩盖拼写错误 |
+| 未知 config 字段 | 抛错（白名单：description / systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars——`reminders` 声明面已移除，声明即撞本条报错）——静默忽略会掩盖拼写错误 |
 | `systemPrompt` 与 `systemPromptFile` 同声明 | 抛错（互斥） |
 | 两者都未声明 | 抛错（二选一必填——提示词是 agent 的最小必需声明） |
 | `systemPrompt` 非 string/函数、`systemPromptFile` 非 string | 抛错 |
@@ -66,7 +67,6 @@ export const config = {
 | `tools` / `agents` 非 string[]（元素混入非 string） | 抛错 |
 | `maxTurns` 非有限正数 | 抛错 |
 | `vars` 非平面对象 / 叶子非 string\|number\|boolean（嵌套不支持） | 抛错 |
-| `reminders` 元素非 string / 函数 / `{ when?, content }` 对象 | 抛错（浅校验——builder 内部错误与渲染期违约由 reminders 引擎既有 fail-fast 兜底） |
 
 清单级校验（`validateAgentDeclarations`）——跨 agent 组合才暴露的问题，静默水合会让注册表处于与声明意图不符的状态：
 

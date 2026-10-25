@@ -45,13 +45,14 @@ export interface AgentCore {
   maxTurns?: number;                               // 有限正数
   inputDescription?: string;                       // agent-as-tool 派发交接单说明
   vars?: Record<string, string | number | boolean>;// 注册时求值的静态平面对象
-  reminders?: ReminderSpec[];                      // 完整形态：string | builder | { when, content }
 }
 ```
 
+> **8.0 起 `reminders` 字段已移除**——提醒注入收敛为 `@faapi/agent` 的 `resolveReminders` deps 级钩子唯一入口（供数在 deps 层，不在 agent 声明上），见 `@faapi/agent` 的 [reminders.md](../../../agent/src/reminders.md)。
+
 **字段求值时机**（启动期运行时求值语义，替代旧 AST 字面量提取）：
 
-- `systemPrompt` 工厂函数 / `reminders` builders——**每次 run**（/每轮）求值，与 `systemPromptFile`「每次 run 读文件」语义对齐：按 env/DB 等运行时状态切换人设、每轮刷新提醒直接可声明。工厂返回非 string 在 run 期抛 `AgentError`（启动期无法验证返回类型）
+- `systemPrompt` 工厂函数——**每次 run** 求值，与 `systemPromptFile`「每次 run 读文件」语义对齐：按 env/DB 等运行时状态切换人设。工厂返回非 string 在 run 期抛 `AgentError`（启动期无法验证返回类型）
 - `tools` / `agents` / `vars` / `maxTurns` / `description` / `inputDescription`——**启动期注册时一次求值**，仅接受静态值（注册表拓扑数据 + 隔离快照可克隆）
 
 systemPrompt 三来源统一管线：内联串 / 文件 / 函数 → vars 渲染 → 装饰钩子（`resolveSystemPrompt`，见 `@faapi/agent` 的 [agent.md](../../../agent/src/agent.md)）。

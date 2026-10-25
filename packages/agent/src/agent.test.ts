@@ -59,7 +59,6 @@ function agentMeta(opts: Partial<AgentCore> = {}): AgentCore {
     maxTurns: opts.maxTurns,
     inputDescription: opts.inputDescription,
     vars: opts.vars,
-    reminders: opts.reminders,
   };
 }
 
@@ -1692,15 +1691,15 @@ describe('Agent', () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
       ]);
-      const agent = new Agent(
-        createDeps({
+      const agent = new Agent({
+        ...createDeps({
           provider,
           agent: agentMeta({ systemPrompt: 'base' }),
           resolveRootInputImpl: hook,
-          // spec 为未包裹内容串——包裹由引擎统一做（joinReminderBlocks）
-          config: { traceId: false, reminders: ['global-rule'] },
         }),
-      );
+        // 钩子返回未包裹内容串——包裹由引擎统一做（joinReminderBlocks）
+        resolveReminders: async (info) => (info.phase === 'once' ? ['global-rule'] : undefined),
+      });
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
@@ -4836,8 +4835,8 @@ describe('sub-agent 派发工具命名与路由', () => {
 });
 
 describe('reminders 注入（buildLoopConfig 装配）', () => {
-  it('本地合并：全局在前单 agent 在后；once 持久进历史、everyTurn 每轮刷新发送副本、ctx 透传', async () => {
-    const builderInfos: ReminderInfo[] = [];
+  it('钩子供数：once 持久进历史、everyTurn 每轮刷新发送副本、phase/turn/ctx 透传', async () => {
+    const hookCalls: Array<ReminderInfo & { phase: ReminderPhase }> = [];
     const handler = vi.fn(async () => ({ ok: true }));
     const { provider, completeCalls } = createMockProvider([
       llmResponse({
@@ -4846,62 +4845,13 @@ describe('reminders 注入（buildLoopConfig 装配）', () => {
       }),
       llmResponse({ content: 'done', stopReason: 'stop' }),
     ]);
-    const agent = new Agent(
-      createDeps({
-        provider,
-        agent: agentMeta({ tools: ['getWeather'], reminders: ['单agent固定'] }),
-        tools: [toolMeta()],
-        loadToolModuleImpl: async () => ({ handler }) as unknown as ToolModule,
-        ctx: toolCtx42,
-        config: {
-          traceId: false,
-          reminders: [
-            '全局固定',
-            (info) => {
-              builderInfos.push(info);
-              return `全局快照${info.turn}`;
-            },
-          ],
-        },
-      }),
-    );
-
-    await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
-
-    const onceBlock =
-      '<system-reminder>\n全局固定\n</system-reminder>\n\n<system-reminder>\n单agent固定\n</system-reminder>';
-    // 第 1 轮：once 块持久注入首条 user，everyTurn 落发送副本末条 user
-    const req1 = completeCalls.mock.calls[0][0] as { messages: LLMMessage[] };
-    const user1 = req1.messages.find((m) => m.role === 'user')!;
-    expect(user1.content).toBe(
-      `hi\n\n${onceBlock}\n\n<system-reminder>\n全局快照1\n</system-reminder>`,
-    );
-    // 第 2 轮（tool 循环）：once 块随历史携带，everyTurn 以 turn=2 刷新末条 user
-    const req2 = completeCalls.mock.calls[1][0] as { messages: LLMMessage[] };
-    const user2 = req2.messages.find((m) => m.role === 'user')!;
-    expect(user2.content).toBe(
-      `hi\n\n${onceBlock}\n\n<system-reminder>\n全局快照2\n</system-reminder>`,
-    );
-    // builder 收到运行时信息：turn 递增、agentName/depth/ctx 来自 base（根 agent depth=1）
-    expect(builderInfos.map((i) => i.turn)).toEqual([1, 2]);
-    expect(
-      builderInfos.every(
-        (i) => i.agentName === 'researcher' && i.depth === 1 && i.ctx === toolCtx42,
-      ),
-    ).toBe(true);
-  });
-
-  it('钩子优先：deps.resolveReminders 接线时本地声明整体忽略，phase/turn/ctx 透传', async () => {
-    const hookCalls: Array<ReminderInfo & { phase: ReminderPhase }> = [];
-    const { provider, completeCalls } = createMockProvider([
-      llmResponse({ content: 'ok', stopReason: 'stop' }),
-    ]);
     const agent = new Agent({
       ...createDeps({
         provider,
-        agent: agentMeta({ reminders: ['单agent固定'] }),
+        agent: agentMeta({ tools: ['getWeather'] }),
+        tools: [toolMeta()],
+        loadToolModuleImpl: async () => ({ handler }) as unknown as ToolModule,
         ctx: toolCtx42,
-        config: { traceId: false, reminders: ['全局固定'] },
       }),
       resolveReminders: async (info) => {
         hookCalls.push(info);
@@ -4911,25 +4861,70 @@ describe('reminders 注入（buildLoopConfig 装配）', () => {
 
     await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
-    const req = completeCalls.mock.calls[0][0] as { messages: LLMMessage[] };
-    const user = req.messages.find((m) => m.role === 'user')!;
-    expect(user.content).toBe(
+    // 第 1 轮：once 块持久注入首条 user，everyTurn 落发送副本末条 user
+    const req1 = completeCalls.mock.calls[0][0] as { messages: LLMMessage[] };
+    const user1 = req1.messages.find((m) => m.role === 'user')!;
+    expect(user1.content).toBe(
       'hi\n\n<system-reminder>\n钩子首轮\n</system-reminder>\n\n<system-reminder>\n钩子第1轮\n</system-reminder>',
     );
-    // 本地声明（config.reminders 与单 agent reminders）两面都不生效
-    expect(user.content).not.toContain('全局固定');
-    expect(user.content).not.toContain('单agent固定');
-    // once 在 turn=0 触发、everyTurn 以 turn=1 触发
+    // 第 2 轮（tool 循环）：once 块随历史携带，everyTurn 以 turn=2 刷新末条 user
+    const req2 = completeCalls.mock.calls[1][0] as { messages: LLMMessage[] };
+    const user2 = req2.messages.find((m) => m.role === 'user')!;
+    expect(user2.content).toBe(
+      'hi\n\n<system-reminder>\n钩子首轮\n</system-reminder>\n\n<system-reminder>\n钩子第2轮\n</system-reminder>',
+    );
+    // once 在 turn=0 触发、everyTurn 以每轮序号触发；agentName/depth/ctx 来自 base（根 agent depth=1）
     expect(hookCalls.map((c) => [c.phase, c.turn])).toEqual([
       ['once', 0],
       ['everyTurn', 1],
+      ['everyTurn', 2],
     ]);
     expect(
       hookCalls.every((c) => c.agentName === 'researcher' && c.depth === 1 && c.ctx === toolCtx42),
     ).toBe(true);
   });
 
-  it('无 reminders 声明：消息原样，不注入空块', async () => {
+  it('sub-agent 派发：钩子以 sub 自身 agentName/depth 触发（共享同一 deps）', async () => {
+    const hookCalls: Array<ReminderInfo & { phase: ReminderPhase }> = [];
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({
+        toolCalls: [toolCall('c1', 'agent-writer', { input: '写吧' })],
+        stopReason: 'tool_calls',
+      }),
+      llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+      llmResponse({ content: 'final', stopReason: 'stop' }),
+    ]);
+    const agent = new Agent({
+      ...createDeps({
+        provider,
+        agent: agentMeta({ agents: ['writer'] }),
+        subAgents: [agentMeta({ name: 'writer' })],
+        ctx: toolCtx42,
+      }),
+      resolveReminders: async (info) => {
+        hookCalls.push(info);
+        return [`${info.agentName}-${info.phase}`];
+      },
+    });
+
+    await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+    // 子代理 fresh run：once（turn=0）+ everyTurn（turn=1），agentName/depth 为 sub 自身值（depth=2）
+    const subCalls = hookCalls.filter((c) => c.agentName === 'writer');
+    expect(subCalls.map((c) => [c.phase, c.turn])).toEqual([
+      ['once', 0],
+      ['everyTurn', 1],
+    ]);
+    expect(subCalls.every((c) => c.depth === 2 && c.ctx === toolCtx42)).toBe(true);
+    // 子循环请求的 user 消息含子代理自身提醒块
+    const subReq = completeCalls.mock.calls[1][0] as { messages: LLMMessage[] };
+    const subUser = subReq.messages.find((m) => m.role === 'user')!;
+    expect(subUser.content).toBe(
+      '写吧\n\n<system-reminder>\nwriter-once\n</system-reminder>\n\n<system-reminder>\nwriter-everyTurn\n</system-reminder>',
+    );
+  });
+
+  it('无钩子接线：消息原样，不注入空块', async () => {
     const { provider, completeCalls } = createMockProvider([
       llmResponse({ content: 'ok', stopReason: 'stop' }),
     ]);

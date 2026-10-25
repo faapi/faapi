@@ -1,5 +1,3 @@
-import type { ReminderSpec } from '../configs/configTypes';
-
 /**
  * agent 清单记录（定位清单条目）
  *
@@ -48,7 +46,7 @@ export type SystemPromptFactory = () => string | Promise<string>;
  * 都消费 `AgentCore`,实现"agent 与 skill 走同一运行时链路"。
  *
  * 字段求值时机（启动期运行时求值语义,替代旧 AST 字面量提取）：
- * - `systemPrompt` 工厂函数 / `reminders` builders——每次 run（/每轮）求值
+ * - `systemPrompt` 工厂函数——每次 run 求值
  * - `tools` / `agents` / `vars` / `maxTurns` / `description` / `inputDescription`
  *   ——启动期注册时一次求值,仅接受静态值（注册表拓扑数据 + 快照可克隆）
  */
@@ -98,15 +96,6 @@ export interface AgentCore {
    * 后渲染);未声明时提示词原样使用。运行时渲染见 `@faapi/agent` 的 promptTemplate.md
    */
   vars?: Record<string, string | number | boolean>;
-  /**
-   * 提醒注入——完整 [ReminderSpec] 形态(与全局声明面 `config.agent.reminders` 同构:
-   * string | builder 函数 | { when, content } 对象),未声明时为 `undefined`
-   *
-   * string 默认 once(首轮持久注入)、函数默认 everyTurn(每轮刷新)、对象形式显式
-   * `when` 覆盖;builder 每次渲染求值(见 `@faapi/agent` 的 reminders.md)。
-   * 与全局声明面合并时排在其后(更靠近上下文末端)
-   */
-  reminders?: ReminderSpec[];
 }
 
 /**
@@ -163,6 +152,4 @@ export interface AgentDeclaration {
   inputDescription?: string;
   /** 提示词模板变量(静态平面对象) */
   vars?: Record<string, string | number | boolean>;
-  /** 提醒注入(完整 ReminderSpec 形态:静态串/builder/对象) */
-  reminders?: ReminderSpec[];
 }

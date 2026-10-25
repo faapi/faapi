@@ -13,8 +13,7 @@ import type { SerializedAgentRecord } from '../cli/generateAgentArtifacts';
  * handler 文件路径）→ 清单级校验（重名 / agents 引用存在性）→ hydrate 注册表。
  *
  * 单 agent 由此获得完整动态能力：systemPrompt 工厂函数（每次 run 求值）、
- * reminders 完整 ReminderSpec 形态（string / builder / 对象）、tools/agents/vars
- * 注册时静态求值。
+ * tools/agents/vars 注册时静态求值。
  */
 
 /** handler.ts `config` 导出的合法字段白名单（未知字段启动期抛错——静默忽略会掩盖拼写错误） */
@@ -27,7 +26,6 @@ const KNOWN_CONFIG_FIELDS = [
   'maxTurns',
   'inputDescription',
   'vars',
-  'reminders',
 ] as const;
 
 /** handler 模块的运行时形态（config 导出 + run 迁移检测） */
@@ -140,9 +138,6 @@ export function evaluateAgentDeclaration(
   if (declaration.vars !== undefined) {
     assertPlainVars(declaration.vars, where);
   }
-  if (declaration.reminders !== undefined) {
-    assertReminderSpecs(declaration.reminders, where);
-  }
 
   const d = declaration as AgentDeclaration;
   const metadata: AgentMetadata = {
@@ -161,7 +156,6 @@ export function evaluateAgentDeclaration(
     ...(d.maxTurns !== undefined ? { maxTurns: d.maxTurns } : {}),
     ...(d.inputDescription !== undefined ? { inputDescription: d.inputDescription } : {}),
     ...(d.vars !== undefined ? { vars: d.vars } : {}),
-    ...(d.reminders !== undefined ? { reminders: d.reminders } : {}),
   };
   return metadata;
 }
@@ -254,29 +248,6 @@ function assertPlainVars(v: unknown, where: string): void {
     if (t !== 'string' && t !== 'number' && t !== 'boolean') {
       throw new Error(
         `[faapi] ${where}: vars.${key} 必须是 string | number | boolean（平面对象，不支持嵌套）——got ${describeValue(leaf)}`,
-      );
-    }
-  }
-}
-
-function assertReminderSpecs(v: unknown, where: string): void {
-  if (!Array.isArray(v)) {
-    throw new Error(`[faapi] ${where}: reminders 必须是数组——got ${describeValue(v)}`);
-  }
-  for (const [index, spec] of v.entries()) {
-    // 浅校验三种合法形态（string / builder 函数 / { when?, content } 对象）——
-    // builder 内部错误与渲染期违约由 reminders 引擎既有 fail-fast 兜底
-    const ok =
-      typeof spec === 'string' ||
-      typeof spec === 'function' ||
-      (typeof spec === 'object' &&
-        spec !== null &&
-        'content' in spec &&
-        (typeof (spec as { content: unknown }).content === 'string' ||
-          typeof (spec as { content: unknown }).content === 'function'));
-    if (!ok) {
-      throw new Error(
-        `[faapi] ${where}: reminders[${index}] 必须是 string、函数或 { when?, content } 对象——got ${describeValue(spec)}`,
       );
     }
   }

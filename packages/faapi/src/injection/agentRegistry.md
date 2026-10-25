@@ -37,7 +37,7 @@ agent 调用 agent（sub-agent）、handler 注入 agent、reactLoop 加载 agen
 
 agent 元数据分两层接口，对应两类使用方（类型定义见 [agentTypes](../agents/agentTypes.md)）：
 
-- **`AgentCore`** —— LLM 可见字段：`name` / `description?` / `systemPrompt?`（string 或工厂函数）/ `systemPromptFile?` / `tools?` / `agents?` / `maxTurns?` / `inputDescription?` / `vars?` / `reminders?`（完整 ReminderSpec 形态）。文件型 agent 与 DB-driven agent（无源文件，业务自治）都可实现此接口。
+- **`AgentCore`** —— LLM 可见字段：`name` / `description?` / `systemPrompt?`（string 或工厂函数）/ `systemPromptFile?` / `tools?` / `agents?` / `maxTurns?` / `inputDescription?` / `vars?`。文件型 agent 与 DB-driven agent（无源文件，业务自治）都可实现此接口。
 - **`AgentMetadata extends AgentCore`** —— 额外含 `filePath`（声明文件定位，产物形式）与 `inputTypeName?`（派发入参 schema 声明判据）。仅文件型 agent（启动期求值产出）有此形态。
 
 | 方法 | 返回类型 | 用途 |

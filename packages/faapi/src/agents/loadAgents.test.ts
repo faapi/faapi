@@ -35,7 +35,6 @@ describe('loadAgents', () => {
             maxTurns: 5,
             inputDescription: '研究主题',
             vars: { lang: 'zh' },
-            reminders: ['先查资料'],
           },
         },
         locator,
@@ -51,7 +50,6 @@ describe('loadAgents', () => {
         maxTurns: 5,
         inputDescription: '研究主题',
         vars: { lang: 'zh' },
-        reminders: ['先查资料'],
       });
     });
 
@@ -137,26 +135,13 @@ describe('loadAgents', () => {
       ).toThrow(/vars\.nested 必须是 string \| number \| boolean/);
     });
 
-    it('reminders 三种合法形态（string/builder/对象）均通过', () => {
-      const meta = evaluateAgentDeclaration(
-        {
-          config: {
-            systemPrompt: 'x',
-            reminders: ['静态串', () => '每轮', { when: 'everyTurn', content: '对象' }],
-          },
-        },
-        locator,
-      );
-      expect(meta.reminders).toHaveLength(3);
-    });
-
-    it('reminders 非法形态抛错', () => {
+    it('reminders 声明面已移除：声明即撞未知字段白名单报错（迁移守卫）', () => {
       expect(() =>
         evaluateAgentDeclaration(
-          { config: { systemPrompt: 'x', reminders: [{ nope: 1 }] } },
+          { config: { systemPrompt: 'x', reminders: ['先查资料'] } },
           locator,
         ),
-      ).toThrow(/reminders\[0\] 必须是 string、函数或/);
+      ).toThrow(/未知 config 字段 "reminders"/);
     });
 
     it('tools 含非 string 元素抛错', () => {

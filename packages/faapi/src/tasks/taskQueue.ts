@@ -372,8 +372,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
 
   /**
    * 注册表纯数据快照（隔离路径 postMessage 用）——agent 经 AgentSnapshotRecord
-   * 投影（函数形态 systemPrompt 剥离、reminders 整体剥离——循环在宿主执行，
-   * 快照仅服务 worker 侧只读查询），派发时刻生成
+   * 投影（工厂形态 systemPrompt 剥离——循环在宿主执行，快照仅服务 worker 侧
+   * 只读查询），派发时刻生成
    */
   function snapshotRegistries(): TaskRegistriesSnapshot {
     return {

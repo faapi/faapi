@@ -22,11 +22,11 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 ## AgentSnapshotRecord（隔离快照内的 agent 投影）
 
-agent 声明运行时化后 `AgentCore` 含函数形态字段（systemPrompt 工厂、reminders builder），不可跨线程——agent 循环已收敛宿主执行（单次 `agent-run` RPC，见下文「taskCtx.agent」），快照中的 agent 仅服务 worker 侧只读查询：
+agent 声明运行时化后 `AgentCore` 含函数形态字段（systemPrompt 工厂），不可跨线程——agent 循环已收敛宿主执行（单次 `agent-run` RPC，见下文「taskCtx.agent」），快照中的 agent 仅服务 worker 侧只读查询：
 
 ```ts
 export interface AgentSnapshotRecord
-  extends Omit<AgentCore, 'systemPrompt' | 'reminders'> {
+  extends Omit<AgentCore, 'systemPrompt'> {
   filePath: string;
   inputTypeName?: string;
   /** 字符串形态人设（工厂函数剥离后不出现——隔离侧查询仅见静态事实） */
@@ -34,7 +34,6 @@ export interface AgentSnapshotRecord
 }
 ```
 
-- **reminders 整体剥离**——builder 不可克隆，供数在宿主 runAgent 内完成
 - **systemPrompt 仅保留字符串形态**——工厂剥离；查询方在隔离侧拿不到动态人设是快照语义的一部分
 - `toAgentSnapshotRecord(entry)` 为宿主与测试共用的单一投影实现（taskQueue 快照与 taskWorker 视图一致性测试共用，防两处漂移）
 

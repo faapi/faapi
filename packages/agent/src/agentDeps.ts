@@ -82,7 +82,6 @@ function toAgentRuntimeConfig(agentConfig: AgentConfig): AgentRuntimeConfig {
     beforeToolCall: agentConfig.beforeToolCall,
     afterToolCall: agentConfig.afterToolCall,
     filterTools: agentConfig.filterTools,
-    reminders: agentConfig.reminders,
   };
 }
 
