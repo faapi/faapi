@@ -131,6 +131,8 @@ async function Page() {
 
 `loadAndHydrateTools(rootDir, dist)` 导出供 `reloadTools` 热替换后重新水合——读 `faapi-tools.js` → `hydrateTools` → `hydrateToolRegistry`。
 
+`loadAndHydrateAgents(rootDir, dist, registries)` 同样导出（`reloadAgents` 热替换复用）——读 `faapi-agents.js` 定位清单 → [loadAndEvaluateAgents](../agents/loadAgents.md) 启动期求值：逐个动态 import handler 产物模块（`importWithCacheBust`，清单与 handler 都绕缓存）求值 `config` 导出 + 逐字段校验（错误带 agent 名与文件路径）→ `AgentMetadata[]` 灌入 agentRegistry。agent 清单缺失（纯 API 项目）跳过，agentRegistry 保持空。
+
 > 模块构成：编排主流程在本文件；清单装载见 [manifestLoader](./manifestLoader.md)、单例与停机信号见 [appSingleton](./appSingleton.md)、`app.inject()` 的 mock 传输层见 [injectMock](./injectMock.md)（公开导出经本文件 re-export，API 路径不变）。
 
 ## 相关模块

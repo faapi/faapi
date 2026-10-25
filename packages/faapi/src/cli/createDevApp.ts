@@ -138,16 +138,20 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
   };
 
   devApp.reloadAgents = async (): Promise<void> => {
-    // 更新模块加载时间戳（ESM import 绕过缓存，让 faapi-agents.js 重新读取）
+    // 更新模块加载时间戳（ESM import 绕过缓存——faapi-agents.js 定位清单与
+    // handler.js 产物模块都经 importWithCacheBust，改 config 后 reload 拿到新模块）
     setLoadTimestamp(Date.now());
-    // 清 Program 缓存（agent 源码可能变化，AST 需重新分析）
+    // 清 Program 缓存（agent 源码可能变化，Input 类型提取需重新分析）
     if (!suppressProgramInvalidation) invalidateProgramCache();
-    // 重新扫描 agents（零 import，仅读源码 + 正则检测 config/run 导出）
+    // 重新扫描 agents（零 import，仅读源码文件列表 + 名字推导）
     const agents = await scanAgents(ctx.rootDir, DEFAULT_AGENT_PATTERNS);
-    // 重生成 faapi-agents.js（含 AST 增强：description / config 块字段）
-    // agent 不生成 zod.js（无输入参数），无 skipSchema 选项
+    // 重编译 agent handler 源码（mtime 缓存：未变化的跳过）——启动期求值 import 产物模块
+    for (const agent of agents) {
+      await ensureCompiled(path.resolve(ctx.rootDir, agent.filePath), ctx.rootDir, ctx.dist);
+    }
+    // 重生成定位清单 faapi-agents.js（含 Input 正则检测 + zod.js）
     await generateAgentArtifacts(agents, ctx.rootDir, ctx.dist);
-    // 重新水合 faapi-agents.js 到 agentRegistry（reload 后需更新注册表）
+    // 重新求值 agent 声明到 agentRegistry（reload 后需更新注册表）
     await loadAndHydrateAgents(ctx.rootDir, ctx.dist, ctx.registries);
   };
 

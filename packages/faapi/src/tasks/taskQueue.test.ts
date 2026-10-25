@@ -2,7 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { createTaskQueue } from './taskQueue';
 import { createTaskRegistry } from './taskRegistry';
 import { TaskCancelledError } from './taskWorker';
-import { createAppRegistries, createTaskRegistriesView } from '../injection/registries';
+import {
+  createAppRegistries,
+  createLlmChannelStore,
+  createTaskRegistriesView,
+} from '../injection/registries';
 import type { LlmChannelStore } from '../injection/registries';
 import type { LlmComplete } from '../injection/llmTypes';
 import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
@@ -730,35 +734,31 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('隔离 agent 通道：agentToolRunner 已注册时注入 onAgentCall 分派（runner 方法收任务合成契约 ctx）；未注册时不注入', async () => {
+  it('隔离 agent 通道：agentRunner 已注册时注入 onAgentRun 单分派（runAgent 收任务合成契约 ctx + 请求）；未注册时不注入', async () => {
     const fake = makeFakeDriver();
     const registry = createTaskRegistry();
     registry.hydrate([
       { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
     ]);
 
-    // runner 已注册：onAgentCall 注入，按 kind 分派到 runner 方法，ctx 为合成契约 ctx
-    const calls: Array<{ kind: string; ctx: Record<string, unknown> }> = [];
-    const runner = {
-      beforeToolCall: async (ctx: Record<string, unknown>) => {
-        calls.push({ kind: 'before-tool-call', ctx });
-        return undefined;
-      },
-      toolCall: async (ctx: Record<string, unknown>) => {
-        calls.push({ kind: 'tool-call', ctx });
-        return 'tool-ok';
-      },
-      filterTools: async () => [],
-      resolveSubAgentInput: async () => undefined,
-      resolveSubAgentContext: async () => undefined,
-    };
+    // runner 已注册：onAgentRun 注入，请求原样透传给 runAgent，ctx 为合成契约 ctx
+    const calls: Array<{ request: Record<string, unknown>; ctx: Record<string, unknown> }> = [];
     const runnerStore = {
       register: vi.fn(),
-      get: () => runner,
+      get: () => ({
+        runAgent: async (ctx: Record<string, unknown>, request: Record<string, unknown>) => {
+          calls.push({ request, ctx });
+          return { output: 'agent-ok' };
+        },
+      }),
       clear: vi.fn(),
     };
     let capturedOpts: {
-      onAgentCall?: (kind: string, payload: Record<string, unknown>) => Promise<unknown>;
+      onAgentRun?: (request: {
+        agentName: string;
+        input?: unknown;
+        options?: unknown;
+      }) => Promise<unknown>;
     } = {};
     const runIsolated = vi.fn(async (opts: typeof capturedOpts) => {
       capturedOpts = opts;
@@ -770,7 +770,7 @@ describe('createTaskQueue', () => {
       config: {},
       driver: fake.driver,
       runIsolated: runIsolated as never,
-      agentToolRunner: runnerStore as never,
+      agentRunner: runnerStore as never,
       loadTaskModule: async () => ({ run: vi.fn() }),
       loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
@@ -778,25 +778,23 @@ describe('createTaskQueue', () => {
     await queue.enqueue('heavy', {}, { carry: { currentUserId: 9 } });
     await fake.dispatch('heavy', {}, 1, undefined, { carry: { currentUserId: 9 } });
 
-    expect(capturedOpts.onAgentCall).toBeDefined();
-    await expect(
-      capturedOpts.onAgentCall!('tool-call', { toolName: 'test.tool', args: { q: 1 } }),
-    ).resolves.toBe('tool-ok');
-    await expect(
-      capturedOpts.onAgentCall!('before-tool-call', { toolName: 'test.tool', args: {} }),
-    ).resolves.toBeUndefined();
+    expect(capturedOpts.onAgentRun).toBeDefined();
+    const request = { agentName: 'log-analyzer', input: '分析', options: { temperature: 0.2 } };
+    await expect(capturedOpts.onAgentRun!(request)).resolves.toEqual({ output: 'agent-ok' });
+    // 单一 RPC：请求对象原样透传（无 per-behavior kind 分派）
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.request).toEqual(request);
     // 合成契约 ctx：carry 字段落顶层 + tasks/log/signal 恒在
     expect(calls[0]!.ctx.currentUserId).toBe(9);
     expect(calls[0]!.ctx.tasks).toBeDefined();
     expect(calls[0]!.ctx.log).toBeDefined();
     expect(calls[0]!.ctx.signal).toBeInstanceOf(AbortSignal);
-    expect(calls.map((c) => c.kind)).toEqual(['tool-call', 'before-tool-call']);
     await queue.stop();
 
-    // runner 未注册：onAgentCall 不注入（worker 消息不带 agentChannel）
+    // runner 未注册：onAgentRun 不注入（worker 消息不带 agentChannel）
     const fake2 = makeFakeDriver();
-    const runIsolated2 = vi.fn(async (opts: { onAgentCall?: unknown }) => {
-      expect(opts.onAgentCall).toBeUndefined();
+    const runIsolated2 = vi.fn(async (opts: { onAgentRun?: unknown }) => {
+      expect(opts.onAgentRun).toBeUndefined();
       return 'ok';
     });
     const queue2 = createTaskQueue({
@@ -1398,20 +1396,30 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('隔离路径：deps.llms 随 workerData 语义转发给 runIsolated，进程内不受影响', async () => {
+  it('隔离路径：deps.llm store 已注册通道时注入 onLlmComplete 分派（worker 内 complete 经 RPC 回宿主）', async () => {
     const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async (opts: { llms?: unknown }) => opts.llms ?? null);
+    let captured: { input: string; options: Record<string, unknown> | undefined } | undefined;
+    const channel = {
+      complete: async (input: string, options?: Record<string, unknown>) => {
+        captured = { input, options };
+        return 'ok';
+      },
+    };
+    const runIsolated = vi.fn(
+      async (opts: { onLlmComplete?: unknown }) => opts.onLlmComplete ?? null,
+    );
     const registry = createTaskRegistry();
     registry.hydrate([
       { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
     ]);
-    const llms = { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } };
+    const llmStore = createLlmChannelStore();
+    llmStore.register(channel);
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
       config: {},
       driver: fake.driver,
-      llms,
+      llm: llmStore,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
       loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
@@ -1419,13 +1427,23 @@ describe('createTaskQueue', () => {
     queue.start();
     await queue.enqueue('heavy');
     await fake.dispatch('heavy', {}, 1);
-    expect(runIsolated.mock.calls[0]![0]).toMatchObject({ llms });
+    const handler = runIsolated.mock.calls[0]![0] as {
+      onLlmComplete?: (input: string, options?: Record<string, unknown>) => Promise<string>;
+    };
+    expect(typeof handler.onLlmComplete).toBe('function');
+    // 分派转发到注册通道（宿主执行 LLM IO）；signal 由执行器层注入
+    // （taskWorker 的 llm-complete 处理——不在本 mock 执行器路径内）
+    await expect(handler.onLlmComplete!('hi', { model: 'm' })).resolves.toBe('ok');
+    expect(captured!.input).toBe('hi');
+    expect(captured!.options).toEqual({ model: 'm' });
     await queue.stop();
   });
 
-  it('隔离路径未配 llms：runIsolated 收到 undefined（worker 内 taskCtx.llm 为 undefined）', async () => {
+  it('隔离路径 llm store 未注册：onLlmComplete 为 undefined（worker 内 taskCtx.llm 不挂载，能力不存在非降级）', async () => {
     const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async (opts: { llms?: unknown }) => opts.llms ?? null);
+    const runIsolated = vi.fn(
+      async (opts: { onLlmComplete?: unknown }) => opts.onLlmComplete ?? null,
+    );
     const registry = createTaskRegistry();
     registry.hydrate([
       { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
@@ -1442,7 +1460,7 @@ describe('createTaskQueue', () => {
     queue.start();
     await queue.enqueue('heavy');
     await fake.dispatch('heavy', {}, 1);
-    expect(runIsolated.mock.calls[0]![0]).toMatchObject({ llms: undefined });
+    expect(runIsolated.mock.calls[0]![0]).toMatchObject({ onLlmComplete: undefined });
     await queue.stop();
   });
 });

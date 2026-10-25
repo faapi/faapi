@@ -193,7 +193,7 @@ interface ReactLoopStreamChunk {
 
 - **机制**：`await executeTool` 期间 async generator 挂起无法 yield——流式路径对每个 tool call 采用 fire-and-drain 泵：fire executeTool（携带 delta emitter）→ generator 循环 drain 队列逐个 yield `subagentDelta` → executeTool 完成后 flush 剩余。冒泡顺序即子代理实际输出顺序；流式路径同轮多 tool_call 串行执行,天然有序
 - **子循环升级**：父为流式时 `executeSubAgent` 让子循环也跑流式（`subAgent.stream()`）——此前固定跑非流式 `run()`,子循环根本没有 delta 可冒泡。done/trace 语义不变：父侧从子流 `done` chunk 拼装与 `run()` 等价的结果（content/usage/turns）,tracing 开启时从 `traceEvent` 收集拼装 `AgentTrace`（结构不变,`subagent_call` 嵌套 trace 不回归）
-- **非流式 `run()` 不受影响**：结果一次性返回,无冒泡需求;自定义 `run` 的 sub-agent（hasRun）无结构化增量,不冒泡（与 usage 计 0 同口径）
+- **非流式 `run()` 不受影响**：结果一次性返回,无冒泡需求;自定义 `run` 的 sub-agent 无结构化增量,不冒泡（与 usage 计 0 同口径）
 - **语义不变式**：嵌套 `reasoning_content` 依旧**不进** messages 历史与续跑源（delta 仅透出给调用方,与 thinking 章节的剥离纪律一致）;`ReactLoopResult` / trace 结构不受影响;中断/`maxAgentDepth`/历史剥离全部不回归
 
 ### thinking（推理内容）

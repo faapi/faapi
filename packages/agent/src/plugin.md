@@ -65,8 +65,8 @@ PluginContext { config.agent, rootDir }
    （含 enableTracing 全量字段）都在装配工厂单一实现
 4. ctx.registries.agentHandle.register((ctx) => new Agent({ ...baseDeps, ctx }))——工厂入参为 AgentToolContext 契约（toAgentToolContext 收窄，HTTP 全量字段随透传）
 5. ctx.registries.llm.register(createLightComplete({ llms, providers }))——轻量补全通道
-6. ctx.registries.agentToolRunner.register({ beforeToolCall / toolCall / filterTools / resolveSubAgentInput / resolveSubAgentContext })——隔离任务工具执行器：worker 内 agent 编排循环经 RPC 把业务函数面回传宿主，toolCall 与 Agent.executeTool 常规分支共用 executeToolCall（schema 缓存 setup 闭包级）
-   （与 agent 循环共享同一 providers 单例；llms 未配置时照常注册,调用时报 AgentError）
+6. ctx.registries.agentRunner.register({ runAgent })——agent 循环执行器：隔离 worker 调 agent 收敛为**单次 agent-run RPC**，宿主在此以任务合成契约 ctx 构造 Agent（`new Agent({ ...baseDeps, ctx })`）跑**完整编排循环**（LLM IO、tool 执行、钩子、reminders、sub-agent 全在宿主——业务函数面与资源零跨线程）。对象入参为富派发形态（先经 `entry.inputTypeName` + `resolveAgentInputSchema` 校验、失败抛 AgentError 浮出为任务错误，再 extractSubAgentUserInput）；字符串入参 user 消息直传
+   （与 agent 循环共享同一 providers 单例；插件未加载时 runner store 为空——worker 内 `taskCtx.agent` 不挂载，能力不存在非降级）
 ```
 
 无默认 agent / 默认 provider——`agent.run/stream` 每次调用显式传 `options.agent` +

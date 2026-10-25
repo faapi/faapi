@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { hydrateTools, type SerializedToolRecord } from './generateToolArtifacts';
-import { hydrateAgents, type SerializedAgentRecord } from './generateAgentArtifacts';
+import type { SerializedAgentRecord } from './generateAgentArtifacts';
+import { loadAndEvaluateAgents } from '../agents/loadAgents';
 import { hydrateTasks, TASKS_FILE } from './generateTaskArtifacts';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import { defaultRegistries, type AppRegistries } from '../injection/registries';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
-import type { AgentMetadata } from '../ast/extractAgentMetadata';
+import type { AgentMetadata } from '../agents/agentTypes';
 import type { FaapiConfig } from '../configs/configTypes';
 
 /**
@@ -50,14 +51,19 @@ export async function loadAndHydrateTools(
 }
 
 /**
- * 加载 faapi-agents.js 并水合到 agentRegistry（app 实例）
+ * 加载 faapi-agents.js 定位清单并求值 agent 声明到 agentRegistry（app 实例）
+ *
+ * agent 声明运行时化：清单只携带定位事实（name/filePath/inputTypeName），
+ * config 块由启动期动态 import handler 产物模块求值（见
+ * [loadAgents](../agents/loadAgents.md)）——清单 import 与 handler 模块 import
+ * 都经 importWithCacheBust（dev reload 时外层 setLoadTimestamp 已更新）。
  *
  * 与 `loadAndHydrateTools` 对称——agent 是可选能力,纯 API 项目可能没有 `faapi-agents.js`,
  * 此时不报错,返回空数组,agentRegistry 保持空。
  *
  * dev 按需模式下 `reloadAgents` 也会调用此函数重新水合（`setLoadTimestamp` 已在外层设置）。
  *
- * @returns 水合后的 AgentMetadata[]（供调用方日志/调试）
+ * @returns 求值后的 AgentMetadata[]（供调用方日志/调试）
  */
 export async function loadAndHydrateAgents(
   rootDir: string,
@@ -71,9 +77,7 @@ export async function loadAndHydrateAgents(
   const serialized = (await importWithCacheBust(agentsPath)) as unknown as {
     agents: SerializedAgentRecord[];
   };
-  const hydrated = hydrateAgents(serialized.agents ?? []);
-  registries.agent.hydrate(hydrated);
-  return hydrated;
+  return loadAndEvaluateAgents(rootDir, dist, serialized.agents ?? [], registries);
 }
 
 /**

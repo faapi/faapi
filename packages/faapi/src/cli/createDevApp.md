@@ -1,12 +1,12 @@
 # createDevApp
 
-一句话概括：dev 模式应用启动 API——委托 `createAppBase` 并附加 `reloadRoutes`/`reloadTools` 热替换能力（重新扫描路由/tool + 按需模式下清缓存/删 stale zod.js + 更新 server 路由引用）。
+一句话概括：dev 模式应用启动 API——委托 `createAppBase` 并附加 `reloadRoutes`/`reloadTools`/`reloadAgents`/`reloadTasks` 热替换能力（重新扫描 + 重生成清单产物 + 更新注册表/路由引用）。
 
 ## 为什么需要
 
-dev 模式需要热替换：文件变更后 watcher 增量编译 `.ts` → `.faapi/*.js`，再调 `app.reloadRoutes()` 重新扫描路由并更新 server 引用，调 `app.reloadTools()` 重新扫描 tools 并重生成 `faapi-tools.js`，无需重启进程。
+dev 模式需要热替换：文件变更后 watcher 增量编译 `.ts` → `.faapi/*.js`，再调 `app.reloadRoutes()` 重新扫描路由并更新 server 引用，调 `app.reloadTools()` 重新扫描 tools 并重生成 `faapi-tools.js`，调 `app.reloadAgents()` 重生成 `faapi-agents.js` 并重新求值 agent 声明，无需重启进程。
 
-`createDevApp` 是 `createAppBase` 的薄包装：调 `createAppBase` 取 `app` 和 `ctx`，在 `app` 上挂载 `reloadRoutes`（内部用 `ctx.updateRoutes` 更新 server 路由引用）和 `reloadTools`（重生成 `faapi-tools.js`）。这保证 dev/prod 走完全一致的读产物代码路径，差异仅由 `FAAPI_DIST`（dev 固定 `.faapi`）驱动。
+`createDevApp` 是 `createAppBase` 的薄包装：调 `createAppBase` 取 `app` 和 `ctx`，在 `app` 上挂载四个 reload* 方法（各自重扫对应清单并更新引用/注册表）。这保证 dev/prod 走完全一致的读产物代码路径，差异仅由 `FAAPI_DIST`（dev 固定 `.faapi`）驱动。
 
 ## 使用场景
 
@@ -65,9 +65,20 @@ watcher 一轮重建串行调 `reloadAll`：开头 `invalidateProgramCache()` �
    - 按需模式跳过 zod.js 生成——首次请求时按需生成（与 `reloadRoutes` 的策略一致）
    - 非按需模式全量生成 tool zod.js
 
-与 `reloadRoutes` 的分工：`reloadRoutes` 管路由清单 + 路由 zod.js，`reloadTools` 管 tool 清单 + tool zod.js。两者独立重建，互不干扰。watcher 文件变化后先调 `reloadRoutes` 再调 `reloadTools`。
+与 `reloadRoutes` 的分工：`reloadRoutes` 管路由清单 + 路由 zod.js，`reloadTools` 管 tool 清单 + tool zod.js，`reloadAgents` 管 agent 定位清单 + agent Input zod.js + 声明求值。四者独立重建，互不干扰。watcher 文件变化后经 `reloadAll` 批量触发（Program 缓存只在开头失效一次）。
 
-无 tool 文件时 `scanTools` 返回空列表，`generateToolArtifacts` 写入空清单（`export const tools = []`），开销极低。
+无 tool 文件时 `scanTools` 返回空列表，`generateToolArtifacts` 写入空清单（`export const tools = []`），开销极低；agent 同理。
+
+## reloadAgents 流程
+
+1. `setLoadTimestamp(Date.now())` — 更新模块加载时间戳（`faapi-agents.js` 定位清单与 handler.js 产物模块都经 `importWithCacheBust`，改 config 后 reload 拿到新模块）
+2. `invalidateProgramCache()` — 清 Program 缓存（agent 源码可能变化，Input 类型提取需重新分析；`reloadAll` 批量上下文中跳过）
+3. `scanAgents(rootDir, DEFAULT_AGENT_PATTERNS)` — 重新扫描 agents（零 import，仅读源码文件列表 + 目录名推导）
+4. 逐个 `ensureCompiled` — 重编译 agent handler 源码（mtime 缓存：未变化的跳过）。agent 声明运行时化后启动期求值要**真实 import handler 产物模块**（config 导出求值、systemPrompt 工厂），源码必须先编译
+5. `generateAgentArtifacts(agents, rootDir, dist)` — 重生成 `faapi-agents.js` 定位清单（Input 正则检测；声明 `Input` 的 agent 重生成 zod.js，dev/prod 同路径全量）
+6. `loadAndHydrateAgents(rootDir, dist, registries)` — 重新求值 agent 声明到 agentRegistry：动态 import handler 模块求值 `config` 导出 + 逐字段校验（见 [loadAgents](../agents/loadAgents.md)）
+
+与 `reloadTools` 的结构对称，差异在最后一步：tool 是纯数据水合（清单即声明），agent 是**求值水合**（清单只是定位事实，声明数据在求值阶段产生——因此 reload 链路比 tool 多出 ensureCompiled 与求值两步）。
 
 ## 相关模块
 
@@ -75,9 +86,12 @@ watcher 一轮重建串行调 `reloadAll`：开头 `invalidateProgramCache()` �
 - `createProdApp.ts` - prod 模式对应物（精简，无 `reloadRoutes`）
 - `createApp.ts` - `createProdApp` 的向后兼容别名
 - `devCommand.ts` - `faapi dev` 命令，内部调用 `createDevApp` + `listen` + 启动 watcher
-- `watcher.ts` - 接收 app 引用，文件变更时调 `app.reloadRoutes()` 实现热替换
+- `watcher.ts` - 接收 app 引用，文件变更时调 `app.reloadAll()` 批量热替换
 - `../routers/scanRoutes.ts` - `reloadRoutes` 重新扫描路由（零 import，仅读源码 + 正则）
 - `./compileOnDemand.ts` - 按需模式下的缓存失效与 stale zod.js 删除
 - `./generateSchemaFiles.ts` - 非按需模式下 `reloadRoutes` 全量重新生成 zod.js
 - `../tools/scanTools.ts` - `reloadTools` 重新扫描 tools（零 import，仅读源码 + 正则），导出 `TOOL_PATTERNS`
 - `./generateToolArtifacts.ts` - `reloadTools` 重生成 `faapi-tools.js` + tool zod.js
+- `../agents/scanAgents.ts` - `reloadAgents` 重新扫描 agents（零 import，导出 `DEFAULT_AGENT_PATTERNS`）
+- `./generateAgentArtifacts.ts` - `reloadAgents` 重生成 `faapi-agents.js` 定位清单 + Input zod.js
+- `../agents/loadAgents.md` - `reloadAgents` 末步的 agent 声明求值与校验（`loadAndHydrateAgents` 委托实现）

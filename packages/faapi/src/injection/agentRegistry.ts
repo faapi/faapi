@@ -1,4 +1,4 @@
-import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
+import type { AgentCore, AgentMetadata } from '../agents/agentTypes';
 import { defaultRegistries } from './registries';
 
 // 类型从 registries 转发（AgentToolDescriptor 的定义源已随实例化迁入 registries）

@@ -65,8 +65,6 @@
 
 - `extractToolMetadata.ts` - tool 元数据提取,使用 Program
 
-- `extractAgentMetadata.ts` - agent 元数据提取,使用 Program
-
 - `../cli/devCommand.ts` - watch 时调 `invalidateProgramCache`
 
 - `../cli/buildCommand.ts` - 构建时调 `createProgram`

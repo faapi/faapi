@@ -7,20 +7,14 @@ import {
   createToolRegistry,
   createAgentRegistry,
   createAgentHandleStore,
-  createAgentToolRunnerStore,
+  createAgentRunnerStore,
   createTaskHandleStore,
   createTaskRegistriesView,
   createLlmChannelStore,
 } from '../injection/registries';
 import { createTaskRegistry } from './taskRegistry';
-import type { AgentMetadata } from '../ast/extractAgentMetadata';
-
-// buildLlmChannel 的 @faapi/agent 动态加载 mock（主线程模块图；真实 worker 线程
-// 不经 vitest 解析，走仓库内不可解析的真实降级路径）
-const mockLlmChannel = vi.hoisted(() => ({ complete: async () => 'ok' }));
-vi.mock('@faapi/agent', () => ({
-  createLightComplete: () => mockLlmChannel,
-}));
+import { toAgentSnapshotRecord } from './taskTypes';
+import type { AgentMetadata } from '../agents/agentTypes';
 
 /**
  * taskWorker 真实 worker 线程集成测试：
@@ -469,16 +463,17 @@ describe('runTaskInWorker', () => {
       agent: agentRegistry,
       task: createTaskRegistry(),
       agentHandle: createAgentHandleStore(),
-      agentToolRunner: createAgentToolRunnerStore(),
+      agentRunner: createAgentRunnerStore(),
       taskHandle: createTaskHandleStore(),
       llm: createLlmChannelStore(),
     });
-    // 与 taskQueue.snapshotRegistries 同构的快照生成
+    // 与 taskQueue.snapshotRegistries 同构的快照生成（共用投影函数防漂移）
     const snapshot = {
       agents: hostView.agent
         .listAgents()
         .map((core) => hostView.agent.getAgentEntry(core.name))
-        .filter((entry): entry is AgentMetadata => entry !== undefined),
+        .filter((entry): entry is AgentMetadata => entry !== undefined)
+        .map((entry) => toAgentSnapshotRecord(entry)),
       tools: hostView.tool.list(),
     };
 
@@ -902,34 +897,64 @@ describe('runTaskInWorker - taskCtx.log 日志桥', () => {
     expect(result).toEqual({ hasLog: false });
   });
 
-  // ─── taskCtx.llm 轻量补全通道（隔离路径） ───────────────────
+  // ─── taskCtx.llm 轻量补全通道（隔离路径，RPC 纯转发回宿主） ─────────────
 
-  it('传入 llms 但 worker 内 @faapi/agent 不可解析：任务显式失败（错误含安装指引），不静默旁路', async () => {
+  it('onLlmComplete 已注入：complete 经 RPC 回宿主执行，结果与 options 原样到达，返回值回传', async () => {
     const modulePath = writeTaskModule(
-      'llm-unresolvable',
-      `export function run() { return 'never-reached'; }`,
+      'llm-rpc-roundtrip',
+      `export async function run(_payload, taskCtx) {
+        return await taskCtx.llm.complete('classify me', { model: 'm', temperature: 0.2 });
+      }`,
+    );
+    const calls: Array<{ input: string; options: Record<string, unknown> | undefined }> = [];
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 5000,
+      onLlmComplete: async (input, options) => {
+        calls.push({ input, options });
+        return '分类结果';
+      },
+    });
+    expect(result).toBe('分类结果');
+    // 宿主侧收到的 options = worker 转发的纯数据选项 + 执行器注入的 signal（业务级取消）
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toBe('classify me');
+    expect(calls[0]!.options).toMatchObject({ model: 'm', temperature: 0.2 });
+    expect((calls[0]!.options as { signal?: unknown }).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('宿主补全拒绝：错误原样回传 reject（name/message 保真），任务失败', async () => {
+    const modulePath = writeTaskModule(
+      'llm-rpc-error',
+      `export async function run(_payload, taskCtx) {
+        return await taskCtx.llm.complete('x');
+      }`,
     );
     const err: Error = await runTaskInWorker({
       taskModulePath: modulePath,
       payload: {},
       taskCtx: baseCtx,
       timeoutMs: 5000,
-      llms: { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } },
+      onLlmComplete: async () => {
+        const e = new Error('provider down after 3 attempts');
+        e.name = 'LLMProviderError';
+        throw e;
+      },
     }).then(
       () => {
         throw new Error('expected rejection');
       },
       (e: Error) => e,
     );
-    // 真实 worker 线程不经 vitest 解析，仓库内 @faapi/agent 不可解析——
-    // llms 已配置而环境不能交付属环境错误：任务失败 + 安装指引，不降级为 undefined
-    expect(err.message).toContain('@faapi/agent is not resolvable');
-    expect(err.message).toContain('install @faapi/agent');
+    expect(err.name).toBe('LLMProviderError');
+    expect(err.message).toBe('provider down after 3 attempts');
   });
 
-  it('未传 llms：worker 不尝试加载 @faapi/agent，taskCtx.llm 为 undefined', async () => {
+  it('onLlmComplete 未注入：taskCtx.llm 为 undefined（通道未注册，能力不存在非降级）', async () => {
     const modulePath = writeTaskModule(
-      'llm-no-config',
+      'llm-absent',
       `export function run(_payload, taskCtx) {
         return { hasLlm: taskCtx.llm !== undefined };
       }`,
@@ -944,33 +969,106 @@ describe('runTaskInWorker - taskCtx.log 日志桥', () => {
   });
 });
 
-// ─── buildLlmChannel（workerEntry 纯函数，主线程单测） ───────────
+// ─── buildLlmProxy（workerEntry 纯函数，主线程单测） ─────────────
 
-describe('buildLlmChannel', () => {
-  it('@faapi/agent 可解析：用 llms 构建轻量补全通道', async () => {
-    const { buildLlmChannel } = await import('./workerEntry');
-    const llms = { openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } };
-    const channel = await buildLlmChannel(llms);
-    expect(channel).toBe(mockLlmChannel);
+describe('buildLlmProxy', () => {
+  /** 构造代理 + 已发送消息收集器 */
+  async function makeProxy() {
+    const sent: Array<Record<string, unknown>> = [];
+    const { buildLlmProxy } = await import('./workerEntry');
+    const { proxy, handleMessage } = buildLlmProxy((msg) => sent.push(msg));
+    return { proxy, sent, handleMessage };
+  }
+
+  it('ok:true 回传：resolve 补全结果', async () => {
+    const { proxy, sent, handleMessage } = await makeProxy();
+    const p = proxy.complete('hi');
+    expect(sent).toEqual([{ type: 'llm-complete', seq: 1, input: 'hi' }]);
+    expect(handleMessage({ type: 'llm-result', seq: 1, ok: true, value: '结果' })).toBe(true);
+    await expect(p).resolves.toBe('结果');
   });
 
-  it('llms 未配置：不触发动态 import，返回 undefined（能力不存在，非降级）', async () => {
-    const { buildLlmChannel } = await import('./workerEntry');
-    const channel = await buildLlmChannel(undefined);
-    expect(channel).toBeUndefined();
-  });
-
-  it('@faapi/agent 不可解析：抛错含安装指引（不返回 undefined）', async () => {
-    vi.resetModules();
-    vi.doMock('@faapi/agent', () => {
-      throw new Error('Cannot find package');
+  it('ok:false 回传：reject 且 name/message 保真', async () => {
+    const { proxy, handleMessage } = await makeProxy();
+    const p = proxy.complete('hi', { model: 'm' });
+    handleMessage({
+      type: 'llm-result',
+      seq: 1,
+      ok: false,
+      error: { name: 'LLMProviderError', message: 'down', stack: undefined, props: {} },
     });
-    const { buildLlmChannel } = await import('./workerEntry');
-    await expect(
-      buildLlmChannel({ openai: { provider: 'openai', apiKey: 'k', models: { m: {} } } }),
-    ).rejects.toThrow(/@faapi\/agent is not resolvable/);
-    vi.doUnmock('@faapi/agent');
-    vi.resetModules();
+    const err: Error = await p.then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: Error) => e,
+    );
+    expect(err.name).toBe('LLMProviderError');
+    expect(err.message).toBe('down');
+  });
+
+  it('迟到/未知 seq 与非 llm-result 消息：忽略（返回 true/false 语义正确）', async () => {
+    const { handleMessage } = await makeProxy();
+    expect(handleMessage({ type: 'other' })).toBe(false);
+    expect(handleMessage({ type: 'llm-result', seq: 99, ok: true, value: 'late' })).toBe(true);
+  });
+
+  it('options.onFailure 钩子：本地显式拒绝（不发 RPC），指引 try/catch 替代', async () => {
+    const { proxy, sent } = await makeProxy();
+    await expect(proxy.complete('x', { onFailure: () => {} } as never)).rejects.toThrow(
+      /onFailure is not available/,
+    );
+    expect(sent).toHaveLength(0);
+  });
+
+  it('options.signal：剥离后转发（不发 RPC 内 signal），abort 时发 llm-abort 消息', async () => {
+    const { proxy, sent, handleMessage } = await makeProxy();
+    const controller = new AbortController();
+    const p = proxy.complete('x', { model: 'm', signal: controller.signal });
+    // signal 剥离：转发负载只含其余纯数据选项
+    expect(sent[0]).toEqual({ type: 'llm-complete', seq: 1, input: 'x', options: { model: 'm' } });
+    controller.abort();
+    expect(sent[1]).toEqual({ type: 'llm-abort', seq: 1 });
+    // 宿主 abort 后经 llm-result ok:false 回传取消错误
+    handleMessage({
+      type: 'llm-result',
+      seq: 1,
+      ok: false,
+      error: { name: 'AgentAbortError', message: 'aborted', stack: undefined, props: {} },
+    });
+    await expect(p).rejects.toThrow('aborted');
+  });
+
+  it('options.signal 已 abort：本地拒绝（不发 RPC）', async () => {
+    const { proxy, sent } = await makeProxy();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(proxy.complete('x', { signal: controller.signal })).rejects.toThrow(
+      /aborted before dispatch/,
+    );
+    expect(sent).toHaveLength(0);
+  });
+
+  it('options.signal 非 AbortSignal：本地拒绝', async () => {
+    const { proxy } = await makeProxy();
+    await expect(proxy.complete('x', { signal: 'nope' } as never)).rejects.toThrow(
+      /signal must be an AbortSignal/,
+    );
+  });
+
+  it('send 抛错（不可克隆）：按调用错误 reject 克隆指引', async () => {
+    const { buildLlmProxy } = await import('./workerEntry');
+    const { proxy } = buildLlmProxy(() => {
+      throw new Error('could not be cloned');
+    });
+    const err: Error = await proxy.complete('x').then(
+      () => {
+        throw new Error('expected rejection');
+      },
+      (e: Error) => e,
+    );
+    expect(err.message).toContain('not cloneable across the worker boundary');
+    expect(err.message).toContain('plain data');
   });
 });
 
@@ -1200,34 +1298,35 @@ describe('buildSuspendChannel', () => {
   });
 });
 
-// ─── buildAgentRpc（workerEntry 纯函数，主线程单测） ─────────────────
+// ─── buildAgentRunProxy（workerEntry 纯函数，主线程单测） ──────────────
 
-describe('buildAgentRpc', () => {
-  it('call 发送 { type: agent-call, seq, kind, payload }，agent-result ok 回 resolve', async () => {
-    const { buildAgentRpc } = await import('./workerEntry');
+describe('buildAgentRunProxy', () => {
+  it('run 发送 { type: agent-run, seq, agentName, input, options }，agent-run-result ok 回 resolve', async () => {
+    const { buildAgentRunProxy } = await import('./workerEntry');
     const sent: Array<Record<string, unknown>> = [];
-    const channel = buildAgentRpc((msg) => sent.push(msg));
-    const p = channel.call('tool-call', { toolName: 'weather_getWeather', args: { city: '北京' } });
+    const proxy = buildAgentRunProxy((msg) => sent.push(msg));
+    const p = proxy.run('分析这份日志', { agent: 'log-analyzer', temperature: 0.2 });
     expect(sent).toEqual([
       {
-        type: 'agent-call',
+        type: 'agent-run',
         seq: 1,
-        kind: 'tool-call',
-        payload: { toolName: 'weather_getWeather', args: { city: '北京' } },
+        agentName: 'log-analyzer',
+        input: '分析这份日志',
+        options: { agent: 'log-analyzer', temperature: 0.2 },
       },
     ]);
-    expect(channel.handleMessage({ type: 'agent-result', seq: 1, ok: true, value: '晴' })).toBe(
-      true,
-    );
-    await expect(p).resolves.toBe('晴');
+    expect(
+      proxy.handleMessage({ type: 'agent-run-result', seq: 1, ok: true, value: { output: '晴' } }),
+    ).toBe(true);
+    await expect(p).resolves.toEqual({ output: '晴' });
   });
 
-  it('agent-result ok:false：reject 并保留错误 name/message（宿主执行错误原样回传）', async () => {
-    const { buildAgentRpc } = await import('./workerEntry');
-    const channel = buildAgentRpc(() => {});
-    const p = channel.call('tool-call', { toolName: 'x', args: {} });
-    channel.handleMessage({
-      type: 'agent-result',
+  it('agent-run-result ok:false：reject 并保留错误 name/message（宿主循环错误原样回传）', async () => {
+    const { buildAgentRunProxy } = await import('./workerEntry');
+    const proxy = buildAgentRunProxy(() => {});
+    const p = proxy.run('hi', { agent: 'x' });
+    proxy.handleMessage({
+      type: 'agent-run-result',
       seq: 1,
       ok: false,
       error: { name: 'RangeError', message: 'boom', stack: undefined, props: {} },
@@ -1235,29 +1334,52 @@ describe('buildAgentRpc', () => {
     await expect(p).rejects.toMatchObject({ name: 'RangeError', message: 'boom' });
   });
 
-  it('多调用 seq 递增互不串台；未知/迟到 seq 消费但不影响挂起调用', async () => {
-    const { buildAgentRpc } = await import('./workerEntry');
+  it('options.agent 缺失：本地 reject 不发 RPC（agent 名是调用侧决策）', async () => {
+    const { buildAgentRunProxy } = await import('./workerEntry');
     const sent: Array<Record<string, unknown>> = [];
-    const channel = buildAgentRpc((msg) => sent.push(msg));
-    const p1 = channel.call('tool-call', { toolName: 'a', args: {} });
-    const p2 = channel.call('before-tool-call', { toolName: 'b', args: {} });
-    expect(sent.map((m) => m.seq)).toEqual([1, 2]);
-    channel.handleMessage({ type: 'agent-result', seq: 2, ok: true, value: 'guard-ok' });
-    channel.handleMessage({ type: 'agent-result', seq: 1, ok: true, value: 'tool-ok' });
-    await expect(p2).resolves.toBe('guard-ok');
-    await expect(p1).resolves.toBe('tool-ok');
-    expect(channel.handleMessage({ type: 'agent-result', seq: 99, ok: true })).toBe(true);
-    expect(channel.handleMessage({ type: 'other' })).toBe(false);
+    const proxy = buildAgentRunProxy((msg) => sent.push(msg));
+    await expect(proxy.run('hi')).rejects.toThrow(/requires options\.agent/);
+    await expect(proxy.run('hi', {})).rejects.toThrow(/requires options\.agent/);
+    expect(sent).toEqual([]);
   });
 
-  it('payload 不可克隆：send 抛错时 call 同步 reject 克隆指引（不发消息）', async () => {
-    const { buildAgentRpc } = await import('./workerEntry');
-    const channel = buildAgentRpc(() => {
+  it('options.provider 为 LLMProvider 实例：本地 reject 指引传 LlmConfig 纯数据', async () => {
+    const { buildAgentRunProxy } = await import('./workerEntry');
+    const sent: Array<Record<string, unknown>> = [];
+    const proxy = buildAgentRunProxy((msg) => sent.push(msg));
+    const provider = {
+      complete: async () => ({}),
+      stream: async function* () {},
+    };
+    await expect(proxy.run('hi', { agent: 'x', provider })).rejects.toThrow(
+      /must be an LlmConfig plain object/,
+    );
+    expect(sent).toEqual([]);
+  });
+
+  it('多调用 seq 递增互不串台；未知/迟到 seq 消费但不影响挂起调用', async () => {
+    const { buildAgentRunProxy } = await import('./workerEntry');
+    const sent: Array<Record<string, unknown>> = [];
+    const proxy = buildAgentRunProxy((msg) => sent.push(msg));
+    const p1 = proxy.run('a', { agent: 'x' });
+    const p2 = proxy.run('b', { agent: 'y' });
+    expect(sent.map((m) => m.seq)).toEqual([1, 2]);
+    proxy.handleMessage({ type: 'agent-run-result', seq: 2, ok: true, value: 'y-ok' });
+    proxy.handleMessage({ type: 'agent-run-result', seq: 1, ok: true, value: 'x-ok' });
+    await expect(p2).resolves.toBe('y-ok');
+    await expect(p1).resolves.toBe('x-ok');
+    expect(proxy.handleMessage({ type: 'agent-run-result', seq: 99, ok: true })).toBe(true);
+    expect(proxy.handleMessage({ type: 'other' })).toBe(false);
+  });
+
+  it('参数不可克隆：send 抛错时 run reject 克隆指引（不发消息）', async () => {
+    const { buildAgentRunProxy } = await import('./workerEntry');
+    const proxy = buildAgentRunProxy(() => {
       throw new Error('() => {} could not be cloned.');
     });
-    await expect(
-      channel.call('tool-call', { toolName: 'x', args: { fn: () => {} } }),
-    ).rejects.toThrow(/agent RPC "tool-call" payload is not cloneable/);
+    await expect(proxy.run('hi', { agent: 'x', onEvent: () => {} })).rejects.toThrow(
+      /arguments are not cloneable across the worker boundary/,
+    );
   });
 });
 

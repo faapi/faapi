@@ -1,8 +1,7 @@
 import type { ToolMetadata } from '../ast/extractToolMetadata';
-import type { AgentMetadata, AgentCore } from '../ast/extractAgentMetadata';
+import type { AgentMetadata, AgentCore } from '../agents/agentTypes';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { AgentToolContext } from '../runtime/agentToolContext';
-import type { ReminderPhase } from '../configs/configTypes';
 import type { TaskRegistry } from '../tasks/taskRegistry';
 import { createTaskRegistry } from '../tasks/taskRegistry';
 import type { LlmComplete } from './llmTypes';
@@ -251,74 +250,59 @@ export function createTaskHandleStore(): TaskHandleStore {
   };
 }
 
-// ─── 隔离任务工具执行器 store ────────────────────────────────────────
+// ─── agent 循环执行器 store ──────────────────────────────────────────
 
 /**
- * 隔离任务工具执行器（由 `@faapi/agent` 插件注册）
+ * agent-run RPC 请求（隔离任务 agent 通道的唯一载荷，纯数据）
  *
- * 隔离 worker 的 agent 编排循环把业务函数面（工具 handler、鉴权钩子、派发钩子）
- * 经 RPC 回传宿主执行——worker 只跑 LLM 调用与编排决策，db 连接池等资源单实例、
- * 钩子无需跨线程。执行器与 `Agent.executeTool` 常规分支共用同一实现
- * （`@faapi/agent` 的 `executeToolCall`）。方法返回值/参数均须可结构化克隆
- * （跨 postMessage 边界，不可克隆按执行错误显式失败）。
- *
- * 各方法 ctx 为宿主侧按任务合成的 [AgentToolContext](../runtime/agentToolContext.md)
- * （carry + scoped TaskClient + 任务级 logger + job.signal，与进程内
- * `taskCtx.agent` 同配方，见 taskToolContext.md）。
+ * `options` 为 `@faapi/agent` `AgentRunOptions` 的可结构化克隆子集（model /
+ * temperature / maxTokens / enableTracing / traceId / messages / provider）——
+ * `provider` 仅支持 `LlmConfig` 纯数据形态，`LLMProvider` 实例不可跨线程（worker
+ * 侧代理显式报错指引）。主包不反向依赖 agent 包类型，此处按结构声明。
  */
-export interface AgentToolRunner {
-  /** 执行守卫钩子（覆盖常规 tool 与 sub-agent 派发；void 放行 / { error } 拒绝 / { args } 改写） */
-  beforeToolCall(
-    ctx: AgentToolContext,
-    toolName: string,
-    args: Record<string, unknown>,
-  ): Promise<unknown>;
-  /** 单次 tool 调用（schema 校验失败返回 { error }；handler 抛错原样上抛） */
-  toolCall(
-    ctx: AgentToolContext,
-    toolName: string,
-    args: Record<string, unknown>,
-  ): Promise<unknown>;
-  /** 可见性过滤钩子（tools 为 OpenAI 规范形数组，返回过滤后数组） */
-  filterTools(ctx: AgentToolContext, tools: unknown[]): Promise<unknown[]>;
-  /** sub-agent 派发入参改写钩子（未接线时 undefined 原样放行） */
-  resolveSubAgentInput(
-    ctx: AgentToolContext,
-    subName: string,
-    args: Record<string, unknown>,
-  ): Promise<Record<string, unknown> | undefined>;
-  /** sub-agent 派发上下文钩子（未接线时 undefined 跳过注入） */
-  resolveSubAgentContext(
-    ctx: AgentToolContext,
-    subName: string,
-    args: Record<string, unknown>,
-  ): Promise<string | undefined>;
+export interface AgentRunRequest {
+  /** 目标 agent 名（原 AgentHandle.run options.agent——调用侧决策） */
+  agentName: string;
   /**
-   * 提醒供数钩子（reminders，见 `@faapi/agent` 的 reminders.md）
-   *
-   * 宿主侧全量合并（`config.agent.reminders` + agent meta.reminders）并渲染指定
-   * 通道，返回**未包裹内容串数组**（包裹由 worker 侧引擎统一做；`undefined` = 该
-   * 通道无提醒）。`info.phase`：`'once'`（fresh run 循环启动一次，turn=0）|
-   * `'everyTurn'`（每轮 LLM 请求前，turn 为当轮序号 1 起）。`info.ctx` 不跨线程
-   * ——worker 垫片不外传 ctx，此处以任务合成 ctx 调用 builder。
+   * 用户输入（可选——续跑场景不传新输入）。字符串为 user 消息直传；结构化对象
+   * 为富 schema 派发形态（宿主先按 agent 的 Input schema 校验，再经
+   * extractSubAgentUserInput 构造 user 消息——与 sub-agent 派发同约定）
    */
-  resolveReminders(
-    ctx: AgentToolContext,
-    info: { agentName: string; depth: number; turn: number; phase: ReminderPhase },
-  ): Promise<string[] | undefined>;
+  input?: string | Record<string, unknown>;
+  /** 本次调用的 LLM 配置（AgentRunOptions 纯数据形态；原样透传宿主） */
+  options?: Record<string, unknown>;
 }
 
-/** 隔离任务工具执行器 store（app 实例级，随 app 生命周期；与 LlmChannelStore 同形态） */
-export interface AgentToolRunnerStore {
+/**
+ * agent 循环执行器（由 `@faapi/agent` 插件注册）
+ *
+ * 隔离 worker 调 agent 收敛为**一次 agent-run RPC**：编排循环（LLM IO + tool
+ * 调度 + reminders 渲染 + sub-agent 递归）整体在宿主执行，worker 只负责转发请求
+ * 与回传结果——此前「IO 在 worker、CPU 在宿主」的 6 种 per-behavior RPC 垫片
+ * 整体下线（beforeToolCall/toolCall/filterTools/resolveSubAgentInput/
+ * resolveSubAgentContext/resolveReminders）。
+ *
+ * 执行器以任务合成契约 ctx（carry + scoped TaskClient + 任务级 logger +
+ * job.signal，与进程内 `taskCtx.agent` 同配方，见 taskToolContext.md）构造
+ * Agent 实例跑完整循环；`request.options` 原样透传为 run 覆盖。返回值/
+ * 参数均须可结构化克隆（跨 postMessage 边界，不可克隆按执行错误显式失败）。
+ */
+export interface AgentRunner {
+  /** 执行一次完整 agent 循环，返回 ReactLoopResult 纯数据；失败上抛（RPC ok:false 回传） */
+  runAgent(ctx: AgentToolContext, request: AgentRunRequest): Promise<unknown>;
+}
+
+/** agent 循环执行器 store（app 实例级，随 app 生命周期；与 LlmChannelStore 同形态） */
+export interface AgentRunnerStore {
   /** 注册执行器（null 清理）；二次注册覆盖 */
-  register(runner: AgentToolRunner | null): void;
+  register(runner: AgentRunner | null): void;
   /** 执行器已注册时返回实例，未注册返回 undefined */
-  get(): AgentToolRunner | undefined;
+  get(): AgentRunner | undefined;
   clear(): void;
 }
 
-export function createAgentToolRunnerStore(): AgentToolRunnerStore {
-  let current: AgentToolRunner | null = null;
+export function createAgentRunnerStore(): AgentRunnerStore {
+  let current: AgentRunner | null = null;
   return {
     register(runner) {
       current = runner;
@@ -343,8 +327,8 @@ export interface AppRegistries {
   taskHandle: TaskHandleStore;
   /** 轻量 LLM 补全通道（`@faapi/agent` 插件注册；未加载插件时为空） */
   llm: LlmChannelStore;
-  /** 隔离任务工具执行器（`@faapi/agent` 插件注册；未加载插件时为空——worker 内 taskCtx.agent 不挂载） */
-  agentToolRunner: AgentToolRunnerStore;
+  /** agent 循环执行器（`@faapi/agent` 插件注册；未加载插件时为空——worker 内 taskCtx.agent 不挂载） */
+  agentRunner: AgentRunnerStore;
 }
 
 /**
@@ -408,8 +392,8 @@ export function createAppRegistries(): AppRegistries {
   const agentHandle = createAgentHandleStore();
   const taskHandle = createTaskHandleStore();
   const llm = createLlmChannelStore();
-  const agentToolRunner = createAgentToolRunnerStore();
-  return { tool, agent, task, agentHandle, taskHandle, llm, agentToolRunner };
+  const agentRunner = createAgentRunnerStore();
+  return { tool, agent, task, agentHandle, taskHandle, llm, agentRunner };
 }
 
 /**

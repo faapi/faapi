@@ -4,9 +4,11 @@ import { runTaskInWorker, TaskCancelledError } from './taskWorker';
 import { IsolatedWorkerBudget, resolveDefaultIsolatedWorkerLimit } from './isolatedWorkerBudget';
 import { collectConfigSnapshot } from './configSnapshot';
 import { createTaskToolContext } from './taskToolContext';
+import { toAgentSnapshotRecord } from './taskTypes';
 import { createEmptyTaskRegistriesView } from '../injection/registries';
 import { createLogger, getEffectiveLogLevel, writeLogEntry } from '../loggers/logger';
-import type { AgentMetadata } from '../ast/extractAgentMetadata';
+import type { LlmCompleteOptions } from '../injection/llmTypes';
+import type { AgentMetadata } from '../agents/agentTypes';
 import type { TaskConfig } from '../configs/configTypes';
 import type { TaskDriver, TaskDriverJob, TaskResumeState, TaskStateEntry } from './driverTypes';
 import type {
@@ -369,15 +371,18 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   }
 
   /**
-   * 注册表纯数据快照（隔离路径 postMessage 用）——agent 取完整元数据
-   * （getAgentEntry 含 filePath，非仅 LLM 可见字段），派发时刻生成
+   * 注册表纯数据快照（隔离路径 postMessage 用）——agent 经 AgentSnapshotRecord
+   * 投影（函数形态 systemPrompt 剥离、reminders 整体剥离——循环在宿主执行，
+   * 快照仅服务 worker 侧只读查询），派发时刻生成
    */
   function snapshotRegistries(): TaskRegistriesSnapshot {
     return {
       agents: registriesView.agent
         .listAgents()
         .map((core) => registriesView.agent.getAgentEntry(core.name))
-        .filter((entry): entry is AgentMetadata => entry !== undefined),
+        .filter((entry): entry is AgentMetadata => entry !== undefined)
+        // 投影单一实现（宿主快照与测试共用，防止漂移）
+        .map((entry) => toAgentSnapshotRecord(entry)),
       tools: registriesView.tool.list(),
     };
   }
@@ -459,11 +464,12 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               'the task manifest is broken (regenerate it with faapi build/dev).',
           );
         }
-        // 隔离 agent 通道：agentToolRunner 已注册（@faapi/agent 插件加载）时注入
-        // RPC 分派——worker 内编排循环的工具调用/钩子回传宿主，宿主以任务合成
-        // 契约 ctx（与进程内 taskCtx.agent 同配方）调执行器。未注册时 run 消息
-        // 不带 agentChannel，worker 内 taskCtx.agent 不挂载（能力不存在非降级）
-        const agentRunner = deps.agentToolRunner?.get();
+        // 隔离 agent 通道：agentRunner 已注册（@faapi/agent 插件加载）时注入
+        // agent-run 分派——worker 侧 taskCtx.agent.run 转发请求，宿主以任务合成
+        // 契约 ctx（与进程内 taskCtx.agent 同配方）构造 Agent 跑完整循环。未注册
+        // 时 run 消息不带 agentChannel，worker 内 taskCtx.agent 不挂载（能力不
+        // 存在非降级）
+        const agentRunner = deps.agentRunner?.get();
         const agentHostCtx = agentRunner
           ? createTaskToolContext({
               carry: job.carry ?? {},
@@ -474,6 +480,13 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               signal: job.signal,
             })
           : undefined;
+        // 隔离 llm 通道：AppRegistries.llm 已注册补全通道（@faapi/agent 插件加载）
+        // 时注入 llm-complete 分派——worker 内 taskCtx.llm.complete 纯转发回宿主
+        // 执行（LLM IO 全在宿主，worker 不加载 @faapi/agent）。通道在派发时刻取值
+        // （快照语义，与 registries 快照一致——执行中途 reload 不影响当次执行）；
+        // 未注册时 run 消息不带 llmChannel，worker 内 taskCtx.llm 不挂载（能力不
+        // 存在非降级）
+        const llmChannel = deps.llm?.get();
         // 全局 worker 并发预算（config.task.maxIsolatedWorkers，默认预留 1 核）：
         // 跨任务封顶同时在跑的隔离 worker 数——单任务 concurrency 挡不住多任务
         // 并发的线程数累加。等待上限 30s，超限显式失败交驱动重试（不无限排队——
@@ -485,8 +498,6 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         try {
           result = await (deps.runIsolated ?? runTaskInWorker)({
             taskModulePath: path.resolve(rootDir, meta.filePath),
-            // 隔离 agent 通道的 schema 解析器定位根（随 workerData 下发）
-            rootDir,
             payload: job.payload,
             taskCtx: {
               resourcesDir: deps.resourcesDir,
@@ -501,9 +512,6 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
             },
             registries: snapshotRegistries(),
-            // agent.llms 纯数据快照随 workerData 下发，worker 内动态加载 @faapi/agent
-            // 重建轻量补全通道（taskCtx.llm）——llms 未配置时不传
-            llms: deps.llms,
             // 日志配置随 workerData 下发（纯数据），worker 内联重建 taskCtx.log，
             // 条目回传宿主走统一管道（scope/fields 与进程内路径一致）
             log: {
@@ -568,52 +576,17 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               await persistSuspendEnvelope(driver, job, state);
               suspended = true;
             },
-            // 隔离 agent RPC：按 kind 分派到执行器方法（before-tool-call / tool-call /
-            // filter-tools / resolve-sub-agent-input / resolve-sub-agent-context /
-            // resolve-reminders），未知 kind 显式抛错。结果/错误按 seq 回传 worker
+            // 隔离 agent RPC（单次 agent-run）：请求原样转发执行器（宿主以任务
+            // 合成契约 ctx 构造 Agent 跑完整循环），结果/错误按 seq 回传 worker
             // （克隆边界在 taskWorker 回传层处理——不可克隆按执行错误回传）
-            onAgentCall: agentRunner
-              ? async (kind, payload) => {
-                  const p = payload as {
-                    toolName?: string;
-                    subName?: string;
-                    args?: Record<string, unknown>;
-                    tools?: unknown[];
-                    agentName?: string;
-                    depth?: number;
-                    turn?: number;
-                    phase?: string;
-                  };
-                  switch (kind) {
-                    case 'before-tool-call':
-                      return agentRunner.beforeToolCall(agentHostCtx!, p.toolName!, p.args ?? {});
-                    case 'tool-call':
-                      return agentRunner.toolCall(agentHostCtx!, p.toolName!, p.args ?? {});
-                    case 'filter-tools':
-                      return agentRunner.filterTools(agentHostCtx!, p.tools ?? []);
-                    case 'resolve-sub-agent-input':
-                      return agentRunner.resolveSubAgentInput(
-                        agentHostCtx!,
-                        p.subName!,
-                        p.args ?? {},
-                      );
-                    case 'resolve-sub-agent-context':
-                      return agentRunner.resolveSubAgentContext(
-                        agentHostCtx!,
-                        p.subName!,
-                        p.args ?? {},
-                      );
-                    case 'resolve-reminders':
-                      return agentRunner.resolveReminders(agentHostCtx!, {
-                        agentName: p.agentName!,
-                        depth: p.depth ?? 0,
-                        turn: p.turn ?? 0,
-                        phase: p.phase === 'everyTurn' ? 'everyTurn' : 'once',
-                      });
-                    default:
-                      throw new Error(`[faapi] Unknown agent RPC kind "${kind}"`);
-                  }
-                }
+            onAgentRun: agentRunner
+              ? (request) => agentRunner.runAgent(agentHostCtx!, request)
+              : undefined,
+            // 隔离 llm RPC（纯转发）：补全请求转发到派发时刻取到的注册通道（LLM IO
+            // 全在宿主），结果/错误按 seq 回传 worker；signal 由执行器注入宿主侧
+            // AbortController（worker 侧业务级取消经 llm-abort 触发）
+            onLlmComplete: llmChannel
+              ? (input, options) => llmChannel.complete(input, options as LlmCompleteOptions)
               : undefined,
           });
         } finally {
@@ -668,7 +641,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         // taskCtx.agent 惰性通道（TaskContext 不声明该字段——类型由 @faapi/agent
         // declare module 增强为 AgentHandle）：首次访问经 agentHandle 工厂构造
         // （与 HTTP 请求链同一份 baseDeps），缓存复用；store 未注入/插件未注册
-        // 工厂时为 undefined（隔离路径不挂载本 store——见 buildAgentChannel）
+        // 工厂时为 undefined（隔离路径不消费本 store——隔离 agent 通道走 agentRunner）
         if (deps.agentHandle) {
           const store = deps.agentHandle;
           let cachedAgent: unknown;

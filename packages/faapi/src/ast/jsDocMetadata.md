@@ -1,14 +1,14 @@
 # jsDocMetadata
 
-一句话概括：tool/agent 元数据提取共用的 JSDoc 工具函数——export 修饰符判断、JSDoc 块提取、描述文本提取、`@<tag>` 标签值提取（现用于检测已移除的 `@agent`/`@tool` 覆盖名标签）。
+一句话概括：tool 元数据提取使用的 JSDoc 工具函数——export 修饰符判断、JSDoc 块提取、描述文本提取、`@<tag>` 标签值提取（现仅 `extractToolMetadata` 消费，用于检测已移除的 `@tool` 覆盖名标签）。
 
 ## 为什么需要
 
-`extractToolMetadata` 与 `extractAgentMetadata` 此前各自维护一份逐字相同的 `hasExportModifier` / `getJSDocFromNode` / `extractDescription`，tag 提取（现用于 `@agent` / `@tool` 残留标签的迁移检测）也是仅 tagName 一个词之差的同构实现。JSDoc 解析行为调整（如 jsDocCache 回退策略）必须双处同步，漏改即 tool 与 agent 的描述提取行为不一致。
+tool 元数据提取需要一组 JSDoc 解析原语（export 判断 / JSDoc 块 / 描述 / tag 值）。收口在独立模块后行为单一来源：JSDoc 解析行为调整（如 jsDocCache 回退策略）只改一处，调用方行为不会漂移。tag 提取现用于 `@tool` 残留标签的迁移检测（有值即迁移错误）；agent 侧的 `@agent` 检测随 agent 声明运行时化整体下线（运行时求值管线不做 JSDoc 提取）。
 
 ## 使用场景
 
-- `extractToolMetadata` / `extractAgentMetadata`：从 handler.ts 提取 JSDoc 描述，并检测残留的 `@agent` / `@tool` 覆盖名标签（有值即迁移错误）
+- `extractToolMetadata`：从 handler.ts 提取 JSDoc 描述，并检测残留的 `@tool` 覆盖名标签（有值即迁移错误）
 - 任何需要「导出函数 + JSDoc 注释 → 元数据」场景的新模块
 
 ## 行为定义
@@ -20,5 +20,4 @@
 
 ## 相关模块
 
-- `extractToolMetadata.ts` - `@tool` 残留标签迁移检测（`extractJSDocTagValue(jsDoc, 'tool')`）
-- `extractAgentMetadata.ts` - `@agent` 残留标签迁移检测（`extractJSDocTagValue(jsDoc, 'agent')`）
+- `extractToolMetadata.ts` - `@tool` 残留标签迁移检测（`extractJSDocTagValue(jsDoc, 'tool')`）——当前唯一消费方

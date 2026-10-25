@@ -1,33 +1,35 @@
 /**
- * 隔离任务 agent 通道 e2e——真实 worker 线程全链路
+ * 隔离任务 agent 通道 e2e——真实 worker 线程 + 单次 agent-run RPC（宿主执行循环）
  *
- * 覆盖：taskQueue 级 onAgentCall 分派（经 runTaskInWorker 的消息循环）→ worker 内
- * buildAgentChannel 动态组装（createAgentDeps + RPC 垫片）→ agent 编排循环在
- * worker 跑（mock LLM）→ 工具调用 / 鉴权钩子回传宿主执行（executeToolCall）→
- * 结果按 seq 回传 worker 续跑。
+ * worker 侧 `taskCtx.agent.run` 仅转发请求（run-only 代理，workerEntry 自包含，
+ * 不动态加载 @faapi/agent）；编排循环收敛宿主：`onAgentRun` 以任务合成契约 ctx
+ * （carry 合成 currentUserId）构造 Agent 跑完整循环——LLM IO、工具执行、鉴权钩子、
+ * reminders 全在宿主（db 连接池等资源单实例、业务函数零跨线程）。
  *
- * 仅 LLM 端点是 mock（本地 node:http 回 OpenAI 形响应），RPC 边界、worker 线程、
- * deps 组装、宿主执行全部真实。工具在宿主执行的证据：宿主 beforeToolCall 守卫与
- * handler marker 同轮触发（守卫只存在于宿主 executeToolCall 内），ctx 携带 carry
- * 合成的 currentUserId。
+ * 覆盖（三条都是真实 worker 线程 + 真实 @faapi/agent 插件 runner，仅 LLM 端点 mock）：
+ * 1. 工具与守卫在宿主执行（carry 身份传导）——beforeToolCall 守卫 / handler marker /
+ *    afterToolCall 审计同轮触发；循环结果按 agent-run-result 回传 worker 收敛
+ * 2. 声明面 reminders（含 builder 函数）在宿主生效——builder 不可克隆（快照剥离），
+ *    但循环在宿主，真实声明全量可见；LLM 请求消息含提醒文本与 builder 渲染的 ctx 身份
+ * 3. Input 校验失败以任务错误浮出——声明 Input 的 agent 派发形态对象入参校验不过，
+ *    runAgent 抛 AgentError → RPC ok:false → worker 侧 reject → 任务失败（真实 zod.js
+ *    产物加载 + safeParse，非 mock 校验）
  *
- * 详见 agentDeps.md「隔离任务通道」与 agentToolContext.md 三路径填充规则。
+ * 详见 agentDeps.md「隔离任务通道」与 taskToolContext.md 三路径填充规则。
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { runTaskInWorker } from '@faapi/faapi/src/tasks/taskWorker';
-import { createTaskToolContext } from '@faapi/faapi';
-import { createLogger } from '@faapi/faapi';
-import { executeToolCall, type AgentDeps } from './agent';
-import type { ToolMetadata, AgentMetadata, LlmConfig } from '@faapi/faapi';
+import { createAppRegistries, createLogger, createTaskToolContext } from '@faapi/faapi';
+import type { AgentMetadata, LlmConfig, PluginContext, ToolMetadata } from '@faapi/faapi';
+import agentPlugin from './plugin';
+import type { AgentRunner } from '@faapi/faapi';
 
-// worker 内 provider fetch 走本机 127.0.0.1——绕过开发机代理（同主包 e2e 约定）
+// 宿主侧 provider fetch 走本机 127.0.0.1——绕过开发机代理（同主包 e2e 约定）
 {
   const targets = ['localhost', '127.0.0.1'];
   const existing = (process.env.NO_PROXY ?? '').split(',').map((s) => s.trim());
@@ -36,63 +38,141 @@ import type { ToolMetadata, AgentMetadata, LlmConfig } from '@faapi/faapi';
   process.env.no_proxy = merged.join(',');
 }
 
-/** OpenAI chat completions 形响应的 mock LLM（按请求次序轮换） */
-function startMockLlm(responses: unknown[]): Promise<{ server: Server; baseURL: string }> {
+interface CapturedLlmRequest {
+  messages: Array<{ role: string; content: string }>;
+}
+
+/** OpenAI chat completions 形响应的 mock LLM（按请求次序轮换 + 请求体捕获） */
+function startMockLlm(
+  responses: unknown[],
+): Promise<{ server: Server; baseURL: string; requests: CapturedLlmRequest[] }> {
   let n = 0;
+  const requests: CapturedLlmRequest[] = [];
   return new Promise((resolve) => {
-    const server = http.createServer((_req, res) => {
-      const body = responses[Math.min(n, responses.length - 1)]!;
-      n += 1;
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(body));
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { messages?: CapturedLlmRequest['messages'] };
+          requests.push({ messages: parsed.messages ?? [] });
+        } catch {
+          requests.push({ messages: [] });
+        }
+        const resp = responses[Math.min(n, responses.length - 1)]!;
+        n += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(resp));
+      });
     });
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address() as { port: number };
-      resolve({ server, baseURL: `http://127.0.0.1:${addr.port}/v1` });
+      resolve({ server, baseURL: `http://127.0.0.1:${addr.port}/v1`, requests });
     });
   });
 }
 
-// ─── worker 可加载的 @faapi/agent bundle（monorepo 测试环境专用） ────────
-//
-// worker 线程经 plain Node 动态加载 agent 包（workerEntry 自包含约束，不走
-// vitest alias）。monorepo 里 dev exports 指向 TS 源（extensionless，Node 不可
-// 加载）——e2e 用 esbuild 把 agent src（连同主包 src 值依赖）打包到
-// packages/faapi/node_modules/.faapi-agent-e2e-bundle/（node_modules gitignore，
-// 目录名不含 '@faapi/agent'——与裸说明符解析零碰撞，主包测试不受影响），
-// 经 runTaskInWorker 的 agentModuleUrl 注入（可注入覆盖，生产走裸说明符解析
-// 业务方安装的 dist 包）。@faapi/faapi 值依赖 inline（esbuild 原生 TS 加载
-// 主包 src）；主包运行时依赖 external——bundle 位置向上即 packages/faapi/
-// node_modules，全部可解析。
-
-const E2E_BUNDLE_DIR = path.resolve(__dirname, '../../faapi/node_modules/.faapi-agent-e2e-bundle');
-
-async function buildAgentBundle(): Promise<string> {
-  const esbuild = (await import(
-    pathToFileURL(path.resolve(__dirname, '../../faapi/node_modules/esbuild/lib/main.js')).href
-  )) as unknown as {
-    build: (options: Record<string, unknown>) => Promise<unknown>;
-  };
-  fs.mkdirSync(E2E_BUNDLE_DIR, { recursive: true });
-  const outfile = path.join(E2E_BUNDLE_DIR, 'index.js');
-  await esbuild.build({
-    entryPoints: [path.resolve(__dirname, 'index.ts')],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    target: 'node24',
-    outfile,
-    external: ['node:*', 'zod', 'croner', 'esbuild', 'fast-glob', 'typescript', 'ws'],
-  });
-  return pathToFileURL(outfile).href;
-}
-
-describe('隔离任务 agent 通道（真实 worker 线程 + RPC 宿主执行）', () => {
-  let mockLlm: { server: Server; baseURL: string };
+/** 临时目录放 workspace 内——zod.js 的 `import 'zod'` 需向上解析到 packages/agent/node_modules */
+describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RPC 宿主执行）', () => {
   let dir: string;
+  let markerPath: string;
 
-  beforeAll(async () => {
-    mockLlm = await startMockLlm([
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(path.resolve(__dirname, '..'), '.e2e-agent-isolated-'));
+    markerPath = path.join(dir, 'marker.txt');
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}', 'utf-8');
+    // 工具 handler 模块（宿主执行——写 marker 证明执行发生与 ctx 身份）
+    fs.writeFileSync(
+      path.join(dir, 'tool.js'),
+      [
+        "import { appendFileSync } from 'node:fs';",
+        'export async function handler(args, ctx) {',
+        '  appendFileSync(process.env.AGENT_E2E_MARKER, JSON.stringify({ city: args.city, userId: ctx.currentUserId }) + "\\n");',
+        "  return { weather: '晴' };",
+        '}',
+      ].join('\n'),
+      'utf-8',
+    );
+    // 隔离任务模块（worker 侧仅转发 agent-run——编排循环在宿主）
+    fs.writeFileSync(
+      path.join(dir, 'task-run.js'),
+      [
+        'export async function run(payload, taskCtx) {',
+        "  if (!taskCtx.agent) throw new Error('taskCtx.agent missing (agentChannel off?)');",
+        '  const result = await taskCtx.agent.run(payload.input, { agent: payload.agentName, model: payload.model });',
+        '  return { content: result.content };',
+        '}',
+      ].join('\n'),
+      'utf-8',
+    );
+    // 派发形态对象入参（Input 校验用例：city 传数字必失败）
+    fs.writeFileSync(
+      path.join(dir, 'task-invalid.js'),
+      [
+        'export async function run(_payload, taskCtx) {',
+        '  const result = await taskCtx.agent.run({ city: 123 }, { agent: "assistant", model: "gpt-4o" });',
+        '  return { content: result.content };',
+        '}',
+      ].join('\n'),
+      'utf-8',
+    );
+    // agent Input 的 zod.js 产物（generateAgentArtifacts 同款约定：与声明文件同级，
+    // 导出 `InputSchema`）——真实加载 + safeParse，非 mock 校验
+    fs.writeFileSync(
+      path.join(dir, 'zod.js'),
+      [
+        "import { z } from 'zod';",
+        'export const InputSchema = z.object({ city: z.string() });',
+      ].join('\n'),
+      'utf-8',
+    );
+  });
+
+  afterAll(() => {
+    delete process.env.AGENT_E2E_MARKER;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** 真实 @faapi/agent 插件 setup（生产装配路径）——返回宿主侧 agentRunner */
+  function setupHost(llms: Record<string, LlmConfig>, meta: AgentMetadata, tools: ToolMetadata[]) {
+    const ctx = {
+      rootDir: dir,
+      registries: createAppRegistries(),
+      routes: [],
+      getRoutes: () => [],
+      server: {} as Server,
+      config: { agent: { llms, maxTurns: 5 } },
+      options: undefined,
+    } as unknown as PluginContext;
+    ctx.registries.agent.hydrate([meta]);
+    ctx.registries.tool.hydrate(tools);
+    agentPlugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get();
+    if (!runner) throw new Error('agentRunner not registered by plugin setup');
+    return runner as AgentRunner;
+  }
+
+  /** 宿主执行 ctx：与生产同配方（createTaskToolContext——carry 字段 + 契约字段） */
+  function buildOnAgentRun(runner: AgentRunner) {
+    let hostCtx: unknown;
+    return (request: { agentName: string; input?: unknown; options?: Record<string, unknown> }) => {
+      hostCtx ??= createTaskToolContext({
+        carry: { currentUserId: 42 },
+        tasks: {} as never, // 本 e2e 工具不触任务队列——占位（生产为 scoped TaskClient）
+        log: createLogger('task:weather-task'),
+        signal: new AbortController().signal,
+      });
+      return runner.runAgent(
+        hostCtx as Parameters<AgentRunner['runAgent']>[0],
+        request as Parameters<AgentRunner['runAgent']>[1],
+      );
+    };
+  }
+
+  it('工具与守卫在宿主执行（carry 身份传导），worker 仅转发 agent-run', async () => {
+    const mockLlm = await startMockLlm([
       // 轮 1：请求工具调用
       {
         choices: [
@@ -115,43 +195,6 @@ describe('隔离任务 agent 通道（真实 worker 线程 + RPC 宿主执行）
       // 轮 2：消费工具结果收敛
       { choices: [{ message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }] },
     ]);
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'faapi-agent-isolated-'));
-    fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}', 'utf-8');
-    // 工具 handler 模块（宿主执行——写 marker 证明执行发生与 ctx 身份）
-    fs.writeFileSync(
-      path.join(dir, 'tool.js'),
-      [
-        "import { appendFileSync } from 'node:fs';",
-        'export async function handler(args, ctx) {',
-        '  appendFileSync(process.env.AGENT_E2E_MARKER, JSON.stringify({ city: args.city, userId: ctx.currentUserId }) + "\\n");',
-        "  return { weather: '晴' };",
-        '}',
-      ].join('\n'),
-      'utf-8',
-    );
-    // 隔离任务模块（worker 侧执行——编排循环，工具经 RPC 宿主执行）
-    fs.writeFileSync(
-      path.join(dir, 'task.js'),
-      [
-        'export async function run(payload, taskCtx) {',
-        "  if (!taskCtx.agent) throw new Error('taskCtx.agent missing (agentChannel off?)');",
-        '  const result = await taskCtx.agent.run("weather?", { agent: "assistant", model: "gpt-4o" });',
-        '  return { content: result.content };',
-        '}',
-      ].join('\n'),
-      'utf-8',
-    );
-  });
-
-  afterAll(() => {
-    delete process.env.AGENT_E2E_MARKER;
-    mockLlm.server.close();
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.rmSync(E2E_BUNDLE_DIR, { recursive: true, force: true });
-  });
-
-  it('工具与守卫在宿主执行（carry 身份传导），编排循环在 worker 完成', async () => {
-    const markerPath = path.join(dir, 'marker.txt');
     process.env.AGENT_E2E_MARKER = markerPath;
     const llms: Record<string, LlmConfig> = {
       openai: {
@@ -172,126 +215,140 @@ describe('隔离任务 agent 通道（真实 worker 线程 + RPC 宿主执行）
       systemPrompt: '你是天气助手',
       tools: ['test_weather'],
     };
-
-    // 宿主侧守卫/审计记录（守卫只存在于宿主 executeToolCall——触发即宿主执行证据）
-    const guardCalls: Array<{ name: string; userId: unknown }> = [];
-    const afterCalls: string[] = [];
-    const toolMap = new Map([[toolMeta.name, toolMeta]]);
-    const hostDeps = {
-      providers: new Map(),
-      llms: {},
-      rootDir: dir,
-      getTool: (name: string) => toolMap.get(name),
-      loadToolModule: async (filePath: string) => {
-        const mod = (await import(pathToFileURL(filePath).href)) as {
-          handler: (args: unknown, ctx: unknown) => Promise<unknown>;
-        };
-        return { functionName: 'handler', handler: mod.handler };
-      },
-      config: {
-        afterToolCall: (name: string) => {
-          afterCalls.push(name);
-        },
-      },
-    } as unknown as AgentDeps;
-
-    const runnerSchemaCache = new Map<string, unknown>();
-    // 宿主执行器（e2e 手工形态——生产由 @faapi/agent 插件注册到 agentToolRunner）
-    const runner = {
-      beforeToolCall: async (ctx: unknown, toolName: string, _args: Record<string, unknown>) => {
-        guardCalls.push({
-          name: toolName,
-          userId: (ctx as { currentUserId?: number }).currentUserId,
-        });
-        return undefined;
-      },
-      toolCall: (ctx: unknown, toolName: string, args: Record<string, unknown>) =>
-        executeToolCall(
-          hostDeps,
-          toolName,
-          args,
-          ctx as Parameters<typeof executeToolCall>[3],
-          runnerSchemaCache as never,
-        ),
-      filterTools: async (_ctx: unknown, tools: unknown[]) => tools,
-      resolveSubAgentInput: async () => undefined,
-      resolveSubAgentContext: async () => undefined,
-      // 宿主无 reminders 声明（config 快照未配置 agent.reminders）——undefined
-      resolveReminders: async () => undefined,
-    };
-
-    // 宿主执行 ctx：与生产同配方（createTaskToolContext——carry 字段 + 契约字段）
-    let hostCtx: unknown;
-    const onAgentCallInner = async (kind: string, payload: Record<string, unknown>) => {
-      hostCtx ??= createTaskToolContext({
-        carry: { currentUserId: 42 },
-        tasks: {} as never, // 本 e2e 工具不触任务队列——占位（生产为 scoped TaskClient）
-        log: createLogger('task:weather-task'),
-        signal: new AbortController().signal,
-      });
-      const p = payload as {
-        toolName?: string;
-        args?: Record<string, unknown>;
-        tools?: unknown[];
-        subName?: string;
-        agentName?: string;
-        depth?: number;
-        turn?: number;
-        phase?: string;
-      };
-      switch (kind) {
-        case 'before-tool-call':
-          return runner.beforeToolCall(hostCtx, p.toolName!, p.args ?? {});
-        case 'tool-call':
-          return runner.toolCall(hostCtx, p.toolName!, p.args ?? {});
-        case 'filter-tools':
-          return runner.filterTools(hostCtx, p.tools ?? []);
-        case 'resolve-sub-agent-input':
-          return runner.resolveSubAgentInput(hostCtx, p.subName!, p.args ?? {});
-        case 'resolve-sub-agent-context':
-          return runner.resolveSubAgentContext(hostCtx, p.subName!, p.args ?? {});
-        case 'resolve-reminders':
-          return runner.resolveReminders(hostCtx, {
-            agentName: p.agentName!,
-            depth: p.depth ?? 0,
-            turn: p.turn ?? 0,
-            phase: p.phase === 'everyTurn' ? 'everyTurn' : 'once',
-          });
-        default:
-          throw new Error(`unexpected kind ${kind}`);
-      }
-    };
-    const onAgentCall = onAgentCallInner;
+    const runner = setupHost(llms, agentMeta, [toolMeta]);
 
     const result = await runTaskInWorker({
-      taskModulePath: path.join(dir, 'task.js'),
-      rootDir: dir,
-      agentModuleUrl: await buildAgentBundle(),
-      payload: { markerPath },
+      taskModulePath: path.join(dir, 'task-run.js'),
+      payload: { input: 'weather?', agentName: 'assistant', model: 'gpt-4o' },
       taskCtx: {
         job: { id: 'j1', name: 'weather-task', attempt: 1 },
-        // config 纯数据快照：worker 内 agentConfig 读 .agent（llms → providers）
-        config: { agent: { llms, maxTurns: 5 } },
         carry: { currentUserId: 42 },
       },
       timeoutMs: 20000,
+      // 注册表快照：worker 侧只读查询用（循环在宿主，真实声明不跨线程）
       registries: { agents: [agentMeta], tools: [toolMeta] },
-      llms,
       log: {
         scope: 'task:weather-task',
         fields: { jobId: 'j1', task: 'weather-task', attempt: 1 },
       },
-      onAgentCall,
+      onAgentRun: buildOnAgentRun(runner),
     });
 
-    // 编排循环在 worker 完成：工具结果回传 LLM 后收敛
+    // 编排循环在宿主完成：工具结果回传 LLM 后收敛，结果经 agent-run-result 回 worker
     expect(result).toEqual({ content: 'done' });
-    // 守卫在宿主触发，ctx 携带 carry 合成身份
-    expect(guardCalls).toEqual([{ name: 'test_weather', userId: 42 }]);
-    // afterToolCall 审计在宿主触发
-    expect(afterCalls).toEqual(['test_weather']);
     // 工具 handler 在宿主执行：marker 写入，ctx.currentUserId 来自宿主合成 ctx
     const marker = fs.readFileSync(markerPath, 'utf8').trim();
     expect(JSON.parse(marker)).toEqual({ city: '北京', userId: 42 });
+    // 宿主守卫/审计（config 钩子在宿主 executeToolCall 内触发）
+    expect(mockLlm.requests).toHaveLength(2);
+    mockLlm.server.close();
+  }, 25000);
+
+  it('声明面 reminders（含 builder 函数）在宿主生效（builder 不可克隆但循环在宿主）', async () => {
+    const mockLlm = await startMockLlm([
+      { choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] },
+    ]);
+    const llms: Record<string, LlmConfig> = {
+      openai: {
+        provider: 'openai',
+        apiKey: 'sk-e2e',
+        baseURL: mockLlm.baseURL,
+        models: { 'gpt-4o': {} },
+      },
+    };
+    const toolMeta: ToolMetadata = {
+      name: 'test_weather',
+      functionName: 'handler',
+      filePath: path.join(dir, 'tool.js'),
+    };
+    const agentMeta: AgentMetadata = {
+      name: 'assistant',
+      filePath: path.join(dir, 'agent.js'),
+      systemPrompt: '你是天气助手',
+      // builder 引用宿主闭包（读 ctx 身份）——不可跨线程，快照剥离；宿主执行全量可见
+      reminders: [
+        '固定提醒',
+        {
+          when: 'once',
+          content: (info) => `构建提醒:${(info.ctx as { currentUserId?: number }).currentUserId}`,
+        },
+      ],
+    };
+    const runner = setupHost(llms, agentMeta, [toolMeta]);
+
+    await runTaskInWorker({
+      taskModulePath: path.join(dir, 'task-run.js'),
+      payload: { input: 'weather?', agentName: 'assistant', model: 'gpt-4o' },
+      taskCtx: {
+        job: { id: 'j2', name: 'weather-task', attempt: 1 },
+        carry: { currentUserId: 42 },
+      },
+      timeoutMs: 20000,
+      // 快照投影：reminders（含 builder）剥离后才可结构化克隆——宿主侧真实声明不受影响
+      registries: {
+        agents: [{ ...agentMeta, reminders: undefined }],
+        tools: [toolMeta],
+      },
+      log: {
+        scope: 'task:weather-task',
+        fields: { jobId: 'j2', task: 'weather-task', attempt: 1 },
+      },
+      onAgentRun: buildOnAgentRun(runner),
+    });
+
+    // LLM 请求消息含声明面提醒：静态串 + builder 渲染（builder 拿到宿主合成 ctx 身份）
+    const messagesJson = JSON.stringify(mockLlm.requests[0]?.messages ?? []);
+    expect(messagesJson).toContain('固定提醒');
+    expect(messagesJson).toContain('构建提醒:42');
+    mockLlm.server.close();
+  }, 25000);
+
+  it('Input 校验失败以任务错误浮出（真实 zod.js 产物 safeParse → RPC ok:false → worker reject）', async () => {
+    const mockLlm = await startMockLlm([
+      { choices: [{ message: { role: 'assistant', content: 'never' }, finish_reason: 'stop' }] },
+    ]);
+    const llms: Record<string, LlmConfig> = {
+      openai: {
+        provider: 'openai',
+        apiKey: 'sk-e2e',
+        baseURL: mockLlm.baseURL,
+        models: { 'gpt-4o': {} },
+      },
+    };
+    const toolMeta: ToolMetadata = {
+      name: 'test_weather',
+      functionName: 'handler',
+      filePath: path.join(dir, 'tool.js'),
+    };
+    const agentMeta: AgentMetadata = {
+      name: 'assistant',
+      filePath: path.join(dir, 'agent.js'),
+      systemPrompt: '你是天气助手',
+      inputTypeName: 'Input',
+    };
+    const runner = setupHost(llms, agentMeta, [toolMeta]);
+
+    // 对象入参 { city: 123 } 违反 zod.js 的 city: z.string()——runAgent 抛 AgentError，
+    // RPC ok:false 回传 worker，taskCtx.agent.run reject → 任务以该错误失败
+    await expect(
+      runTaskInWorker({
+        taskModulePath: path.join(dir, 'task-invalid.js'),
+        payload: {},
+        taskCtx: {
+          job: { id: 'j3', name: 'weather-task', attempt: 1 },
+          carry: { currentUserId: 42 },
+        },
+        timeoutMs: 20000,
+        registries: { agents: [agentMeta], tools: [toolMeta] },
+        log: {
+          scope: 'task:weather-task',
+          fields: { jobId: 'j3', task: 'weather-task', attempt: 1 },
+        },
+        onAgentRun: buildOnAgentRun(runner),
+      }),
+    ).rejects.toThrow(/input validation failed/);
+    // 校验在宿主 runAgent 内短路——循环未起，零 LLM 调用
+    expect(mockLlm.requests).toHaveLength(0);
+    mockLlm.server.close();
   }, 25000);
 });

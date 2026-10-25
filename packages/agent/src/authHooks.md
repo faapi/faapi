@@ -30,9 +30,9 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
       tasks / 任务级 logger / job.signal（与 HTTP 同契约，见 taskToolContext.md）
 
 隔离任务（worker 内 taskCtx.agent）
-  └─ worker 侧同配方合成 → AgentDeps.ctx
-      └─ 工具调用 / 钩子 / 派发钩子经 RPC 回宿主执行 ← agentToolRunner（宿主以
-          同配方合成 ctx），业务函数面与资源零跨线程
+  └─ 单次 agent-run RPC 收敛宿主 → 完整循环（含钩子）在宿主执行
+      └─ 宿主 runAgent 以任务合成契约 ctx 构造 Agent（同配方合成 AgentDeps.ctx，
+          见 taskToolContext.md），业务函数面与资源零跨线程
 
 无 app 编排（测试 / 编程式）
   └─ createStandaloneToolContext 显式构造   ← 诚实缺省（tasks 抛错桩等）

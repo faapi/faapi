@@ -11,12 +11,11 @@ import { DEFAULT_AGENT_PATTERNS } from '../agents/scanAgents';
 import { generateAgentArtifacts } from './generateAgentArtifacts';
 import { scanTasks, TASK_PATTERNS } from '../tasks/scanTasks';
 import { generateTaskArtifacts } from './generateTaskArtifacts';
-import { ensureCompiled } from './compileOnDemand';
 import { loadConfig } from '../configs/loadConfig';
 import { loadEnv } from './loadEnv';
 import { startWatcher } from './watcher';
 import { createDevApp } from './createDevApp';
-import { setDevOnDemandEnabled, setDevDist } from './compileOnDemand';
+import { ensureCompiled, setDevOnDemandEnabled, setDevDist } from './compileOnDemand';
 import { copyResources } from './copyResources';
 import { ROUTE_PATTERNS } from '../utils/prodPaths';
 
@@ -153,14 +152,19 @@ export async function generateToolArtifactsForDev(rootDir: string, dist: string)
 }
 
 /**
- * 生成 agent 产物：faapi-agents.js（仅 agent 清单，不含 zod.js）
+ * 生成 agent 产物：定位清单 faapi-agents.js + 编译 agent handler 源码
  *
- * 与 `generateToolArtifactsForDev` 对称——agent 不生成 zod.js（无输入参数，
- * config 块字段在 AST 阶段已提取为字面量）。无 agent 文件时 scanAgents 返回空列表，
- * generateAgentArtifacts 写入空清单。
+ * agent 声明运行时化：清单只含定位事实（name/filePath/inputTypeName），config
+ * 块由启动期动态 import handler 产物模块求值——dev 模式必须先把 handler.ts
+ * 编译出来（ensureCompiled 依赖闭包 + mtime 缓存，与任务同款配方），否则启动期
+ * import 404。Input zod.js 与 build 同款全量生成（声明 Input 即必须有产物）。
+ * 无 agent 文件时 scanAgents 返回空列表，generateAgentArtifacts 写入空清单。
  */
 export async function generateAgentArtifactsForDev(rootDir: string, dist: string): Promise<void> {
   const agents = await scanAgents(rootDir, DEFAULT_AGENT_PATTERNS);
+  for (const agent of agents) {
+    await ensureCompiled(path.resolve(rootDir, agent.filePath), rootDir, dist);
+  }
   await generateAgentArtifacts(agents, rootDir, dist);
 }
 

@@ -3,27 +3,24 @@ import { writeFileSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  serializeAgents,
   writeAgentsModule,
-  hydrateAgents,
   generateAgentArtifacts,
   type SerializedAgentRecord,
 } from './generateAgentArtifacts';
 import { importWithCacheBust } from '../utils/importWithCacheBust';
 import type { AgentManifest } from '../agents/agentTypes';
-import type { AgentMetadata } from '../ast/extractAgentMetadata';
 import { invalidateProgramCache } from '../ast/createProgram';
 
 /**
- * generateAgentArtifacts 测试：从 AgentManifest[] 生成 faapi-agents.js
+ * generateAgentArtifacts 测试：定位清单 faapi-agents.js + Input zod.js（agent 声明
+ * 运行时化后的瘦身管线——config 块字段提取已下线，运行时启动期求值）
  *
  * 覆盖：
- * - serializeAgents：序列化 AgentMetadata → SerializedAgentRecord（filePath 转产物形式）
- * - hydrateAgents：水合 SerializedAgentRecord → AgentMetadata
- * - writeAgentsModule：写入 faapi-agents.js
- * - generateAgentArtifacts：端到端主入口（AST 增强 + 序列化 + 写入）
- *
- * agent 不生成 zod.js（与 tool 的关键差异），仅生成清单产物。
+ * - Input 导出正则检测 → inputTypeName 标记 + zod.js 生成（共享管线，coerce=false）
+ * - 未声明 Input → 单字段交接单模式（无 zod.js、无 inputTypeName）
+ * - skipSchema（测试设施 free-form 模式）
+ * - 定位清单写入（filePath 转产物形式 / dev .faapi 形态 / 空清单）
+ * - writeAgentsModule：JSON 嵌入格式与运行时 import 往返
  */
 describe('generateAgentArtifacts', () => {
   let tempDir: string;
@@ -41,667 +38,142 @@ describe('generateAgentArtifacts', () => {
     invalidateProgramCache();
   });
 
-  // ─── serializeAgents ──────────────────────────────────────────────────
+  /** 写一个 agent handler fixture（可选 Input 类型导出） */
+  function writeAgent(
+    name: string,
+    opts: { withInput?: boolean; configSource?: string } = {},
+  ): AgentManifest {
+    const dir = join(tempDir, 'src', 'agents', name);
+    mkdirSync(dir, { recursive: true });
+    const inputDecl = opts.withInput
+      ? '\nexport interface Input { topic: string; limit?: number }\n'
+      : '';
+    const configSource =
+      opts.configSource ?? `export const config = { systemPrompt: 'You are ${name}' };`;
+    writeFileSync(join(dir, 'handler.ts'), configSource + inputDecl);
+    return { name, filePath: `src/agents/${name}/handler.ts` };
+  }
 
-  describe('serializeAgents', () => {
-    it('完整字段 agent filePath 转产物形式(src/agents/... → dist/agents/...)', () => {
-      const meta: AgentMetadata = {
-        name: 'researcher',
-        description: '研究助手',
-        filePath: 'src/agents/researcher/handler.ts',
-        systemPrompt: 'You are a researcher',
-        tools: ['web-search_search'],
-        agents: ['writer'],
-        maxTurns: 10,
-        inputDescription: '研究任务交接单,含主题与输出格式',
-        inputTypeName: 'Input',
-      };
-      const result = serializeAgents([meta], 'dist');
-      expect(result).toHaveLength(1);
-      expect(result[0]).toEqual({
-        name: 'researcher',
-        description: '研究助手',
-        systemPrompt: 'You are a researcher',
-        tools: ['web-search_search'],
-        agents: ['writer'],
-        maxTurns: 10,
-        inputDescription: '研究任务交接单,含主题与输出格式',
-        inputTypeName: 'Input',
-        filePath: 'dist/agents/researcher/handler.js',
-      });
+  // ─── Input 检测与 zod.js 生成 ─────────────────────────────────────────
+
+  it('声明 Input 的 agent 生成 zod.js + 清单标记 inputTypeName', async () => {
+    const a = writeAgent('researcher', { withInput: true });
+    const records = await generateAgentArtifacts([a], tempDir, 'dist');
+
+    expect(records).toHaveLength(1);
+    expect(records[0]!.inputTypeName).toBe('Input');
+    expect(records[0]!.filePath).toBe('dist/agents/researcher/handler.js');
+    expect(existsSync(join(tempDir, 'dist', 'agents', 'researcher', 'zod.js'))).toBe(true);
+  });
+
+  it('未声明 Input 的 agent 无 zod.js、无 inputTypeName（单字段交接单模式）', async () => {
+    const a = writeAgent('writer');
+    const records = await generateAgentArtifacts([a], tempDir, 'dist');
+
+    expect(records).toHaveLength(1);
+    expect(records[0]!.inputTypeName).toBeUndefined();
+    expect(existsSync(join(tempDir, 'dist', 'agents', 'writer', 'zod.js'))).toBe(false);
+  });
+
+  it('type Input 别名形态同样被检测', async () => {
+    const dir = join(tempDir, 'src', 'agents', 'aliasing');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'handler.ts'),
+      "export const config = { systemPrompt: 'x' };\nexport type Input = { q: string };\n",
+    );
+    const records = await generateAgentArtifacts(
+      [{ name: 'aliasing', filePath: 'src/agents/aliasing/handler.ts' }],
+      tempDir,
+      'dist',
+    );
+    expect(records[0]!.inputTypeName).toBe('Input');
+  });
+
+  it('混合场景：仅声明 Input 的 agent 生成 zod.js，其余跳过（零 AST 成本）', async () => {
+    const withInput = writeAgent('with-input', { withInput: true });
+    const withoutInput = writeAgent('no-input');
+    const records = await generateAgentArtifacts([withInput, withoutInput], tempDir, 'dist');
+
+    expect(records).toHaveLength(2);
+    expect(existsSync(join(tempDir, 'dist', 'agents', 'with-input', 'zod.js'))).toBe(true);
+    expect(existsSync(join(tempDir, 'dist', 'agents', 'no-input', 'zod.js'))).toBe(false);
+    expect(records.find((r) => r.name === 'with-input')?.inputTypeName).toBe('Input');
+    expect(records.find((r) => r.name === 'no-input')?.inputTypeName).toBeUndefined();
+  });
+
+  it('skipSchema 跳过 zod.js 生成（测试设施 free-form 模式），清单照常写入', async () => {
+    const a = writeAgent('researcher', { withInput: true });
+    const records = await generateAgentArtifacts([a], tempDir, 'dist', { skipSchema: true });
+
+    expect(records[0]!.inputTypeName).toBe('Input');
+    expect(existsSync(join(tempDir, 'dist', 'agents', 'researcher', 'zod.js'))).toBe(false);
+  });
+
+  it('生成的 zod.js 导出 InputSchema（coerce=false——LLM JSON 入参）', async () => {
+    const a = writeAgent('researcher', { withInput: true });
+    await generateAgentArtifacts([a], tempDir, 'dist');
+
+    const zodSource = readFileSync(
+      join(tempDir, 'dist', 'agents', 'researcher', 'zod.js'),
+      'utf-8',
+    );
+    expect(zodSource).toContain('InputSchema');
+    expect(zodSource).toContain('// agent researcher → Input');
+  });
+
+  // ─── 定位清单 ─────────────────────────────────────────────────────────
+
+  it('空 manifest 写入空清单', async () => {
+    const records = await generateAgentArtifacts([], tempDir, 'dist');
+    expect(records).toEqual([]);
+
+    const mod = (await importWithCacheBust(join(tempDir, 'dist', 'faapi-agents.js'))) as {
+      agents: SerializedAgentRecord[];
+    };
+    expect(mod.agents).toEqual([]);
+  });
+
+  it('dev 模式 dist 为 .faapi，filePath 转产物形式', async () => {
+    const a = writeAgent('writer');
+    const records = await generateAgentArtifacts([a], tempDir, '.faapi');
+    expect(records[0]!.filePath).toBe('.faapi/agents/writer/handler.js');
+  });
+
+  it('生成的清单经运行时 import 往返还原（含 Input 标记）', async () => {
+    const a = writeAgent('researcher', { withInput: true });
+    const b = writeAgent('writer');
+    await generateAgentArtifacts([a, b], tempDir, 'dist');
+
+    const mod = (await importWithCacheBust(join(tempDir, 'dist', 'faapi-agents.js'))) as {
+      agents: SerializedAgentRecord[];
+    };
+    expect(mod.agents).toHaveLength(2);
+    const researcher = mod.agents.find((r) => r.name === 'researcher');
+    const writer = mod.agents.find((r) => r.name === 'writer');
+    expect(researcher).toEqual({
+      name: 'researcher',
+      filePath: 'dist/agents/researcher/handler.js',
+      inputTypeName: 'Input',
     });
-
-    it('仅必填字段 agent 省略 undefined 字段', () => {
-      const meta: AgentMetadata = {
-        name: 'researcher',
-        filePath: 'src/agents/researcher/handler.ts',
-        // description / systemPrompt / tools / agents / maxTurns / inputDescription 均为 undefined
-      };
-      const result = serializeAgents([meta], 'dist');
-      expect(result[0].name).toBe('researcher');
-      expect(result[0].filePath).toBe('dist/agents/researcher/handler.js');
-      expect(result[0].description).toBeUndefined();
-      expect(result[0].systemPrompt).toBeUndefined();
-      expect(result[0].tools).toBeUndefined();
-      expect(result[0].agents).toBeUndefined();
-      expect(result[0].inputDescription).toBeUndefined();
-      expect(result[0].maxTurns).toBeUndefined();
-      expect(result[0].inputDescription).toBeUndefined();
-    });
-
-    it('systemPromptFile 透传序列化，hydrate 往返还原', () => {
-      const meta: AgentMetadata = {
-        name: 'researcher',
-        filePath: 'src/agents/researcher/handler.ts',
-        systemPromptFile: 'prompts/research.md',
-      };
-      const serialized = serializeAgents([meta], 'dist');
-      expect(serialized[0].systemPromptFile).toBe('prompts/research.md');
-      expect(serialized[0].systemPrompt).toBeUndefined();
-
-      const hydrated = hydrateAgents(
-        JSON.parse(JSON.stringify(serialized)) as SerializedAgentRecord[],
-      );
-      expect(hydrated[0].systemPromptFile).toBe('prompts/research.md');
-      expect(hydrated[0].systemPrompt).toBeUndefined();
-    });
-
-    it('reminders 透传序列化，hydrate 往返还原（单 agent 固定提醒）', () => {
-      const meta: AgentMetadata = {
-        name: 'researcher',
-        filePath: 'src/agents/researcher/handler.ts',
-        systemPrompt: 'x',
-        reminders: ['写作规范', '字数上限 2000'],
-      };
-      const serialized = serializeAgents([meta], 'dist');
-      expect(serialized[0].reminders).toEqual(['写作规范', '字数上限 2000']);
-
-      const hydrated = hydrateAgents(
-        JSON.parse(JSON.stringify(serialized)) as SerializedAgentRecord[],
-      );
-      expect(hydrated[0].reminders).toEqual(['写作规范', '字数上限 2000']);
-    });
-
-    it('dev 模式 dist 为 .faapi', () => {
-      const meta: AgentMetadata = {
-        name: 'researcher',
-        filePath: 'src/agents/researcher/handler.ts',
-      };
-      const result = serializeAgents([meta], '.faapi');
-      expect(result[0].filePath).toBe('.faapi/agents/researcher/handler.js');
-    });
-
-    it('dist 默认为 dist', () => {
-      const meta: AgentMetadata = {
-        name: 'researcher',
-        filePath: 'src/agents/researcher/handler.ts',
-      };
-      const result = serializeAgents([meta]);
-      expect(result[0].filePath).toBe('dist/agents/researcher/handler.js');
-    });
-
-    it('多个 agent 同时序列化', () => {
-      const metas: AgentMetadata[] = [
-        {
-          name: 'researcher',
-          description: '研究助手',
-          filePath: 'src/agents/researcher/handler.ts',
-        },
-        {
-          name: 'writer',
-          description: '写作助手',
-          filePath: 'src/agents/writer/handler.ts',
-          maxTurns: 5,
-        },
-      ];
-      const result = serializeAgents(metas, 'dist');
-      expect(result).toHaveLength(2);
-      expect(result.map((r) => r.name)).toEqual(['researcher', 'writer']);
-      expect(result[0].filePath).toBe('dist/agents/researcher/handler.js');
-      expect(result[1].filePath).toBe('dist/agents/writer/handler.js');
+    expect(writer).toEqual({
+      name: 'writer',
+      filePath: 'dist/agents/writer/handler.js',
     });
   });
 
-  // ─── hydrateAgents ───────────────────────────────────────────────────
+  // ─── writeAgentsModule ────────────────────────────────────────────────
 
-  describe('hydrateAgents', () => {
-    it('字段一一对应还原', () => {
-      const serialized: SerializedAgentRecord[] = [
-        {
-          name: 'researcher',
-          description: '研究助手',
-          systemPrompt: 'You are a researcher',
-          tools: ['web-search_search'],
-          agents: ['writer'],
-          maxTurns: 10,
-          inputDescription: '研究任务交接单,含主题与输出格式',
-          filePath: 'dist/agents/researcher/handler.js',
-        },
-      ];
-      const hydrated = hydrateAgents(serialized);
-      expect(hydrated).toHaveLength(1);
-      expect(hydrated[0]).toEqual({
-        name: 'researcher',
-        description: '研究助手',
-        filePath: 'dist/agents/researcher/handler.js',
-        systemPrompt: 'You are a researcher',
-        tools: ['web-search_search'],
-        agents: ['writer'],
-        maxTurns: 10,
-        inputDescription: '研究任务交接单,含主题与输出格式',
-      });
-    });
+  it('writeAgentsModule 生成带 do-not-edit 头注释的 ESM 模块', async () => {
+    const records: SerializedAgentRecord[] = [
+      { name: 'researcher', filePath: 'dist/agents/researcher/handler.js' },
+    ];
+    const out = join(tempDir, 'faapi-agents.js');
+    await writeAgentsModule(records, out);
 
-    it('undefined 字段正确还原(缺失字段兜底为 undefined)', () => {
-      // 模拟从 JSON.parse 还原后的对象(undefined 字段在 JSON 中被省略)
-      const serialized = [
-        {
-          name: 'researcher',
-          filePath: 'dist/agents/researcher/handler.js',
-          // description / systemPrompt / tools / agents / maxTurns / inputDescription 缺失
-        },
-      ] as unknown as SerializedAgentRecord[];
-      const hydrated = hydrateAgents(serialized);
-      expect(hydrated[0].name).toBe('researcher');
-      expect(hydrated[0].description).toBeUndefined();
-      expect(hydrated[0].systemPrompt).toBeUndefined();
-      expect(hydrated[0].tools).toBeUndefined();
-      expect(hydrated[0].agents).toBeUndefined();
-      expect(hydrated[0].inputDescription).toBeUndefined();
-      expect(hydrated[0].maxTurns).toBeUndefined();
-      expect(hydrated[0].inputDescription).toBeUndefined();
-    });
-
-    it('serializeAgents + hydrateAgents 往返一致(filePath 保持产物形式)', () => {
-      const original: AgentMetadata[] = [
-        {
-          name: 'researcher',
-          description: '研究助手',
-          filePath: 'src/agents/researcher/handler.ts',
-          systemPrompt: 'prompt',
-          inputDescription: '研究任务交接单',
-          inputTypeName: 'Input',
-        },
-        {
-          name: 'writer',
-          filePath: 'src/agents/writer/handler.ts',
-        },
-      ];
-      const serialized = serializeAgents(original, 'dist');
-      const hydrated = hydrateAgents(serialized);
-      // filePath 已转为产物形式,其他字段一致
-      expect(hydrated[0].filePath).toBe('dist/agents/researcher/handler.js');
-      expect(hydrated[0].name).toBe(original[0].name);
-      expect(hydrated[0].description).toBe(original[0].description);
-      expect(hydrated[0].systemPrompt).toBe(original[0].systemPrompt);
-      expect(hydrated[0].maxTurns).toBe(original[0].maxTurns);
-      expect(hydrated[0].inputDescription).toBe(original[0].inputDescription);
-      expect(hydrated[0].inputTypeName).toBe(original[0].inputTypeName);
-      expect(hydrated[1].filePath).toBe('dist/agents/writer/handler.js');
-      expect(hydrated[1].description).toBeUndefined();
-      expect(hydrated[1].inputDescription).toBeUndefined();
-      expect(hydrated[1].inputTypeName).toBeUndefined();
-    });
-  });
-
-  // ─── writeAgentsModule ───────────────────────────────────────────────
-
-  describe('writeAgentsModule', () => {
-    it('写入 faapi-agents.js,内容含 export const agents', async () => {
-      const outputPath = join(tempDir, 'faapi-agents.js');
-      const manifest: SerializedAgentRecord[] = [
-        {
-          name: 'researcher',
-          description: '研究助手',
-          systemPrompt: 'You are a researcher',
-          maxTurns: 10,
-          filePath: 'dist/agents/researcher/handler.js',
-        },
-      ];
-      await writeAgentsModule(manifest, outputPath);
-      expect(existsSync(outputPath)).toBe(true);
-
-      const content = readFileSync(outputPath, 'utf-8');
-      expect(content).toContain('export const agents =');
-      expect(content).toContain('researcher');
-      expect(content).toContain('研究助手');
-      expect(content).toContain('You are a researcher');
-      expect(content).toContain('You are a researcher');
-      expect(content).toContain('dist/agents/researcher/handler.js');
-    });
-
-    it('空清单也写入(空数组)', async () => {
-      const outputPath = join(tempDir, 'faapi-agents.js');
-      await writeAgentsModule([], outputPath);
-      expect(existsSync(outputPath)).toBe(true);
-      const content = readFileSync(outputPath, 'utf-8');
-      expect(content).toContain('export const agents = []');
-    });
-
-    it('自动创建目录', async () => {
-      const outputPath = join(tempDir, 'nested', 'dir', 'faapi-agents.js');
-      await writeAgentsModule([], outputPath);
-      expect(existsSync(outputPath)).toBe(true);
-    });
-  });
-
-  // ─── generateAgentArtifacts(端到端主入口) ──────────────────────────────
-
-  describe('generateAgentArtifacts', () => {
-    /** 创建 agent fixture 文件 */
-    function writeAgent(relPath: string, content: string): string {
-      const absPath = join(tempDir, ...relPath.split('/'));
-      mkdirSync(join(tempDir, ...relPath.split('/').slice(0, -1)), { recursive: true });
-      writeFileSync(absPath, content);
-      return relPath;
-    }
-
-    it('从 AgentManifest[] 生成 faapi-agents.js(含 config 块字段)', async () => {
-      writeAgent(
-        'src/agents/researcher/handler.ts',
-        `/**
- * 研究助手
- */
-export const config = {
-  systemPrompt: 'You are a researcher',
-  tools: ['web-search_search'],
-  agents: ['writer'],
-  maxTurns: 10,
-};
-`,
-      );
-      // researcher 的 agents 引用了 writer——清单需包含 writer（互引校验通过）
-      writeAgent(
-        'src/agents/writer/handler.ts',
-        `export const config = { systemPrompt: 'write well' };\n`,
-      );
-
-      const agents: AgentManifest[] = [
-        {
-          name: 'researcher',
-          filePath: 'src/agents/researcher/handler.ts',
-        },
-        {
-          name: 'writer',
-          filePath: 'src/agents/writer/handler.ts',
-        },
-      ];
-      const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      // 返回值是 AST 增强后的 AgentMetadata
-      expect(metadata).toHaveLength(2);
-      expect(metadata[0].name).toBe('researcher');
-      expect(metadata[0].description).toBe('研究助手');
-      expect(metadata[0].systemPrompt).toBe('You are a researcher');
-      expect(metadata[0].tools).toEqual(['web-search_search']);
-      expect(metadata[0].agents).toEqual(['writer']);
-      expect(metadata[0].maxTurns).toBe(10);
-
-      // faapi-agents.js 生成
-      const agentsPath = join(dist, 'faapi-agents.js');
-      expect(existsSync(agentsPath)).toBe(true);
-      const content = readFileSync(agentsPath, 'utf-8');
-      expect(content).toContain('export const agents =');
-      expect(content).toContain('researcher');
-      expect(content).toContain('研究助手');
-      expect(content).toContain('You are a researcher');
-      expect(content).toContain('web-search_search');
-      expect(content).toContain('You are a researcher');
-      expect(content).toContain('dist/agents/researcher/handler.js');
-    });
-
-    it('agents 引用清单中不存在的 agent → 抛错', async () => {
-      writeAgent(
-        'src/agents/researcher/handler.ts',
-        `export const config = { systemPrompt: 'x', agents: ['ghost'] };\n`,
-      );
-      const agents: AgentManifest[] = [
-        { name: 'researcher', filePath: 'src/agents/researcher/handler.ts' },
-      ];
-      const dist = join(tempDir, 'dist');
-      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(
-        /agents 引用了不存在的 agent: "ghost"/,
-      );
-    });
-
-    it('@agent 标签残留 → 迁移报错（覆盖名已移除）', async () => {
-      writeAgent(
-        'src/agents/researcher/handler.ts',
-        `/** @agent dup */\nexport const config = { systemPrompt: 'x' };\n`,
-      );
-      const agents: AgentManifest[] = [
-        { name: 'researcher', filePath: 'src/agents/researcher/handler.ts' },
-      ];
-      const dist = join(tempDir, 'dist');
-      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/已移除/);
-    });
-
-    it('run 导出 → 迁移报错（自定义 run 已移除）', async () => {
-      writeAgent(
-        'src/agents/writer/handler.ts',
-        `/**
- * 写作助手
- */
-export async function run(ctx) { return 'done'; }
-`,
-      );
-
-      const agents: AgentManifest[] = [
-        {
-          name: 'writer',
-          filePath: 'src/agents/writer/handler.ts',
-        },
-      ];
-      const dist = join(tempDir, 'dist');
-      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/run 已移除/);
-    });
-
-    it('模板字符串 systemPrompt 端到端写入 faapi-agents.js(多行人设)', async () => {
-      // 业务反馈场景:2K 字符多行分析人设用反引号模板字符串书写,
-      // 提取失败静默降级曾导致产物无 systemPrompt 字段、运行时人设整体丢失
-      writeAgent(
-        'src/agents/log-analyzer/handler.ts',
-        'export const config = {\n  systemPrompt: `You are a log analyzer.\nBe careful.`,\n  maxTurns: 3,\n};\n',
-      );
-      const agents: AgentManifest[] = [
-        { name: 'log-analyzer', filePath: 'src/agents/log-analyzer/handler.ts' },
-      ];
-      const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      expect(metadata[0].systemPrompt).toBe('You are a log analyzer.\nBe careful.');
-      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
-      expect(content).toContain('"systemPrompt"');
-      expect(content).toContain('You are a log analyzer.');
-    });
-
-    it('config 块 inputDescription 端到端写入 faapi-agents.js 并水合还原(agent-as-tool 派发交接单)', async () => {
-      // 业务反馈场景:提取器提取了 inputDescription,但序列化/水合两道字段映射
-      // 均漏掉该字段,导致运行时 agent-as-tool 派发工具恒用框架默认文案
-      writeAgent(
-        'src/agents/outliner/handler.ts',
-        `export const config = {
-  systemPrompt: '章节拆解',
-  inputDescription: '章节拆解交接单,含章节原文与拆解维度',
-};
-`,
-      );
-      const agents: AgentManifest[] = [
-        { name: 'outliner', filePath: 'src/agents/outliner/handler.ts' },
-      ];
-      const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      expect(metadata[0].inputDescription).toBe('章节拆解交接单,含章节原文与拆解维度');
-
-      // faapi-agents.js 含 inputDescription 字段(JSON key 与值)
-      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
-      expect(content).toContain('"inputDescription"');
-      expect(content).toContain('章节拆解交接单,含章节原文与拆解维度');
-
-      // import 还原 + 水合——运行时 agentRegistry 拿到的元数据带 inputDescription
-      const mod = (await importWithCacheBust(join(dist, 'faapi-agents.js'))) as {
-        agents: SerializedAgentRecord[];
-      };
-      const hydrated = hydrateAgents(mod.agents);
-      expect(hydrated[0].inputDescription).toBe('章节拆解交接单,含章节原文与拆解维度');
-    });
-
-    it('不生成 zod.js(与 tool 的关键差异)', async () => {
-      writeAgent(
-        'src/agents/researcher/handler.ts',
-        `export const config = { systemPrompt: 'x' };
-`,
-      );
-
-      const agents: AgentManifest[] = [
-        {
-          name: 'researcher',
-          filePath: 'src/agents/researcher/handler.ts',
-        },
-      ];
-      const dist = join(tempDir, 'dist');
-      await generateAgentArtifacts(agents, tempDir, dist);
-
-      // faapi-agents.js 生成
-      expect(existsSync(join(dist, 'faapi-agents.js'))).toBe(true);
-      // 不生成 zod.js(agent 无输入参数,无需 schema)
-      expect(existsSync(join(dist, 'agents', 'researcher', 'zod.js'))).toBe(false);
-    });
-
-    it('空清单不报错(faapi-agents.js 为空数组)', async () => {
-      const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts([], tempDir, dist);
-      expect(metadata).toEqual([]);
-      expect(existsSync(join(dist, 'faapi-agents.js'))).toBe(true);
-      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
-      expect(content).toContain('export const agents = []');
-    });
-
-    it('faapi-agents.js 可被 import 还原为 AgentMetadata[]', async () => {
-      writeAgent(
-        'src/agents/researcher/handler.ts',
-        `/** 研究助手 */
-export const config = { systemPrompt: 'prompt', maxTurns: 4 };
-`,
-      );
-
-      const agents: AgentManifest[] = [
-        {
-          name: 'researcher',
-          filePath: 'src/agents/researcher/handler.ts',
-        },
-      ];
-      // dist 用相对路径(避免 toProdFilePath 拼出绝对路径)
-      const dist = 'dist';
-      await generateAgentArtifacts(agents, tempDir, dist);
-
-      // import faapi-agents.js
-      const agentsPath = join(tempDir, dist, 'faapi-agents.js');
-      const mod = (await importWithCacheBust(agentsPath)) as {
-        agents: SerializedAgentRecord[];
-      };
-      expect(mod.agents).toHaveLength(1);
-      expect(mod.agents[0].name).toBe('researcher');
-      expect(mod.agents[0].description).toBe('研究助手');
-      expect(mod.agents[0].systemPrompt).toBe('prompt');
-      expect(mod.agents[0].maxTurns).toBe(4);
-      expect(mod.agents[0].filePath).toBe('dist/agents/researcher/handler.js');
-
-      // 用 hydrateAgents 还原
-      const hydrated = hydrateAgents(mod.agents);
-      expect(hydrated).toHaveLength(1);
-      expect(hydrated[0].name).toBe('researcher');
-      expect(hydrated[0].description).toBe('研究助手');
-      expect(hydrated[0].systemPrompt).toBe('prompt');
-    });
-
-    it('多个 agent 混合生成（多 agent 端到端写盘）', async () => {
-      writeAgent(
-        'src/agents/researcher/handler.ts',
-        `/** 研究助手 */
-export const config = { systemPrompt: 'x', maxTurns: 4 };
-`,
-      );
-      writeAgent(
-        'src/agents/writer/handler.ts',
-        `/** 写作助手 */
-export const config = { systemPrompt: 'write well' };
-`,
-      );
-
-      const agents: AgentManifest[] = [
-        {
-          name: 'researcher',
-          filePath: 'src/agents/researcher/handler.ts',
-        },
-        {
-          name: 'writer',
-          filePath: 'src/agents/writer/handler.ts',
-        },
-      ];
-      const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      // faapi-agents.js 含两个 agent
-      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
-      expect(content).toContain('researcher');
-      expect(content).toContain('writer');
-      expect(content).toContain('研究助手');
-      expect(content).toContain('写作助手');
-
-      // metadata 各自字段正确
-      expect(metadata).toHaveLength(2);
-      expect(metadata[0].name).toBe('researcher');
-      expect(metadata[0].maxTurns).toBe(4);
-      expect(metadata[1].name).toBe('writer');
-      expect(metadata[1].systemPrompt).toBe('write well');
-      expect(metadata[1].maxTurns).toBeUndefined();
-    });
-
-    it('dev 模式 dist 为 .faapi', async () => {
-      writeAgent(
-        'src/agents/researcher/handler.ts',
-        `export const config = { systemPrompt: 'x' };
-`,
-      );
-
-      const agents: AgentManifest[] = [
-        {
-          name: 'researcher',
-          filePath: 'src/agents/researcher/handler.ts',
-        },
-      ];
-      const dist = join(tempDir, '.faapi');
-      await generateAgentArtifacts(agents, tempDir, dist);
-
-      expect(existsSync(join(dist, 'faapi-agents.js'))).toBe(true);
-      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
-      expect(content).toContain('.faapi/agents/researcher/handler.js');
-    });
-
-    it('@agent 标签残留 → 迁移报错（目录推导名不受标签影响）', async () => {
-      writeAgent(
-        'src/agents/researcher/handler.ts',
-        `/**
- * 研究助手
- * @agent custom-researcher
- */
-export const config = { systemPrompt: 'x' };
-`,
-      );
-
-      const agents: AgentManifest[] = [
-        {
-          name: 'researcher', // 目录推导名
-          filePath: 'src/agents/researcher/handler.ts',
-        },
-      ];
-      const dist = join(tempDir, 'dist');
-      await expect(generateAgentArtifacts(agents, tempDir, dist)).rejects.toThrow(/已移除/);
-    });
-  });
-
-  // ─── 派发入参 schema 声明（Input 声明 → zod.js 生成） ───────────────────
-
-  describe('agent zod.js 生成（Input 声明）', () => {
-    /** 创建 agent fixture 文件（与 generateAgentArtifacts describe 内的同名 helper 一致） */
-    function writeAgent(relPath: string, content: string): string {
-      const absPath = join(tempDir, ...relPath.split('/'));
-      mkdirSync(join(tempDir, ...relPath.split('/').slice(0, -1)), { recursive: true });
-      writeFileSync(absPath, content);
-      return relPath;
-    }
-
-    it('声明 interface Input → 生成 zod.js 且可 import 校验', async () => {
-      writeAgent(
-        'src/agents/chapter-writer/handler.ts',
-        `export const config = { systemPrompt: 'write well' };
-export interface Input {
-  /** 小说 ID */
-  novelId: string;
-  /** 章节 ID */
-  chapterId: number;
-}
-`,
-      );
-      const agents: AgentManifest[] = [
-        { name: 'chapter-writer', filePath: 'src/agents/chapter-writer/handler.ts' },
-      ];
-      const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      // 元数据记 inputTypeName
-      expect(metadata[0].inputTypeName).toBe('Input');
-
-      // zod.js 与 handler.js 同级,导出 InputSchema
-      const zodPath = join(dist, 'agents', 'chapter-writer', 'zod.js');
-      expect(existsSync(zodPath)).toBe(true);
-      const zodMod = await importWithCacheBust(zodPath);
-      const schema = (zodMod as Record<string, unknown>).InputSchema as {
-        safeParse: (v: unknown) => { success: boolean; data?: unknown };
-      };
-      expect(schema).toBeDefined();
-      const ok = schema.safeParse({ novelId: 'n1', chapterId: 3 });
-      expect(ok.success).toBe(true);
-      expect(ok.data).toEqual({ novelId: 'n1', chapterId: 3 });
-      expect(schema.safeParse({ novelId: 'n1' }).success).toBe(false);
-
-      // 清单含 inputTypeName
-      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
-      expect(content).toContain('"inputTypeName": "Input"');
-    });
-
-    it('type Input 声明同样生成 zod.js', async () => {
-      writeAgent(
-        'src/agents/writer/handler.ts',
-        `export const config = { systemPrompt: 'x' };
-export type Input = { topic: string };
-`,
-      );
-      const agents: AgentManifest[] = [
-        { name: 'writer', filePath: 'src/agents/writer/handler.ts' },
-      ];
-      const dist = join(tempDir, 'dist');
-      await generateAgentArtifacts(agents, tempDir, dist);
-
-      expect(existsSync(join(dist, 'agents', 'writer', 'zod.js'))).toBe(true);
-    });
-
-    it('未声明 Input → 不生成 zod.js,清单无 inputTypeName', async () => {
-      writeAgent('src/agents/writer/handler.ts', `export const config = { systemPrompt: 'x' };\n`);
-      const agents: AgentManifest[] = [
-        { name: 'writer', filePath: 'src/agents/writer/handler.ts' },
-      ];
-      const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      expect(metadata[0].inputTypeName).toBeUndefined();
-      expect(existsSync(join(dist, 'agents', 'writer', 'zod.js'))).toBe(false);
-      const content = readFileSync(join(dist, 'faapi-agents.js'), 'utf-8');
-      expect(content).not.toContain('inputTypeName');
-    });
-
-    it('混合清单（一个声明一个未声明）→ 只为声明者生成', async () => {
-      writeAgent(
-        'src/agents/chapter-writer/handler.ts',
-        `export const config = { systemPrompt: 'x', agents: ['plain'] };
-export interface Input { novelId: string };
-`,
-      );
-      writeAgent('src/agents/plain/handler.ts', `export const config = { systemPrompt: 'y' };\n`);
-      const agents: AgentManifest[] = [
-        { name: 'chapter-writer', filePath: 'src/agents/chapter-writer/handler.ts' },
-        { name: 'plain', filePath: 'src/agents/plain/handler.ts' },
-      ];
-      const dist = join(tempDir, 'dist');
-      const metadata = await generateAgentArtifacts(agents, tempDir, dist);
-
-      expect(metadata[0].inputTypeName).toBe('Input');
-      expect(metadata[1].inputTypeName).toBeUndefined();
-      expect(existsSync(join(dist, 'agents', 'chapter-writer', 'zod.js'))).toBe(true);
-      expect(existsSync(join(dist, 'agents', 'plain', 'zod.js'))).toBe(false);
-    });
+    const source = readFileSync(out, 'utf-8');
+    expect(source).toContain('自动生成,请勿手动编辑');
+    expect(source).toContain('export const agents');
+    expect(source).toContain('"name": "researcher"');
   });
 });

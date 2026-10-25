@@ -2,8 +2,8 @@ import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { TaskRegistriesSnapshot } from './taskTypes';
+import type { AgentRunRequest } from '../injection/registries';
 import type { WorkerEntryData, SerializedWorkerError } from './workerEntry';
-import type { LlmConfig } from '../configs/configTypes';
 import type { LogEntry, LogLevel } from '../loggers/loggerTypes';
 
 /**
@@ -63,16 +63,6 @@ export type TaskWorkerRunner = typeof runTaskInWorker;
 export interface TaskWorkerOptions {
   /** 任务产物模块绝对路径（`<dist>/tasks/<dir>/task.js`） */
   taskModulePath: string;
-  /**
-   * 项目根目录（隔离 agent 通道用——随 workerData 下发，worker 内组装 AgentDeps
-   * 时作为 schema 解析器的产物定位根；仅 `onAgentCall` 注入时消费）
-   */
-  rootDir?: string;
-  /**
-   * `@faapi/agent` 模块 file:// URL（隔离 agent 通道的可注入覆盖——测试注入
-   * bundle 产物；缺省 worker 内按裸说明符 `@faapi/agent` 解析生产安装包）
-   */
-  agentModuleUrl?: string;
   payload: unknown;
   /** signal 由执行器构造（abort/terminate 时触发），宿主只传 job 信息 */
   taskCtx: {
@@ -120,12 +110,6 @@ export interface TaskWorkerOptions {
    */
   registries?: TaskRegistriesSnapshot;
   /**
-   * `agent.llms` 纯数据快照（postMessage 结构化克隆传入，worker 内动态加载
-   * `@faapi/agent` 重建轻量补全通道注入 taskCtx.llm）——缺省不传，worker 内
-   * taskCtx.llm 为 undefined
-   */
-  llms?: Record<string, LlmConfig>;
-  /**
    * 任务日志配置（纯数据，postMessage 传入，worker 内联重建日志器注入 taskCtx.log；
    * 缺省时 taskCtx.log 为 undefined）：scope/fields 与进程内路径一致（`task:<name>`
    * + jobId/task/attempt），level 为宿主侧生效的全局级别（worker 侧预过滤，
@@ -166,13 +150,22 @@ export interface TaskWorkerOptions {
    */
   onSuspend?: (state?: unknown) => Promise<void>;
   /**
-   * 隔离任务 agent RPC 分派（worker 内 agent 编排循环的工具调用/钩子经
-   * `{ type: 'agent-call' }` 消息回传宿主执行，结果/错误按 seq 回传）——语义层
-   * 注入（闭包持有 agentToolRunner 与任务合成契约 ctx）；不传则 run 消息不携带
+   * agent 循环执行分派（worker 内 `taskCtx.agent.run` 经单次 `{ type: 'agent-run' }`
+   * 消息回传宿主，宿主构造 Agent 跑完整编排循环，结果/错误按 seq 回传）——语义层
+   * 注入（闭包持有 agentRunner 与任务合成契约 ctx）；不传则 run 消息不携带
    * `agentChannel`，worker 内 taskCtx.agent 不挂载（插件未加载，能力不存在）。
-   * 返回值/参数须可结构化克隆（不可克隆按执行错误回传，与 tasks-call 同口径）
+   * 请求与返回值须可结构化克隆（不可克隆按执行错误回传，与 tasks-call 同口径）
    */
-  onAgentCall?: (kind: string, payload: Record<string, unknown>) => Promise<unknown>;
+  onAgentRun?: (request: AgentRunRequest) => Promise<unknown>;
+  /**
+   * LLM 一次性补全分派（worker 内 `taskCtx.llm.complete` 经 `{ type: 'llm-complete' }`
+   * 消息回传宿主执行——宿主从 AppRegistries.llm 取注册通道跑 LLM IO，结果/错误按
+   * seq 回传）——语义层注入（闭包持有注册通道，派发时刻取值快照）；不传则 run 消息
+   * 不携带 `llmChannel`，worker 内 taskCtx.llm 不挂载（通道未注册，能力不存在）。
+   * 入参与返回值须可结构化克隆（signal 由执行器注入宿主侧 AbortController——worker
+   * 侧业务级取消经 `{ type: 'llm-abort' }` 触发；不可克隆按调用错误拒绝）
+   */
+  onLlmComplete?: (input: string, options?: Record<string, unknown>) => Promise<string>;
 }
 
 /** worker 错误回传负载（serializeError 的结构化克隆产物） */
@@ -221,8 +214,6 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         workerData: {
           moduleUrl,
           resourcesDir: taskCtx.resourcesDir,
-          rootDir: options.rootDir,
-          agentModuleUrl: options.agentModuleUrl,
         } satisfies WorkerEntryData,
         // 堆上限透传（meta.maxOldGenerationSizeMb）：超限 V8 杀线程，error 事件
         // reject → 任务 failed；未声明不传——worker 不设资源限制
@@ -239,6 +230,8 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
     let phase: 'running' | 'grace' | 'settled' = 'running';
     let cancelReason = '';
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    /** llm-complete 的宿主侧取消控制器（seq 映射；业务级 llm-abort 触发 abort） */
+    const llmControllers = new Map<number, AbortController>();
     const finish = (settle: () => void): void => {
       if (phase === 'settled') return;
       phase = 'settled';
@@ -287,8 +280,9 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
         method?: string;
         args?: unknown[];
         state?: unknown;
-        kind?: string;
-        payload?: Record<string, unknown>;
+        agentName?: string;
+        input?: string | Record<string, unknown>;
+        options?: Record<string, unknown>;
       }) => {
         // taskCtx.tasks RPC：worker 内代理调用回传宿主执行（结果/错误按 seq 回传）。
         // running/grace 两阶段都处理——run 在宽限期内仍可能 await 一次入队；settled
@@ -346,26 +340,32 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
             });
           return;
         }
-        if (msg?.type === 'agent-call') {
-          // 隔离 agent RPC：worker 内编排循环的工具调用/钩子回传宿主执行（runner
-          // 与任务合成 ctx 由语义层注入）。running/grace 两阶段都处理（与 tasks-call
-          // 同口径——调用随任务超时两段式取消一并终止）；settled 后不会再有消息
-          const { seq, kind, payload } = msg;
+        if (msg?.type === 'agent-run') {
+          // agent-run RPC：worker 内 taskCtx.agent.run 转发请求，宿主构造 Agent
+          // 跑完整编排循环（单次 RPC 收敛——工具/钩子/reminders/sub-agent 全在宿主）。
+          // running/grace 两阶段都处理（与 tasks-call 同口径——调用随任务超时两段式
+          // 取消一并终止）；settled 后不会再有消息
+          const { seq, agentName, input, options: runOptions } = msg;
+          const request: AgentRunRequest = {
+            agentName: agentName as string,
+            ...(input !== undefined ? { input: input as string } : {}),
+            ...(runOptions !== undefined ? { options: runOptions as Record<string, unknown> } : {}),
+          };
           const replyAgent = (body: Record<string, unknown>) => {
             try {
-              worker.postMessage({ type: 'agent-result', seq, ...body });
+              worker.postMessage({ type: 'agent-run-result', seq, ...body });
             } catch (err) {
-              // 回传值不可克隆：按执行错误回传（工具结果须可结构化克隆——能力边界）
+              // 回传值不可克隆：按执行错误回传（ReactLoopResult 须可结构化克隆——能力边界）
               try {
                 worker.postMessage({
-                  type: 'agent-result',
+                  type: 'agent-run-result',
                   seq,
                   ok: false,
                   error: {
                     name: 'Error',
                     message:
-                      `agent RPC "${kind}" result is not cloneable across the worker boundary: ${String(err)}` +
-                      '. Keep tool results plain data (JSON-serializable values).',
+                      'agent-run result is not cloneable across the worker boundary: ' +
+                      `${String(err)}. The agent loop result must be plain data.`,
                     stack: undefined,
                     props: {},
                   } satisfies SerializedWorkerError,
@@ -375,12 +375,13 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
               }
             }
           };
-          if (!options.onAgentCall) {
+          if (!options.onAgentRun) {
             replyAgent({
               ok: false,
               error: {
                 name: 'Error',
-                message: `agent RPC "${kind}" is unavailable: no host handler was provided for this execution`,
+                message:
+                  'taskCtx.agent.run is unavailable: no host handler was provided for this execution',
                 stack: undefined,
                 props: {},
               } satisfies SerializedWorkerError,
@@ -388,7 +389,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
             return;
           }
           options
-            .onAgentCall(kind!, (payload as Record<string, unknown>) ?? {})
+            .onAgentRun(request)
             .then((value) => replyAgent({ ok: true, value }))
             .catch((err: unknown) => {
               replyAgent({
@@ -401,6 +402,78 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
                 } satisfies SerializedWorkerError,
               });
             });
+          return;
+        }
+        if (msg?.type === 'llm-complete') {
+          // llm 一次性补全 RPC：worker 内 taskCtx.llm.complete 纯转发，宿主从
+          // AppRegistries.llm 注册通道跑 LLM IO（worker 不加载 @faapi/agent）。
+          // running/grace 两阶段都处理（与 tasks-call 同口径——调用随任务超时两段式
+          // 取消一并终止）；settled 后不会再有消息。signal 由宿主侧 AbortController
+          // 注入——worker 侧业务级取消经 llm-abort 触发（与任务取消是两回事，不接
+          // job.signal：取消只在 worker 生效）
+          const { seq, input, options: completeOptions } = msg;
+          const controller = new AbortController();
+          llmControllers.set(seq!, controller);
+          const replyLlm = (body: Record<string, unknown>) => {
+            try {
+              worker.postMessage({ type: 'llm-result', seq, ...body });
+            } catch (err) {
+              // 回传值不可克隆（理论边缘——返回值恒字符串）：按调用错误回传
+              try {
+                worker.postMessage({
+                  type: 'llm-result',
+                  seq,
+                  ok: false,
+                  error: {
+                    name: 'Error',
+                    message: `taskCtx.llm.complete result is not cloneable: ${String(err)}`,
+                    stack: undefined,
+                    props: {},
+                  } satisfies SerializedWorkerError,
+                });
+              } catch {
+                // 连错误负载都不可克隆（理论上不发生）——放弃回传，worker 侧按挂起处理
+              }
+            }
+          };
+          if (!options.onLlmComplete) {
+            replyLlm({
+              ok: false,
+              error: {
+                name: 'Error',
+                message:
+                  'taskCtx.llm.complete is unavailable: no host handler was provided for this execution',
+                stack: undefined,
+                props: {},
+              } satisfies SerializedWorkerError,
+            });
+            return;
+          }
+          options
+            .onLlmComplete(input as string, {
+              ...(completeOptions ?? {}),
+              signal: controller.signal,
+            })
+            .then((value) => replyLlm({ ok: true, value }))
+            .catch((err: unknown) => {
+              replyLlm({
+                ok: false,
+                error: {
+                  name: err instanceof Error ? err.name : 'Error',
+                  message: err instanceof Error ? err.message : String(err),
+                  stack: err instanceof Error ? err.stack : undefined,
+                  props: {},
+                } satisfies SerializedWorkerError,
+              });
+            })
+            .finally(() => llmControllers.delete(seq!));
+          return;
+        }
+        if (msg?.type === 'llm-abort') {
+          // 业务级取消转发：worker 侧 AbortSignal abort → 宿主 abort 对应请求
+          // （provider 层抛 AgentAbortError → llm-result ok:false 回传 reject）。
+          // 未知/已完成 seq 静默忽略（abort 与完成竞态）
+          llmControllers.get(msg.seq!)?.abort();
           return;
         }
         if (msg?.type === 'suspend') {
@@ -509,11 +582,13 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
           ...(taskCtx.resumed !== undefined ? { resumed: taskCtx.resumed } : {}),
         },
         registries: options.registries,
-        llms: options.llms,
         log: options.log,
-        // 隔离 agent 通道开关：onAgentCall 已注入（agentToolRunner 已注册）才挂载
+        // 隔离 llm 通道开关：onLlmComplete 已注入（AppRegistries.llm 已注册通道）
+        // 才挂载 worker 内 taskCtx.llm——通道未注册时能力不存在，worker 不组装
+        llmChannel: options.onLlmComplete !== undefined,
+        // 隔离 agent 通道开关：onAgentRun 已注入（agentRunner 已注册）才挂载
         // worker 内 taskCtx.agent——插件未加载时能力不存在，worker 不组装
-        agentChannel: options.onAgentCall !== undefined,
+        agentChannel: options.onAgentRun !== undefined,
       });
     } catch (err) {
       finish(() =>

@@ -16,8 +16,9 @@ dev 模式与 `faapi build`（产线构建）为两套独立代码路径，仅�
 4. `loadConfig(rootDir, '.faapi')` 读应用行为配置
 5. `generateRouteArtifacts` 生成 `.faapi/faapi-routes.js`（**仅路由清单，不编译 handler.js，不生成 zod.js**——按需模式）
 6. `generateToolArtifactsForDev` 生成 `.faapi/faapi-tools.js`（**仅 tool 清单，不生成 tool zod.js**——按需模式）
-7. `createDevApp({ rootDir, port })` + `app.listen()` 启动 dev 应用（含 reloadRoutes/reloadTools 热替换能力）
-8. `startWatcher({ rootDir, app, devDist: '.faapi' })`（文件变化时增量编译 + 重生成 config + 调 `app.reloadRoutes()` + `app.reloadTools()`）
+7. `generateAgentArtifactsForDev` 生成 `.faapi/faapi-agents.js`（**定位清单**；声明 `Input` 的 agent 生成 zod.js——dev/prod 同路径全量，与 tool 的按需策略不同）
+8. `createDevApp({ rootDir, port })` + `app.listen()` 启动 dev 应用（含 reloadRoutes/reloadTools/reloadAgents 热替换能力）
+9. `startWatcher({ rootDir, app, devDist: '.faapi' })`（文件变化时增量编译 + 重生成 config + 调 `app.reloadAll()`——routes/tools/agents/tasks 四路批量热替换，Program 缓存只在开头失效一次）
 
 CLI 选项（`--port`）优先于环境变量（`PORT`）。
 
@@ -47,7 +48,7 @@ dev 启动时**只编译配置和路由清单**，不全量编译 handler.js / �
 
 ## 与 createDevApp 的协作
 
-`devCommand` 直接调用 `createDevApp()` 获取 app 实例。devCommand 持有 app 引用后直接传给 `startWatcher`，watcher 文件变化时调用 `app.reloadRoutes()` 实现热替换。
+`devCommand` 直接调用 `createDevApp()` 获取 app 实例。devCommand 持有 app 引用后直接传给 `startWatcher`，watcher 文件变化时调用 `app.reloadAll()` 实现四路批量热替换（内部依次 reloadRoutes / reloadTools / reloadAgents / reloadTasks）。
 
 `createDevApp()` 通过 `FAAPI_DIST` 读 dev 产物，无需任何 dev/prod 模式判断。
 
@@ -70,10 +71,19 @@ dev 启动时**只编译配置和路由清单**，不全量编译 handler.js / �
 
 与 `generateRouteArtifacts` 对称——dev 按需模式仅生成清单，tool zod.js 首次请求时按需生成。无 tool 文件时 `scanTools` 返回空列表，`generateToolArtifacts` 写入空清单。
 
+## generateAgentArtifactsForDev
+
+`devCommand` 导出 `generateAgentArtifactsForDev(rootDir, dist)` 函数：
+
+1. `scanAgents` 扫描 agents（零 import，仅读源码文件列表 + 目录名推导，产出定位清单——详见 [scanAgents](../agents/scanAgents.md)）
+2. `generateAgentArtifacts` 生成 `faapi-agents.js` 定位清单（Input 正则检测 + 声明 `Input` 的 agent zod.js，dev/prod 同路径全量——不引入按需跳过，理由见 [generateAgentArtifacts](./generateAgentArtifacts.md)）
+
+注意 agent 的 config 块不在构建期生成——运行时 `createDevApp` 启动时经 `loadAndHydrateAgents` 动态 import handler 产物求值（见 [loadAgents](../agents/loadAgents.md)），本步骤只产定位事实。无 agent 文件时 `scanAgents` 返回空列表，`generateAgentArtifacts` 写入空清单。
+
 ## 相关模块
 
 - [compileOnDemand](./compileOnDemand.md) — 按需编译核心：`ensureCompiled` / `ensureSchemaGenerated` / `deleteSchemaFiles`
-- `createDevApp.ts` - `devCommand` 直接调用，启动 dev 应用（含 reloadRoutes/reloadTools）
+- `createDevApp.ts` - `devCommand` 直接调用，启动 dev 应用（含 reloadRoutes/reloadTools/reloadAgents/reloadTasks）
 - `createAppCore.ts` - `createDevApp` 的共享编排核心（createAppBase）
 - `compileDevRoutes.ts` - 按需编译时由 `ensureCompiled` 单文件调用
 - `compileConfig.ts` - 编译配置源码为 `.faapi/faapi-config.js`
@@ -81,4 +91,6 @@ dev 启动时**只编译配置和路由清单**，不全量编译 handler.js / �
 - `generateSchemaFiles.ts` - 按需生成时由 `ensureSchemaGenerated` 单文件调用
 - `../tools/scanTools.ts` - `generateToolArtifactsForDev` 扫描 tools（导出 `TOOL_PATTERNS`）
 - `./generateToolArtifacts.ts` - `generateToolArtifactsForDev` 生成 `faapi-tools.js` + tool zod.js
-- `watcher.ts` - `devCommand` 启动的文件 watcher，接收 app 引用，调 `app.reloadRoutes()` + `app.reloadTools()`
+- `../agents/scanAgents.ts` - `generateAgentArtifactsForDev` 扫描 agents（导出 `DEFAULT_AGENT_PATTERNS`）
+- `./generateAgentArtifacts.ts` - `generateAgentArtifactsForDev` 生成 `faapi-agents.js` 定位清单 + Input zod.js
+- `watcher.ts` - `devCommand` 启动的文件 watcher，接收 app 引用，调 `app.reloadAll()` 批量热替换

@@ -72,7 +72,12 @@ const DEFAULT_SUBAGENT_INPUT_DESCRIPTION =
  * 去掉 JSON 壳，子代理 LLM 直接读交接单原文;其余形状（宽松模型多传字段/传空对象/
  * 任意 JSON）`JSON.stringify` 兜底，不丢信息、向后兼容
  */
-function extractSubAgentUserInput(args: Record<string, unknown>): string {
+/**
+ * 派发入参 → sub-agent user 消息文本（args 恰为单字段 `{ input: <string> }` 时
+ * 直传字符串,其余形状 stringify 兜底）。隔离任务宿主执行器（plugin.runAgent）对
+ * 结构化顶层入参复用同一约定——与 sub-agent 派发的 user 消息构造单一来源。
+ */
+export function extractSubAgentUserInput(args: Record<string, unknown>): string {
   const keys = Object.keys(args);
   if (keys.length === 1 && keys[0] === 'input' && typeof args.input === 'string') {
     return args.input;
@@ -853,8 +858,9 @@ export class Agent {
     // reminders 解析器装配（见 reminders.md）：deps.resolveReminders 钩子接线时
     // 钩子是唯一供数源（本地声明整体忽略,避免双渲染——隔离任务 RPC 垫片 / 业务
     // decorateDeps 走此路,合并语义由钩子实现方在宿主侧负责）;否则本地引擎合并
-    // 全局声明（config.agent.reminders）与单 agent 声明（meta.reminders,构建期
-    // 字面量提取,全部 once）。specs 为空时不装配（逐字节现状）
+    // 全局声明（config.agent.reminders）与单 agent 声明（meta.reminders,启动期
+    // 运行时求值,完整 ReminderSpec 形态——string 默认 once / 函数默认 everyTurn）。
+    // specs 为空时不装配（逐字节现状）
     const reminders = this.deps.resolveReminders
       ? createHookReminderResolver(this.deps.resolveReminders, {
           agentName,
@@ -900,7 +906,7 @@ export class Agent {
    *
    * 经主包免传参 `readResource` 读取（相对产物 resources 目录，越界/符号链接逃逸
    * 防护内建；读取根在 app 启动时绑定、隔离 worker 由 wrapper 播种，见主包
-   * utils/readResource.md）。构建期已保证 systemPrompt 与 systemPromptFile 二选一
+   * utils/readResource.md）。启动期已保证 systemPrompt 与 systemPromptFile 二选一
    * ——读取失败（未绑定 / 文件缺失 / 越界）抛 `AgentError`，不静默降级。
    *
    * agent config 声明 `vars` 时（提示词模板注入,见 promptTemplate.md）base 在装饰
@@ -915,7 +921,25 @@ export class Agent {
    */
   private async resolveSystemPrompt(agentName: string, meta: AgentCore): Promise<string> {
     let base: string;
-    if (!meta.systemPromptFile) {
+    if (typeof meta.systemPrompt === 'function') {
+      // 工厂函数形态：每次 run 求值（与 systemPromptFile「每次 run 读文件」语义
+      // 对齐——按 env/DB 等运行时状态切换人设）。返回非 string 显式抛 AgentError
+      // （启动期无法验证工厂返回类型，run 期兜底）。
+      let rendered: string | Promise<string>;
+      try {
+        rendered = meta.systemPrompt();
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new AgentError(`Agent "${agentName}" systemPrompt factory threw — ${reason}`);
+      }
+      const resolved = await rendered;
+      if (typeof resolved !== 'string') {
+        throw new AgentError(
+          `Agent "${agentName}" systemPrompt factory must return string — got ${typeof resolved}`,
+        );
+      }
+      base = resolved;
+    } else if (!meta.systemPromptFile) {
       base = meta.systemPrompt ?? '';
     } else {
       try {

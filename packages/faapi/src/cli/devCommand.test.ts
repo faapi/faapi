@@ -38,6 +38,7 @@ vi.mock('./createDevApp', () => ({
 vi.mock('./compileOnDemand', () => ({
   setDevOnDemandEnabled: vi.fn(),
   setDevDist: vi.fn(),
+  ensureCompiled: vi.fn(async () => {}),
 }));
 // mock generateRouteArtifacts 的依赖（scanRoutes/serializeRoutes/writeRoutesModule）
 vi.mock('../routers/scanRoutes', () => ({
@@ -307,7 +308,7 @@ describe('devCommand', () => {
     });
 
     it('generateAgentArtifacts 传入 scanAgents 返回值', async () => {
-      const fakeAgents = [{ name: 'agent1' }] as any;
+      const fakeAgents = [{ name: 'agent1', filePath: 'src/agents/agent1/handler.ts' }] as any;
       vi.mocked(scanAgents).mockResolvedValue(fakeAgents);
       await generateAgentArtifactsForDev('/root', '.faapi');
       expect(generateAgentArtifacts).toHaveBeenCalledWith(fakeAgents, '/root', '.faapi');

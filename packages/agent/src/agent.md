@@ -66,7 +66,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | --- | --- |
 | HTTP 请求（@faapi/agent 插件工厂） | `toAgentToolContext` 从完整请求 ctx 收窄（契约字段 + 全量字段透传） |
 | 进程内任务（`taskCtx.agent` 静默通道） | `createTaskToolContext` 合成：carry 数据字段落顶层 + scoped TaskClient / 任务级 logger / `job.signal` |
-| 隔离任务（worker 内 `taskCtx.agent`） | worker 侧同配方合成；工具与钩子经 RPC 回宿主执行（宿主以同配方合成，见 [taskToolContext.md](../../faapi/src/tasks/taskToolContext.md)） |
+| 隔离任务（worker 内 `taskCtx.agent`） | run-only 句柄（单次 agent-run RPC 收敛宿主）；宿主 runAgent 以任务合成契约 ctx 构造 Agent 跑完整循环（同配方合成，见 [taskToolContext.md](../../faapi/src/tasks/taskToolContext.md)） |
 | 测试 / 编程式（无 app 编排） | `createStandaloneToolContext`（诚实缺省：tasks 抛错桩 / console logger / 永不触发 signal） |
 
 `AgentDeps.ctx` 为**必填**（类型层强制 + `createAgentDeps` 运行时 invariant）——无 ctx 的 Agent 组装会让 tool handler 第二参数缺席，契约破坏即显式失败。sub-agent 递归复用同一 deps，ctx 随行不变。完整传递链见 [authHooks.md](./authHooks.md)，任务侧组装示例见主包 [taskTypes.md](../../faapi/src/tasks/taskTypes.md)「任务内组装 Agent」。
@@ -164,9 +164,9 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
 
 ### vars 提示词模板变量（config 静态声明）
 
-agent config 支持 `vars: Record<string, string | number | boolean>`（静态字面量,构建期
-AST 提取进 faapi-agents.js 清单,声明与提取规则见主包
-[extractAgentMetadata.md](../../faapi/src/ast/extractAgentMetadata.md)）——systemPrompt /
+agent config 支持 `vars: Record<string, string | number | boolean>`（启动期求值进
+AgentCore.vars,声明与校验规则见主包
+[loadAgents.md](../../faapi/src/agents/loadAgents.md)）——systemPrompt /
 systemPromptFile 内容中的 `{{key}}` 占位符按 vars 渲染（渲染实现见
 [promptTemplate.md](./promptTemplate.md)）：
 
@@ -357,7 +357,7 @@ sub-agent 包装为 tool 发给 LLM 时,`function.name` 受 OpenAI 兼容协议�
 }
 ```
 
-显式 `input` 字段是 agent-as-tool 的派发交接单——严格遵循 JSON schema 的模型（GLM 系列、OpenAI strict mode 等）对无属性 `{ type: 'object' }` 只会回空 `{}`,派发上下文传不进子代理（宽松填参的模型不受影响,问题隐性）。默认文案提示 LLM 传自然语言交接单;sub 元数据声明 `inputDescription`（agent config 块,见 [extractAgentMetadata](../../faapi/src/ast/extractAgentMetadata.md)）时覆盖默认文案,让 sub-agent 自述需要什么交接单。
+显式 `input` 字段是 agent-as-tool 的派发交接单——严格遵循 JSON schema 的模型（GLM 系列、OpenAI strict mode 等）对无属性 `{ type: 'object' }` 只会回空 `{}`,派发上下文传不进子代理（宽松填参的模型不受影响,问题隐性）。默认文案提示 LLM 传自然语言交接单;sub 元数据声明 `inputDescription`（agent config 块,启动期求值,见 [loadAgents](../../faapi/src/agents/loadAgents.md)）时覆盖默认文案,让 sub-agent 自述需要什么交接单。
 
 ### 派发入参 schema 声明（per-agent 富 schema）
 
@@ -576,4 +576,4 @@ asTool(name: string): AgentToolDescriptor | undefined {
 - faapi 核心 [agentRegistry](../../faapi/src/injection/agentRegistry.md) —— `AgentDeps` 访问器的真实实现来源（Phase 3.5 接线）
 - faapi 核心 [toolRegistry](../../faapi/src/injection/toolRegistry.md) —— tool 元数据查询
 - faapi 核心 [loadToolModule](../../faapi/src/loaders/loadToolModule.md) —— 动态加载 tool handler
-- faapi 核心 [extractAgentMetadata](../../faapi/src/ast/extractAgentMetadata.md) / [extractToolMetadata](../../faapi/src/ast/extractToolMetadata.md) —— 元数据类型定义
+- faapi 核心 [agentTypes](../../faapi/src/agents/agentTypes.md) / [extractToolMetadata](../../faapi/src/ast/extractToolMetadata.md) —— agent/tool 元数据类型定义

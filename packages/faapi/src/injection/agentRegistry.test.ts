@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { AgentMetadata } from '../ast/extractAgentMetadata';
+import type { AgentMetadata } from '../agents/agentTypes';
 import type { ToolMetadata } from '../ast/extractToolMetadata';
 import {
   hydrateAgentRegistry,

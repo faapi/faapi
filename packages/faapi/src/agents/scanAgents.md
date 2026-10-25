@@ -1,14 +1,12 @@
 # scanAgents
 
-一句话概括：扫描文件系统，生成 agent 清单。**Vite 风格**——仅读源码 + 正则检测 `run` 导出，零 import agent.js，让 dev 启动近乎瞬开。
+一句话概括：扫描文件系统，生成 agent **定位清单**（`AgentManifest[]`——仅 name / filePath 静态事实）。Vite 风格——只读源码文件列表，零 import agent.js、零内容解析，让 dev 启动近乎瞬开。
 
 ## 为什么需要
 
-faapi 引入 agent 能力后，需要把目录结构转换为 agent 清单。与 tool 扫描（[scanTools](../tools/scanTools.md)）同构——"文件系统即 agent"，用户在约定目录下写 `handler.ts` 即声明一个 agent，框架自动扫描收集。
+faapi 引入 agent 能力后，需要把目录结构转换为 agent 清单。与 tool 扫描（[scanTools](../tools/scanTools.md)）同构——"文件系统即 agent"，用户在约定目录下写 `handler.ts` 即声明一个 agent，框架自动扫描收集。本模块只做**定位**（哪个目录是哪个 agent），不做声明解析：
 
-旧版（如果用运行时 import 检测导出）会让 dev 启动慢、按需编译无法实现。新版改为：
-
-- **零内容解析**：扫描层不读源码内容，config 块字段提取由 AST 阶段负责
+- **零内容解析**：扫描层不读源码内容——config 块字段由启动期运行时求值（[loadAgents](./loadAgents.md) 动态 import handler 求值 `config` 导出），`Input` 类型导出由 [generateAgentArtifacts](../cli/generateAgentArtifacts.md) 构建期正则检测
 - **零 import**：启动时只读文件列表，不读源码内容、不 import 模块
 
 ## 使用场景
@@ -16,7 +14,7 @@ faapi 引入 agent 能力后，需要把目录结构转换为 agent 清单。与
 - `faapi dev` / `faapi build` 启动时扫描 `src/agents/**/handler.ts`（支持多级嵌套目录，见下文）
 - `reloadAgents` 热替换时重新扫描（dev 模式 watcher 触发，Phase 1.9 接入）
 - 根据 glob pattern 过滤 agent 文件
-- 将文件路径转换为 agent 名（目录名）
+- 将文件路径转换为 agent 名（目录路径推导）
 
 ## 文件类型与目录约定
 
@@ -62,13 +60,9 @@ agent directory names allow a-z A-Z 0-9 '-' only ('_' is reserved as the nesting
 
 > 迁移提示：旧版 `/` 规范化为 `.` 且允许段内任意字符（含平铺点号目录 `easy-writing.wizard/`）。新版下嵌套调用名 `easy-writing.wizard` 改为 `easy-writing_wizard`（`agents` 声明、`agent.run({ agent })`、authHooks 前缀判断同步改），平铺点号目录需改名为连字符（`easy-writing-wizard/`）。
 
-## 导出检测（正则）
-
-scanAgents 检测一个保留导出名：
-
 ## 重名检测
 
-同 agent 名出现在多个文件 → `scanAgents` 抛 `AgentConflictError`：
+同 agent 名出现在多个文件 → `scanAgents` 抛错：
 
 ```
 Agent conflict: "researcher" declared in both src/agents/researcher/handler.ts and backup/agents/researcher/handler.ts
@@ -88,10 +82,12 @@ export async function scanAgents(
 - `rootDir` — 项目根目录
 - `patterns` — glob patterns（默认 `DEFAULT_AGENT_PATTERNS = ['src/agents/**/handler.ts']`）
 
+返回 `AgentManifest[]`（`{ name, filePath }` 定位清单条目，类型见 [agentTypes](./agentTypes.md)）。
+
 ## 相关模块
 
-- [agentTypes](./agentTypes.md) - `AgentManifest` 类型定义
+- [agentTypes](./agentTypes.md) - `AgentManifest` / `AgentManifestList` 类型定义
+- [loadAgents](./loadAgents.md) - 启动期求值 `config` 导出（含 `run` 导出迁移错误检测）
+- [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 生成 `faapi-agents.js` 定位清单 + Input zod.js
 - [scanTools](../tools/scanTools.md) - tool 扫描（同构，扫描 `src/tools/**`）
-- [extractAgentMetadata](../ast/extractAgentMetadata.md) - AST 增强 agent 元数据（Phase 1.8）
-- [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 生成 `faapi-agents.js`（Phase 1.9）
 - [scanRoutes](../routers/scanRoutes.md) - 路由扫描（同构设计参考）

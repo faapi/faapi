@@ -14,8 +14,8 @@ agent 运行中存在一类「框架注入的上下文」：不是用户说的�
 
 - 全局固定提醒：`config.agent.reminders: ['所有输出必须带引用来源']`（once）
 - 全局动态状态：`config.agent.reminders: [async ({ turn }) => turn > 1 ? renderTodoState() : undefined]`（everyTurn）
-- 单 agent 固定提醒：agent config 块 `reminders: ['禁止编造数据']`（once，构建期字面量提取）
-- 隔离任务路径：worker 内 agent 循环经 RPC 由宿主渲染提醒（业务函数零跨线程）
+- 单 agent 提醒：agent config 块 `reminders: ['禁止编造数据']` 或 builder 函数（与全局声明面同构的完整 ReminderSpec 形态，启动期求值）
+- 隔离任务路径：agent 循环收敛宿主执行（单次 agent-run RPC），reminders 渲染全在宿主（业务函数零跨线程）
 
 ## 语义规格
 
@@ -39,7 +39,7 @@ type ReminderSpec = string | ReminderBuilder | ReminderSpecObject;
 两个声明面：
 
 1. **全局**：`config.agent.reminders?: ReminderSpec[]` → `AgentConfig.reminders` → `toAgentRuntimeConfig` → `AgentRuntimeConfig.reminders`（新旋钮两路自动到达的既有清单）
-2. **单 agent**：agent config 块 `reminders?: string[]` → 构建期字面量提取进 `AgentCore.reminders`（与 tools/agents 同管线，含非字面量元素构建期抛错）→ 清单序列化透传。**单 agent 声明全部为 once**（静态文本，AST 提取只能给字面量）
+2. **单 agent**：agent config 块 `reminders?: ReminderSpec[]` → 启动期求值进 `AgentCore.reminders`（与全局声明面**同构**——string / builder 函数 / `{ when, content }` 对象全形态支持，求值与校验见主包 [loadAgents.md](../../faapi/src/agents/loadAgents.md)）。单 agent 声明不降级为 once-only，与全局声明面能力等价；合并时排在其后（更靠近上下文末端）
 
 ### when 解析与合并
 
@@ -71,7 +71,7 @@ type ReminderSpec = string | ReminderBuilder | ReminderSpecObject;
 ### 运行时装配（buildLoopConfig，单一装配点）
 
 ```
-deps.resolveReminders 已接线（worker RPC 垫片 / 业务 decorateDeps）
+deps.resolveReminders 已接线（业务 decorateDeps）
   → 钩子是唯一供数源：本地 specs（config.reminders + meta.reminders）整体忽略（避免双渲染）
   → createHookReminderResolver(hook, { agentName, depth, ctx: deps.ctx })
 否则
@@ -102,23 +102,22 @@ interface ReminderResolver {
 }
 ```
 
-### 隔离任务路径（动态函数的宿主桥接）
+### 隔离任务路径（循环收敛宿主）
 
-config 级声明（`config.agent.reminders`）可含函数，不可跨线程——复用既有 RPC 配方（与 beforeToolCall 同款，业务函数零跨线程）：
+config 级声明（`config.agent.reminders`）可含函数，不可跨线程——agent 循环已收敛宿主执行（单次 `agent-run` RPC），reminders 渲染随之全在宿主，无需任何 RPC 垫片：
 
 ```
-worker buildAgentChannel
-  → overrides 注入 resolveReminders RPC 垫片（ctx 参数不外传）
-  → rpc('resolve-reminders', { agentName, depth, turn, phase })
-宿主 taskQueue onAgentCall 分派 → AgentToolRunner.resolveReminders
-  → plugin.ts 处理器：全量合并（baseDeps.config?.reminders + baseDeps.getAgent(agentName)?.reminders）
-    → renderReminderSpecs(specs, { ...info, ctx: agentHostCtx }, phase) → string[] 回传
+worker 内 taskCtx.agent.run(input, options)
+  → 单次 agent-run RPC（纯数据请求）
+宿主 taskQueue onAgentRun → agentRunner.runAgent(agentHostCtx, request)
+  → plugin.ts runAgent：new Agent({ ...baseDeps, ctx: agentHostCtx }).run(runInput, { ...options, agent: agentName })
+    → 完整循环在宿主（LLM IO、tool 执行、钩子、reminders 渲染、sub-agent 递归）
 ```
 
-- worker 侧 buildLoopConfig 因钩子接线走 hook 解析器——config 快照内被剔除函数的 specs 数组不消费（字符串占位 undefined 亦无影响）
-- 宿主 ctx 不跨线程：worker 不传 ctx，宿主以任务合成 ctx（agentHostCtx）调用 builder
-- 返回值 string[] 可结构化克隆 ✓
-- sub-agent 派发（worker 内或宿主内）：新 Agent 共享 deps——钩子路径 agentName/depth 为 sub 自身值，合并点在宿主 handler；本地路径 buildLoopConfig 合并 sub 的 meta.reminders
+- **真实声明全量可见**：baseDeps 携带 config.reminders 与注册表——builder 函数在宿主按原生路径渲染（agentName/depth/ctx 均为真实值），不经任何序列化
+- 宿主 ctx 不跨线程：worker 不传 ctx，宿主以任务合成契约 ctx（agentHostCtx，carry 身份落顶层）调用 builder
+- 快照仅服务 worker 侧只读查询：`AgentSnapshotRecord` 投影将 reminders **整体剥离**（builder 不可克隆）——隔离侧查询拿不到提醒声明是快照语义的一部分，渲染本身在宿主不受影响
+- sub-agent 递归：循环在宿主，派发的子代理共享同一 deps——钩子路径 agentName/depth 为 sub 自身值，meta.reminders 在 buildLoopConfig 本地合并
 
 ## 相关模块
 
@@ -126,8 +125,8 @@ worker buildAgentChannel
 - `agent.ts` - AgentRuntimeConfig.reminders 旋钮 + AgentDeps.resolveReminders 钩子 + buildLoopConfig 装配
 - `agentDeps.ts` - toAgentRuntimeConfig 拆装清单新增 reminders
 - `reactLoop.ts` - ReactLoopConfig.reminders 消费（initLoop once 注入 / 每轮 everyTurn 追加）
-- `plugin.ts` - agentToolRunner 注册 resolveReminders 处理器（宿主渲染 + 全量合并）
-- `ast/extractAgentMetadata.ts`（主包）- AgentCore.reminders 构建期提取（requireStringArrayValue）
-- `cli/generateAgentArtifacts.ts`（主包）- SerializedAgentRecord / serializeAgents / hydrateAgents 透传
-- `injection/registries.ts`、`tasks/taskQueue.ts`、`tasks/workerEntry.ts`（主包）- AgentToolRunner 接口 / RPC 分派 / worker 垫片
-- `tasks/configSnapshot.ts`（主包）- 快照投影规则：reminders 数组函数元素剔除（既有行为，worker 路径不消费快照内 specs）
+- `plugin.ts` - agentRunner 注册 runAgent（宿主完整循环，reminders 渲染在宿主原生执行）
+- `../faapi/src/agents/loadAgents.ts`（主包）- AgentCore.reminders 启动期求值与校验
+- `../faapi/src/cli/generateAgentArtifacts.ts`（主包）- 定位清单生成（reminders 不进清单——函数形态不可序列化，求值在启动期）
+- `../faapi/src/injection/registries.ts`、`../faapi/src/tasks/taskQueue.ts`、`../faapi/src/tasks/taskWorker.ts`（主包）- AgentRunner 接口 / onAgentRun 注入 / agent-run RPC 协议
+- `../faapi/src/tasks/taskTypes.ts`（主包）- AgentSnapshotRecord 投影：reminders 整体剥离（循环在宿主，快照仅服务 worker 只读查询）

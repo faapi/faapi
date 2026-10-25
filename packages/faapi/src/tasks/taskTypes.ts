@@ -1,11 +1,10 @@
 import type { ToolMetadata } from '../ast/extractToolMetadata';
-import type { AgentMetadata } from '../ast/extractAgentMetadata';
+import type { AgentMetadata, AgentCore } from '../agents/agentTypes';
 import type { TaskRegistry } from './taskRegistry';
 import type { TaskDriver } from './driverTypes';
 import type { TaskWorkerRunner } from './taskWorker';
 import type { TaskRegistriesView, LlmChannelStore } from '../injection/registries';
 import type { LlmComplete } from '../injection/llmTypes';
-import type { LlmConfig } from '../configs/configTypes';
 import type { FaapiContextConfig } from '../runtime/contextTypes';
 import type { Logger } from '../loggers/loggerTypes';
 
@@ -220,11 +219,47 @@ export interface TaskEvent {
  *
  * 注册表对象含函数闭包不可 postMessage；元数据本身是纯数据——语义层从
  * `TaskRegistriesView` 生成快照，worker wrapper 内重建只读视图。
+ *
+ * agent 循环已收敛宿主（AgentRunner 单次 agent-run RPC），快照中的 agent 仅服务
+ * worker 侧只读查询（registries.agent 元数据面），经 {@link AgentSnapshotRecord}
+ * 投影保证可克隆。
  */
 export interface TaskRegistriesSnapshot {
-  /** agent 完整元数据（含 filePath，非仅 LLM 可见字段） */
-  agents: AgentMetadata[];
+  /** agent 投影元数据（纯数据——函数形态 systemPrompt 剥离、reminders 整体剥离） */
+  agents: AgentSnapshotRecord[];
   tools: ToolMetadata[];
+}
+
+/**
+ * 隔离快照内的 agent 投影（`AgentMetadata` 的可结构化克隆子集）
+ *
+ * agent 声明运行时化后 `AgentCore` 含函数形态字段（systemPrompt 工厂、reminders
+ * builder），不可跨线程。循环在宿主执行（真实声明全量可见），快照只服务 worker
+ * 侧只读查询：systemPrompt 仅保留字符串形态（工厂剥离——查询方在隔离侧拿不到
+ * 动态人设是快照语义的一部分），reminders 整体剥离（builder 不可克隆，供数在
+ * 宿主 runAgent 内完成）。
+ */
+export interface AgentSnapshotRecord extends Omit<AgentCore, 'systemPrompt' | 'reminders'> {
+  filePath: string;
+  inputTypeName?: string;
+  /** 字符串形态人设（工厂函数剥离后不出现——隔离侧查询仅见静态事实） */
+  systemPrompt?: string;
+}
+
+/**
+ * AgentMetadata → AgentSnapshotRecord 投影（宿主与测试共用的单一实现）
+ *
+ * 剥离不可跨线程的函数形态字段：reminders 整体剥离（builder 不可克隆，供数在
+ * 宿主 runAgent 内完成）、工厂形态 systemPrompt 剥离（字符串形态原样保留）。
+ * taskQueue 快照与 taskWorker 视图一致性测试共用，防止两处投影漂移。
+ */
+export function toAgentSnapshotRecord(entry: AgentMetadata): AgentSnapshotRecord {
+  const { reminders: _reminders, ...rest } = entry;
+  if (typeof entry.systemPrompt === 'function') {
+    const { systemPrompt: _sp, ...noPrompt } = rest;
+    return noPrompt;
+  }
+  return { ...rest, systemPrompt: entry.systemPrompt };
 }
 
 /**
@@ -302,6 +337,7 @@ export interface TaskContext {
    * `registries.llm` 的活引用（与 agent 循环共享 providers 单例）。
    * 一次性补全（分类/蒸馏/摘要等）用此通道，不必在任务内组装 agent；
    * 工具循环场景仍走 registries.agent 组装 Agent。详见 `@faapi/agent` 的 lightComplete.md。
+   * 隔离路径为同签名纯转发代理（complete 经 RPC 回宿主执行，见 {@link IsolatedTaskContext.llm}）。
    */
   llm?: LlmComplete;
   /**
@@ -325,7 +361,7 @@ export interface TaskContext {
  *   线程，与 registries 快照同款边界），其余值 structuredClone 保真；含非函数
  *   不可克隆值时派发显式报错列路径。见 configSnapshot.md）
  * - registries 为派发时刻的**快照**重建视图（执行中途 reload 不影响当次执行）
- * - llm 为 worker 内按 `agent.llms` 纯数据快照重建的实例
+ * - llm 为纯转发代理（complete 经 RPC 回宿主执行——LLM IO 全在宿主，worker 不加载 `@faapi/agent`）
  * - log 条目经 postMessage 回传宿主统一输出（fields 须可结构化克隆，
  *   不可克隆按执行错误处理）
  * - progress 值经 postMessage 回传（须可结构化克隆，不可克隆按执行错误处理）
@@ -396,10 +432,14 @@ export interface IsolatedTaskContext {
    */
   log?: Logger;
   /**
-   * 轻量 LLM 补全通道（可选字段）——worker 内按 `agent.llms` 纯数据快照动态
-   * 加载 `@faapi/agent` 重建；llms 已配置但不可解析时任务显式失败（含安装指引），
-   * llms 未配置时为 `undefined`（能力不存在，非降级）。
-   * 详见 `@faapi/agent` 的 lightComplete.md。
+   * 轻量 LLM 补全通道（可选字段）——**纯转发代理**：complete 经单次
+   * `{ type: 'llm-complete' }` 消息回传宿主，宿主从 AppRegistries.llm 取派发时刻
+   * 注册的通道执行（LLM IO 全在宿主，worker 不加载 `@faapi/agent`）；通道未注册
+   * 时为 `undefined`（能力不存在，非降级）。入参/返回值须可结构化克隆——
+   * `options.onFailure` 钩子为函数不可跨线程（显式拒绝，任务内 try/catch 自行
+   * 实现失败副作用）；`options.signal` 不可克隆但支持——剥离后转发，任务内业务级
+   * 取消经 `{ type: 'llm-abort' }` 回传宿主 abort 对应请求。使用语义见
+   * `@faapi/agent` 的 lightComplete.md。
    */
   llm?: LlmComplete;
   /**
@@ -606,28 +646,27 @@ export interface TaskQueueDeps {
    */
   llm?: LlmChannelStore;
   /**
-   * `agent.llms` 纯数据快照——隔离执行路径经 postMessage 传入 worker，worker 内
-   * 动态加载 `@faapi/agent` 重建补全通道（纯数据可结构化克隆）。缺省不传入
-   * （worker 内 taskCtx.llm 为 undefined）
+   * 隔离执行路径的补全通道走 RPC 纯转发（worker 内 taskCtx.llm.complete 经
+   * llm-complete 消息回传宿主，从 `llm` store 取派发时刻注册的通道执行）——
+   * llms 快照与 worker 内 @faapi/agent 加载均已删除（worker 纯转发原则）
    */
-  llms?: Record<string, LlmConfig>;
   /**
    * agent handle 工厂 store（AppRegistries.agentHandle）——进程内执行路径
    * `taskCtx.agent` 惰性通道的数据源（以 carry + 任务级能力合成的契约 ctx 构造，
    * 与 HTTP 请求链同一份 baseDeps）；缺省 taskCtx.agent 恒 undefined。
    * 隔离路径不消费本 store（工厂为宿主闭包不可跨线程）——隔离的 agent 通道走
-   * `agentToolRunner`（工具/钩子宿主执行 RPC）
+   * `agentRunner`（宿主完整循环 RPC）
    */
   agentHandle?: import('../injection/registries.js').AgentHandleStore;
   /**
-   * 隔离任务工具执行器 store（AppRegistries.agentToolRunner，`@faapi/agent` 插件
-   * 注册）——隔离 worker 的 agent 编排循环把业务函数面（工具 handler / 钩子 /
-   * 派发钩子）经 RPC 回传宿主执行，宿主以任务合成契约 ctx 调用执行器（与进程内
-   * `taskCtx.agent` 同配方，见 taskToolContext.md）。已注册时 run 消息携带
-   * `agentChannel: true`，worker 内挂载 `taskCtx.agent`；缺省（插件未加载）
-   * worker 内 taskCtx.agent 恒 undefined（能力不存在非降级）
+   * agent 循环执行器 store（AppRegistries.agentRunner，`@faapi/agent` 插件注册）
+   * ——隔离 worker 调 agent 收敛为单次 agent-run RPC：worker 侧 `taskCtx.agent.run`
+   * 转发请求，宿主以任务合成契约 ctx 构造 Agent 跑完整编排循环（LLM IO、tool
+   * 执行、钩子、reminders、sub-agent 全在宿主，见 taskToolContext.md）。已注册时
+   * run 消息携带 `agentChannel: true`，worker 内挂载 `taskCtx.agent`（run-only
+   * 句柄）；缺省（插件未加载）worker 内 taskCtx.agent 恒 undefined（能力不存在非降级）
    */
-  agentToolRunner?: import('../injection/registries.js').AgentToolRunnerStore;
+  agentRunner?: import('../injection/registries.js').AgentRunnerStore;
   /**
    * 队列驱动（必填）：`loadTaskDriver` 解析结果（pgboss/bullmq 子包驱动）
    * 或自定义 TaskDriver 实例；无任务清单时由 createAppBase 传入 idleTaskDriver

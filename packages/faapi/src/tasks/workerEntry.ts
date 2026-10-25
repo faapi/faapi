@@ -1,7 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import type { TaskRegistriesSnapshot, TaskClient } from './taskTypes';
-import type { LlmComplete } from '../injection/llmTypes';
-import type { LlmConfig } from '../configs/configTypes';
+import type { LlmComplete, LlmCompleteOptions } from '../injection/llmTypes';
 import type { LogEntry, LogLevel } from '../loggers/loggerTypes';
 
 /**
@@ -29,17 +28,6 @@ export interface WorkerEntryData {
   moduleUrl: string;
   /** 产物 resources 目录绝对路径（缺省不播种——readResource 未绑定即显式抛错） */
   resourcesDir?: string;
-  /**
-   * 项目根目录（隔离 agent 通道用——worker 内组装 AgentDeps 时作为 schema 解析器
-   * 的产物定位根；仅 run 消息 agentChannel 开启时消费）
-   */
-  rootDir?: string;
-  /**
-   * `@faapi/agent` 模块的 file:// URL（隔离 agent 通道的可注入覆盖）——传入时
-   * buildAgentChannel 按它加载 agent 包（测试注入 bundle 产物），缺省按裸说明符
-   * `@faapi/agent` 解析（生产：业务方安装的 dist 包）
-   */
-  agentModuleUrl?: string;
 }
 
 /**
@@ -132,42 +120,111 @@ export function serializeError(err: unknown): SerializedWorkerError {
 const LOG_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
 /**
- * worker 内重建轻量 LLM 补全通道（隔离任务路径）
+ * taskCtx.llm 轻量补全代理（worker 侧）——隔离任务一次性补全的纯转发通道
  *
- * channel 是函数闭包不可跨线程；`agent.llms` 是纯数据——postMessage 传入后在本
- * 函数内动态加载 `@faapi/agent` 重建实例（与 task.ts 内 import '@faapi/agent'
- * 同一解析来源，业务方安装即可用）。specifier 变量拼接避免主包静态依赖
- * `@faapi/agent`（与 loadTaskDriver 加载驱动子包同策略）。
+ * `taskCtx.llm.complete(input, options)` 经 `{ type: 'llm-complete', seq, input,
+ * options }` 消息回传宿主，宿主从 AppRegistries.llm 取注册的补全通道执行（LLM IO
+ * 全在宿主——worker 纯转发，不加载 `@faapi/agent`），以 `{ type: 'llm-result',
+ * seq, ok, value | error }` 回传——按 seq 匹配挂起调用。
  *
- * 显式失败口径（不降级）：llms 已配置但 `@faapi/agent` 不可解析（未安装/导出
- * 缺失）→ 抛错（含安装指引），任务失败——配置声明了能力而环境不能交付属环境
- * 错误，fail fast；llms 未配置时返回 `undefined`（能力不存在，非降级），任务照常执行。
+ * options 前置校验（本地报错，不发 RPC）：`onFailure` 钩子为函数不可跨线程——
+ * 显式拒绝并指引在任务内 try/catch 自行实现失败副作用；`signal` 不可结构化克隆
+ * ——剥离后转发，业务级取消（任务内自建 AbortController）经 `{ type: 'llm-abort',
+ * seq }` 消息回传宿主 abort 对应请求（错误经 llm-result 回传，与 LlmCompleteOptions
+ * 契约一致：取消透传到底层 HTTP 请求）。注意业务级取消与任务取消（两段式）是两
+ * 回事：任务取消不传播宿主（worker 纯转发原则），挂起的 complete 随任务终止一并
+ * 消失，无独立超时。
+ *
+ * 纯函数形态（send 注入）：真实 worker 传 parentPort.postMessage，单测直接构造。
  */
-export async function buildLlmChannel(
-  llms?: Record<string, LlmConfig>,
-  agentModuleUrl?: string,
-): Promise<LlmComplete | undefined> {
-  if (!llms || Object.keys(llms).length === 0) return undefined;
-  const specifier = agentModuleUrl ?? '@faapi/' + 'agent';
-  let mod: {
-    createLightComplete?: (deps: { llms: Record<string, LlmConfig> }) => LlmComplete;
+export function buildLlmProxy(send: (msg: Record<string, unknown>) => void): {
+  proxy: LlmComplete;
+  /** 处理 llm-result 消息：命中返回 true（消息已消费），其余返回 false */
+  handleMessage: (msg: {
+    type?: string;
+    seq?: number;
+    ok?: boolean;
+    value?: unknown;
+    error?: SerializedWorkerError;
+  }) => boolean;
+} {
+  let seq = 0;
+  const pending = new Map<
+    number,
+    { resolve: (value: string) => void; reject: (err: Error) => void }
+  >();
+
+  const proxy: LlmComplete = {
+    complete: (input, options) => {
+      const opts = options as (LlmCompleteOptions & Record<string, unknown>) | undefined;
+      if (typeof opts?.onFailure === 'function') {
+        return Promise.reject(
+          new Error(
+            'taskCtx.llm.complete options.onFailure is not available in the isolated task ' +
+              'context — callback functions cannot cross the worker boundary. Implement ' +
+              'failure side effects with try/catch around the await instead.',
+          ),
+        );
+      }
+      const signal = opts?.signal;
+      if (signal !== undefined && !(signal instanceof AbortSignal)) {
+        return Promise.reject(
+          new Error('taskCtx.llm.complete options.signal must be an AbortSignal'),
+        );
+      }
+      return new Promise<string>((resolve, reject) => {
+        const s = ++seq;
+        pending.set(s, { resolve, reject });
+        try {
+          const payload: Record<string, unknown> = { type: 'llm-complete', seq: s, input };
+          if (opts !== undefined) {
+            const { signal: _signal, ...rest } = opts;
+            if (Object.keys(rest).length > 0) payload.options = rest;
+            if (signal !== undefined) {
+              if (signal.aborted) {
+                pending.delete(s);
+                reject(new Error('taskCtx.llm.complete was aborted before dispatch'));
+                return;
+              }
+              // 业务级取消转发：abort → 宿主 abort 对应请求（错误经 llm-result 回传）
+              signal.addEventListener('abort', () => send({ type: 'llm-abort', seq: s }), {
+                once: true,
+              });
+            }
+          }
+          send(payload);
+        } catch (err) {
+          pending.delete(s);
+          reject(
+            new Error(
+              `taskCtx.llm.complete arguments are not cloneable across the worker boundary: ` +
+                `${err instanceof Error ? err.message : String(err)}. ` +
+                'Keep input / options plain data (strings / numbers / plain objects).',
+              { cause: err },
+            ),
+          );
+        }
+      });
+    },
   };
-  try {
-    mod = (await import(/* @vite-ignore */ specifier)) as typeof mod;
-  } catch (err) {
-    throw new Error(
-      '[faapi] agent.llms is configured but @faapi/agent is not resolvable in the task worker — ' +
-        `install @faapi/agent to enable taskCtx.llm (${err instanceof Error ? err.message : String(err)})`,
-      { cause: err },
-    );
-  }
-  if (typeof mod.createLightComplete !== 'function') {
-    throw new Error(
-      '[faapi] @faapi/agent resolved but does not export createLightComplete() — ' +
-        'taskCtx.llm unavailable (check package version)',
-    );
-  }
-  return mod.createLightComplete({ llms });
+
+  return {
+    proxy,
+    handleMessage: (msg) => {
+      if (msg?.type !== 'llm-result') return false;
+      const entry = msg.seq !== undefined ? pending.get(msg.seq) : undefined;
+      if (!entry) return true; // 迟到/未知 seq（取消终止后到达）——忽略
+      pending.delete(msg.seq!);
+      if (msg.ok) {
+        entry.resolve(msg.value as string);
+      } else {
+        const err = new Error(msg.error?.message ?? 'taskCtx.llm.complete failed');
+        if (msg.error?.name !== undefined) err.name = msg.error.name;
+        entry.reject(err);
+      }
+      return true;
+    },
+  };
 }
 
 /**
@@ -312,19 +369,29 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
 }
 
 /**
- * 隔离 agent RPC 通道（worker 侧）
+ * agent-run RPC 代理（worker 侧）——隔离任务 `taskCtx.agent` 的 run-only 句柄
  *
- * agent 编排循环的业务函数面调用经 `{ type: 'agent-call', seq, kind, payload }`
- * 消息回传宿主执行，宿主以 `{ type: 'agent-result', seq, ok, value | error }`
- * 回传——按 seq 匹配挂起调用。五种 kind（与宿主 AgentToolRunner 方法一一对应）：
- * `before-tool-call` / `tool-call` / `filter-tools` / `resolve-sub-agent-input` /
- * `resolve-sub-agent-context`。参数与返回值须可结构化克隆（不可克隆按调用错误
- * 抛出，与 tasks-call 同口径）；挂起的调用随任务超时两段式取消一并终止。
+ * `taskCtx.agent.run(input, options)` 经单次 `{ type: 'agent-run', seq, agentName,
+ * input, options }` 消息回传宿主，宿主构造 Agent 跑完整编排循环（工具/钩子/
+ * reminders/sub-agent 全在宿主），以 `{ type: 'agent-run-result', seq, ok,
+ * value | error }` 回传——按 seq 匹配挂起调用。流式不支持（句柄 run-only）。
  *
+ * worker 侧前置校验（本地报错，不发 RPC）：
+ * - `options.agent` 缺失/非 string——agent 名是调用侧决策（与 AgentHandle 同语义）
+ * - `options.provider` 为 LLMProvider 实例（有 complete/stream 方法）——实例不可
+ *   跨线程，显式报错指引传 LlmConfig 纯数据
+ * - 请求整体不可结构化克隆——按调用错误拒绝（与 tasks-call 同口径）
+ *
+ * 挂起的调用随任务超时两段式取消（terminate）一并终止，无独立超时。
  * 纯函数形态（send 注入）：真实 worker 传 parentPort.postMessage，单测直接构造。
  */
-export function buildAgentRpc(send: (msg: Record<string, unknown>) => void): {
-  call: (kind: string, payload: Record<string, unknown>) => Promise<unknown>;
+export function buildAgentRunProxy(send: (msg: Record<string, unknown>) => void): {
+  /** run-only 句柄（AgentRpcHandle 的运行时形态——options.agent 即目标 agent 名） */
+  run: (
+    input?: string | Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ) => Promise<unknown>;
+  /** 处理 agent-run-result 消息：命中返回 true（消息已消费），其余返回 false */
   handleMessage: (msg: {
     type?: string;
     seq?: number;
@@ -339,172 +406,86 @@ export function buildAgentRpc(send: (msg: Record<string, unknown>) => void): {
     { resolve: (value: unknown) => void; reject: (err: Error) => void }
   >();
 
+  /** LLMProvider 实例判别（与 @faapi/agent agent.ts 的 isProviderInstance 同款结构判定
+   * ——本文件自包含不可值导入，有 complete/stream 方法即实例） */
+  const isProviderInstance = (value: unknown): boolean =>
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { complete?: unknown }).complete === 'function' &&
+    typeof (value as { stream?: unknown }).stream === 'function';
+
+  const run = (
+    input?: string | Record<string, unknown>,
+    options?: Record<string, unknown>,
+  ): Promise<unknown> => {
+    if (options !== undefined && (typeof options !== 'object' || Array.isArray(options))) {
+      return Promise.reject(
+        new Error(
+          'taskCtx.agent.run options must be a plain object of run-level overrides ' +
+            '(model / temperature / maxTokens / messages / provider).',
+        ),
+      );
+    }
+    const agentName = (options as { agent?: unknown } | undefined)?.agent;
+    if (typeof agentName !== 'string' || agentName.trim() === '') {
+      return Promise.reject(
+        new Error(
+          'taskCtx.agent.run requires options.agent (the target agent name) — ' +
+            'there is no default agent, same as the AgentHandle contract.',
+        ),
+      );
+    }
+    if (isProviderInstance((options as { provider?: unknown }).provider)) {
+      return Promise.reject(
+        new Error(
+          'taskCtx.agent.run options.provider must be an LlmConfig plain object — ' +
+            'LLMProvider instances cannot cross the worker boundary. Pass the config ' +
+            '(apiKey / baseURL / models) and let the host create the provider.',
+        ),
+      );
+    }
+    return new Promise((resolve, reject) => {
+      const s = ++seq;
+      pending.set(s, { resolve, reject });
+      try {
+        send({
+          type: 'agent-run',
+          seq: s,
+          agentName,
+          ...(input !== undefined ? { input } : {}),
+          ...(options !== undefined ? { options } : {}),
+        });
+      } catch (err) {
+        pending.delete(s);
+        reject(
+          new Error(
+            'taskCtx.agent.run arguments are not cloneable across the worker boundary: ' +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              'Keep input / options plain data (strings / numbers / plain objects).',
+            { cause: err },
+          ),
+        );
+      }
+    });
+  };
+
   return {
-    call: (kind, payload) =>
-      new Promise((resolve, reject) => {
-        const s = ++seq;
-        pending.set(s, { resolve, reject });
-        try {
-          send({ type: 'agent-call', seq: s, kind, payload });
-        } catch (err) {
-          pending.delete(s);
-          reject(
-            new Error(
-              `agent RPC "${kind}" payload is not cloneable across the worker boundary: ` +
-                `${err instanceof Error ? err.message : String(err)}. ` +
-                'Keep tool args / hook payloads plain data (JSON-serializable values).',
-              { cause: err },
-            ),
-          );
-        }
-      }),
+    run,
     handleMessage: (msg) => {
-      if (msg?.type !== 'agent-result') return false;
+      if (msg?.type !== 'agent-run-result') return false;
       const entry = msg.seq !== undefined ? pending.get(msg.seq) : undefined;
       if (!entry) return true; // 迟到/未知 seq（取消终止后到达）——忽略
       pending.delete(msg.seq!);
       if (msg.ok) {
         entry.resolve(msg.value);
       } else {
-        const err = new Error(msg.error?.message ?? `agent RPC call failed`);
+        const err = new Error(msg.error?.message ?? 'taskCtx.agent.run failed');
         if (msg.error?.name !== undefined) err.name = msg.error.name;
         entry.reject(err);
       }
       return true;
     },
   };
-}
-
-/**
- * 构建隔离任务 `taskCtx.agent`（worker 侧，仅 run 消息 `agentChannel: true` 时调用）
- *
- * 动态加载 `@faapi/agent`（与 buildLlmChannel 同策略：specifier 变量拼接避免主包
- * 静态依赖；worker 内只解析这一个说明符——workerEntry 自包含约束），组装带 RPC
- * 垫片的 AgentDeps：
- * - `beforeToolCall` / `filterTools` 经 agentConfig 钩子位转发宿主（守卫覆盖
- *   sub-agent 派发分流，必须在 worker 侧 executeTool 开头生效）
- * - `loadToolModule` 桩返回 RPC handler——工具调用回传宿主，由 agentToolRunner
- *   经 executeToolCall 执行（schema 校验 + handler + afterToolCall 全在宿主：
- *   资源单实例、钩子不跨线程）；worker 侧 executeToolCall 仅保留超时竞速
- * - `resolveToolSchema` 走真实解析器（rootDir 定位产物 zod.js）——LLM 可见
- *   parameters 与执行前校验需要 schema；派发入参 schema（resolveAgentInputSchema）
- *   同源
- * - `resolveSubAgentInput` / `resolveSubAgentContext` 经 overrides 转发宿主
- *   （deps 级钩子，业务经 decorateDeps/overrides 装配的函数不跨线程）
- * - 契约 ctx 经 agent 包 re-export 的 createTaskToolContext 合成（单一配方，
- *   与进程内 `taskCtx.agent` 同款——carry 字段落顶层 + 契约字段后置）
- *
- * 垫片的 ctx 参数不跨线程——宿主侧以任务合成契约 ctx 执行。
- *
- * 显式失败口径（不降级）：agentChannel 已开启（宿主 agentToolRunner 已注册）但
- * `@faapi/agent` 不可解析 → 抛错（含安装指引），任务失败。
- */
-export async function buildAgentChannel(input: {
-  /** enqueue 时 `opts.carry` 声明的执行上下文快照（未携带为空对象） */
-  carry: Record<string, unknown>;
-  /** worker 内 tasks RPC 代理（注入契约 ctx.tasks） */
-  tasks: TaskClient;
-  /** 任务级 logger（契约 ctx.log；run 消息未带日志配置时的兜底构造） */
-  log: unknown;
-  /** 任务取消信号（契约 ctx.signal） */
-  signal: AbortSignal;
-  registries: ReturnType<typeof buildRegistriesView>;
-  /** faapi.config 的 agent 块纯数据快照（llms/maxTurns 等旋钮；钩子函数已剥离） */
-  agentConfig: Record<string, unknown>;
-  rootDir?: string;
-  /** `@faapi/agent` 模块 file:// URL（测试可注入 bundle 产物；缺省裸说明符解析） */
-  agentModuleUrl?: string;
-  rpc: (kind: string, payload: Record<string, unknown>) => Promise<unknown>;
-}): Promise<unknown> {
-  const specifier = input.agentModuleUrl ?? '@faapi/' + 'agent';
-  let mod: {
-    createAgentDeps?: (options: Record<string, unknown>) => unknown;
-    createTaskToolContext?: (source: {
-      carry: Record<string, unknown>;
-      tasks: unknown;
-      log: unknown;
-      signal: AbortSignal;
-    }) => unknown;
-    Agent?: new (deps: unknown) => unknown;
-  };
-  try {
-    mod = (await import(/* @vite-ignore */ specifier)) as typeof mod;
-  } catch (err) {
-    throw new Error(
-      '[faapi] isolated agent channel is enabled but @faapi/agent is not resolvable in the task worker — ' +
-        `install @faapi/agent to enable taskCtx.agent (${err instanceof Error ? err.message : String(err)})`,
-      { cause: err },
-    );
-  }
-  if (
-    typeof mod.createAgentDeps !== 'function' ||
-    typeof mod.createTaskToolContext !== 'function' ||
-    typeof mod.Agent !== 'function'
-  ) {
-    throw new Error(
-      '[faapi] @faapi/agent resolved but does not export createAgentDeps()/createTaskToolContext()/Agent() — ' +
-        'taskCtx.agent unavailable (check package version)',
-    );
-  }
-
-  const toolCtx = mod.createTaskToolContext!({
-    carry: input.carry,
-    tasks: input.tasks,
-    log: input.log,
-    signal: input.signal,
-  });
-  const toolsList = input.registries.tool.list();
-  const deps = mod.createAgentDeps({
-    registries: input.registries,
-    ctx: toolCtx,
-    rootDir: input.rootDir ?? process.cwd(),
-    agentConfig: {
-      ...input.agentConfig,
-      // RPC 垫片：钩子语义在宿主执行（业务函数零跨线程）。ctx 参数不外传——
-      // 宿主以自己的任务合成 ctx 调用钩子
-      beforeToolCall: async (toolName: string, args: Record<string, unknown>) =>
-        input.rpc('before-tool-call', { toolName, args }),
-      filterTools: async (tools: unknown[]) => input.rpc('filter-tools', { tools }),
-    },
-    overrides: {
-      // 工具桩：按产物定位注册名（宿主执行器按注册名查元数据/校验/执行）
-      loadToolModule: async (filePath: string, functionName: string) => {
-        const tool = toolsList.find(
-          (t) => t.filePath === filePath && t.functionName === functionName,
-        );
-        const toolName = tool?.name ?? functionName;
-        return {
-          functionName,
-          handler: async (args: Record<string, unknown>) =>
-            input.rpc('tool-call', { toolName, args }),
-        };
-      },
-      resolveSubAgentInput: async (subName: string, args: Record<string, unknown>) =>
-        (await input.rpc('resolve-sub-agent-input', { subName, args })) as
-          | Record<string, unknown>
-          | undefined,
-      resolveSubAgentContext: async (subName: string, args: Record<string, unknown>) =>
-        (await input.rpc('resolve-sub-agent-context', { subName, args })) as string | undefined,
-      // 提醒供数垫片（reminders，见 @faapi/agent 的 reminders.md）：宿主 runner
-      // 全量合并（config.agent.reminders + agent meta.reminders）并渲染指定通道，
-      // 返回未包裹内容串数组——包裹由 agent 包引擎在本垫片之上统一做。ctx 不外传，
-      // 宿主以任务合成 ctx 调用 builder
-      resolveReminders: async (info: {
-        agentName: string;
-        depth: number;
-        turn: number;
-        phase: string;
-        ctx?: unknown;
-      }) =>
-        (await input.rpc('resolve-reminders', {
-          agentName: info.agentName,
-          depth: info.depth,
-          turn: info.turn,
-          phase: info.phase,
-        })) as string[] | undefined,
-    },
-  });
-  return new mod.Agent(deps!);
 }
 
 /**
@@ -590,9 +571,12 @@ function bootstrap(): void {
   // taskCtx.suspend 通道：挂起经消息回传宿主执行信封持久化（onSuspend 与进程内
   // 路径共用同一写入）
   const suspendChannel = buildSuspendChannel((msg) => parentPort?.postMessage(msg));
-  // 隔离 agent RPC 通道：工具调用/钩子/派发钩子回传宿主执行（onAgentCall 分派到
-  // agentToolRunner + 任务合成契约 ctx）
-  const agentRpc = buildAgentRpc((msg) => parentPort?.postMessage(msg));
+  // agent-run 代理：taskCtx.agent.run 单次 RPC 回传宿主跑完整循环（onAgentRun 分派
+  // 到 agentRunner + 任务合成契约 ctx）
+  const agentRunProxy = buildAgentRunProxy((msg) => parentPort?.postMessage(msg));
+  // llm 补全代理：taskCtx.llm.complete 纯转发回宿主执行（onLlmComplete 分派到
+  // AppRegistries.llm 注册的补全通道——worker 不加载 @faapi/agent）
+  const llmProxy = buildLlmProxy((msg) => parentPort?.postMessage(msg));
 
   let controller: AbortController | null = null;
   let modulePromise: Promise<{ run?: (payload: unknown, taskCtx: unknown) => unknown }> | null =
@@ -612,15 +596,18 @@ function bootstrap(): void {
         resumed?: { state?: unknown; inject?: unknown; activations: number };
       };
       registries?: TaskRegistriesSnapshot;
-      llms?: Record<string, LlmConfig>;
-      /** 隔离 agent 通道开关（宿主 agentToolRunner 已注册时 true——worker 挂载 taskCtx.agent） */
+      /** 隔离 llm 通道开关（宿主 AppRegistries.llm 已注册通道时 true——worker 挂载纯转发代理） */
+      llmChannel?: boolean;
+      /** 隔离 agent 通道开关（宿主 agentRunner 已注册时 true——worker 挂载 taskCtx.agent） */
       agentChannel?: boolean;
       log?: { level?: LogLevel; scope?: string; fields?: Record<string, unknown> };
     }) => {
       if (suspendChannel.handleMessage(msg as Parameters<typeof suspendChannel.handleMessage>[0]))
         return;
       if (tasksProxy.handleMessage(msg as Parameters<typeof tasksProxy.handleMessage>[0])) return;
-      if (agentRpc.handleMessage(msg as Parameters<typeof agentRpc.handleMessage>[0])) return;
+      if (agentRunProxy.handleMessage(msg as Parameters<typeof agentRunProxy.handleMessage>[0]))
+        return;
+      if (llmProxy.handleMessage(msg as Parameters<typeof llmProxy.handleMessage>[0])) return;
       if (msg?.type === 'abort') {
         controller?.abort(new Error(msg.reason));
         return;
@@ -665,31 +652,12 @@ function bootstrap(): void {
           const taskLog = msg.log
             ? createTaskLogger(msg.log.level, msg.log.scope, msg.log.fields)
             : undefined;
-          // 轻量补全通道：llms 快照在 worker 内重建（不可解析时 undefined，warn 留痕）；
-          // agentModuleUrl 与 agent 通道同源注入（测试 bundle / 生产裸说明符）
-          const llm = await buildLlmChannel(msg.llms, data.agentModuleUrl);
-          // 隔离 agent 通道：宿主 agentToolRunner 已注册（agentChannel）时组装带
-          // RPC 垫片的 Agent——编排循环在 worker，业务函数面回传宿主执行
-          let agent: unknown;
-          if (msg.agentChannel === true) {
-            agent = await buildAgentChannel({
-              // 契约 ctx 合成在 buildAgentChannel 内走 agent 包 re-export 的
-              // createTaskToolContext（单一配方——与进程内 taskCtx.agent 同款：
-              // carry 字段落顶层 + 契约字段后置）
-              carry: taskCtx?.carry ?? {},
-              tasks: tasksProxy.proxy,
-              log:
-                taskLog ??
-                createTaskLogger(undefined, `task:${taskCtx?.job?.name ?? ''}`, taskCtx?.job),
-              signal: controller!.signal,
-              registries,
-              agentConfig:
-                (taskCtx?.config as { agent?: Record<string, unknown> } | undefined)?.agent ?? {},
-              rootDir: data.rootDir,
-              agentModuleUrl: data.agentModuleUrl,
-              rpc: agentRpc.call,
-            });
-          }
+          // 轻量补全通道：纯转发代理（complete 经 RPC 回宿主执行——worker 不加载
+          // @faapi/agent）；宿主 llm 通道未注册时 undefined（能力不存在非降级）
+          const llm = msg.llmChannel === true ? llmProxy.proxy : undefined;
+          // 隔离 agent 通道：宿主 agentRunner 已注册（agentChannel）时挂载 run-only
+          // 句柄——taskCtx.agent.run 单次 RPC 回传宿主跑完整循环（编排收敛宿主）
+          const agent = msg.agentChannel === true ? { run: agentRunProxy.run } : undefined;
           const result = await run(payload, {
             ...taskCtx,
             signal: controller!.signal,

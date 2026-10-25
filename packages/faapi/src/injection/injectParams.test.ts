@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { injectParamsAsync } from './injectParams';
 import type { FaapiContext } from '../runtime/contextTypes';
 import type { MultipartResult } from '../utils/parseMultipart';
-import type { AgentCore, AgentMetadata } from '../ast/extractAgentMetadata';
+import type { AgentCore, AgentMetadata } from '../agents/agentTypes';
 import { hydrateAgentRegistry, clearAgentRegistry } from './agentRegistry';
 import { createLogger } from '../loggers/logger';
 import { createThrowingTaskClient } from '../runtime/agentToolContext';

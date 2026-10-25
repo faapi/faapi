@@ -14,6 +14,7 @@
 - 生成 `dist/**/zod.js`（每个 handler 一个 zod schema 模块）
 - 生成 `dist/faapi-routes.js`（序列化路由清单）
 - 生成 `dist/faapi-tools.js`（序列化 tool 清单）+ tool handler 的 `zod.js`
+- 生成 `dist/faapi-agents.js`（agent 定位清单）+ 声明 `Input` 的 agent `zod.js`
 
 ## 输出目录清空（emptyOutDir 语义）
 
@@ -30,7 +31,7 @@
 3. **生成 schema 文件**（`generateSchemaFiles` → `dist/**/zod.js`，AST 从源码 `.ts`）
 4. **生成路由清单**（`serializeRoutes` + `writeRoutesModule` → `dist/faapi-routes.js`）
 5. **生成 tool 清单 + schema**（`scanTools` 扫描 `src/tools` + `generateToolArtifacts` AST 增强 → `dist/faapi-tools.js` + 每个 tool 的 `zod.js`）
-6. **生成 agent 清单**（`scanAgents` + `generateAgentArtifacts` → `dist/faapi-agents.js`）
+6. **生成 agent 清单**（`scanAgents` 产出定位清单 + `generateAgentArtifacts` Input 正则检测 → `dist/faapi-agents.js`；声明 `Input` 的 agent 生成 `dist/agents/<name>/zod.js`）
 7. **生成启动入口**（写入 `dist/main.js`：`import { createProdApp, loadEnv } from '@faapi/faapi'` + 兜底 `NODE_ENV=production` + `loadEnv(cwd)` + `createProdApp()` + `listen()`；`--dist` 选项以 `JSON.stringify` 写入 `main.js`（Windows 反斜杠路径不损坏），端口由运行时 `PORT` 环境变量决定）
 
 ## 编译模式
@@ -48,6 +49,7 @@ dist/
 ├── main.js                   # 启动入口（零入口设计：build 阶段自动生成，import createProdApp + listen）
 ├── faapi-routes.js           # 路由清单（序列化，含 middlewarePaths）
 ├── faapi-tools.js            # tool 清单（序列化，含 description/inputTypeName）
+├── faapi-agents.js           # agent 定位清单（序列化，仅 name/filePath/inputTypeName——声明数据运行时求值）
 ├── faapi-config.js           # 配置入口产物（import faapi.config.js + export base）
 ├── faapi.config.js           # config 源编译产物（保留相对 import 指向项目模块）
 ├── faapi-helpers.js          # coerce 公用函数（仅当存在 number/boolean 字段时生成）
@@ -56,6 +58,8 @@ dist/
 ├── api/hello/middlewares.js  # 中间件（独立编译）
 ├── tools/weather/handler.js  # 编译后的 tool（与路由对称，打平 src 前缀）
 ├── tools/weather/zod.js      # tool zod schema 模块（与 handler.js 同级）
+├── agents/researcher/handler.js        # 编译后的 agent handler
+├── agents/researcher/zod.js            # agent 派发入参 schema（仅声明 Input 的 agent 生成）
 ├── lib/errors.js             # 项目模块（与 routes 共享，instanceof 跨 config/routes 生效）
 └── ...
 ```
@@ -110,5 +114,7 @@ PORT=8080 node dist/main    # 运行时指定端口
 - `scanRoutes.ts` - 扫描路由
 - `../tools/scanTools.ts` - 扫描 tools（导出 `TOOL_PATTERNS`）
 - `./generateToolArtifacts.ts` - 生成 `faapi-tools.js` + tool zod.js
+- `../agents/scanAgents.ts` - 扫描 agents（导出 `DEFAULT_AGENT_PATTERNS`）
+- `./generateAgentArtifacts.ts` - 生成 `faapi-agents.js` 定位清单 + agent Input zod.js
 - `readTsconfig.ts` - 读取 tsconfig paths 配置
 - `resolveAlias.ts` - 按 paths 配置解析别名 specifier

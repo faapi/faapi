@@ -20,6 +20,24 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 视图只暴露查询方法（`get` / `list` / `resolve*`），不暴露 `hydrate` / `clear` 写接口——任务不是注册表的所有者。
 
+## AgentSnapshotRecord（隔离快照内的 agent 投影）
+
+agent 声明运行时化后 `AgentCore` 含函数形态字段（systemPrompt 工厂、reminders builder），不可跨线程——agent 循环已收敛宿主执行（单次 `agent-run` RPC，见下文「taskCtx.agent」），快照中的 agent 仅服务 worker 侧只读查询：
+
+```ts
+export interface AgentSnapshotRecord
+  extends Omit<AgentCore, 'systemPrompt' | 'reminders'> {
+  filePath: string;
+  inputTypeName?: string;
+  /** 字符串形态人设（工厂函数剥离后不出现——隔离侧查询仅见静态事实） */
+  systemPrompt?: string;
+}
+```
+
+- **reminders 整体剥离**——builder 不可克隆，供数在宿主 runAgent 内完成
+- **systemPrompt 仅保留字符串形态**——工厂剥离；查询方在隔离侧拿不到动态人设是快照语义的一部分
+- `toAgentSnapshotRecord(entry)` 为宿主与测试共用的单一投影实现（taskQueue 快照与 taskWorker 视图一致性测试共用，防两处漂移）
+
 ## TaskContext.progress 与 TaskJob.progress（任务进度上报）
 
 `TaskContext.progress?(value: unknown): void` 为可选能力：任务执行中主动上报进度，语义层记入 `TaskJob.progress`（`list()` 快照可见），供管理视图/日志观测长任务执行进展。两条路径语义一致：
@@ -52,7 +70,7 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 |------|------------------------------|------------------------------|
 | `config` | `FaapiContextConfig` **必有**——活引用全量配置，与 handler `ctx.config` 同一对象，增强类型字段全可读、函数字段可调用（同进程） | **必有**——派发时刻**纯数据快照**（`collectConfigSnapshot`，见 configSnapshot.md）：函数值（lifecycle 钩子 / `task.onFailed` / log sink / middlewares 等宿主行为面）不进快照（与 registries 快照同款边界），其余值结构化克隆保真（Date/Map/Set 原样）；含非函数不可克隆值时**派发显式报错**（列路径），不剔除不降级 |
 | `registries` | 活引用视图，反映实时状态 | 派发时刻**快照**在 worker 内重建，中途 reload 不影响当次执行 |
-| `llm` | `registries.llm` 活引用（共享 providers 单例） | worker 内按 `agent.llms` 快照重建；llms 配置但不可解析 → 任务显式失败 |
+| `llm` | `registries.llm` 活引用（共享 providers 单例） | **纯转发代理**——complete 经单次 llm-complete RPC 回宿主，宿主从 `AppRegistries.llm` 取派发时刻注册的通道执行（LLM IO 全在宿主，worker 不加载 `@faapi/agent`）；`options.onFailure` 钩子不可跨线程（显式拒绝）；`options.signal` 剥离后转发，业务级取消经 llm-abort 回传宿主 abort 对应请求 |
 | `log` | 直写 `config.log` 管道 | postMessage 回传宿主输出——**fields 须可结构化克隆**（不可克隆按执行错误处理） |
 | `progress` | 直写任务记录 | postMessage 回传——**值须可结构化克隆**（不可克隆按执行错误处理） |
 | `emit` | 直写本进程事件缓冲 + 订阅扇出 | postMessage 回传——**值须可结构化克隆**（不可克隆按执行错误处理），宽限期内不采纳 |
@@ -76,7 +94,7 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 `TaskContext.llm?: LlmComplete` 为可选字段（`@faapi/agent` 插件加载且 `agent.llms` 可解析时注入）：一次性 LLM 补全（分类/蒸馏/摘要/改写等）的官方出口——复用 `agent.llms` 同源配置与 provider 重试引擎，失败钩子内建、传输失败恒抛（不提供降级出口），详见 `@faapi/agent` 的 lightComplete.md。两条路径：
 
 - **进程内路径**：任务执行时刻从 `registries.llm` store 惰性读取（插件晚于队列构造注册，构造期快照会漏）——与 agent 循环共享同一 providers 单例
-- **隔离路径**（`worker.ts`）：channel 是函数闭包不可跨线程——`agent.llms` 纯数据快照（`TaskQueueDeps.llms`，可结构化克隆）随派发下发，worker 内动态加载 `@faapi/agent` 重建实例（`workerEntry.buildLlmChannel`，specifier 变量拼接、与 `loadTaskDriver` 加载驱动子包同策略）。**llms 已配置但 `@faapi/agent` 不可解析 → 显式抛错**（含安装指引），任务失败——配置声明了能力而环境不能交付属环境错误，fail fast；llms 未配置时不触发加载、`taskCtx.llm` 为 `undefined`（能力不存在，非降级）
+- **隔离路径**（`worker.ts`）：**纯转发代理**（`workerEntry.buildLlmProxy`）——`complete(input, options)` 经单次 `{ type: 'llm-complete', seq, input, options }` 消息回传宿主，宿主从 `AppRegistries.llm` 取**派发时刻**注册的通道执行（LLM IO 全在宿主——worker 纯转发原则，不加载 `@faapi/agent`），以 `{ type: 'llm-result', seq, ok, value | error }` 回传。通道未注册时 `taskCtx.llm` 为 `undefined`（能力不存在，非降级）。**克隆纪律**：input/options/返回值须可结构化克隆——`options.onFailure` 钩子为函数不可跨线程（本地显式拒绝，指引任务内 try/catch 自行实现失败副作用）；`options.signal` 不可克隆但支持——剥离后转发，任务内业务级取消（自建 AbortController）经 `{ type: 'llm-abort', seq }` 回传宿主 abort 对应请求（错误经 llm-result 回传；与任务取消是两回事，任务取消不传播宿主，挂起的调用随两段式取消一并终止）
 
 工具循环场景仍走 `registries.agent` 组装 `Agent`（见下节）——`llm` 只承接一次性补全，两者互补。
 
@@ -101,7 +119,7 @@ export async function run(payload, taskCtx) {
 - **纯数据校验**：carry 须为普通对象且可结构化克隆（要持久化 + 跨隔离 worker 线程），含函数/symbol/不可克隆值在 **enqueue 时刻显式抛错**（与 config 快照同款边界，不留到派发才炸）
 - **续投自动继承**：任务内 `taskCtx.tasks.enqueue*` 自动带上当前执行的 carry（显式传 carry 整体覆盖，不合并）；`tasks.resume` 激活重投继承挂起前的 carry
 - **cron 触发**为空对象（无调用方上下文，业务按需在 run 内补）
-- **`taskCtx.agent` 惰性通道**（两条路径均有）：首次访问经 `agentHandle` 工厂（进程内）或 worker 内动态组装（隔离）构造并缓存复用——执行 ctx 按 `createTaskToolContext` 配方合成（**carry 数据字段落顶层 + 契约字段 tasks/log/signal 后置**，见 [taskToolContext.md](./taskToolContext.md)，与 [AgentToolContext 契约](../runtime/agentToolContext.md) 对齐）；类型由 `@faapi/agent` 的 declare module 增强为 `AgentHandle | undefined`（未安装该包时类型与运行时一致：字段不存在）。**隔离任务的通道以宿主 `agentToolRunner` 注册为前提**（`@faapi/agent` 插件加载）——worker 内编排循环把工具/钩子经 RPC 回传宿主执行（`agentToolRunner`，业务函数面与资源零跨线程）；插件未加载时两条路径均 undefined（能力不存在非降级），手工组装走 `createAgentDeps`（见下节）
+- **`taskCtx.agent` 惰性通道**（两条路径均有）：进程内首次访问经 `agentHandle` 工厂构造并缓存复用——执行 ctx 按 `createTaskToolContext` 配方合成（**carry 数据字段落顶层 + 契约字段 tasks/log/signal 后置**，见 [taskToolContext.md](./taskToolContext.md)，与 [AgentToolContext 契约](../runtime/agentToolContext.md) 对齐）；类型由 `@faapi/agent` 的 declare module 增强为 `AgentHandle | undefined`（未安装该包时类型与运行时一致：字段不存在）。**隔离路径以宿主 `agentRunner` 注册为前提**（`TaskQueueDeps.agentRunner`，由 `@faapi/agent` 插件注册）：worker 内 `taskCtx.agent` 为 **run-only 句柄**（`AgentRpcHandle`，仅 `run(input?, options?)`），每次调用经**单次 `agent-run` RPC 收敛宿主**——完整 agent 循环（LLM IO、tool 执行、钩子、reminders、sub-agent 派发）全在宿主执行，worker 只转发请求，业务函数面与资源零跨线程；插件未加载时两条路径均 undefined（能力不存在非降级），手工组装走 `createAgentDeps`（见下节）
 
 ## TaskContext.tasks（任务侧任务客户端）
 

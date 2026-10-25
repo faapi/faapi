@@ -5,8 +5,8 @@ import { scanAgents, DEFAULT_AGENT_PATTERNS } from './agents/scanAgents';
 import { scanTools, TOOL_PATTERNS } from './tools/scanTools';
 import { generateAgentArtifacts } from './cli/generateAgentArtifacts';
 import { generateToolArtifacts } from './cli/generateToolArtifacts';
-import { serializeAgents, hydrateAgents } from './cli/generateAgentArtifacts';
 import { serializeTools, hydrateTools } from './cli/generateToolArtifacts';
+import { loadAndEvaluateAgents } from './agents/loadAgents';
 import { collectRelativeImports } from './cli/collectImports';
 import { compileDevRoutes } from './cli/compileDevRoutes';
 import {
@@ -18,7 +18,7 @@ import {
 } from './injection/registries';
 import { createToolSchemaResolver, type ToolSchemaResolution } from './loaders/toolSchemaResolver';
 import type { ToolMetadata } from './ast/extractToolMetadata';
-import type { AgentMetadata } from './ast/extractAgentMetadata';
+import type { AgentMetadata } from './agents/agentTypes';
 
 /**
  * createAgentTestHarness 入参
@@ -95,11 +95,12 @@ export interface AgentTestHarness {
  * 内部流程：
  * 1. scanAgents / scanTools 扫描源码（零 import，与 dev 启动同管线）
  * 2. mkdtemp 临时产物目录（或用传入的 dist）
- * 3. generateAgentArtifacts / generateToolArtifacts（AST 增强 + 清单级校验；
+ * 3. generateAgentArtifacts / generateToolArtifacts（定位清单 + Input 检测；
  *    free-form 跳过 zod.js 生成）
- * 4. compileDevRoutes 编译 tool 源码及其 src 内依赖闭包（agent 源码不编译——
- *    声明式 agent 运行时不 import handler.js）
- * 5. 实例级注册表工厂 hydrate（不触全局注册表、不建 app——单进程单 app 零占用）
+ * 4. compileDevRoutes 编译 tool 与 agent 源码及 src 内依赖闭包（agent 声明运行时化
+ *    后启动期求值 import handler 产物模块——必须编译）
+ * 5. 实例级注册表工厂 hydrate（不触全局注册表、不建 app——单进程单 app 零占用）；
+ *    agent 走启动期求值链路（loadAndEvaluateAgents——与生产水合形态一致）
  * 6. 组装 loader 桥接（generated 时另接 schema 解析器，显式 dist 不触碰全局状态）
  *
  * 编译失败在创建时响亮抛错（带原始 cause）——构建期失败优于首次 tool 调用失败。
@@ -141,41 +142,45 @@ export async function createAgentTestHarness(
       : path.resolve(rootDir, dist)
     : await fs.mkdtemp(path.join(os.tmpdir(), 'faapi-agent-harness-'));
 
-  // 3. AST 增强 + 清单产物（free-form 跳过 zod.js——不提供 schema 解析器时产物不会被读取）
+  // 3. 定位清单 + Input zod 产物（free-form 跳过 zod.js——不提供 schema 解析器时产物不会被读取）
   const skipSchema = schemaMode !== 'generated';
-  const agentMetadata = await generateAgentArtifacts(agents, rootDir, schemaDist, { skipSchema });
+  const agentLocators = await generateAgentArtifacts(agents, rootDir, schemaDist, { skipSchema });
   const toolMetadata = await generateToolArtifacts(tools, rootDir, schemaDist, { skipSchema });
 
-  // 4. 编译 tool 源码及其 src 内依赖闭包（自封性：测试进程不要求先跑过 build）
-  //    agent 源码不编译——声明式 agent 运行时不 import handler.js（人设走 systemPromptFile
-  //    的 readResource 直读，入参 schema 走 AST 管线的 zod.js）
-  if (tools.length > 0) {
+  // 4. 编译 tool 与 agent 源码及 src 内依赖闭包（自封性：测试进程不要求先跑过 build）
+  //    agent 声明运行时化后启动期求值 import handler 产物模块——必须编译
+  const agentAbsPaths = agents.map((m) => path.resolve(rootDir, m.filePath));
+  if (tools.length > 0 || agents.length > 0) {
     const toolAbsPaths = tools.map((m) => path.resolve(rootDir, m.filePath));
-    const { insideFiles } = await collectRelativeImports(toolAbsPaths, rootDir);
+    const { insideFiles } = await collectRelativeImports(
+      [...toolAbsPaths, ...agentAbsPaths],
+      rootDir,
+    );
     try {
       await compileDevRoutes({
         rootDir,
         dist: schemaDist,
-        files: [...toolAbsPaths, ...insideFiles],
+        files: [...toolAbsPaths, ...agentAbsPaths, ...insideFiles],
         logLevel: 'silent',
       });
     } catch (err) {
       await fs.rm(schemaDist, { recursive: true, force: true }).catch(() => {});
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `createAgentTestHarness: failed to compile tool sources under ${rootDir}: ${reason}`,
+        `createAgentTestHarness: failed to compile tool/agent sources under ${rootDir}: ${reason}`,
         { cause: err },
       );
     }
   }
 
   // 5. 实例级注册表水合（与生产同接口：createAppBase 同款工厂，互不串台）。
-  //    走 serialize→hydrate 往返与生产水合形态一致——registry 中的 filePath 为
-  //    产物形式（临时目录前缀），直接 hydrate AST 返回值会让 filePath 停在源码形式
+  //    tool 走 serialize→hydrate 往返与生产水合形态一致——registry 中的 filePath 为
+  //    产物形式（临时目录前缀），直接 hydrate 返回值会让 filePath 停在源码形式；
+  //    agent 走启动期求值链路（定位清单 filePath 已由 generateAgentArtifacts 转产物形式）
   const toolRegistry: ToolRegistry = createToolRegistry();
   toolRegistry.hydrate(hydrateTools(serializeTools(toolMetadata, schemaDist)));
   const agentRegistry: AgentRegistry = createAgentRegistry(toolRegistry);
-  agentRegistry.hydrate(hydrateAgents(serializeAgents(agentMetadata, schemaDist)));
+  await loadAndEvaluateAgents(rootDir, schemaDist, agentLocators, { agent: agentRegistry });
 
   // 6. 不暴露 loadToolModule 直调面：tool 的受支持调用路径是真实分发管线
   //    （`@faapi/agent` 的 callTool / Agent 派发），直调 handler 绕过 ctx 声明即

@@ -1,17 +1,17 @@
 # agentTestHarness
 
-一句话概括：公开导出 `createAgentTestHarness`，测试进程内扫描 agent/tool 源码 → AST 增强 → 水合出与生产同接口的注册表视图——agent 流程测试（真 reactLoop + 真工具 + 假 LLM）的官方设施，对位 HTTP 层的 `createTestServer`。tool 的单测调用走 `@faapi/agent` 的 `callTool`（经真实分发管线，ctx 声明即校验生效）。
+一句话概括：公开导出 `createAgentTestHarness`，测试进程内扫描 agent/tool 源码 → 定位清单 + Input 检测 → agent 启动期求值水合出与生产同接口的注册表视图——agent 流程测试（真 reactLoop + 真工具 + 假 LLM）的官方设施，对位 HTTP 层的 `createTestServer`。tool 的单测调用走 `@faapi/agent` 的 `callTool`（经真实分发管线，ctx 声明即校验生效）。
 
 ## 为什么需要
 
 agent 的进程内流程测试此前没有官方设施。真注册表只能由 dev/prod app 启动时装载（构建期产物），测试进程想不起 app 就得手搓「扫描器等价物」：逐个 import agent config / tool handler、手打最终工具名映射表、查表替代 loadToolModule、schema 放行桩。每个 faapi 项目做同类测试都要重抄这份机械，且桩接口不全会被组装层掩盖（如漏实现 `resolveSubAgents` 在某些路径静默走默认）。
 
-`createTestServer` 已证明 faapi 愿意在测试进程里跑同构管线（scanRoutes + 现场生成 zod.js + 起 server），本模块把同款取舍发给 agent 层：扫描、AST 增强、注册表水合、loader 桥接全部复用 dev/build 管线现成件，测试只留配方（假 LLM 脚本编排、场景断言）。
+`createTestServer` 已证明 faapi 愿意在测试进程里跑同构管线（scanRoutes + 现场生成 zod.js + 起 server），本模块把同款取舍发给 agent 层：扫描、定位清单生成 + 启动期求值、注册表水合、loader 桥接全部复用 dev/build 管线现成件，测试只留配方（假 LLM 脚本编排、场景断言）。
 
 ## 使用场景
 
 - agent 流程集成测试：真 `reactLoop`（`@faapi/agent` 的 `Agent` 类）+ 真 tool handler + 脚本假 LLM，测派发路由、交接单传导、鉴权门禁、状态推进等编排行为（文本质量不在覆盖范围）
-- tool 单测：`@faapi/agent` 的 `callTool(h, name, args, ctx)`——经 `executeToolCall` 真实分发管线（input schema + ctx 声明即校验在生产口径下生效），见 [callTool](../../../agent/src/callTool.md)
+- tool 单测：`@faapi/agent` 的 `callTool(h, name, args, ctx)`——经 `executeToolCall` 真实分发管线（input schema + ctx 声明即校验在生产口径下生效），见 [callTool](../../agent/src/callTool.md)
 - harness 的注册表视图整体塞进 `ctx.registries` 桩，供 HTTP 层集成测试走生产注入路径
 - 断言 agent 注册名 / tool 最终名（目录路径推导名）/ sub-agent 集合与生产一致（与 dev 水合同管线，阴性对照见测试）
 
@@ -48,13 +48,13 @@ import { createAgentTestHarness, type AgentTestHarness, type AgentTestHarnessOpt
 | `resolveAgentInputSchema` | `AgentDeps['resolveAgentInputSchema']`（仅 `generated`） | 与 `resolveToolSchema` 同一实例（tool 入参与 agent 派发入参共用缓存），free-form 时为 `undefined` |
 | `agentNames` | `string[]` | 扫描水合后的 agent 注册名清单（目录路径推导名），测试按名取 core / 断言集合 |
 | `toolNames` | `string[]` | 扫描水合后的 tool 最终名清单（路径推导名：目录路径 + 函数名） |
-| `schemaDist` | `string` | 产物临时目录绝对路径（`free-form` 下含 tool handler 编译产物，`generated` 下另有 zod.js），调试可查看 |
+| `schemaDist` | `string` | 产物临时目录绝对路径（tool 与 agent handler 的编译产物；`generated` 下另有 zod.js），调试可查看 |
 | `close()` | `() => Promise<void>` | 清理产物临时目录。幂等（重复调用不重复清理） |
 
 ## 行为约定
 
-- **扫描与水合同生产管线**：`scanAgents` / `scanTools`（零 import 扫描 + 字符集校验）→ `generateAgentArtifacts` / `generateToolArtifacts`（AST 增强 + 清单级校验）→ 实例级注册表工厂 `hydrate`。与 dev 启动的唯一差异是不写全局/不建 app——产物写到临时目录、水合到独立实例，对进程内单 app 强制零占用。
-- **handler 装载走源码侧（自封性）**：创建时经 `collectRelativeImports` 收集 tool 源码的 src 内依赖闭包（相对 import + tsconfig paths 别名），`compileDevRoutes` 逐文件编译到临时目录——测试进程不要求先跑过 build。agent 源码不编译（声明式 agent 运行时不 import handler.js，人设走 `systemPromptFile` 的 readResource 直读、入参 schema 走 AST 管线的 zod.js）。
+- **扫描与水合同生产管线**：`scanAgents` / `scanTools`（零 import 扫描 + 字符集校验）→ `generateAgentArtifacts` / `generateToolArtifacts`（定位清单 + Input 正则检测；agent config 块不在构建期提取）→ tool 走 serialize→hydrate 往返水合实例级注册表工厂，agent 走 [loadAndEvaluateAgents](./agents/loadAgents.md) 启动期求值（动态 import handler 求值 config 导出 + 校验，与生产水合形态一致）。与 dev 启动的唯一差异是不写全局/不建 app——产物写到临时目录、水合到独立实例，对进程内单 app 强制零占用。
+- **handler 装载走源码侧（自封性）**：创建时经 `collectRelativeImports` 收集 tool 与 agent 源码的 src 内依赖闭包（相对 import + tsconfig paths 别名），`compileDevRoutes` 逐文件编译到临时目录——测试进程不要求先跑过 build。**agent 源码同样编译**：agent 声明运行时化后启动期求值要真实 import handler 产物模块（config 导出求值、systemPrompt 工厂等），不编译则求值链路直接失败。
 - **vitest 下模块加载走 Vite SSR pipeline**（与 `createTestServer` 同款）：tool handler 经 `loadToolModule` → `importWithCacheBust` 装载，识别 tsconfig paths 别名、`vi.mock` 在加载的 tool handler 内生效。前置条件同 `createTestServer`（`test.globals: true` 或显式挂 `globalThis.vi`）。
 - **不暴露 loadToolModule 直调面**：tool 的受支持调用路径是真实分发管线——`callTool`（单测）与 Agent 派发（流程测试）。直调 `mod.handler(input, ctx)` 绕过 ctx 声明即校验（`ToolModule.handler` 参数为 `unknown[]`，编译期与运行时均无防护，业务字段缺失静默执行）。组装 AgentDeps 用 `createAgentDeps`（自带 loader 桥接）。
 - **不带 LLM**：providers 恒由测试侧组装（假 LLM 经 `agent.run(input, { agent, provider })` 的 `options.provider` 注入，或 `createScriptLLM` 官方件）——这是配方不是机械，harness 不掺业务语义。
@@ -154,7 +154,8 @@ const llm = createScriptLLM([
 - [testServer.md](./testServer.md) - HTTP 层对位物（同款 mkdtemp + close 清理 + vitest 别名解析取舍）
 - [injection/registries.md](./injection/registries.md) - 实例级注册表工厂（`createToolRegistry` / `createAgentRegistry` / `hydrate`）
 - [agents/scanAgents.md](./agents/scanAgents.md) / [tools/scanTools.md](./tools/scanTools.md) - 扫描（零 import + 字符集校验）
-- [cli/generateAgentArtifacts.md](./cli/generateAgentArtifacts.md) / [cli/generateToolArtifacts.md](./cli/generateToolArtifacts.md) - AST 增强 + zod.js 生成
+- [agents/loadAgents.md](./agents/loadAgents.md) - agent 启动期求值与校验（水合链路的实现）
+- [cli/generateAgentArtifacts.md](./cli/generateAgentArtifacts.md) / [cli/generateToolArtifacts.md](./cli/generateToolArtifacts.md) - 定位清单 / Input 检测 + zod.js 生成
 - [loader/loadToolModule.md](./loaders/loadToolModule.md) - tool handler 加载（harness 桥接的底层）
 - [loader/toolSchemaResolver.md](./loaders/toolSchemaResolver.md) - schema 解析工厂（`generated` 模式的实现）
 - [cli/compileOnDemand.md](./cli/compileOnDemand.md) - 依赖闭包收集与按需编译（handler 源码侧装载的机制来源）

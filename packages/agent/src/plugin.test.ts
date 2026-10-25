@@ -69,8 +69,6 @@ import {
   type PluginContext,
   type AgentCore,
   type AgentMetadata,
-  type ReminderInfo,
-  type ReminderPhase,
   type ToolMetadata,
 } from '@faapi/faapi';
 
@@ -556,157 +554,176 @@ describe('@faapi/agent plugin', () => {
   });
 });
 
-describe('@faapi/agent plugin — 隔离任务工具执行器（agentToolRunner）注册', () => {
-  it('setup 注册执行器：toolCall 经 executeToolCall 在宿主执行 handler（decorateDeps 注入的 loadToolModule 可达）', async () => {
-    const ctx = makeCtx({
-      ...fullAgentConfig,
-      decorateDeps: (deps: unknown) => ({
-        ...(deps as Record<string, unknown>),
-        loadToolModule: async () => ({ handler: async () => 'tool-ok', functionName: 'fn' }),
-        // 隔离其它用例的 zod schema 缓存（本用例只验执行链路，不验校验）
-        resolveToolSchema: async () => undefined,
-      }),
-    } as AgentConfig);
-    const testTool: ToolMetadata = {
-      name: 'test.tool',
-      functionName: 'fn',
-      filePath: 'dist/tools/test/handler.js',
-    };
-    ctx.registries.agent.hydrate([{ ...testAgentEntry, tools: ['test.tool'] }]);
-    ctx.registries.tool.hydrate([testTool]);
-
-    plugin.setup(ctx);
-    const runner = ctx.registries.agentToolRunner.get();
-    expect(runner).toBeDefined();
-
-    const toolCtx = createStandaloneToolContext({ currentUserId: 7 });
-    const result = await runner!.toolCall(toolCtx, 'test.tool', { q: 'x' });
-    expect(result).toBe('tool-ok');
-  });
-
-  it('beforeToolCall / filterTools / resolveSubAgent* 透传到 baseDeps 配置（ctx 为调用方传入的契约 ctx）', async () => {
-    const seen: Array<[string, unknown, unknown]> = [];
-    const ctx = makeCtx({
-      ...fullAgentConfig,
-      beforeToolCall: (name, args, hookCtx) => {
-        seen.push(['beforeToolCall', args, hookCtx]);
-        return undefined;
-      },
-      filterTools: (tools, hookCtx) => {
-        seen.push(['filterTools', tools, hookCtx]);
-        return tools;
-      },
-      decorateDeps: (deps: unknown) => ({
-        ...(deps as Record<string, unknown>),
-        resolveSubAgentInput: async (
-          subName: string,
-          args: Record<string, unknown>,
-          hookCtx: unknown,
-        ) => {
-          seen.push(['resolveSubAgentInput', args, hookCtx]);
-          return { ...args, material: 'm1' };
-        },
-        resolveSubAgentContext: async (
-          subName: string,
-          args: Record<string, unknown>,
-          hookCtx: unknown,
-        ) => {
-          seen.push(['resolveSubAgentContext', args, hookCtx]);
-          return 'ctx-block';
-        },
-      }),
-    } as AgentConfig);
-    plugin.setup(ctx);
-    const runner = ctx.registries.agentToolRunner.get();
-    expect(runner).toBeDefined();
-
-    const toolCtx = createStandaloneToolContext({ currentUserId: 42 });
-    await runner!.beforeToolCall(toolCtx, 'test.tool', { q: 1 });
-    await runner!.filterTools(toolCtx, []);
-    await expect(runner!.resolveSubAgentInput(toolCtx, 'writer', { q: 2 })).resolves.toEqual({
-      q: 2,
-      material: 'm1',
-    });
-    await expect(runner!.resolveSubAgentContext(toolCtx, 'writer', { q: 3 })).resolves.toBe(
-      'ctx-block',
-    );
-
-    // 钩子收到的是调用方传入的契约 ctx（currentUserId 增强字段可读）
-    const beforeCtx = seen[0]![2] as { currentUserId?: number };
-    expect(beforeCtx.currentUserId).toBe(42);
-    expect(seen.map(([k]) => k)).toEqual([
-      'beforeToolCall',
-      'filterTools',
-      'resolveSubAgentInput',
-      'resolveSubAgentContext',
-    ]);
-  });
-
-  it('resolveReminders：config.agent.reminders 与单 agent reminders 全量合并（全局在前）、phase 过滤、ctx 注入', async () => {
-    const builderInfos: Array<{
-      agentName: string;
-      depth: number;
-      turn: number;
-      phase: string;
-      ctx: unknown;
-    }> = [];
-    const ctx = makeCtx({
-      ...fullAgentConfig,
-      reminders: [
-        '全局固定',
-        {
-          when: 'everyTurn',
-          content: (info) => {
-            builderInfos.push(info as ReminderInfo & { phase: ReminderPhase });
-            return `全局轮${info.turn}`;
-          },
-        },
-      ],
-    } as AgentConfig);
-    ctx.registries.agent.hydrate([{ ...testAgentEntry, reminders: ['单agent固定'] }]);
-
-    plugin.setup(ctx);
-    const runner = ctx.registries.agentToolRunner.get();
-    expect(runner).toBeDefined();
-
-    const toolCtx = createStandaloneToolContext({ currentUserId: 7 });
-    // once：全局字符串 + 单 agent 字符串（everyTurn spec 过滤掉），未包裹内容串数组
-    await expect(
-      runner!.resolveReminders(toolCtx, {
-        agentName: 'researcher',
-        depth: 1,
-        turn: 0,
-        phase: 'once',
-      }),
-    ).resolves.toEqual(['全局固定', '单agent固定']);
-    // everyTurn：函数 spec 渲染（once 声明过滤掉）
-    await expect(
-      runner!.resolveReminders(toolCtx, {
-        agentName: 'researcher',
-        depth: 1,
-        turn: 2,
-        phase: 'everyTurn',
-      }),
-    ).resolves.toEqual(['全局轮2']);
-    // builder 收到运行时信息（agentName/depth/turn/phase/ctx 为调用方契约 ctx）
-    expect(builderInfos).toEqual([
-      { agentName: 'researcher', depth: 1, turn: 2, phase: 'everyTurn', ctx: toolCtx },
-    ]);
-  });
-
-  it('resolveReminders：无任何声明时返回 undefined（不凭空产空数组）', async () => {
+describe('@faapi/agent plugin — 隔离 agent 通道（agentRunner 注册）', () => {
+  it('setup 注册 runner：runAgent string 入参在宿主跑完整循环（按名解析人设，ctx 为调用方传入的契约 ctx）', async () => {
     const ctx = makeCtx(fullAgentConfig);
     plugin.setup(ctx);
-    const runner = ctx.registries.agentToolRunner.get();
+    const runner = ctx.registries.agentRunner.get();
+    expect(runner).toBeDefined();
+
+    const before = completeRequests.length;
+    const toolCtx = createStandaloneToolContext({ currentUserId: 7 });
+    const result = (await runner!.runAgent(toolCtx, {
+      agentName: 'researcher',
+      input: '研究量子',
+      options: { model: 'gpt-4o' },
+    })) as { content: string };
+    // 循环在宿主跑：mock provider 收到请求，最终 assistant 内容回传
+    expect(result.content).toBe('ok');
+    expect(completeRequests.length).toBeGreaterThan(before);
+    const first = completeRequests[before]!.messages as Array<{ role: string; content: string }>;
+    // system 人设来自注册表元数据（宿主按 agentName 解析；trace 注入块不参与断言）
+    expect(first[0]).toMatchObject({ role: 'system' });
+    expect(first[0]!.content).toContain('you are a researcher');
+  });
+
+  it('runAgent 对象入参：富派发形态经 extractSubAgentUserInput 构造 user 消息（未声明 Input 不校验）', async () => {
+    const ctx = makeCtx(fullAgentConfig);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get()!;
+
+    const before = completeRequests.length;
+    const toolCtx = createStandaloneToolContext();
+    await runner.runAgent(toolCtx, {
+      agentName: 'researcher',
+      input: { q: '量子', depth: 2 },
+      options: { model: 'gpt-4o' },
+    });
+    const messages = completeRequests[before]!.messages as Array<{
+      role: string;
+      content: string;
+    }>;
+    const lastUser = messages.filter((m) => m.role === 'user').at(-1)!;
+    // 多字段对象 → JSON.stringify（extractSubAgentUserInput 语义）
+    expect(lastUser.content).toBe(JSON.stringify({ q: '量子', depth: 2 }));
+
+    const before2 = completeRequests.length;
+    await runner.runAgent(toolCtx, {
+      agentName: 'researcher',
+      input: { input: '研究宇宙' },
+      options: { model: 'gpt-4o' },
+    });
+    const messages2 = completeRequests[before2]!.messages as Array<{
+      role: string;
+      content: string;
+    }>;
+    const lastUser2 = messages2.filter((m) => m.role === 'user').at(-1)!;
+    // 单 input 字符串字段 → 直传
+    expect(lastUser2.content).toBe('研究宇宙');
+  });
+
+  it('runAgent 对象入参 + Input 声明：校验失败抛 AgentError（RPC ok:false 原样回传 worker 以任务错误浮出）', async () => {
+    const ctx = makeCtx({
+      ...fullAgentConfig,
+      decorateDeps: (deps: unknown) => ({
+        ...(deps as Record<string, unknown>),
+        resolveAgentInputSchema: async () => ({
+          jsonSchema: { type: 'object' },
+          validate: () => ({ ok: false as const, error: 'q: Required' }),
+        }),
+      }),
+    } as AgentConfig);
+    ctx.registries.agent.hydrate([{ ...testAgentEntry, inputTypeName: 'Input' }]);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get()!;
+
+    const toolCtx = createStandaloneToolContext();
+    const before = completeRequests.length;
+    await expect(
+      runner.runAgent(toolCtx, { agentName: 'researcher', input: { depth: 2 } }),
+    ).rejects.toThrow(AgentError);
+    await expect(
+      runner.runAgent(toolCtx, { agentName: 'researcher', input: { depth: 2 } }),
+    ).rejects.toThrow(/input validation failed/);
+    // 校验失败在宿主 runAgent 内短路——循环未起，零 LLM 调用
+    expect(completeRequests).toHaveLength(before);
+  });
+
+  it('runAgent 对象入参 + Input 声明：产物缺失（resolver 返回 undefined）抛 AgentError 指引重建', async () => {
+    const ctx = makeCtx({
+      ...fullAgentConfig,
+      decorateDeps: (deps: unknown) => ({
+        ...(deps as Record<string, unknown>),
+        resolveAgentInputSchema: async () => undefined,
+      }),
+    } as AgentConfig);
+    ctx.registries.agent.hydrate([{ ...testAgentEntry, inputTypeName: 'Input' }]);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get()!;
 
     const toolCtx = createStandaloneToolContext();
     await expect(
-      runner!.resolveReminders(toolCtx, {
-        agentName: 'researcher',
-        depth: 1,
-        turn: 0,
-        phase: 'once',
+      runner.runAgent(toolCtx, { agentName: 'researcher', input: { q: 1 } }),
+    ).rejects.toThrow(/missing or broken/);
+  });
+
+  it('runAgent 字符串入参不走派发校验（user 消息直传，与 HTTP/编程式 run 同语义）', async () => {
+    const ctx = makeCtx({
+      ...fullAgentConfig,
+      decorateDeps: (deps: unknown) => ({
+        ...(deps as Record<string, unknown>),
+        resolveAgentInputSchema: async () => ({
+          jsonSchema: { type: 'object' },
+          validate: () => ({ ok: false as const, error: 'q: Required' }),
+        }),
       }),
-    ).resolves.toBeUndefined();
+    } as AgentConfig);
+    ctx.registries.agent.hydrate([{ ...testAgentEntry, inputTypeName: 'Input' }]);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get()!;
+
+    const before = completeRequests.length;
+    const toolCtx = createStandaloneToolContext();
+    await expect(
+      runner.runAgent(toolCtx, {
+        agentName: 'researcher',
+        input: '研究量子',
+        options: { model: 'gpt-4o' },
+      }),
+    ).resolves.toMatchObject({ content: 'ok' });
+    // 字符串直传绕过富 schema 校验——循环照常起（零校验报错）
+    expect(completeRequests.length).toBeGreaterThan(before);
+  });
+
+  it('runAgent 契约 ctx 透传：reminders builder 收到调用方传入的 ctx（增强字段可读）', async () => {
+    const captured: Array<{ turn: number; currentUserId?: number }> = [];
+    const ctx = makeCtx(fullAgentConfig);
+    ctx.registries.agent.hydrate([
+      {
+        ...testAgentEntry,
+        reminders: [
+          {
+            when: 'once',
+            content: (info) => {
+              captured.push({
+                turn: info.turn,
+                currentUserId: (info.ctx as { currentUserId?: number }).currentUserId,
+              });
+              return 'r';
+            },
+          },
+        ],
+      },
+    ]);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get()!;
+
+    const toolCtx = createStandaloneToolContext({ currentUserId: 7 });
+    await runner.runAgent(toolCtx, {
+      agentName: 'researcher',
+      input: '研究量子',
+      options: { model: 'gpt-4o' },
+    });
+    expect(captured).toEqual([{ turn: 0, currentUserId: 7 }]);
+  });
+
+  it('runAgent 未知 agent 名：循环侧 AgentError 原样抛出', async () => {
+    const ctx = makeCtx(fullAgentConfig);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get()!;
+    const toolCtx = createStandaloneToolContext();
+    await expect(runner.runAgent(toolCtx, { agentName: 'nope', input: 'hi' })).rejects.toThrow(
+      AgentError,
+    );
   });
 });

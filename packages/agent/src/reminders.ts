@@ -119,7 +119,7 @@ export function joinReminderBlocks(contents: readonly string[]): string | undefi
 /** 合并全局与单 agent 声明（全局在前——agent 特定内容更靠近上下文末端；各自保持声明序） */
 export function collectReminderSpecs(
   globalSpecs: readonly ReminderSpec[] | undefined,
-  agentSpecs: readonly string[] | undefined,
+  agentSpecs: readonly ReminderSpec[] | undefined,
 ): ReminderSpec[] {
   return [...(globalSpecs ?? []), ...(agentSpecs ?? [])];
 }

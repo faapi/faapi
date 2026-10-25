@@ -39,16 +39,11 @@
  * 详见 [plugin.md](./plugin.md)。
  */
 
-import {
-  type FaapiPlugin,
-  type PluginContext,
-  type AgentConfig,
-  type ToolSchemaResolution,
-} from '@faapi/faapi';
-import { Agent, executeToolCall, type FilterToolsHook } from './agent';
+import { type FaapiPlugin, type PluginContext, type AgentConfig } from '@faapi/faapi';
+import { Agent, AgentError, extractSubAgentUserInput } from './agent';
+import type { AgentRunOptions } from './agentHandle';
 import { createAgentDeps } from './agentDeps';
 import { createLightComplete } from './lightComplete';
-import { collectReminderSpecs, renderReminderSpecs } from './reminders';
 import { createStandaloneToolContext } from './standaloneToolContext';
 
 /**
@@ -122,35 +117,43 @@ const agentPlugin: FaapiPlugin = {
       return new Agent({ ...baseDeps, ctx });
     });
 
-    // 注册隔离任务工具执行器——隔离 worker 的 agent 编排循环经 RPC 把业务函数面
-    // （工具 handler / 钩子 / 派发钩子）回传宿主执行：与 Agent.executeTool 常规
-    // 分支共用 executeToolCall（schema 缓存 setup 闭包级，跨调用复用），worker 侧
-    // 只跑 LLM 循环。插件未加载时 runner store 为空——worker 内 taskCtx.agent
-    // 不挂载（能力不存在非降级，见 taskTypes.md）
-    const runnerSchemaCache = new Map<string, ToolSchemaResolution | undefined>();
-    ctx.registries.agentToolRunner.register({
-      beforeToolCall: async (ctx, toolName, args) =>
-        baseDeps.config?.beforeToolCall?.(toolName, args, ctx),
-      toolCall: (ctx, toolName, args) =>
-        executeToolCall(baseDeps, toolName, args, ctx, runnerSchemaCache),
-      filterTools: async (ctx, tools) =>
-        (await baseDeps.config?.filterTools?.(tools as Parameters<FilterToolsHook>[0], ctx)) ??
-        tools,
-      resolveSubAgentInput: async (ctx, subName, args) =>
-        baseDeps.resolveSubAgentInput?.(subName, args, ctx),
-      resolveSubAgentContext: async (ctx, subName, args) =>
-        baseDeps.resolveSubAgentContext?.(subName, args, ctx),
-      // 提醒供数（reminders，见 reminders.md）：宿主侧全量合并（config.agent.reminders
-      // + agent meta.reminders——与本地 buildLoopConfig 同一 collectReminderSpecs 语义）
-      // 并渲染指定通道，返回未包裹内容串数组；worker 侧引擎负责包裹。ctx 为任务合成
-      // 上下文（builder 的 info.ctx——worker 垫片不外传 ctx，此处注入）
-      resolveReminders: async (ctx, info) => {
-        const specs = collectReminderSpecs(
-          baseDeps.config?.reminders,
-          baseDeps.getAgent(info.agentName)?.reminders,
-        );
-        if (specs.length === 0) return undefined;
-        return renderReminderSpecs(specs, { ...info, ctx }, info.phase);
+    // 注册 agent 循环执行器——隔离 worker 调 agent 收敛为单次 agent-run RPC：
+    // worker 侧 taskCtx.agent.run 转发请求，宿主在此以任务合成契约 ctx 构造 Agent
+    // 跑完整编排循环（LLM IO、tool 执行、钩子、reminders、sub-agent 全在宿主——
+    // db 连接池等资源单实例、业务函数零跨线程）。插件未加载时 runner store 为空
+    // ——worker 内 taskCtx.agent 不挂载（能力不存在非降级，见 taskTypes.md）
+    ctx.registries.agentRunner.register({
+      runAgent: async (ctx, request) => {
+        const { agentName, options } = request;
+        const entry = baseDeps.getAgentEntry(agentName);
+        // 派发入参校验（富 schema 派发形态——镜像 executeSubAgent：声明 Input 且
+        // resolver 已接线时校验，失败/产物缺失显式抛错，RPC ok:false 原样回传
+        // worker 以任务错误浮出）。字符串入参为 user 消息直传（与 HTTP/编程式
+        // run 同语义，不经派发 schema）；结构化对象为派发形态，宿主跑循环前校验
+        let runInput: string | undefined;
+        if (typeof request.input === 'object' && request.input !== null) {
+          if (entry?.inputTypeName && baseDeps.resolveAgentInputSchema) {
+            const schemaRes = await baseDeps.resolveAgentInputSchema(entry);
+            if (!schemaRes) {
+              throw new AgentError(
+                `Agent "${agentName}" declares input schema "${entry.inputTypeName}" but its zod.js artifact is missing or broken (run \`faapi build\` / restart \`faapi dev\` to regenerate)`,
+              );
+            }
+            const result = schemaRes.validate(request.input);
+            if (!result.ok) {
+              throw new AgentError(`Agent "${agentName}" input validation failed: ${result.error}`);
+            }
+          }
+          runInput = extractSubAgentUserInput(request.input);
+        } else {
+          runInput = request.input;
+        }
+        // 完整循环：与 HTTP 请求链同一份 baseDeps（工具/钩子/reminders 单一实现）
+        const agent = new Agent({ ...baseDeps, ctx });
+        return agent.run(runInput, {
+          ...(options as AgentRunOptions | undefined),
+          agent: agentName,
+        });
       },
     });
 
