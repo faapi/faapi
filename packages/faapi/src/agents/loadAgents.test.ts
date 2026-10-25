@@ -135,7 +135,7 @@ describe('loadAgents', () => {
       ).toThrow(/vars\.nested 必须是 string \| number \| boolean/);
     });
 
-    it('reminders 声明面已移除：声明即撞未知字段白名单报错（迁移守卫）', () => {
+    it('reminders 非白名单字段：声明即撞未知字段白名单报错', () => {
       expect(() =>
         evaluateAgentDeclaration(
           { config: { systemPrompt: 'x', reminders: ['先查资料'] } },

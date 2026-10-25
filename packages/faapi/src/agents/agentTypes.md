@@ -48,8 +48,6 @@ export interface AgentCore {
 }
 ```
 
-> **8.0 起 `reminders` 字段已移除**——框架不再提供提醒注入原语（reminders 概念整线删除，含 `@faapi/agent` 的 `resolveReminders` 钩子与注入引擎）；进历史的动态注入块走 `resolveRootInput` / `resolveSubAgentInput`。
-
 **字段求值时机**（启动期运行时求值语义，替代旧 AST 字面量提取）：
 
 - `systemPrompt` 工厂函数——**每次 run** 求值，与 `systemPromptFile`「每次 run 读文件」语义对齐：按 env/DB 等运行时状态切换人设。工厂返回非 string 在 run 期抛 `AgentError`（启动期无法验证返回类型）
