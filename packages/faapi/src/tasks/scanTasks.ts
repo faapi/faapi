@@ -32,17 +32,24 @@ const WORKER_FILENAME = 'worker.ts';
  * 只匹配对象字面量中的简单字面量形式（字符串/数字），不追求完整表达式求值——
  * meta 是静态声明，动态计算的 cron/并发数不支持（显式约束，不静默降级）。
  */
-const CRON_RE = /(?:^|\n)\s*cron:\s*['"`]([^'"`\n]+)['"`]/;
+// cron 字符串字面量提取——闭合引号后同款值后边界（与 NUM_BOUNDARY 统一口径）：
+// `'0 3 * * *' + suffix` 拼接表达式不能被引号前缀静默截取（交给字面量守卫显式抛错）；
+// 行尾注释放行（`cron: '0 3 * * *' // nightly` 不误伤）
+const CRON_RE = /(?:^|\n)\s*cron:\s*['"`]([^'"`\n]+)['"`](?=\s*(?:\/\/|\/\*|,|\}|\n|$))/;
 // 数字字面量含下划线分隔符（TS 惯用写法 60_000）——不支持则被截断成 60，静默错值
 const NUM_LITERAL = '(\\d+(?:_\\d+)*)';
-const CONCURRENCY_RE = new RegExp(`(?:^|\\n)\\s*concurrency:\\s*${NUM_LITERAL}`);
-const RETRIES_RE = new RegExp(`(?:^|\\n)\\s*retries:\\s*${NUM_LITERAL}`);
-const TIMEOUT_MS_RE = new RegExp(`(?:^|\\n)\\s*timeoutMs:\\s*${NUM_LITERAL}`);
-const GRACE_MS_RE = new RegExp(`(?:^|\\n)\\s*graceMs:\\s*${NUM_LITERAL}`);
+// 数字字段统一后边界：值后必须紧跟 `,` / `}` / 换行 / 行尾注释（`//`、`/*`）/ 结尾。
+// `30 * 60_000` 这类表达式不能被前导字面量静默截取（意图 30 分钟，截取 30 是静默
+// 错值——交给字面量守卫显式抛错）；行尾注释放行，`timeoutMs: 60_000 // one minute`
+// 风格不误伤（cron 字符串字段在 CRON_RE 内联同款边界，六个 meta 字段口径统一，
+// 见 scanTasks.md）
+const NUM_BOUNDARY = '(?=\\s*(?://|/\\*|,|\\}|\\n|$))';
+const CONCURRENCY_RE = new RegExp(`(?:^|\\n)\\s*concurrency:\\s*${NUM_LITERAL}${NUM_BOUNDARY}`);
+const RETRIES_RE = new RegExp(`(?:^|\\n)\\s*retries:\\s*${NUM_LITERAL}${NUM_BOUNDARY}`);
+const TIMEOUT_MS_RE = new RegExp(`(?:^|\\n)\\s*timeoutMs:\\s*${NUM_LITERAL}${NUM_BOUNDARY}`);
+const GRACE_MS_RE = new RegExp(`(?:^|\\n)\\s*graceMs:\\s*${NUM_LITERAL}${NUM_BOUNDARY}`);
 const MAX_OLD_GEN_RE = new RegExp(
-  // 值后必须紧跟 `,`/`}`/换行/结尾：`128 * 2` 这类多行表达式不能被前导字面量
-  // 静默截取（128 * 2 意图是 256，截取 128 是静默错值——交给字面量守卫显式抛错）
-  `(?:^|\\n)\\s*maxOldGenerationSizeMb:\\s*${NUM_LITERAL}(?=\\s*(?:,|\\}|\\n|$))`,
+  `(?:^|\\n)\\s*maxOldGenerationSizeMb:\\s*${NUM_LITERAL}${NUM_BOUNDARY}`,
 );
 
 /** 数字字面量 meta 字段（字面量守卫的宽松检测清单，cron 单列为字符串字面量） */

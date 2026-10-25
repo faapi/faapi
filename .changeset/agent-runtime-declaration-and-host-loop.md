@@ -1,5 +1,5 @@
 ---
-'@faapi/faapi': major
+'@faapi/faapi': minor
 ---
 
 agent 声明运行时化 + 隔离任务 agent 循环收敛宿主（agent-run 单一 RPC）。
@@ -22,6 +22,10 @@ agent 声明运行时化 + 隔离任务 agent 循环收敛宿主（agent-run 单
 **隔离任务 taskCtx.llm 收敛为 RPC 纯转发（worker 零 @faapi/agent 依赖）**
 
 - 删除 `TaskQueueDeps.llms`（agent.llms 快照下发）与 `workerEntry.buildLlmChannel`（worker 内动态加载 `@faapi/agent` 重建通道）——worker 纯转发原则贯彻到一次性补全：`taskCtx.llm.complete` 经单次 `{ type: 'llm-complete', seq, input, options }` 消息回传宿主，宿主从 `AppRegistries.llm` 取派发时刻注册的通道执行（LLM IO 全在宿主，与 agent 循环同一份 providers/重试引擎），以 `{ type: 'llm-result', seq, ok, value | error }` 回传
-- `workerEntry.buildLlmProxy`（纯函数，单测直接构造）：options 前置校验——`onFailure` 钩子为函数不可跨线程显式拒绝（指引任务内 try/catch）；`options.signal` 剥离后转发，业务级取消经 `{ type: 'llm-abort', seq }` 回传宿主 abort 对应请求（宿主侧 AbortController 由执行器注入；与任务取消是两回事——任务取消不传播宿主，挂起调用随两段式取消一并终止）
+- `workerEntry.buildLlmProxy`（纯函数，单测直接构造）：options 前置校验——`onFailure` 钩子为函数不可跨线程显式拒绝（指引任务内 try/catch）；`options.signal` 剥离后转发，业务级取消经 `{ type: 'llm-abort', seq }` 回传宿主 abort 对应请求（宿主侧 AbortController 由执行器注入；业务级取消与任务取消是两个 abort 源，任务取消传播见下）
 - `TaskWorkerOptions`：删 `agentModuleUrl`/`llms`，新增 `onLlmComplete`（语义层注入，llm store 未注册时 run 消息不带 `llmChannel`，worker 内 `taskCtx.llm` 不挂载——能力不存在非降级）；`WorkerEntryData` 删 `agentModuleUrl`
-- 取消语义固化（显式设计决策）：隔离任务取消只在 worker 侧生效——两段式取消不向宿主 agent-run 循环传播，宿主已开始的循环继续执行到自然结束、结果随 worker 终止被丢弃
+- 取消传播宿主（替代此前「取消只在 worker 生效」的显式取舍）：隔离任务两段式取消（超时/停机）第一段即 abort 宿主侧全部 in-flight 控制器——agent-run 循环经 `AgentRunner.runAgent` 新增第三参 `execution.signal`（合入 run options 的 `signal`，宿主侧优先）抛 `AgentAbortError`，部分对话历史（`messages`）由宿主留痕 `agent-aborted` 事件（业务可基于 messages 续跑；按 `err.name` 检测，主包不依赖 `@faapi/agent`）；llm-complete IO 随任务取消中断，LLM tokens 不白烧。不变量保持：取消判定即终局、tool 执行不被取消（业务自决）、`TaskWorkerOptions.onAgentRun` 第二参为宿主侧取消 signal
+
+**scanTasks meta 字段值后边界收敛（防前导截取）**
+
+- 六个 meta 字段统一带值后边界 lookahead（值后必须紧跟 `,` / `}` / 换行 / 行尾注释（`//`、`/*`）/ 结尾）：五个数字字段（`concurrency` / `retries` / `timeoutMs` / `graceMs` / `maxOldGenerationSizeMb`）多行对象写法的表达式值（`timeoutMs:` 换行写 `30 * 60_000,`）不再被前导数字静默截取成 `30`（此前误提取后走「低于最小值」的误导性范围报错）；`cron` 字符串字段的拼接表达式（`cron: '0 3 * * *' + suffix`）不再被引号前缀静默截取——两者统一交字面量守卫报 not a literal；行尾注释放行，`timeoutMs: 60_000 // one minute`、`cron: '0 3 * * *' // nightly` 风格不误伤（`maxOldGenerationSizeMb` 既有边界收敛为同款实现）

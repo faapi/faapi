@@ -333,6 +333,54 @@ describe('scanTasks meta 字面量守卫', () => {
     await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(/not a numeric literal/);
   });
 
+  it('多行对象写法的表达式值不被前导数字静默截取（数字字段后边界——表达式交字面量守卫显式抛错，而非误提取为错值后走范围校验）', async () => {
+    writeTask(
+      'src/tasks/expr-line-start/worker.ts',
+      `export const task = {\n  timeoutMs: 30 * 60_000,\n  concurrency: 2 * 1,\n  maxOldGenerationSizeMb: 128 * 2,\n};\nexport function run() {}\n`,
+    );
+    // 修复前：timeoutMs 被静默截取为 30（意图 30 分钟 = 1_800_000），错误面是
+    // 「低于最小值」的误导性范围报错；修复后：统一由字面量守卫报 not a numeric literal
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /"timeoutMs": value is not a numeric literal/,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /"concurrency": value is not a numeric literal/,
+    );
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /"maxOldGenerationSizeMb": value is not a numeric literal/,
+    );
+  });
+
+  it('行尾注释不误伤：值后跟 // / /* 注释（无逗号）时字面量正常提取（后边界 lookahead 放行注释）', async () => {
+    writeTask(
+      'src/tasks/commented-value/worker.ts',
+      `export const task = {\n  timeoutMs: 60_000 // one minute\n  ,\n  graceMs: 5_000 /* grace */,\n};\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks[0]).toMatchObject({ mode: 'isolated', timeoutMs: 60000, graceMs: 5000 });
+  });
+
+  it('cron 字符串字段同款后边界：拼接表达式不被引号前缀静默截取（交字面量守卫显式抛错）', async () => {
+    writeTask(
+      'src/tasks/cron-expr/worker.ts',
+      `const suffix = '0 5';\nexport const task = {\n  cron: '0 3 * * *' + suffix,\n  timeoutMs: 60_000,\n};\nexport function run() {}\n`,
+    );
+    // 修复前：CRON_RE 无后边界，闭合引号即停止——静默提取 '0 3 * * *'（意图拼接
+    // 出完整表达式），声明失效但扫描通过；修复后：统一交字面量守卫报错
+    await expect(scanTasks(rootDir, TASK_PATTERNS)).rejects.toThrow(
+      /"cron": value is not a string literal/,
+    );
+  });
+
+  it('cron 值行尾注释不误伤：值后跟 // 注释（无逗号）时字符串字面量正常提取', async () => {
+    writeTask(
+      'src/tasks/cron-comment/worker.ts',
+      `export const task = {\n  cron: '0 3 * * *' // nightly\n  ,\n  timeoutMs: 60_000,\n};\nexport function run() {}\n`,
+    );
+    const tasks = await scanTasks(rootDir, TASK_PATTERNS);
+    expect(tasks[0]).toMatchObject({ mode: 'isolated', cron: '0 3 * * *', timeoutMs: 60000 });
+  });
+
   it('行注释中的示例（// timeoutMs: ...）不误报也不触发迁移报错', async () => {
     writeTask(
       'src/tasks/commented/task.ts',
