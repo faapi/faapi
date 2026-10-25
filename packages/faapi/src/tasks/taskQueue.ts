@@ -578,9 +578,32 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             },
             // 隔离 agent RPC（单次 agent-run）：请求原样转发执行器（宿主以任务
             // 合成契约 ctx 构造 Agent 跑完整循环），结果/错误按 seq 回传 worker
-            // （克隆边界在 taskWorker 回传层处理——不可克隆按执行错误回传）
+            // （克隆边界在 taskWorker 回传层处理——不可克隆按执行错误回传）。
+            // 第二参为宿主侧取消控制器 signal（taskWorker 每调用构造），经
+            // AgentRunner 第三参 execution 合入 run options（宿主侧优先）
             onAgentRun: agentRunner
-              ? (request) => agentRunner.runAgent(agentHostCtx!, request)
+              ? async (request, signal) => {
+                  try {
+                    return await agentRunner.runAgent(agentHostCtx!, request, { signal });
+                  } catch (err) {
+                    // AgentAbortError：任务取消传播宿主中断 agent 循环——部分对话
+                    // 历史留痕事件缓冲（agent-aborted，业务可基于 messages 续跑）。
+                    // 仅 running 采纳（与 onEvent 同口径，取消判定即终局不翻案）；
+                    // 按 err.name 检测（主包不依赖 @faapi/agent）；错误原样上抛
+                    // （RPC ok:false 回传 worker 以任务错误浮出）
+                    if (
+                      err instanceof Error &&
+                      err.name === 'AgentAbortError' &&
+                      record.status === 'running'
+                    ) {
+                      appendEvent(record, {
+                        type: 'agent-aborted',
+                        messages: (err as Error & { messages?: unknown }).messages ?? [],
+                      });
+                    }
+                    throw err;
+                  }
+                }
               : undefined,
             // 隔离 llm RPC（纯转发）：补全请求转发到派发时刻取到的注册通道（LLM IO
             // 全在宿主），结果/错误按 seq 回传 worker；signal 由执行器注入宿主侧

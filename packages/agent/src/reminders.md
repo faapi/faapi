@@ -109,8 +109,8 @@ config 级声明（`config.agent.reminders`）可含函数，不可跨线程—�
 ```
 worker 内 taskCtx.agent.run(input, options)
   → 单次 agent-run RPC（纯数据请求）
-宿主 taskQueue onAgentRun → agentRunner.runAgent(agentHostCtx, request)
-  → plugin.ts runAgent：new Agent({ ...baseDeps, ctx: agentHostCtx }).run(runInput, { ...options, agent: agentName })
+宿主 taskQueue onAgentRun → agentRunner.runAgent(agentHostCtx, request, { signal })
+  → plugin.ts runAgent：new Agent({ ...baseDeps, ctx: agentHostCtx }).run(runInput, { ...options, agent: agentName, signal })
     → 完整循环在宿主（LLM IO、tool 执行、钩子、reminders 渲染、sub-agent 递归）
 ```
 

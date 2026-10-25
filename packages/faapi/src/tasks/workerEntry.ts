@@ -119,6 +119,87 @@ export function serializeError(err: unknown): SerializedWorkerError {
 
 const LOG_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
+/** worker 侧 RPC 结果消息统一形态（四个代理 handleMessage 的入参；error 为
+ * 全可选宽形状——suspend 通道公开签名即此形态，SerializedWorkerError 可赋值） */
+interface RpcResultMsg {
+  type?: string;
+  seq?: number;
+  ok?: boolean;
+  value?: unknown;
+  error?: { name?: string; message?: string; stack?: string; props?: Record<string, unknown> };
+}
+
+/**
+ * worker 侧 RPC 通道工厂——tasks / llm / agent / suspend 四个代理共享的
+ * seq→pending 样板收敛：seq 分配、挂起登记、send、结果分派（resolve / reject /
+ * 迟到 seq 消费）由本工厂统一承载，各代理只保留差异面（请求载荷形状、前置
+ * 校验、业务级 abort 转发、错误文案）。
+ *
+ * 错误分派语义与四通道既有口径一致：ok:true → resolve(value)；ok:false →
+ * reject（error.message 优先，缺失时 fallbackError(label) 兜底；error.name
+ * 透传——业务错误名跨线程保真）；迟到/未知 seq（取消终止后到达）消费掉返回
+ * true 不 reject。纯数据面，无任何宿主侧语义。
+ */
+function createRpcChannel(config: {
+  /** 消息发送出口（真实 worker 传 parentPort.postMessage，单测注入收集器） */
+  send: (msg: Record<string, unknown>) => void;
+  /** 请求消息类型（如 'llm-complete'） */
+  requestType: string;
+  /** 结果消息类型（如 'llm-result'） */
+  resultType: string;
+  /** !ok 且 error.message 缺失时的兜底文案（label 为 call 时传入的分派上下文） */
+  fallbackError: (label: string | undefined) => string;
+}) {
+  let seq = 0;
+  const pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (err: Error) => void; label?: string }
+  >();
+  return {
+    /**
+     * 发起一次 RPC 调用：payload 为请求消息除 type/seq 外的字段；label 供结果
+     * 分派兜底文案（tasks 的 method 名）；onDispatch 在 send 前同步回调（seq 已
+     * 分配——llm 的业务级 abort 监听在此接线）；send 同步抛错（postMessage 结构
+     * 化克隆）→ 撤销登记 + reject onCloneError 构造的指引错误
+     */
+    call(
+      payload: Record<string, unknown>,
+      opts: {
+        label?: string;
+        onDispatch?: (seq: number) => void;
+        onCloneError: (err: unknown) => Error;
+      },
+    ): Promise<unknown> {
+      return new Promise((resolve, reject) => {
+        const s = ++seq;
+        pending.set(s, { resolve, reject, label: opts.label });
+        try {
+          opts.onDispatch?.(s);
+          config.send({ type: config.requestType, seq: s, ...payload });
+        } catch (err) {
+          pending.delete(s);
+          reject(opts.onCloneError(err));
+        }
+      });
+    },
+    /** 结果分派：type 不符返回 false（不消费）；命中 resolve/reject；迟到 seq 消费 */
+    handleMessage(msg: RpcResultMsg): boolean {
+      if (msg?.type !== config.resultType) return false;
+      const entry = msg.seq !== undefined ? pending.get(msg.seq) : undefined;
+      if (!entry) return true; // 迟到/未知 seq（取消终止后到达）——忽略
+      pending.delete(msg.seq!);
+      if (msg.ok) {
+        entry.resolve(msg.value);
+      } else {
+        const err = new Error(msg.error?.message ?? config.fallbackError(entry.label));
+        if (msg.error?.name !== undefined) err.name = msg.error.name;
+        entry.reject(err);
+      }
+      return true;
+    },
+  };
+}
+
 /**
  * taskCtx.llm 轻量补全代理（worker 侧）——隔离任务一次性补全的纯转发通道
  *
@@ -131,9 +212,9 @@ const LOG_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 
  * 显式拒绝并指引在任务内 try/catch 自行实现失败副作用；`signal` 不可结构化克隆
  * ——剥离后转发，业务级取消（任务内自建 AbortController）经 `{ type: 'llm-abort',
  * seq }` 消息回传宿主 abort 对应请求（错误经 llm-result 回传，与 LlmCompleteOptions
- * 契约一致：取消透传到底层 HTTP 请求）。注意业务级取消与任务取消（两段式）是两
- * 回事：任务取消不传播宿主（worker 纯转发原则），挂起的 complete 随任务终止一并
- * 消失，无独立超时。
+ * 契约一致：取消透传到底层 HTTP 请求）。业务级取消与任务取消是两个 abort 源：
+ * 任务取消（两段式）由宿主在第一段统一 abort 全部 in-flight 控制器（agent-run /
+ * llm-complete 同款），LLM IO 随任务取消中断；worker 侧纯转发，无独立超时。
  *
  * 纯函数形态（send 注入）：真实 worker 传 parentPort.postMessage，单测直接构造。
  */
@@ -148,11 +229,12 @@ export function buildLlmProxy(send: (msg: Record<string, unknown>) => void): {
     error?: SerializedWorkerError;
   }) => boolean;
 } {
-  let seq = 0;
-  const pending = new Map<
-    number,
-    { resolve: (value: string) => void; reject: (err: Error) => void }
-  >();
+  const channel = createRpcChannel({
+    send,
+    requestType: 'llm-complete',
+    resultType: 'llm-result',
+    fallbackError: () => 'taskCtx.llm.complete failed',
+  });
 
   const proxy: LlmComplete = {
     complete: (input, options) => {
@@ -172,58 +254,35 @@ export function buildLlmProxy(send: (msg: Record<string, unknown>) => void): {
           new Error('taskCtx.llm.complete options.signal must be an AbortSignal'),
         );
       }
-      return new Promise<string>((resolve, reject) => {
-        const s = ++seq;
-        pending.set(s, { resolve, reject });
-        try {
-          const payload: Record<string, unknown> = { type: 'llm-complete', seq: s, input };
-          if (opts !== undefined) {
-            const { signal: _signal, ...rest } = opts;
-            if (Object.keys(rest).length > 0) payload.options = rest;
-            if (signal !== undefined) {
-              if (signal.aborted) {
-                pending.delete(s);
-                reject(new Error('taskCtx.llm.complete was aborted before dispatch'));
-                return;
-              }
-              // 业务级取消转发：abort → 宿主 abort 对应请求（错误经 llm-result 回传）
-              signal.addEventListener('abort', () => send({ type: 'llm-abort', seq: s }), {
-                once: true,
-              });
-            }
-          }
-          send(payload);
-        } catch (err) {
-          pending.delete(s);
-          reject(
-            new Error(
-              `taskCtx.llm.complete arguments are not cloneable across the worker boundary: ` +
-                `${err instanceof Error ? err.message : String(err)}. ` +
-                'Keep input / options plain data (strings / numbers / plain objects).',
-              { cause: err },
-            ),
-          );
-        }
-      });
+      if (signal?.aborted) {
+        return Promise.reject(new Error('taskCtx.llm.complete was aborted before dispatch'));
+      }
+      const payload: Record<string, unknown> = { input };
+      if (opts !== undefined) {
+        const { signal: _signal, ...rest } = opts;
+        if (Object.keys(rest).length > 0) payload.options = rest;
+      }
+      return channel.call(payload, {
+        onDispatch: (seq) => {
+          // 业务级取消转发：abort → 宿主 abort 对应请求（错误经 llm-result 回传）
+          signal?.addEventListener('abort', () => send({ type: 'llm-abort', seq }), {
+            once: true,
+          });
+        },
+        onCloneError: (err) =>
+          new Error(
+            `taskCtx.llm.complete arguments are not cloneable across the worker boundary: ` +
+              `${err instanceof Error ? err.message : String(err)}. ` +
+              'Keep input / options plain data (strings / numbers / plain objects).',
+            { cause: err },
+          ),
+      }) as Promise<string>;
     },
   };
 
   return {
     proxy,
-    handleMessage: (msg) => {
-      if (msg?.type !== 'llm-result') return false;
-      const entry = msg.seq !== undefined ? pending.get(msg.seq) : undefined;
-      if (!entry) return true; // 迟到/未知 seq（取消终止后到达）——忽略
-      pending.delete(msg.seq!);
-      if (msg.ok) {
-        entry.resolve(msg.value as string);
-      } else {
-        const err = new Error(msg.error?.message ?? 'taskCtx.llm.complete failed');
-        if (msg.error?.name !== undefined) err.name = msg.error.name;
-        entry.reject(err);
-      }
-      return true;
-    },
+    handleMessage: channel.handleMessage,
   };
 }
 
@@ -295,30 +354,27 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
     error?: SerializedWorkerError;
   }) => boolean;
 } {
-  let seq = 0;
-  const pending = new Map<
-    number,
-    { resolve: (value: unknown) => void; reject: (err: Error) => void; method: string }
-  >();
+  const channel = createRpcChannel({
+    send,
+    requestType: 'tasks-call',
+    resultType: 'tasks-result',
+    fallbackError: (label) => `taskCtx.tasks.${label} failed`,
+  });
 
   const call = (method: string, args: unknown[]): Promise<unknown> =>
-    new Promise((resolve, reject) => {
-      const s = ++seq;
-      pending.set(s, { resolve, reject, method });
-      try {
-        send({ type: 'tasks-call', seq: s, method, args });
-      } catch (err) {
-        pending.delete(s);
-        reject(
+    channel.call(
+      { method, args },
+      {
+        label: method,
+        onCloneError: (err) =>
           new Error(
             `taskCtx.tasks.${method} arguments are not cloneable across the worker boundary: ` +
               `${err instanceof Error ? err.message : String(err)}. ` +
               'Keep arguments plain data (strings / numbers / plain objects).',
             { cause: err },
           ),
-        );
-      }
-    });
+      },
+    );
 
   return {
     proxy: {
@@ -351,20 +407,7 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
         );
       },
     },
-    handleMessage: (msg) => {
-      if (msg?.type !== 'tasks-result') return false;
-      const entry = msg.seq !== undefined ? pending.get(msg.seq) : undefined;
-      if (!entry) return true; // 迟到/未知 seq（取消终止后到达）——忽略
-      pending.delete(msg.seq!);
-      if (msg.ok) {
-        entry.resolve(msg.value);
-      } else {
-        const err = new Error(msg.error?.message ?? `taskCtx.tasks.${entry.method} failed`);
-        if (msg.error?.name !== undefined) err.name = msg.error.name;
-        entry.reject(err);
-      }
-      return true;
-    },
+    handleMessage: channel.handleMessage,
   };
 }
 
@@ -400,11 +443,12 @@ export function buildAgentRunProxy(send: (msg: Record<string, unknown>) => void)
     error?: SerializedWorkerError;
   }) => boolean;
 } {
-  let seq = 0;
-  const pending = new Map<
-    number,
-    { resolve: (value: unknown) => void; reject: (err: Error) => void }
-  >();
+  const channel = createRpcChannel({
+    send,
+    requestType: 'agent-run',
+    resultType: 'agent-run-result',
+    fallbackError: () => 'taskCtx.agent.run failed',
+  });
 
   /** LLMProvider 实例判别（与 @faapi/agent agent.ts 的 isProviderInstance 同款结构判定
    * ——本文件自包含不可值导入，有 complete/stream 方法即实例） */
@@ -444,47 +488,27 @@ export function buildAgentRunProxy(send: (msg: Record<string, unknown>) => void)
         ),
       );
     }
-    return new Promise((resolve, reject) => {
-      const s = ++seq;
-      pending.set(s, { resolve, reject });
-      try {
-        send({
-          type: 'agent-run',
-          seq: s,
-          agentName,
-          ...(input !== undefined ? { input } : {}),
-          ...(options !== undefined ? { options } : {}),
-        });
-      } catch (err) {
-        pending.delete(s);
-        reject(
+    return channel.call(
+      {
+        agentName,
+        ...(input !== undefined ? { input } : {}),
+        ...(options !== undefined ? { options } : {}),
+      },
+      {
+        onCloneError: (err) =>
           new Error(
             'taskCtx.agent.run arguments are not cloneable across the worker boundary: ' +
               `${err instanceof Error ? err.message : String(err)}. ` +
               'Keep input / options plain data (strings / numbers / plain objects).',
             { cause: err },
           ),
-        );
-      }
-    });
+      },
+    );
   };
 
   return {
     run,
-    handleMessage: (msg) => {
-      if (msg?.type !== 'agent-run-result') return false;
-      const entry = msg.seq !== undefined ? pending.get(msg.seq) : undefined;
-      if (!entry) return true; // 迟到/未知 seq（取消终止后到达）——忽略
-      pending.delete(msg.seq!);
-      if (msg.ok) {
-        entry.resolve(msg.value);
-      } else {
-        const err = new Error(msg.error?.message ?? 'taskCtx.agent.run failed');
-        if (msg.error?.name !== undefined) err.name = msg.error.name;
-        entry.reject(err);
-      }
-      return true;
-    },
+    handleMessage: channel.handleMessage,
   };
 }
 
@@ -508,42 +532,34 @@ export function buildSuspendChannel(send: (msg: Record<string, unknown>) => void
     error?: { name?: string; message?: string; stack?: string; props?: Record<string, unknown> };
   }) => boolean;
 } {
-  let seq = 0;
-  const pending = new Map<number, { resolve: () => void; reject: (err: Error) => void }>();
+  const channel = createRpcChannel({
+    send,
+    requestType: 'suspend',
+    resultType: 'suspend-result',
+    fallbackError: () => 'taskCtx.suspend failed',
+  });
   return {
+    /** worker 内挂起：await 直到宿主信封写入完成（run 返回后落账 suspended） */
     suspend: (state?: unknown) =>
-      new Promise<void>((resolve, reject) => {
-        const id = ++seq;
-        pending.set(id, { resolve, reject });
-        try {
-          send({ type: 'suspend', seq: id, state });
-        } catch (err) {
-          pending.delete(id);
-          reject(
+      channel.call(
+        { state },
+        {
+          onCloneError: (err) =>
             new Error(
               `taskCtx.suspend state is not cloneable across the worker boundary: ` +
                 `${err instanceof Error ? err.message : String(err)}. ` +
                 'Keep the suspend state plain data (strings / numbers / plain objects).',
               { cause: err },
             ),
-          );
-        }
-      }),
-    handleMessage: (msg) => {
-      if (msg?.type !== 'suspend-result') return false;
-      const id = msg.seq;
-      if (id === undefined || !pending.has(id)) return true; // 迟到/未知 seq：消费掉
-      const entry = pending.get(id)!;
-      pending.delete(id);
-      if (msg.ok) {
-        entry.resolve();
-      } else {
-        const err = new Error(msg.error?.message ?? 'taskCtx.suspend failed');
-        if (msg.error?.name !== undefined) err.name = msg.error.name;
-        entry.reject(err);
-      }
-      return true;
-    },
+        },
+      ) as Promise<void>,
+    /** 处理 suspend-result 消息：命中返回 true（消息已消费），其余返回 false */
+    handleMessage: (msg: {
+      type?: string;
+      seq?: number;
+      ok?: boolean;
+      error?: { name?: string; message?: string; stack?: string; props?: Record<string, unknown> };
+    }) => channel.handleMessage(msg),
   };
 }
 

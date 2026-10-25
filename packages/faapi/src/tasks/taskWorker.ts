@@ -154,16 +154,20 @@ export interface TaskWorkerOptions {
    * 消息回传宿主，宿主构造 Agent 跑完整编排循环，结果/错误按 seq 回传）——语义层
    * 注入（闭包持有 agentRunner 与任务合成契约 ctx）；不传则 run 消息不携带
    * `agentChannel`，worker 内 taskCtx.agent 不挂载（插件未加载，能力不存在）。
-   * 请求与返回值须可结构化克隆（不可克隆按执行错误回传，与 tasks-call 同口径）
+   * 请求与返回值须可结构化克隆（不可克隆按执行错误回传，与 tasks-call 同口径）。
+   * 第二参为宿主侧取消控制器 signal（与 llm-complete 同款 per-call controller）——
+   * 两段式取消第一段 abort：AgentRunner 合入 run options（宿主侧优先），循环抛
+   * AgentAbortError 由语义层留痕 agent-aborted 事件
    */
-  onAgentRun?: (request: AgentRunRequest) => Promise<unknown>;
+  onAgentRun?: (request: AgentRunRequest, signal?: AbortSignal) => Promise<unknown>;
   /**
    * LLM 一次性补全分派（worker 内 `taskCtx.llm.complete` 经 `{ type: 'llm-complete' }`
    * 消息回传宿主执行——宿主从 AppRegistries.llm 取注册通道跑 LLM IO，结果/错误按
    * seq 回传）——语义层注入（闭包持有注册通道，派发时刻取值快照）；不传则 run 消息
    * 不携带 `llmChannel`，worker 内 taskCtx.llm 不挂载（通道未注册，能力不存在）。
    * 入参与返回值须可结构化克隆（signal 由执行器注入宿主侧 AbortController——worker
-   * 侧业务级取消经 `{ type: 'llm-abort' }` 触发；不可克隆按调用错误拒绝）
+   * 侧业务级取消经 `{ type: 'llm-abort' }` 触发，任务取消（两段式）同样在第一段
+   * abort 全部 in-flight 控制器；不可克隆按调用错误拒绝）
    */
   onLlmComplete?: (input: string, options?: Record<string, unknown>) => Promise<string>;
 }
@@ -230,6 +234,8 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
     let phase: 'running' | 'grace' | 'settled' = 'running';
     let cancelReason = '';
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    /** agent-run 的宿主侧取消控制器（seq 映射；两段式取消第一段统一 abort） */
+    const agentControllers = new Map<number, AbortController>();
     /** llm-complete 的宿主侧取消控制器（seq 映射；业务级 llm-abort 触发 abort） */
     const llmControllers = new Map<number, AbortController>();
     const finish = (settle: () => void): void => {
@@ -247,6 +253,12 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
       if (phase !== 'running') return;
       phase = 'grace';
       cancelReason = reason;
+      // 取消传播宿主：第一段即 abort 宿主侧全部 in-flight 控制器——agent-run 循环
+      // 抛 AgentAbortError（messages 由语义层留痕 agent-aborted 事件）、llm-complete
+      // IO 随任务取消中断（不白烧 tokens）。错误回传竞态无需处理：宽限期内到达的
+      // RPC 结果照常回传（worker 可能仍在监听），任务终局已锁定不受影响
+      for (const controller of agentControllers.values()) controller.abort();
+      for (const controller of llmControllers.values()) controller.abort();
       worker.postMessage({ type: 'abort', reason });
       graceTimer = setTimeout(() => {
         finish(() =>
@@ -344,13 +356,18 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
           // agent-run RPC：worker 内 taskCtx.agent.run 转发请求，宿主构造 Agent
           // 跑完整编排循环（单次 RPC 收敛——工具/钩子/reminders/sub-agent 全在宿主）。
           // running/grace 两阶段都处理（与 tasks-call 同口径——调用随任务超时两段式
-          // 取消一并终止）；settled 后不会再有消息
+          // 取消一并终止）；settled 后不会再有消息。signal 由宿主侧 AbortController
+          // 注入（语义层经 AgentRunner 第三参 execution 合入 run options，宿主侧
+          // 优先）——两段式取消第一段统一 abort，循环抛 AgentAbortError 由语义层
+          // 留痕 agent-aborted 事件
           const { seq, agentName, input, options: runOptions } = msg;
           const request: AgentRunRequest = {
             agentName: agentName as string,
             ...(input !== undefined ? { input: input as string } : {}),
             ...(runOptions !== undefined ? { options: runOptions as Record<string, unknown> } : {}),
           };
+          const controller = new AbortController();
+          agentControllers.set(seq!, controller);
           const replyAgent = (body: Record<string, unknown>) => {
             try {
               worker.postMessage({ type: 'agent-run-result', seq, ...body });
@@ -389,7 +406,7 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
             return;
           }
           options
-            .onAgentRun(request)
+            .onAgentRun(request, controller.signal)
             .then((value) => replyAgent({ ok: true, value }))
             .catch((err: unknown) => {
               replyAgent({
@@ -401,7 +418,8 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
                   props: {},
                 } satisfies SerializedWorkerError,
               });
-            });
+            })
+            .finally(() => agentControllers.delete(seq!));
           return;
         }
         if (msg?.type === 'llm-complete') {
@@ -409,8 +427,8 @@ export async function runTaskInWorker(options: TaskWorkerOptions): Promise<unkno
           // AppRegistries.llm 注册通道跑 LLM IO（worker 不加载 @faapi/agent）。
           // running/grace 两阶段都处理（与 tasks-call 同口径——调用随任务超时两段式
           // 取消一并终止）；settled 后不会再有消息。signal 由宿主侧 AbortController
-          // 注入——worker 侧业务级取消经 llm-abort 触发（与任务取消是两回事，不接
-          // job.signal：取消只在 worker 生效）
+          // 注入——两个 abort 源：worker 侧业务级取消经 llm-abort 触发；任务取消
+          //（两段式）在第一段统一 abort（startCancel），LLM IO 不白烧 tokens
           const { seq, input, options: completeOptions } = msg;
           const controller = new AbortController();
           llmControllers.set(seq!, controller);

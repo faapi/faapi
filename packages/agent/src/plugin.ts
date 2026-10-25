@@ -123,7 +123,7 @@ const agentPlugin: FaapiPlugin = {
     // db 连接池等资源单实例、业务函数零跨线程）。插件未加载时 runner store 为空
     // ——worker 内 taskCtx.agent 不挂载（能力不存在非降级，见 taskTypes.md）
     ctx.registries.agentRunner.register({
-      runAgent: async (ctx, request) => {
+      runAgent: async (ctx, request, execution) => {
         const { agentName, options } = request;
         const entry = baseDeps.getAgentEntry(agentName);
         // 派发入参校验（富 schema 派发形态——镜像 executeSubAgent：声明 Input 且
@@ -153,6 +153,10 @@ const agentPlugin: FaapiPlugin = {
         return agent.run(runInput, {
           ...(options as AgentRunOptions | undefined),
           agent: agentName,
+          // 宿主任务取消传播 agent 循环（宿主侧优先）：隔离任务两段式取消第一段
+          // abort 此 signal——ReactLoop 每轮预检查 + provider 请求中断抛
+          // AgentAbortError（messages 由宿主留痕 agent-aborted 事件，可续跑）
+          signal: execution?.signal ?? (options as AgentRunOptions | undefined)?.signal,
         });
       },
     });

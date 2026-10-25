@@ -288,8 +288,17 @@ export interface AgentRunRequest {
  * 参数均须可结构化克隆（跨 postMessage 边界，不可克隆按执行错误显式失败）。
  */
 export interface AgentRunner {
-  /** 执行一次完整 agent 循环，返回 ReactLoopResult 纯数据；失败上抛（RPC ok:false 回传） */
-  runAgent(ctx: AgentToolContext, request: AgentRunRequest): Promise<unknown>;
+  /**
+   * 执行一次完整 agent 循环，返回 ReactLoopResult 纯数据；失败上抛（RPC ok:false 回传）。
+   * `execution.signal` 为宿主侧任务取消控制器（隔离任务两段式取消第一段 abort）——
+   * 执行器合入 run options（宿主侧优先），ReactLoop 每轮预检查 + provider 请求中断
+   * 抛 AgentAbortError（messages 经宿主留痕 agent-aborted 事件）
+   */
+  runAgent(
+    ctx: AgentToolContext,
+    request: AgentRunRequest,
+    execution?: { signal?: AbortSignal },
+  ): Promise<unknown>;
 }
 
 /** agent 循环执行器 store（app 实例级，随 app 生命周期；与 LlmChannelStore 同形态） */

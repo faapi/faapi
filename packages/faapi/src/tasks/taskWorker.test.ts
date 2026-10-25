@@ -1424,3 +1424,56 @@ describe('runTaskInWorker · resourceLimits 透传', () => {
     expect(max).not.toBe(64);
   });
 });
+
+describe('runTaskInWorker · 任务取消传播宿主（agent-run / llm-complete）', () => {
+  it('两段式取消第一段即 abort 宿主侧 in-flight 的 agent-run 与 llm-complete 控制器（LLM IO 不白烧 tokens）', async () => {
+    const modulePath = writeTaskModule(
+      'cancel-propagation',
+      `export async function run(payload, taskCtx) {
+        const agentP = taskCtx.agent.run('hi', { agent: 'x' });
+        const llmP = taskCtx.llm.complete('q');
+        return Promise.all([agentP, llmP]).then(() => 'done');
+      }`,
+    );
+    const agentSignals: AbortSignal[] = [];
+    const llmSignals: AbortSignal[] = [];
+    let agentStarted!: () => void;
+    let llmStarted!: () => void;
+    const bothStarted = Promise.all([
+      new Promise<void>((r) => {
+        agentStarted = r;
+      }),
+      new Promise<void>((r) => {
+        llmStarted = r;
+      }),
+    ]);
+    const externalController = new AbortController();
+    const pending = runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: baseCtx,
+      timeoutMs: 10_000,
+      graceMs: 0,
+      externalSignal: externalController.signal,
+      onAgentRun: (_request, signal) => {
+        agentSignals.push(signal!);
+        agentStarted();
+        return new Promise(() => {});
+      },
+      onLlmComplete: (_input, options) => {
+        llmSignals.push((options as { signal: AbortSignal }).signal);
+        llmStarted();
+        return new Promise(() => {});
+      },
+    });
+    await bothStarted;
+    externalController.abort();
+    // 取消判定即终局：任务失败为 TaskCancelledError
+    await expect(pending).rejects.toBeInstanceOf(TaskCancelledError);
+    // 宿主侧 agent-run / llm-complete 的取消控制器在第一段即被 abort
+    expect(agentSignals[0]).toBeInstanceOf(AbortSignal);
+    expect(agentSignals[0]!.aborted).toBe(true);
+    expect(llmSignals[0]).toBeInstanceOf(AbortSignal);
+    expect(llmSignals[0]!.aborted).toBe(true);
+  });
+});

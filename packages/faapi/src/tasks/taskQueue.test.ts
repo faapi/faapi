@@ -812,6 +812,85 @@ describe('createTaskQueue', () => {
     await queue2.stop();
   });
 
+  it('隔离 agent 通道取消传播：onAgentRun 透传取消 signal（AgentRunner 第三参 execution），AgentAbortError 经事件留痕（agent-aborted 携带 messages 可续跑）', async () => {
+    const fake = makeFakeDriver();
+    const registry = createTaskRegistry();
+    registry.hydrate([
+      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
+    ]);
+
+    const seenSignals: AbortSignal[] = [];
+    const runnerStore = {
+      register: vi.fn(),
+      get: () => ({
+        runAgent: async (
+          _ctx: Record<string, unknown>,
+          _request: Record<string, unknown>,
+          execution?: { signal?: AbortSignal },
+        ) => {
+          if (execution?.signal) seenSignals.push(execution.signal);
+          const err = new Error('agent loop aborted');
+          (err as unknown as { name: string }).name = 'AgentAbortError';
+          (err as unknown as { messages: unknown[] }).messages = [
+            { role: 'user', content: 'hi' },
+            { role: 'assistant', content: 'partial' },
+          ];
+          throw err;
+        },
+      }),
+      clear: vi.fn(),
+    };
+    let capturedOpts: {
+      onAgentRun?: (
+        request: { agentName: string; input?: unknown; options?: unknown },
+        signal?: AbortSignal,
+      ) => Promise<unknown>;
+    } = {};
+    let agentError: unknown;
+    const controller = new AbortController();
+    const request = { agentName: 'log-analyzer', input: '分析' };
+    const runIsolated = vi.fn(async (opts: typeof capturedOpts) => {
+      capturedOpts = opts;
+      // 执行进行中调用（record.status === 'running'）——留痕走 onEvent 同一 running 守卫
+      try {
+        await opts.onAgentRun!(request, controller.signal);
+      } catch (err) {
+        agentError = err;
+      }
+      return 'from-worker';
+    });
+    const queue = createTaskQueue({
+      registry,
+      rootDir: '/fake',
+      config: {},
+      driver: fake.driver,
+      runIsolated: runIsolated as never,
+      agentRunner: runnerStore as never,
+      loadTaskModule: async () => ({ run: vi.fn() }),
+      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
+    });
+    queue.start();
+    const { id } = await queue.enqueue('heavy', {}, { carry: { currentUserId: 9 } });
+    await fake.dispatch('heavy', {}, 1, undefined, { carry: { currentUserId: 9 } });
+
+    expect(capturedOpts.onAgentRun).toBeDefined();
+    // 错误原样上抛（RPC ok:false 回传 worker 以任务错误浮出）
+    expect((agentError as Error | undefined)?.name).toBe('AgentAbortError');
+    // 取消 signal 经 AgentRunner 第三参 execution 到达宿主循环（宿主侧优先合入 run options）
+    expect(seenSignals).toEqual([controller.signal]);
+    // AgentAbortError 留痕事件缓冲：{ type: 'agent-aborted', messages }——部分对话
+    // 历史可续跑（任务终局仍由两段式取消判定，留痕只追加不翻案）
+    const events = queue.listEvents('heavy', { jobId: id });
+    expect(events.at(-1)!.data).toEqual({
+      type: 'agent-aborted',
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'partial' },
+      ],
+    });
+    await queue.stop();
+  });
+
   it('mode: isolated 的任务走隔离执行器（runIsolated），进程内 run 不被调用', async () => {
     const run = vi.fn(async () => 'in-process');
     const fake = makeFakeDriver();

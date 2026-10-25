@@ -38,7 +38,7 @@ export interface AgentRunRequest {
 
 export interface AgentRunner {
   /** 执行一次完整 agent 循环，返回 ReactLoopResult 纯数据；失败上抛（RPC ok:false 回传） */
-  runAgent(ctx: AgentToolContext, request: AgentRunRequest): Promise<unknown>;
+  runAgent(ctx: AgentToolContext, request: AgentRunRequest, execution?: { signal?: AbortSignal }): Promise<unknown>;
 }
 
 export interface AgentRunnerStore {
@@ -53,7 +53,7 @@ export interface AgentRunnerStore {
 要点：
 
 - **纯数据边界**：request / 返回值均须可结构化克隆（跨 postMessage，不可克隆按执行错误显式失败）；`options.provider` 仅支持 `LlmConfig` 纯数据形态，`LLMProvider` 实例不可跨线程（worker 侧代理显式报错指引）
-- **ctx 由调用方注入**：执行器不感知任务——`taskQueue` 以任务合成契约 ctx（carry + scoped TaskClient + 任务级 logger + job.signal，与进程内 `taskCtx.agent` 同配方，见 [taskToolContext.md](../tasks/taskToolContext.md)）调用 `runAgent(ctx, request)`
+- **ctx 由调用方注入**：执行器不感知任务——`taskQueue` 以任务合成契约 ctx（carry + scoped TaskClient + 任务级 logger + job.signal，与进程内 `taskCtx.agent` 同配方，见 [taskToolContext.md](../tasks/taskToolContext.md)）调用 `runAgent(ctx, request)`；`execution.signal`（可选）为宿主侧任务取消控制器——执行器须传入 Agent 循环（ReactLoopConfig.signal），任务取消传播宿主中断 LLM IO（见 taskWorker.md「取消传播宿主」）
 - **主包不反向依赖 agent 包类型**：`AgentRunRequest.options` 按结构声明为 `Record<string, unknown>`
 - 注册时机：`@faapi/agent` 插件 `setup` 内注册（晚于队列构造）——队列**每次派发时** `deps.agentRunner?.get()` 取值，构造期快照不会漏注册
 - 未注册时队列不注入 `onAgentRun`：run 消息不带 `agentChannel`，worker 内 `taskCtx.agent` 恒 undefined（能力不存在非降级）

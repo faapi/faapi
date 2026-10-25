@@ -577,6 +577,35 @@ describe('@faapi/agent plugin — 隔离 agent 通道（agentRunner 注册）', 
     expect(first[0]!.content).toContain('you are a researcher');
   });
 
+  it('runAgent 第三参 execution.signal：合入 run options 的 signal（宿主任务取消传播 agent 循环，宿主侧优先）', async () => {
+    const ctx = makeCtx(fullAgentConfig);
+    plugin.setup(ctx);
+    const runner = ctx.registries.agentRunner.get()!;
+
+    const toolCtx = createStandaloneToolContext();
+    const controller = new AbortController();
+    const before = completeRequests.length;
+    await runner.runAgent(
+      toolCtx,
+      { agentName: 'researcher', input: '研究量子', options: { model: 'gpt-4o' } },
+      { signal: controller.signal },
+    );
+    // 取消控制器随请求到达 provider（每轮 LLM 预检查 + 请求中断依赖此 signal）
+    const request = completeRequests[before] as unknown as { signal?: AbortSignal };
+    expect(request.signal).toBe(controller.signal);
+
+    // options.signal 直传（无 execution.signal 时保持既有语义）
+    const before2 = completeRequests.length;
+    const callerController = new AbortController();
+    await runner.runAgent(toolCtx, {
+      agentName: 'researcher',
+      input: '研究宇宙',
+      options: { model: 'gpt-4o', signal: callerController.signal },
+    });
+    const request2 = completeRequests[before2] as unknown as { signal?: AbortSignal };
+    expect(request2.signal).toBe(callerController.signal);
+  });
+
   it('runAgent 对象入参：富派发形态经 extractSubAgentUserInput 构造 user 消息（未声明 Input 不校验）', async () => {
     const ctx = makeCtx(fullAgentConfig);
     plugin.setup(ctx);
