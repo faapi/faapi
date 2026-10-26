@@ -1108,6 +1108,17 @@ fixed 模式强制所有包统一版本号，新增包必须加入此数组。
 2. `pnpm -r run typecheck` / `lint` / `test` / `build` —— 全部通过
 3. 正式发版走 `npm-stable-release` 技能，确认新包发布到 npm `latest` tag
 
+### 6.6 测试确定性约定（本地绿 ≠ CI 绿的根治规则）
+
+测试必须**确定性**——不依赖任何只在特定环境成立的假设（本机 macOS APFS 与 CI Ubuntu ext4 的 mtime 粒度、FS 时序、并发度都可能是盲区；v7.9.0 发布门禁曾因 mtime 粒度 + 单例级联三用例连挂）。四条硬规则：
+
+1. **文件新旧断言必须显式 `utimesSync`**——凡测试断言「文件 A 比文件 B 新/旧」（mtime 缓存、产物新鲜度类），用 `utimesSync` 显式设置 mtime 制造确定性差值，禁止依赖两次写入的自然 mtime 顺序（CI 上两次写入可能落在同一 mtime 刻度，`isProductFresh` 类判定会反向误判）。
+2. **资源防御式清理——任何路径不留存活状态**——创建 app（`createAppBase`/`createProdApp`/`createDevApp`）的用例，无论成功、失败、断言 reject，都必须 close：预期 reject 的用例用**防御式断言**（`.then(app => close, err => ...)` 双路径收口），不得假设「reject 就不占单例」。faapi/agent 两包 vitest 已挂 `setupFiles` 泄漏守卫（`vitest.setup.ts`）——用例结束仍存活 app 即在该用例上报错（不级联，真凶立即暴露）。
+3. **时序等待用确定性信号**——依赖「响应写出后发射」等异步时序的断言，优先等确定性信号（事件、Promise、轮询条件）；短 `setTimeout` tick 需注释时序依据，禁止裸长 sleep。
+4. **禁止环境假设**——路径大小写（macOS 不敏感/Linux 敏感）、换行符、FS mtime 粒度、CPU 数（`os.availableParallelism`）等一律不进断言或显式归一。
+
+> 「本地全绿」不是合并依据的充分条件——CI test job（push main 触发）的结果必须在合并下一个动作前确认（见 npm-stable-release 技能「打 tag 前确认 CI 已绿」步骤）。
+
 ## 7. 交付完成定义
 
 某个子功能只有在以下条件全部满足时才算完成：

@@ -272,6 +272,29 @@ pnpm test
 
 > 教训(v4.3.0 发版):本地 tarball 模拟连环报错(404 faapi@*、import 解析到 src/index.ts),排查半天全是开发态假象——发布后 npm 验证一次通过。发版前只需要 build/typecheck/typecheck:test/test 绿,然后提交、打 tag、推送,**发布正确性交给 CI,发版后走第 12 步在真实 npm 上验证**。
 
+### 8.5 打 tag 前确认 CI 已绿（流程防线，v7.9.0 事故后新增）
+
+「本地全绿」不等于 CI 绿——环境差异（FS mtime 粒度、平台行为）只在 CI 暴露；且直接 push main 时连续 push 会因 ci.yml 的 `cancel-in-progress` **取消功能 commit 的 CI run**，全量测试第一次真正跑可能就是 Release 门禁。打 tag 前（步骤 10）必须确认 HEAD commit 的 CI run 已成功：
+
+```bash
+# 查 HEAD 的 CI run 状态（GitHub API，public repo 无需认证）
+HEAD_SHA=$(git rev-parse HEAD)
+curl -s "https://api.github.com/repos/faapi/faapi/actions/runs?head_sha=$HEAD_SHA&per_page=5" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+runs = data.get('workflow_runs', [])
+if not runs:
+    print('NO CI RUN for HEAD — 先推一个空 commit 触发或等待'); exit(1)
+bad = [(r['name'], r['conclusion']) for r in runs if r['conclusion'] not in ('success',)]
+for name, c in bad: print(f'{name}: {c}')
+if bad: exit(1)
+print('CI all green for HEAD')
+"
+```
+
+- HEAD 无 CI run 或有 failure → **中止打 tag**：先修复（或推空 commit 触发 CI）并等绿，再回来继续
+- CI 尚在 running → 等待完成后再打 tag（不要抢跑——Release 门禁挂掉的修复成本高于等待）
+
 ### 9. 提交版本升级
 
 ```bash

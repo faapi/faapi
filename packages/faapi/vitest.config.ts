@@ -25,6 +25,9 @@ export default defineConfig({
   },
   test: {
     globals: true,
+    // 泄漏即失败守卫：app 单例泄漏在引发用例上报错（见 vitest.setup.ts 与
+    // AGENTS.md「测试确定性约定」）
+    setupFiles: ['./vitest.setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     exclude: ['node_modules', 'dist'],
     // E2E 测试含服务器启动 + 路由扫描，全量并行时 CPU 竞争会超过默认 5s

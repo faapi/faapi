@@ -16,6 +16,8 @@ export default defineConfig({
   },
   test: {
     globals: true,
+    // 泄漏即失败守卫（同主包 vitest.setup.ts——agent e2e 也建 app 单例）
+    setupFiles: ['../faapi/vitest.setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     exclude: ['node_modules', 'dist'],
     testTimeout: 15000,
