@@ -1,12 +1,16 @@
 import { describe, it, expect, expectTypeOf } from 'vitest';
 import type {
   FaapiConfig,
-  LifecycleHooks,
   LifecycleContext,
   AgentConfig,
   LlmConfig,
   LlmModelConfig,
 } from './configTypes';
+import type {
+  BeforeToolCallEvent,
+  AfterToolCallEvent,
+  FilterToolsEvent,
+} from '../events/appEventBus';
 import type { RouteManifest } from '../routers/routeTypes';
 import type { AgentToolContext } from '../runtime/agentToolContext';
 import type { Server } from 'node:http';
@@ -16,10 +20,6 @@ describe('configTypes', () => {
     const config: FaapiConfig = {
       port: 3000,
       cors: { origin: '*' },
-      lifecycle: {
-        onReady: async () => {},
-        onClose: async () => {},
-      },
     };
     expect(config.port).toBe(3000);
   });
@@ -29,20 +29,13 @@ describe('configTypes', () => {
       port: 3000,
     };
     expect(config.cors).toBeUndefined();
-    expect(config.lifecycle).toBeUndefined();
   });
 
-  it('LifecycleHooks 类型可正确构造', () => {
-    const hooks: LifecycleHooks = {
-      onReady: async (ctx) => {
-        console.log('ready', ctx.rootDir);
-      },
-      onClose: async (ctx) => {
-        console.log('close', ctx.rootDir);
-      },
-    };
-    expect(typeof hooks.onReady).toBe('function');
-    expect(typeof hooks.onClose).toBe('function');
+  it('lifecycle 钩子面已移除（全量事件化）——FaapiConfig 不再有 lifecycle 钩子类型', () => {
+    // FaapiConfig 继承业务自定义 index signature（lifecycle 退化为普通业务 key）,
+    // 钩子类型的删除以 LifecycleHooks 导入移除为编译期锚——此处锚运行时缺省
+    const config: FaapiConfig = {};
+    expect((config as Record<string, unknown>).lifecycle).toBeUndefined();
   });
 
   it('LifecycleContext 类型可正确构造', () => {
@@ -72,19 +65,12 @@ describe('configTypes', () => {
     expect(ctx.config.answer).toBe(42);
   });
 
-  it('FaapiConfig 的 lifecycle.onReady 接收 LifecycleContext 参数', () => {
-    const config: FaapiConfig = {
-      port: 3000,
-      lifecycle: {
-        onReady: (ctx: LifecycleContext) => {
-          expectTypeOf(ctx).toMatchTypeOf<LifecycleContext>();
-          expectTypeOf(ctx.rootDir).toBeString();
-          expectTypeOf(ctx.routes).toMatchTypeOf<RouteManifest>();
-          expectTypeOf(ctx.server).toMatchTypeOf<Server>();
-        },
-      },
-    };
-    expect(typeof config.lifecycle!.onReady).toBe('function');
+  it('app:boot / app:ready / app:close 事件载荷为 LifecycleContext（原钩子 ctx 全量字段）', () => {
+    type BootHandler = Parameters<import('../events/appEventBus').AppEventHandler<'app:boot'>>;
+    expectTypeOf<BootHandler[0]>().toEqualTypeOf<LifecycleContext>();
+    expectTypeOf<LifecycleContext['rootDir']>().toBeString();
+    expectTypeOf<LifecycleContext['routes']>().toMatchTypeOf<RouteManifest>();
+    expectTypeOf<LifecycleContext['server']>().toMatchTypeOf<Server>();
   });
 
   it('FaapiConfig 支持自定义业务配置(任意 key)', () => {
@@ -199,7 +185,6 @@ describe('configTypes', () => {
     it('agent 配置可与 cors / lifecycle 等其他字段共存', () => {
       const config: FaapiConfig = {
         cors: { origin: '*' },
-        lifecycle: { onReady: async () => {} },
         agent: {
           llms: {
             openai: { provider: 'openai', apiKey: 'sk-xxx', models: { 'gpt-4o': {} } },
@@ -209,7 +194,6 @@ describe('configTypes', () => {
         db: { host: 'localhost' },
       };
       expect(config.cors).toBeDefined();
-      expect(config.lifecycle).toBeDefined();
       expect(config.agent!.maxTurns).toBe(5);
       expect((config as { db: { host: string } }).db.host).toBe('localhost');
     });
@@ -235,18 +219,20 @@ describe('configTypes', () => {
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultTools');
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultAgent');
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultLlm');
+      // 鉴权钩子字段已移除（7.x 事件化）——AgentConfig 继承 index signature,
+      // 编译期锚是 AgentRuntimeConfig 三钩子字段删除（agent 包 toAgentRuntimeConfig 拆装清单）
+      expect('beforeToolCall' in ({} as AgentConfig)).toBe(false);
+      expect('afterToolCall' in ({} as AgentConfig)).toBe(false);
+      expect('filterTools' in ({} as AgentConfig)).toBe(false);
     });
 
-    it('AgentConfig 鉴权钩子 ctx 参数为 AgentToolContext（必有契约，三路径合成）', () => {
-      expectTypeOf<
-        Parameters<NonNullable<AgentConfig['beforeToolCall']>>[2]
-      >().toEqualTypeOf<AgentToolContext>();
-      expectTypeOf<
-        Parameters<NonNullable<AgentConfig['afterToolCall']>>[3]
-      >().toEqualTypeOf<AgentToolContext>();
-      expectTypeOf<
-        Parameters<NonNullable<AgentConfig['filterTools']>>[1]
-      >().toEqualTypeOf<AgentToolContext>();
+    it('AgentConfig 鉴权钩子已移除（全量事件化）——目录外字段不存在，事件载荷 ctx 为 AgentToolContext', () => {
+      expectTypeOf<AgentConfig>().not.toHaveProperty('beforeToolCall');
+      expectTypeOf<AgentConfig>().not.toHaveProperty('afterToolCall');
+      expectTypeOf<AgentConfig>().not.toHaveProperty('filterTools');
+      expectTypeOf<BeforeToolCallEvent['ctx']>().toEqualTypeOf<AgentToolContext>();
+      expectTypeOf<AfterToolCallEvent['ctx']>().toEqualTypeOf<AgentToolContext>();
+      expectTypeOf<FilterToolsEvent['ctx']>().toEqualTypeOf<AgentToolContext>();
     });
 
     it('FaapiConfig.agent 类型校验', () => {

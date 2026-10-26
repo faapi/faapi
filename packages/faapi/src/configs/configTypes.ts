@@ -1,5 +1,4 @@
 import type { FaapiContext } from '../runtime/contextTypes';
-import type { AgentToolContext } from '../runtime/agentToolContext';
 import type { FaapiMiddleware } from '../middlewares/middlewareTypes';
 import type { InjectorMap } from '../middlewares/injectorTypes';
 import type { PluginDeclaration } from './pluginTypes';
@@ -9,43 +8,11 @@ import type { EtagOptions } from '../middlewares/etag';
 import type { Http2Options } from '../server/createServer';
 
 /**
- * 生命周期钩子
- *
- * 执行时序:onBoot(.listen 调用前)→ server.listen → listen 回调内 onReady → 运行期 onError → 关闭时 onClose
+ * 生命周期钩子已全量事件化（7.x）——原 onBoot/onReady/onClose/onError 四钩子移除,
+ * 由 [appEventBus](../events/appEventBus.md) 的 `app:boot` / `app:ready` / `app:close` /
+ * `request:error` 事件承载（订阅写 `src/bootstrap.ts`，经 `getApp().on`）。
+ * `LifecycleContext` 保留,作为 `app:*` 事件载荷类型。
  */
-export interface LifecycleHooks {
-  /**
-   * 服务器 listen 之前调用(启动校验钩子)
-   *
-   * 时机:`app.listen()` 内、`server.listen` 调用之前——server 已创建但未监听
-   * (`server.listening === false`),路由/tool/agent 清单已水合、插件已加载。
-   *
-   * 适合启动校验(环境变量、下游依赖可达性)、DB 迁移等**失败即不该暴露端口**的逻辑:
-   * 钩子抛错 → `listen()` 以原始错误 reject,`server.listen` 不会被调用,端口不暴露。
-   *
-   * 与 onReady 的差异:onReady 在 listen 回调内执行,失败时端口已开,
-   * 存在"接受连接但不服务"的窗口——启动校验请用 onBoot,资源初始化用 onReady。
-   */
-  onBoot?: (ctx: LifecycleContext) => Promise<void> | void;
-  /** 服务器启动后调用（适合初始化数据库连接等） */
-  onReady?: (ctx: LifecycleContext) => Promise<void> | void;
-  /** 服务器关闭时调用（适合清理资源、优雅关闭） */
-  onClose?: (ctx: LifecycleContext) => Promise<void> | void;
-  /**
-   * 请求错误已被处理为响应后调用(参考 Fastify onError 语义)
-   *
-   * 时机:handler 抛错 → 全局中间件 try/catch(若有) → 框架内置 formatErrorResponse 兜底
-   *      → 响应发出后 → onError 触发副作用
-   *
-   * 职责:日志上报、告警、链路追踪等副作用。**不修改、不替换已生成的响应**。
-   * 自身抛错会被捕获并 console.error 留痕,不影响响应已发送的事实。
-   *
-   * 与全局错误中间件的区别:
-   * - 全局错误中间件:把 error 翻译成 Response(主入口,决定响应内容)
-   * - onError:响应发出后的副作用(不能改响应)
-   */
-  onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
-}
 
 /**
  * pg-boss 驱动选项（透传给 @faapi/task-pgboss）
@@ -112,12 +79,6 @@ export interface TaskConfig {
    * 非法值（<1 或非整数）启动即报错
    */
   maxIsolatedWorkers?: number;
-  /**
-   * 任务执行失败/取消钩子——每次 process 抛错后触发（含将重试的失败），
-   * `info.willRetry` 按任务 meta.retries 推算、`info.cancelled` 标记框架终止；
-   * 用于告警/死信上报等副作用，自身抛错 console.error 留痕
-   */
-  onFailed?: import('../tasks/taskTypes.js').TaskFailedHandler;
 }
 
 /**
@@ -398,66 +359,14 @@ export interface AgentConfig {
    */
   maxHistoryTokens?: number;
   /**
-   * 执行守卫（authHooks，见 @faapi/agent 的 authHooks 文档）
-   *
-   * 每次 tool / sub-agent 执行前调用（`agent-x` 派发名称为 sub-agent 递归）。
-   * 三种返回：`void` 放行；`{ error }` 拒绝（不执行，error 回传 LLM 调整策略）；
-   * `{ args }` 改写后放行（多租户场景强制注入可信值，不信 LLM 传入的标识参数）。
-   *
-   * ctx 为 [AgentToolContext](../runtime/agentToolContext.md) 契约（必有，框架
-   * 三路径合成、tasks/log/signal 保证正确）：HTTP 请求是完整请求 ctx 的收窄，
-   * 任务路径为 carry + 任务级能力合成。业务身份字段（currentUserId 等）经
-   * `declare module` 增强 AgentToolContext 后在此强类型读取。
-   *
-   * 允许返回 Promise（隔离任务路径钩子经 RPC 转发宿主执行；同步钩子不受影响）。
-   *
-   * 典型用法：中间件解析 `ctx.workspace` 后在此校验/强制改写 `args.workspaceId`。
+   * 执行守卫/审计/可见性过滤（原 authHooks 三钩子 beforeToolCall/afterToolCall/
+   * filterTools）与输入改写（原 resolveRootInput/resolveSubAgentInput）、提示词
+   * 装饰（原 resolveSystemPrompt/resolveSubAgentContext）已全量事件化（7.x）——
+   * 由 [appEventBus](../events/appEventBus.md) 的 `agent:before-tool-call` /
+   * `agent:after-tool-call` / `agent:filter-tools` / `agent:system-prompt` /
+   * `agent:sub-agent-context` / `agent:root-input` 等事件承载，订阅入口
+   * `getApp().on`（`src/bootstrap.ts`）。
    */
-  beforeToolCall?: (
-    name: string,
-    args: Record<string, unknown>,
-    ctx: AgentToolContext,
-  ) =>
-    | void
-    | { error: string }
-    | { args: Record<string, unknown> }
-    | Promise<void | { error: string } | { args: Record<string, unknown> }>;
-  /**
-   * 审计钩子（authHooks）：tool / sub-agent 成功返回后调用，返回值忽略。
-   * 用于日志/审计/计量；异常路径不调用。
-   */
-  afterToolCall?: (
-    name: string,
-    args: Record<string, unknown>,
-    result: unknown,
-    ctx: AgentToolContext,
-  ) => void;
-  /**
-   * 可见性过滤（authHooks）：LLM 可见 tools 清单组装完成后调用，
-   * 返回过滤后的数组（含 agent-as-tool 项）。每次 agent.run / stream 生效——
-   * 无权 tool 不进 LLM 视野，比执行时拒绝省一轮 LLM 调用。
-   *
-   * tools 为 OpenAI chat completions 规范形（`type: 'function'` +
-   * `function: { name, description?, parameters? }`），按 `tool.function.name` 过滤。
-   * 允许返回 Promise（隔离任务路径钩子经 RPC 转发宿主执行）。
-   */
-  filterTools?: (
-    tools: Array<{
-      type: 'function';
-      function: { name: string; description?: string; parameters?: Record<string, unknown> };
-    }>,
-    ctx: AgentToolContext,
-  ) =>
-    | Array<{
-        type: 'function';
-        function: { name: string; description?: string; parameters?: Record<string, unknown> };
-      }>
-    | Promise<
-        Array<{
-          type: 'function';
-          function: { name: string; description?: string; parameters?: Record<string, unknown> };
-        }>
-      >;
   /**
    * 进程级 deps 配方（装饰钩子）——真实签名为
    * `(deps: AgentDeps) => AgentDeps`（`AgentDeps` 类型定义在 `@faapi/agent`，
@@ -511,8 +420,6 @@ export interface AgentConfig {
 export interface FaapiConfig {
   /** CORS 配置，false 禁用 */
   cors?: import('../middlewares/cors.js').CorsOptions | boolean;
-  /** 生命周期钩子 */
-  lifecycle?: LifecycleHooks;
 
   /** 安全头配置，false 禁用 */
   helmet?: HelmetOptions | boolean;

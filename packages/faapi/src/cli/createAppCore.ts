@@ -23,6 +23,7 @@ import {
   type AppRegistries,
 } from '../injection/registries';
 import type { FaapiConfig, LifecycleContext } from '../configs/configTypes';
+import { APP_EVENT, type AppEventHandler, type FaapiAppEventName } from '../events/appEventBus';
 import { ROUTE_PATTERNS } from '../utils/prodPaths';
 import {
   getTaskDriverOptions,
@@ -120,6 +121,14 @@ export interface AppBase {
    * （配合 `getApp()` 拿到 app 实例）。
    */
   inject(options?: InjectOptions): Promise<InjectResponse>;
+  /**
+   * 订阅框架事件（目录封闭强类型，见 [appEventBus](../events/appEventBus.md)）
+   *
+   * 事件载荷由 `FaapiAppEventMap` 推导（`agent:root-input` / `agent:input` 及
+   * `:<agentName>` 专属变体）；handler 可原地改写载荷（改写式扩展点）。返回退订
+   * 函数（幂等）。业务方统一经 `getApp().on(...)` 订阅；订阅随 `close()` 清空。
+   */
+  on<K extends FaapiAppEventName>(name: K, handler: AppEventHandler<K>): () => void;
 }
 
 /**
@@ -294,7 +303,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     // agent-run RPC 回传宿主跑完整循环；插件未注册执行器时 worker 内 taskCtx.agent 不挂载）
     agentRunner: registries.agentRunner,
     driver: taskDriver,
-    onFailed: config?.task?.onFailed,
+    // task:failed 事件发射源（原 onFailed 钩子——7.x 事件化,总线在 app 实例注册表）
+    appEvents: registries.appEvents,
   });
   const cronScheduler: CronScheduler = createCronScheduler(registries.task, (name, opts) =>
     taskQueue.enqueue(name, undefined, opts),
@@ -324,7 +334,6 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     rootDir,
     dist,
     cors: config?.cors ?? true,
-    onError: config?.lifecycle?.onError,
     config: config as FaapiContextConfig | undefined,
     wsRoutes,
     middlewares: config?.middlewares,
@@ -365,33 +374,34 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     rootDir,
     dist,
     tasks: taskQueue,
+    // 事件订阅委托 app 实例总线（工厂闭包实现,无 this——直接引用方法安全）
+    on: registries.appEvents.on,
 
     async listen(listenPort?: number): Promise<Server> {
       // 端口优先级：listen() 参数 > options.port > 环境变量 PORT > 默认 3000
       const envPort = process.env.PORT ? Number(process.env.PORT) : undefined;
       const actualPort = listenPort ?? options?.port ?? envPort ?? DEFAULT_PORT;
 
-      // onBoot 生命周期钩子（listen 前）：启动校验 / DB 迁移等"失败即不该暴露端口"的逻辑。
-      // 此时 server 已创建但未监听、路由/tool/agent 清单已水合、插件已加载。
-      // 抛错 → listen() 以原始错误 reject，server.listen 不会被调用，端口不暴露。
-      if (config?.lifecycle?.onBoot) {
-        try {
-          await config.lifecycle.onBoot({
-            rootDir,
-            routes: sorted,
-            server,
-            registries,
-            tasks: taskQueue,
-            config: config as LifecycleContext['config'],
-          });
-          console.log('- onBoot hook executed');
-        } catch (err) {
-          // 启动校验失败：端口不暴露，同时停掉已启动的任务运行时（cron + worker）
-          await stopTaskRuntime();
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[faapi] onBoot hook failed: ${message}`);
-          throw err;
-        }
+      // app:boot 生命周期事件（listen 前，原 lifecycle.onBoot 钩子——7.x 事件化）：
+      // 启动校验 / DB 迁移等"失败即不该暴露端口"的逻辑。此时 server 已创建但未监听、
+      // 路由/tool/agent 清单已水合、插件已加载。订阅端抛错 → listen() 以原始错误
+      // reject（传播口径），server.listen 不会被调用，端口不暴露。
+      try {
+        await registries.appEvents.emit(APP_EVENT.appBoot, {
+          rootDir,
+          routes: sorted,
+          server,
+          registries,
+          tasks: taskQueue,
+          config: config as LifecycleContext['config'],
+        });
+        console.log('- app:boot event emitted');
+      } catch (err) {
+        // 启动校验失败：端口不暴露，同时停掉已启动的任务运行时（cron + worker）
+        await stopTaskRuntime();
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[faapi] app:boot subscriber failed: ${message}`);
+        throw err;
       }
 
       return new Promise<Server>((resolve, reject) => {
@@ -420,18 +430,16 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           // 注册默认优雅关闭信号（进程级仅注册一次，faapi 单进程单 app 设计）
           registerDefaultShutdownHandlers();
 
-          // onReady 生命周期钩子
-          if (config?.lifecycle?.onReady) {
-            await config.lifecycle.onReady({
-              rootDir,
-              routes: sorted,
-              server,
-              registries,
-              tasks: taskQueue,
-              config: config as LifecycleContext['config'],
-            });
-            console.log('- onReady hook executed');
-          }
+          // app:ready 生命周期事件（listen 回调内，原 lifecycle.onReady 钩子——7.x 事件化）
+          await registries.appEvents.emit(APP_EVENT.appReady, {
+            rootDir,
+            routes: sorted,
+            server,
+            registries,
+            tasks: taskQueue,
+            config: config as LifecycleContext['config'],
+          });
+          console.log('- app:ready event emitted');
 
           app.server = server;
           resolve(server);
@@ -460,16 +468,16 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       // onClose——保证业务方清理资源（DB 等）时没有任务还在执行
       await stopTaskRuntime();
 
-      if (config?.lifecycle?.onClose) {
-        await config.lifecycle.onClose({
-          rootDir,
-          routes: sorted,
-          server,
-          registries,
-          tasks: taskQueue,
-          config: config as LifecycleContext['config'],
-        });
-      }
+      // app:close 生命周期事件（drain 之后，原 lifecycle.onClose 钩子——7.x 事件化；
+      // 载荷 server 仍为实例——app.server 置 null 在其后）
+      await registries.appEvents.emit(APP_EVENT.appClose, {
+        rootDir,
+        routes: sorted,
+        server,
+        registries,
+        tasks: taskQueue,
+        config: config as LifecycleContext['config'],
+      });
 
       // 注册表（方案 A 实例化）：清理的是 app 自己的实例，随 app 生命周期销毁；
       // 全局默认实例不被 app 生命周期触碰
@@ -479,6 +487,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       registries.agentHandle.clear();
       registries.taskHandle.clear();
       registries.llm.clear();
+      registries.appEvents.clear();
       // 解绑全局 readResource 读取根（onClose 已执行完，业务清理阶段仍可读资源）
       setActiveResourcesDir(null);
 

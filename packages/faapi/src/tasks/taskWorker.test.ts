@@ -13,6 +13,7 @@ import {
   createLlmChannelStore,
 } from '../injection/registries';
 import { createTaskRegistry } from './taskRegistry';
+import { createAppEventBus } from '../events/appEventBus';
 import { toAgentSnapshotRecord } from './taskTypes';
 import type { AgentMetadata } from '../agents/agentTypes';
 
@@ -466,6 +467,7 @@ describe('runTaskInWorker', () => {
       agentRunner: createAgentRunnerStore(),
       taskHandle: createTaskHandleStore(),
       llm: createLlmChannelStore(),
+      appEvents: createAppEventBus(),
     });
     // 与 taskQueue.snapshotRegistries 同构的快照生成（共用投影函数防漂移）
     const snapshot = {

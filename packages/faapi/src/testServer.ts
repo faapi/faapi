@@ -6,13 +6,14 @@ import { scanRoutes } from './routers/scanRoutes';
 import { sortRoutes } from './routers/sortRoutes';
 import { generateSchemaFiles } from './cli/generateSchemaFiles';
 import { invalidateSchemaCache } from './validators/validateInput';
+import { createAppRegistries } from './injection/registries';
+import type { AppEventBus } from './events/appEventBus';
 import { createServer } from './server/createServer';
 import type { RouteManifest, WsRouteManifest } from './routers/routeTypes';
 import type { FaapiMiddleware } from './middlewares/middlewareTypes';
 import type { InjectorMap } from './middlewares/injectorTypes';
 import type { CorsOptions } from './middlewares/cors';
 import type { HelmetOptions } from './middlewares/helmet';
-import type { FaapiContext } from './runtime/contextTypes';
 
 /**
  * createTestServer 入参
@@ -39,8 +40,12 @@ export interface TestServerOptions {
   middlewares?: FaapiMiddleware[];
   /** 全局注入器 */
   injectors?: InjectorMap;
-  /** 请求错误钩子（在错误响应生成后调用，用于副作用） */
-  onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
+  /**
+   * app 事件总线（HTTP 域事件观察面——`request:error` 等；业务测试自行
+   * `createAppEventBus()` 构造传入）。缺省不传 → createServer 无总线、事件不发射
+   * （能力边界，非降级）
+   */
+  appEvents?: AppEventBus;
   /** 业务配置（注入到 ctx.config） */
   config?: Record<string, unknown>;
   /** 请求体大小限制（字节），默认 10MB */
@@ -109,7 +114,7 @@ export async function createTestServer(options: TestServerOptions): Promise<Test
     helmet = false,
     middlewares,
     injectors,
-    onError,
+    appEvents,
     config,
     bodyLimit = DEFAULT_BODY_LIMIT,
   } = options;
@@ -129,6 +134,14 @@ export async function createTestServer(options: TestServerOptions): Promise<Test
   await generateSchemaFiles(sorted, rootDir, schemaDist);
 
   // 4. 创建 server（默认禁用 CORS/Helmet，避免污染断言）
+  // appEvents 注入最小 AppRegistries（server 链路只读 appEvents——其余 store 恒空）
+  const registries = appEvents
+    ? (() => {
+        const r = createAppRegistries();
+        r.appEvents = appEvents;
+        return r;
+      })()
+    : undefined;
   const { server } = createServer({
     routes: sorted,
     rootDir,
@@ -137,7 +150,7 @@ export async function createTestServer(options: TestServerOptions): Promise<Test
     helmet,
     middlewares,
     injectors,
-    onError,
+    registries,
     config,
     wsRoutes,
     bodyLimit,

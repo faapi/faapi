@@ -357,7 +357,6 @@ describe('historyCompactor 子代理传导', () => {
       },
       resolveToolSchema: async () => undefined,
       resolveAgentInputSchema: async () => undefined,
-      resolveSystemPrompt: undefined,
     };
 
     const agent = new Agent(deps);

@@ -2,6 +2,8 @@
 
 一句话概括：prod 模式应用启动 API——委托 `createAppBase` 并仅返回 `AppBase`（不含 dev 的 `reloadRoutes`/缓存失效能力）。
 
+> **框架内部模块（7.x 起不公开导出）**——仅供生成的 `dist/main.js`（`$start`）与 CLI 编排使用，业务不应直接调用。启动逻辑写 `src/bootstrap.ts`（见 [bootstrap](./bootstrap.md)）。
+
 ## 为什么需要
 
 prod 模式不需要热替换，直接读 `dist/` 产物启动。`faapi build` 生成 `dist/main.js` 启动入口（零入口设计：内部 `import { createProdApp } from '@faapi/faapi'` + `listen`），`node dist/main` 调用 `createProdApp` 完成启动。

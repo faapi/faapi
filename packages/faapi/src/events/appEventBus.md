@@ -1,0 +1,137 @@
+# appEventBus（app 级事件总线）
+
+一句话概括：app 实例级的事件总线——**框架全部流程扩展点的统一出口**，业务方经 `getApp().on(name, handler)` 监听（启动期事件写 `src/bootstrap.ts` 约定文件，由框架在正确时机加载），handler 可原地改写事件载荷（改写式扩展点，非只读观察）。
+
+## 为什么需要
+
+框架在关键流程点（对话输入组装、每轮 LLM 调用、tool 调用边界、应用启动/关闭、请求错误、任务失败……）需要业务可监听、可改写的统一出口。此前的扩展以散落的钩子承接——agent 的 `resolveRootInput`/`resolveSubAgentInput`/`resolveSystemPrompt`/`resolveSubAgentContext`/authHooks 三钩子、`lifecycle.onBoot/onReady/onClose/onError`、`task.onFailed`——共十二个口子，各自有声明面、传递链与错误约定，业务方要逐个学习。7.x 起**全部收敛为事件**：一个目录、一种订阅模型（订阅/退订/专属名/载荷改写）、两类错误口径。改写消息语义上是同步转换，事件 handler 原地改写载荷承接；事件目录封闭强类型（目录外编译报错，无 `unknown` 逃逸口）。
+
+## 事件目录（封闭，随框架版本演进）
+
+### agent 域（改写类，含 `:<agentName>`/`:<toolName>` 专属变体）
+
+| 事件名 | 载荷 | 触发时机（替代的旧钩子） |
+| --- | --- | --- |
+| `agent:root-input` | `AgentRootInputEvent` | 所有 agent 对话首次 user 消息发送前——根调用（depth=1）与子代理派发（depth≥2）；纯续跑不触发（原 `resolveRootInput` + `resolveSubAgentInput`） |
+| `agent:input` | `AgentInputEvent` | 每轮 LLM 调用前（含首轮、工具轮、子代理各轮、续跑轮）（无旧钩子对应，7.x 新增） |
+| `agent:before-tool-call` | `BeforeToolCallEvent` | tool/sub-agent 执行前——ctx 声明即校验之后、白名单与分流之前；handler 原地改写 `args`、设 `error` 拒绝（原 `config.agent.beforeToolCall`） |
+| `agent:after-tool-call` | `AfterToolCallEvent` | tool/sub-agent 成功执行后（异常路径不触发）；name 为 tool 名（sub-agent 为派发名 `agent-<name>`）（原 `config.agent.afterToolCall`） |
+| `agent:filter-tools` | `FilterToolsEvent` | 每次 run/stream 组装 LLM 可见 tool 清单末尾；handler 原地增删 `tools` 数组（原 `config.agent.filterTools`） |
+| `agent:system-prompt` | `SystemPromptEvent` | 框架解析好 base systemPrompt（内联/`systemPromptFile`/vars 渲染）之后；handler 改写 `prompt` 即最终 system（原 deps `resolveSystemPrompt`） |
+| `agent:sub-agent-context` | `SubAgentContextEvent` | 子代理派发入参校验通过后；handler 设 `context` 为追加进子代理 system 的上下文块（多 handler 后设覆盖）（原 deps `resolveSubAgentContext`） |
+
+```ts
+export interface BeforeToolCallEvent {
+  name: string;               // tool 名或派发名 agent-<name>（与原 beforeToolCall 钩子同语义）
+  args: Record<string, unknown>; // handler 可整体替换（payload.args = {...}）
+  ctx: AgentToolContext;
+  error?: string;             // handler 设置即拒绝执行（扇出后统一判定,回传 LLM）
+}
+export interface AfterToolCallEvent {
+  name: string;
+  args: Record<string, unknown>;
+  result: unknown;            // 成功结果（观察/审计面,改写不回写）
+  ctx: AgentToolContext;
+}
+export interface FilterToolsEvent {
+  agentName: string;          // 本次 run/stream 的 agent 名（比原钩子多——专属订阅可按 agent 路由）
+  tools: LLMToolDefinition[]; // handler 原地 filter/splice
+  ctx: AgentToolContext;
+}
+export interface SystemPromptEvent {
+  agentName: string;
+  prompt: string;             // vars 渲染后的 base——handler 改写即最终 system 消息
+  ctx: AgentToolContext;
+}
+export interface SubAgentContextEvent {
+  subName: string;            // 真实 agent 名（非派发名）
+  args: Record<string, unknown>; // 校验后的派发入参
+  context?: string;           // handler 设置 → 追加进子代理 system（\n\n 拼接,空串/不设跳过）
+  ctx: AgentToolContext;
+}
+```
+
+### 应用与任务域（全局事件，无专属变体）
+
+| 事件名 | 载荷 | 触发时机（替代的旧钩子） |
+| --- | --- | --- |
+| `app:boot` | `LifecycleContext` | listen 内、server.listen 前（原 `lifecycle.onBoot`——启动校验/迁移等「失败即不该暴露端口」的逻辑） |
+| `app:ready` | `LifecycleContext` | listen 回调内（原 `lifecycle.onReady`——资源初始化） |
+| `app:close` | `LifecycleContext`（server 有值） | close 内、任务 drain 之后（原 `lifecycle.onClose`——清理） |
+| `request:error` | `RequestErrorEvent` | 请求错误响应**发出后**（原 `lifecycle.onError`——日志/告警副作用）；`ctx` 不存在（请求准备阶段错误）不发射 |
+| `task:failed` | `TaskFailedInfo`（复用任务类型：task/jobId/attempt/willRetry/cancelled/error） | 任务每次执行失败/取消后（原 `config.task.onFailed`，含 willRetry 失败与 cancelled） |
+
+```ts
+export interface RequestErrorEvent {
+  error: unknown;
+  ctx: FaapiContext;          // 请求准备阶段错误无 ctx → 整个事件不发射（对齐原钩子语义）
+}
+```
+
+`LifecycleContext` 即原生命周期钩子 ctx 类型（rootDir/routes/server/registries/tasks/config 活引用），转为 `app:*` 事件载荷。
+
+## 订阅（唯一入口 `getApp().on`，启动期写 src/bootstrap.ts）
+
+```ts
+// src/bootstrap.ts —— 框架约定的启动文件（机制见 [cli/bootstrap](../cli/bootstrap.md)）：
+// createProdApp/createDevApp 在 app 创建后、listen 前加载执行——getApp() 可用、事件未发射，
+// app:boot/app:ready/app:close 三个启动期事件的唯一订阅位置
+import { getApp } from '@faapi/faapi';
+
+export default async function bootstrap() {
+  const app = getApp();
+
+  app.on('app:boot', ({ server }) => {
+    if (!process.env.DB_HOST) throw new Error('DB_HOST is required'); // 抛错 → 端口不暴露
+  });
+  app.on('app:ready', async ({ registries }) => {
+    await initDb();
+  });
+  app.on('app:close', async () => {
+    await closeDb();
+  });
+
+  // agent 域 / 观察类事件也可在这里统一订阅，或写在各自模块顶层（app 运行中随时可订）
+  app.on('agent:root-input', (e) => {
+    e.input = `[tenant:${currentTenant()}] ${e.input}`;   // 原地改写，改写结果进对话历史
+  });
+}
+```
+
+- handler 同步或返回 `Promise`；`emit` 按注册顺序 `await` 依次执行。
+- **改写语义**：handler 原地修改载荷（或对标记可赋值的字段整体赋值，如 `payload.args` / `payload.context`）；多 handler 顺序串联（后者看到前者改写结果）。
+- **通用名与专属名的顺序**：每个接缝先发射通用名、后发射专属名（`agent:input:<agentName>` 等），**同一载荷对象**顺序串联——专属 handler 看得到通用 handler 的改写并可覆盖。
+- 订阅返回退订函数（幂等）；无订阅者 emit 为 no-op；订阅集合随 `app.close()` 清空。
+
+## 错误口径（两类，按接缝性质锚定）
+
+| 口径 | 事件 | 行为 |
+| --- | --- | --- |
+| **流程/改写类——传播** | `app:boot`（失败端口不暴露）、`app:ready`、`app:close`、`agent:root-input`、`agent:input`、`agent:before-tool-call`（per-tool catch 回灌主控 LLM）、`agent:filter-tools`、`agent:system-prompt`、`agent:sub-agent-context`（同回灌） | handler 抛错立即向 `emit` 调用方传播（剩余 handler 跳过）——fail fast，不吞不降级 |
+| **观察类——留痕** | `request:error`（不干扰已发出的响应）、`task:failed`（不影响驱动重试决策）、`agent:after-tool-call`（不改变成功结果） | 发射点捕获 handler 抛错，`console.error` 留痕后继续 |
+
+**改写后校验（框架强制，仅改写类 agent 事件）**：`agent:root-input` 扇出后 `input` 必须为非空字符串；`agent:input` 扇出后 `messages` 必须为非空数组——违反抛 `AgentError`。
+
+## 发射侧（框架内部接线）
+
+- 总线实例挂 `AppRegistries.appEvents`（app 实例级，`app.close()` 时 `clear()`）；`@faapi/agent` 插件 setup 时把 `registries.appEvents.emit` 经 `createAgentDeps` 的 `overrides.emitAppEvent` 注入 `AgentDeps`——HTTP 请求路径与隔离任务 RPC 路径（宿主执行）同一份 deps。
+- `createProdApp`/`createDevApp` 内部加载执行 `src/bootstrap.ts`（listen 前窗口）；`listen()` 发射 `app:boot`/`app:ready`、`close()` 发射 `app:close`（原三钩子调用点，副作用流程不变：boot 失败仍停任务运行时、close 仍在 drain 后）。
+- `createServer` 的 `sendErrorResponse` 发射 `request:error`（响应发出后）；`taskQueue` 发射 `task:failed`（fire-and-forget）。
+
+## 能力边界（显式声明，非降级）
+
+- 未加载 `@faapi/agent` 插件、或编程式裸 `new Agent(deps)`（deps 无 `emitAppEvent`）→ agent 域事件不发射、输入原样——与被移除钩子的可选语义一致。`app:*`/`request:error`/`task:failed` 由主包发射，不依赖插件。
+- 业务自定义事件名不支持——目录封闭是「`on` 无 unknown」的前提；新框架事件随版本进 `FaapiAppEventMap`。
+- 启动期事件（`app:boot`/`app:ready`/`app:close`）的订阅必须写 `src/bootstrap.ts`（框架在 listen 前加载执行，见 [cli/bootstrap](../cli/bootstrap.md)）——handler 模块按需编译在首次请求才加载，届时 app:boot/app:ready 已发射。
+- 订阅时机在发射之后不影响已开始的发射；发射开始时的订阅快照生效（扇出中途退订不影响在途分发）。
+
+## 相关模块
+
+- [llmMessageTypes](./llmMessageTypes.md)——`LLMMessage`/`LLMToolCall` 规范类型
+- [registries](../injection/registries.md)——`AppRegistries.appEvents` 存储
+- [createAppCore](../cli/createAppCore.md)——`AppBase.on`、`app:boot/ready/close` 发射点、close 清理
+- [configTypes](../configs/configTypes.md)——`LifecycleContext`（`app:*` 载荷）
+- [taskTypes](../tasks/taskTypes.md)——`TaskFailedInfo`（`task:failed` 载荷）
+- `@faapi/agent` [agent](../../../agent/src/agent.md)——agent 域接缝
+- `@faapi/agent` [reactLoop](../../../agent/src/reactLoop.md)——`agent:input` 接缝
+- `@faapi/agent` [plugin](../../../agent/src/plugin.md)——`emitAppEvent` 注入

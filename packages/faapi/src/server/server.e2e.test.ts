@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { scanRoutes } from '../routers/scanRoutes';
 import { sortRoutes } from '../routers/sortRoutes';
 import { createServer } from './createServer';
+import { createAppRegistries } from '../injection/registries';
 import { generateSchemaFiles } from '../cli/generateSchemaFiles';
 import { invalidateSchemaCache } from '../validators/validateInput';
 import { configureLogging } from '../loggers/logger';
@@ -876,7 +877,7 @@ describe('HTTP Server E2E', () => {
   });
 
   // onError 生命周期钩子 E2E 测试
-  describe('onError hook', () => {
+  describe('request:error 事件（原 onError 钩子——7.x 事件化）', () => {
     let onErrorServer: Server;
     let onErrorBaseUrl: string;
     let capturedError: unknown;
@@ -885,14 +886,16 @@ describe('HTTP Server E2E', () => {
     beforeAll(async () => {
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
+      const registries = createAppRegistries();
+      registries.appEvents.on('request:error', ({ error, ctx }) => {
+        capturedError = error;
+        capturedPath = ctx.path;
+      });
       const { server: srv } = createServer({
         routes: sorted,
         rootDir: FIXTURES_DIR,
         dist: schemaDist,
-        onError: (error, ctx) => {
-          capturedError = error;
-          capturedPath = ctx.path;
-        },
+        registries,
       });
       await new Promise<void>((resolve, reject) => {
         srv.listen(0, () => {
@@ -912,7 +915,7 @@ describe('HTTP Server E2E', () => {
       await closeServer(onErrorServer);
     });
 
-    it('请求出错时 onError 被调用,接收 error 和 ctx', async () => {
+    it('请求出错时 request:error 发射,载荷接收 error 和 ctx', async () => {
       capturedError = undefined;
       const res = await fetch(`${onErrorBaseUrl}/nonexistent-route`);
       expect(res.status).toBe(404);

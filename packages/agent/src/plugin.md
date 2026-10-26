@@ -60,9 +60,12 @@ PluginContext { config.agent, rootDir }
 1. readAgentConfig(ctx) → AgentConfig | undefined
 2. 遍历 agentConfig?.llms ?? {} → 空 apiKey warn（provider 实例由 createAgentDeps 创建）
    （llms 可选——未配置时进入「外部 provider 模式」,照常注册工厂）
-3. createAgentDeps({ registries, rootDir, agentConfig: agentConfig ?? {} })
+3. createAgentDeps({ registries, rootDir, agentConfig: agentConfig ?? {}, overrides: { emitAppEvent: registries.appEvents.emit } })
    —— agent 块复合形状整体透传,llms → providers 转换与 AgentRuntimeConfig 拆装
-   （含 enableTracing 全量字段）都在装配工厂单一实现
+   （含 enableTracing 全量字段）都在装配工厂单一实现;app 事件发射器
+   （[appEventBus](../../faapi/src/events/appEventBus.md),来源 app 实例注册表）经 overrides 注入——
+   HTTP 路径与隔离任务 RPC 路径（步骤 4/6 的 `{ ...baseDeps, ctx }`）自动获得,
+   `agent:root-input` / `agent:input` 事件恒在宿主进程发射
 4. ctx.registries.agentHandle.register((ctx) => new Agent({ ...baseDeps, ctx }))——工厂入参为 AgentToolContext 契约（toAgentToolContext 收窄，HTTP 全量字段随透传）
 5. ctx.registries.llm.register(createLightComplete({ llms, providers }))——轻量补全通道
 6. ctx.registries.agentRunner.register({ runAgent })——agent 循环执行器：隔离 worker 调 agent 收敛为**单次 agent-run RPC**，宿主在此以任务合成契约 ctx 构造 Agent（`new Agent({ ...baseDeps, ctx })`）跑**完整编排循环**（LLM IO、tool 执行、钩子、sub-agent 全在宿主——业务函数面与资源零跨线程）。`execution.signal`（宿主任务取消控制器）合入 run options 的 `signal`（宿主侧优先——ReactLoop 每轮预检查 + provider 请求中断，任务取消传播宿主不白烧 tokens）。对象入参为富派发形态（先经 `entry.inputTypeName` + `resolveAgentInputSchema` 校验、失败抛 AgentError 浮出为任务错误，再 extractSubAgentUserInput）；字符串入参 user 消息直传
@@ -82,8 +85,14 @@ PluginContext { config.agent, rootDir }
 // setup 时经官方装配工厂构造一次（createAgentDeps，见 agentDeps.md——插件 setup /
 // 任务内组装 / 自组装单一实现）：providers Map 与 schema 解析器缓存随 deps
 // 生命周期跨请求复用。agent 块复合形状整体透传（拆装清单单一维护，
-// 框架新增旋钮两路自动到达——不再手写 runtimeConfig 字段清单）
-const baseDeps = createAgentDeps({ registries, rootDir, agentConfig: agentConfig ?? {} });
+// 框架新增旋钮两路自动到达——不再手写 runtimeConfig 字段清单）；
+// overrides 注入 app 事件发射器（emitAppEvent → registries.appEvents.emit）
+const baseDeps = createAgentDeps({
+  registries,
+  rootDir,
+  agentConfig: agentConfig ?? {},
+  overrides: { emitAppEvent: registries.appEvents.emit },
+});
 
 registerAgentHandleFactory((ctx) => {
   // 请求回调只叠加每请求差异项（契约 ctx：authHooks 与 tool handler 第二参数）

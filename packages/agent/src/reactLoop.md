@@ -129,6 +129,18 @@ export interface SubAgentToolResult {
 
 `ReactLoopConfig.historyCompactor` / `AgentRuntimeConfig.historyCompactor`（子代理共享根 deps 全树生效）声明时，超预算且存在轮组的轮次改调业务策略（整体替换现行截断），仅作用于发送副本。输出不变量（头部保留 / tool 配对完整 / 至少一轮组）由框架强制守卫，违反抛 `AgentError`——策略自由度以不变量为界。缺省不声明时逐字节保持上述截断行为。完整契约见 [historyCompaction.md](./historyCompaction.md)。
 
+### `agent:input` 每轮发送前事件（发送副本改写面）
+
+`ReactLoopConfig.appEvent` 已接线（`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传）时，每轮 `resolveOutgoingMessages`（历史裁剪/压缩）之后、`provider.complete/stream` 之前，经其发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:input` 与 `agent:input:<agentName>`（先通用后专属，同一载荷对象顺序串联）：
+
+- **载荷**：`{ agentName, depth, messages, ctx }`——`messages` 为本轮发送副本（裁剪/压缩后），handler 可原地改写 `messages` 数组（增删改消息对象均生效）。
+- **副本口径**：改写仅作用**本轮发送**——本地 `messages` / `result.messages` / `done.messages` / 续跑源不受影响（与历史裁剪同一口径）。跨轮持久改写用 `agent:root-input`（进历史）。
+- **触发面**：首轮、工具轮、子代理各轮（`agentName` = 子代理名、`depth` > 1）、续跑轮全部触发——每轮 LLM 调用恰好一次。
+- **扇出后校验**：`messages` 必须为非空数组，否则抛 `AgentError`（fail fast，不发 LLM 请求）。
+- **错误传播**：handler 抛错走 run / stream 既有错误链（发起 LLM 请求前显式失败，非流式路径同 `provider.complete` 错误处理；不吞不降级）。
+- **未接线**：`appEvent` 缺席 → 事件不发射、消息原样（能力边界，非降级）。
+- **trace 一致**：`inputSnapshot` 记录实际发送的（事件改写后）消息，与「trace 如实反映发送内容」纪律一致。
+
 ### `maxAgentDepth` 防护
 
 reactLoop 本身不跟踪 agent 递归深度——`maxAgentDepth` 防护在 [Agent 类](./agent.md) 的 `executeSubAgent` 实现中：

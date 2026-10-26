@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { APP_EVENT } from '../events/appEventBus';
 import { ValidationError } from '../errors/httpErrors';
 import { runTaskInWorker, TaskCancelledError } from './taskWorker';
 import { IsolatedWorkerBudget, resolveDefaultIsolatedWorkerLimit } from './isolatedWorkerBudget';
@@ -197,7 +198,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   /**
    * 事件落账（两条执行路径共用）：seq 递增 → 构造 TaskEvent 入缓冲（单执行上限
    * 丢最旧）→ 全局上限按 job 首次发射序整体淘汰 → 同步扇出订阅者（按任务名匹配；
-   * handler 抛错 console.error 留痕——副作用回调不破坏任务执行，与 onFailed 同口径）。
+   * handler 抛错 console.error 留痕——副作用回调不破坏任务执行，与 task:failed 事件同口径）。
    * 仅 running 状态调用（调用方守卫，与 progress 同口径）。
    */
   function appendEvent(record: TaskJob, data: unknown): void {
@@ -712,12 +713,14 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       record.error = err instanceof Error ? err.message : String(err);
       evictFinishedRecords();
       await settleGroup(record, outcome, willRetry);
-      // onFailed 副作用钩子（告警/死信上报）：willRetry 按 meta.retries 推算，
-      // 自身抛错 console.error 留痕——不影响驱动重试决策，但不静默吞掉
-      if (deps.onFailed) {
+      // task:failed 事件（原 config.task.onFailed 钩子——7.x 事件化,观察类留痕口径）：
+      // 告警/死信上报等副作用,订阅端抛错 console.error 留痕——不影响驱动重试决策,但不静默吞掉。
+      // deps.appEvents 缺席（裸 createTaskQueue,无 app 编排）→ 不发射（能力边界,非降级）
+      if (deps.appEvents) {
+        const { appEvents } = deps;
         void Promise.resolve()
           .then(() =>
-            deps.onFailed!({
+            appEvents.emit(APP_EVENT.taskFailed, {
               task: job.name,
               jobId: job.id,
               attempt: job.attempt,
@@ -727,7 +730,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             }),
           )
           .catch((hookErr) => {
-            console.error(`[faapi] task onFailed hook threw for "${job.name}":`, hookErr);
+            console.error(`[faapi] task:failed subscriber threw for "${job.name}":`, hookErr);
           });
       }
       throw err; // 交给驱动决定重试

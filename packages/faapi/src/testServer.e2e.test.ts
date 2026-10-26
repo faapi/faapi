@@ -107,20 +107,24 @@ describe('createTestServer 自定义 options', () => {
     expect(res.status).toBe(200);
   });
 
-  it('传入 onError 钩子捕获 handler 错误', async () => {
-    const errors: unknown[] = [];
+  it('handler 抛错返回 500；appEvents 选项注入总线可观察 request:error 事件', async () => {
+    const { createAppEventBus } = await import('@faapi/faapi');
+    const bus = createAppEventBus();
+    const seen: unknown[] = [];
+    bus.on('request:error', (e) => {
+      seen.push(e.error);
+    });
     const ts2 = await createTestServer({
       rootDir: FIXTURES_DIR,
       patterns: ['api/**/*.ts'],
-      onError: (err) => {
-        errors.push(err);
-      },
+      appEvents: bus,
     });
     try {
-      await fetch(`${ts2.baseUrl}/api/error/throw`);
-      // 等微任务 + onError 异步触发
-      await new Promise((r) => setTimeout(r, 50));
-      expect(errors.length).toBeGreaterThan(0);
+      const res = await fetch(`${ts2.baseUrl}/api/error/throw`);
+      expect(res.status).toBe(500);
+      // 发射在响应写出后 await——等一个 tick 再断言
+      await new Promise((r) => setTimeout(r, 20));
+      expect(seen.length).toBeGreaterThan(0);
     } finally {
       await ts2.close();
     }

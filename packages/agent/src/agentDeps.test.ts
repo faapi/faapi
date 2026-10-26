@@ -24,12 +24,23 @@ vi.mock('./provider', async (importOriginal) => {
 
 // ─── 导入（mock 后）─────────────────────────────────
 import { createAppRegistries, createTaskRegistriesView } from '@faapi/faapi';
-import type { AgentConfig, AgentMetadata, ToolMetadata } from '@faapi/faapi';
+import type {
+  AgentConfig,
+  AgentMetadata,
+  ToolMetadata,
+  FaapiAppEventMap,
+  FaapiAppEventName,
+} from '@faapi/faapi';
 import { createAgentDeps } from './agentDeps';
 import { Agent, AgentError, type AgentDeps } from './agent';
 import { createProvider, type LLMProvider } from './provider';
 import { createScriptLLM } from './scriptLlm';
 import { createStandaloneToolContext } from './standaloneToolContext';
+
+const emitAppEvent = async <K extends FaapiAppEventName>(
+  name: K,
+  payload: FaapiAppEventMap[K],
+): Promise<FaapiAppEventMap[K]> => payload;
 
 /** 共享合规 ctx（ctx 必填契约下各装配用例的公共入参） */
 const toolCtx = createStandaloneToolContext();
@@ -147,10 +158,7 @@ describe('createAgentDeps', () => {
     ).toThrow(/createStandaloneToolContext/);
   });
 
-  it('agentConfig 直收：复合块全量拆装——llms 转 providers，config 含 enableTracing/toolTimeoutMs 全字段到达', () => {
-    const beforeToolCall = () => undefined;
-    const afterToolCall = () => undefined;
-    const filterTools = <T extends Array<unknown>>(tools: T) => tools;
+  it('agentConfig 直收：复合块全量拆装——llms 转 providers，config 含 enableTracing/toolTimeoutMs 全字段到达（authHooks 三钩子已移除,由 app 事件承载）', () => {
     const agentConfig: AgentConfig = {
       llms: LLMS,
       maxTurns: 12,
@@ -160,9 +168,6 @@ describe('createAgentDeps', () => {
       enableTracing: true,
       traceId: false,
       traceIdTemplate: 'trace: {traceId}',
-      beforeToolCall,
-      afterToolCall,
-      filterTools,
     };
     const deps = createAgentDeps({ registries: makeRegistries(), ctx: toolCtx, agentConfig });
 
@@ -177,20 +182,17 @@ describe('createAgentDeps', () => {
       enableTracing: true,
       traceId: false,
       traceIdTemplate: 'trace: {traceId}',
-      beforeToolCall,
-      afterToolCall,
-      filterTools,
     });
   });
 
   it('agentConfig.decorateDeps 装饰生效：base 之上叠加差异项，其余装配保留', () => {
     // 业务侧按真实签名 (deps: AgentDeps) => AgentDeps 强类型书写（never[] 声明
-    // 手法兼容任意函数，见 configTypes.ts 的 AgentConfig.decorateDeps JSDoc）
-    const resolveSystemPrompt = async (_name: string, _meta: unknown, base: string) =>
-      `${base}+配方`;
+    // 手法兼容任意函数，见 configTypes.ts 的 AgentConfig.decorateDeps JSDoc）。
+    // 流程钩子已全量事件化——配方典型用途剩 schema 富化 / providers 复用 / emitAppEvent 桥接
+
     const decorate = (deps: AgentDeps): AgentDeps => ({
       ...deps,
-      resolveSystemPrompt,
+      emitAppEvent,
     });
     const deps = createAgentDeps({
       registries: makeRegistries(),
@@ -198,7 +200,7 @@ describe('createAgentDeps', () => {
       agentConfig: { decorateDeps: decorate },
     });
 
-    expect(deps.resolveSystemPrompt).toBe(resolveSystemPrompt);
+    expect(deps.emitAppEvent).toBe(emitAppEvent);
     // 未覆盖的装配不受装饰影响
     expect(deps.getAgent('researcher')?.name).toBe('researcher');
     expect(deps.resolveToolSchema).toBeDefined();
@@ -235,17 +237,15 @@ describe('createAgentDeps', () => {
     ).toThrow('recipe broken');
   });
 
-  it('overrides 浅合并：装饰钩子覆盖默认装配，其余字段不受影响', () => {
-    const resolveSystemPrompt = async (_name: string, _meta: unknown, base: string) =>
-      `${base}+装饰`;
+  it('overrides 浅合并：同名字段覆盖默认装配，其余字段不受影响', () => {
     const deps = createAgentDeps({
       registries: makeRegistries(),
       ctx: toolCtx,
       agentConfig: { llms: LLMS },
-      overrides: { resolveSystemPrompt },
+      overrides: { emitAppEvent },
     });
 
-    expect(deps.resolveSystemPrompt).toBe(resolveSystemPrompt);
+    expect(deps.emitAppEvent).toBe(emitAppEvent);
     // 其余装配不受覆盖影响
     expect(deps.providers.get('openai')).toBeDefined();
     expect(deps.getAgent('researcher')).toBeDefined();

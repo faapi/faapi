@@ -58,7 +58,6 @@ vi.mock('./provider', async (importOriginal) => {
 // ─── 导入（mock 后）─────────────────────────────────
 import { createAppRegistries } from '@faapi/faapi';
 import plugin from './plugin';
-import type { AgentDeps } from './agent';
 import { createProvider, type LLMProvider } from './provider';
 import { Agent, AgentError } from './agent';
 import { createStandaloneToolContext } from './standaloneToolContext';
@@ -167,6 +166,23 @@ describe('@faapi/agent plugin', () => {
       expect(createProvider).toHaveBeenCalledWith(fullAgentConfig.llms!.openai);
     });
 
+    it('emitAppEvent 接线：deps 发射落到 app 实例的 appEvents 总线（getApp().on 可收）', async () => {
+      const ctx = makeCtx(fullAgentConfig);
+      const received: Array<{ name: string; input: string }> = [];
+      ctx.registries.appEvents.on('agent:root-input', (e) => {
+        received.push({ name: e.agentName, input: e.input });
+      });
+      plugin.setup(ctx);
+      const factory = setupAndCaptureFactory(ctx);
+      const agent = factory!(makeReqCtx()) as Agent;
+
+      await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 通用订阅收到一次发射（专属名 agent:root-input:researcher 是独立目录项,
+      // 另有专属订阅位）,载荷来自 agent:root-input 接缝
+      expect(received).toEqual([{ name: 'researcher', input: 'hello' }]);
+    });
+
     it('工厂返回 Agent 实例（满足 AgentHandle）', () => {
       const factory = setupAndCaptureFactory(makeCtx(fullAgentConfig));
       expect(factory).toBeDefined();
@@ -244,18 +260,21 @@ describe('@faapi/agent plugin', () => {
       expect(result.trace!.traceId).toBe(result.traceId);
     });
 
-    it('config.agent.decorateDeps 经插件工厂产物生效——配方装饰的 resolveSystemPrompt 进 system 消息', async () => {
-      // 进程级 deps 配方走 config.agent 声明：插件 setup 装配 baseDeps 时应用,
-      // 工厂产物（HTTP 请求链注入的 AgentHandle）自动携带配方
+    it('emitAppEvent 由插件 overrides 注入（优先于 decorateDeps 同名字段）——业务桥接走 app 总线订阅', async () => {
+      // 装配次序 base → decorateDeps → overrides:配方即使装饰 emitAppEvent 也会被
+      // 插件的 overrides（registries.appEvents.emit）覆盖——业务自定义事件路由的
+      // 正道是订阅 app 实例总线（setup 的 ctx.registries.appEvents）,不是替换发射器。
+      // 本用例同时锚定:订阅总线即可经工厂产物影响 HTTP 请求链的 system 消息
       completeRequests.length = 0;
       const decorate = (deps: import('./agent').AgentDeps) => ({
         ...deps,
-        resolveSystemPrompt: async (_name: string, _meta: unknown, base: string) =>
-          `${base}\n[配方注入]`,
+        emitAppEvent: async (name: never, payload: never) => payload,
       });
-      const factory = setupAndCaptureFactory(
-        makeCtx({ ...fullAgentConfig, decorateDeps: decorate }),
-      );
+      const ctx = makeCtx({ ...fullAgentConfig, decorateDeps: decorate });
+      ctx.registries.appEvents.on('agent:system-prompt', (e) => {
+        e.prompt = `${e.prompt}\n[配方注入]`;
+      });
+      const factory = setupAndCaptureFactory(ctx);
       const agent = factory!(makeReqCtx()) as Agent;
 
       const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
@@ -715,21 +734,13 @@ describe('@faapi/agent plugin — 隔离 agent 通道（agentRunner 注册）', 
     expect(completeRequests.length).toBeGreaterThan(before);
   });
 
-  it('runAgent 契约 ctx 透传：resolveRootInput 钩子收到调用方传入的 ctx（增强字段可读）', async () => {
+  it('runAgent 契约 ctx 透传：agent:root-input 事件载荷 ctx 收到调用方传入的 ctx（增强字段可读）', async () => {
+    // 业务订阅走 app 实例总线（emitAppEvent 由插件 overrides 注入——业务侧
+    // decorateDeps 覆盖 emitAppEvent 会被插件 overrides 按装配次序覆盖,订阅才是正道）
     const captured: Array<{ currentUserId?: number }> = [];
-    const ctx = makeCtx({
-      ...fullAgentConfig,
-      // decorateDeps 是 config 声明钩子的生产装配路径（createAgentDeps 应用）——
-      // 按真实签名标注（config 声明为 (...args: never[]) => unknown 宽松形态）
-      decorateDeps: (deps: AgentDeps): AgentDeps => ({
-        ...deps,
-        resolveRootInput: async (_name, _input, hookCtx) => {
-          captured.push({
-            currentUserId: (hookCtx as { currentUserId?: number }).currentUserId,
-          });
-          return undefined;
-        },
-      }),
+    const ctx = makeCtx(fullAgentConfig);
+    ctx.registries.appEvents.on('agent:root-input', (e) => {
+      captured.push({ currentUserId: (e.ctx as { currentUserId?: number }).currentUserId });
     });
     plugin.setup(ctx);
     const runner = ctx.registries.agentRunner.get()!;
@@ -740,6 +751,7 @@ describe('@faapi/agent plugin — 隔离 agent 通道（agentRunner 注册）', 
       input: '研究量子',
       options: { model: 'gpt-4o' },
     });
+    // 通用订阅收到一次发射（专属名为独立目录项）,载荷 ctx 为宿主任务合成契约 ctx
     expect(captured).toEqual([{ currentUserId: 7 }]);
   });
 

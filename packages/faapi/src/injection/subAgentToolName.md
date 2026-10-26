@@ -13,7 +13,7 @@ agent-as-tool 把 sub-agent 包装成 tool 发给 LLM，`function.name` 受 Open
 
 - `agentRegistry.asTool` / task worker 注册表视图的 `asTool` / `@faapi/agent` 的 `Agent.asTool`——包装单个 agent 为 `AgentToolDescriptor`
 - `Agent.buildToolDefinitions` / `buildDeclaredTools`——组装 LLM 可见 tools 清单与执行白名单
-- 业务方 authHooks——`beforeToolCall` / `filterTools` 用导出的 `SUB_AGENT_TOOL_PREFIX` 判别 sub-agent 调用，避免硬编码前缀字符串
+- 业务方 tool 链事件——`agent:before-tool-call` / `agent:filter-tools`（原 authHooks 钩子，7.x 事件化）用导出的 `SUB_AGENT_TOOL_PREFIX` 判别 sub-agent 调用，避免硬编码前缀字符串
 
 ## 设计
 

@@ -54,7 +54,7 @@ const events = tasks.listEvents('skill-distill', { jobId }); // seq 升序
 - `subscribe(name, handler)` → 退订函数
   - 本进程实时订阅：该任务名后续每次 emit 落账后**同步**回调（匹配所有执行/所有 attempt；handler 须快速返回，不做异步等待——同步扇出无背压）。
   - **不回放订阅前历史**（补历史用 `listEvents`；UI 桥接用 seq 去重衔接两段）。
-  - handler 抛错 `console.error` 留痕（副作用回调，与 onFailed 同口径）——不影响任务执行与其他订阅者。
+  - handler 抛错 `console.error` 留痕（副作用回调，与 `task:failed` 事件同口径）——不影响任务执行与其他订阅者。
   - **仅宿主侧可用**：隔离任务 `taskCtx.tasks.subscribe` 显式抛错（回调函数不可结构化克隆跨线程）；进程内任务 `taskCtx.tasks.subscribe` 可用（活引用），但订阅面向管理面/桥接，任务内自订阅无典型场景。
 - `listEvents(name, opts?)` → `TaskEvent[]`（单执行内 seq 升序；跨执行按 job 首次发射序）
   - `opts.jobId?`：收窄到单次执行。

@@ -79,9 +79,6 @@ function toAgentRuntimeConfig(agentConfig: AgentConfig): AgentRuntimeConfig {
     enableTracing: agentConfig.enableTracing,
     traceId: agentConfig.traceId,
     traceIdTemplate: agentConfig.traceIdTemplate,
-    beforeToolCall: agentConfig.beforeToolCall,
-    afterToolCall: agentConfig.afterToolCall,
-    filterTools: agentConfig.filterTools,
   };
 }
 

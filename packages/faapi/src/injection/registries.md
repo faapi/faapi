@@ -1,6 +1,6 @@
 # registries
 
-一句话概括：app 级注册表集合——tool / agent / agentHandle / taskHandle / llm / agentRunner 的实例化实现，每个 app 持有独立一套，随 app 创建与销毁。
+一句话概括：app 级注册表集合——tool / agent / agentHandle / taskHandle / llm / agentRunner / appEvents 的实例化实现，每个 app 持有独立一套，随 app 创建与销毁。
 
 ## 为什么需要
 
@@ -17,10 +17,11 @@
 - `@faapi/agent` 插件经 `ctx.registries.agentHandle.register(...)` 注册工厂，deps 读同套实例
 - `@faapi/agent` 插件经 `ctx.registries.llm.register(...)` 注册轻量补全通道（`LlmChannelStore`，存实例本身而非工厂——channel 与请求上下文无关），handler 的 `llm` 注入参数与任务执行上下文（进程内 `taskCtx.llm`）读取
 - `@faapi/agent` 插件经 `ctx.registries.agentRunner.register({ runAgent })` 注册 agent 循环执行器，隔离任务队列读同套实例
+- `@faapi/agent` 插件经 `overrides.emitAppEvent` 把 `ctx.registries.appEvents.emit` 注入 agent deps——`agent:root-input` / `agent:input` 事件恒发射到 app 自己的总线（[appEventBus](../events/appEventBus.md)，业务方经 `getApp().on(...)` 订阅，`app.close()` 时 `clear()`）
 
 ## AgentRunner（agent 循环执行器）
 
-隔离任务调 agent 的通道：worker 侧 `taskCtx.agent.run` 经**单次 `agent-run` RPC** 转发请求，宿主经本执行器跑**完整编排循环**（LLM IO + tool 调度 + beforeToolCall/afterToolCall 钩子 + sub-agent 递归）——worker 只负责转发与回传，业务函数面与资源零跨线程。此前「IO 在 worker、CPU 在宿主」的 6 种 per-behavior RPC 垫片整体下线。
+隔离任务调 agent 的通道：worker 侧 `taskCtx.agent.run` 经**单次 `agent-run` RPC** 转发请求，宿主经本执行器跑**完整编排循环**（LLM IO + tool 调度 + agent:before-tool-call/after-tool-call 等事件发射 + sub-agent 递归）——worker 只负责转发与回传，业务函数面与资源零跨线程。此前「IO 在 worker、CPU 在宿主」的 6 种 per-behavior RPC 垫片整体下线。
 
 ```ts
 export interface AgentRunRequest {

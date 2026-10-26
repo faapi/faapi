@@ -57,9 +57,9 @@ AGENTS.md                       ← 项目唯一顶层文档（本文件）
 ### 5.1 层间关系
 
 ```
-dev:   CLI → compileDevRoutes  → .faapi/        → createDevApp()        ─┐
-build: CLI → compileBuildRoutes → dist/ + dist/main.js                  │
-prod:  node dist/main → createProdApp() → dist/                          ┤→ Server → Router → Loader → Runtime → Response
+dev:   CLI → compileDevRoutes  → .faapi/ → createDevApp()【→ bootstrap】─┐
+build: CLI → compileBuildRoutes → dist/ + dist/main.js                    │
+prod:  node dist/main → main.js(生成物) → $start()【→ bootstrap】→ listen ┤→ Server → Router → Loader → Runtime → Response
                                                                        ↓                ↓
                                                                    Injection        Validator
                                                                        ↓                ↓
@@ -67,7 +67,7 @@ prod:  node dist/main → createProdApp() → dist/                          ┤
 ```
 
 dev 模式：`faapi dev` 编译 + 调 `createDevApp()` + watcher（调 `app.reloadRoutes()`）。
-生产模式：`faapi build` 生成产物 + `dist/main.js` 启动入口，`node dist/main` 调 `createProdApp()` 自动水合路由清单。
+生产模式：`faapi build` 生成产物 + `dist/main.js` 启动入口，`node dist/main` 调 `$start()`（内部 `createProdApp`）自动水合路由清单并执行 `src/bootstrap.ts`。
 
 框架采用零入口设计——用户无需编写 `main.ts`：dev 由 CLI 内部编排，prod 由 build 阶段生成 `dist/main.js` 启动入口。
 
@@ -96,7 +96,7 @@ dev 模式：`faapi dev` 编译 + 调 `createDevApp()` + watcher（调 `app.relo
 - **dev**：`faapi dev` 调用 `createDevApp()`（含 `reloadRoutes` 热替换）
 - **prod**：`faapi build` 生成 `dist/main.js` 启动入口（内部 import `createProdApp` + `listen`），`node dist/main` 直接启动
 
-框架采用零入口设计——用户无需编写 `main.ts`：dev 由 CLI 内部编排，prod 由 build 阶段自动生成 `dist/main.js` 启动入口。用户自定义启动逻辑（初始化数据库、注册信号处理等）通过 `faapi.config.ts` 的 `lifecycle.onReady` / `onClose` 钩子实现，dev/prod 都执行。
+框架采用零入口设计——用户无需编写 `main.ts`：dev 由 CLI 内部编排，prod 由 build 阶段自动生成 `dist/main.js` 启动入口。用户自定义启动逻辑（初始化数据库、事件订阅等）通过 `src/bootstrap.ts` 约定启动文件实现（框架在 app 创建后、listen 前加载执行，`getApp().on(...)` 订阅——原 `lifecycle` 钩子，7.x 全量事件化），dev/prod 都执行。
 
 ```bash
 # dev 模式（编译 .ts → .faapi/*.js + 生成产物三元组 + 调 createDevApp() 启动 dev 应用 + 启动 watcher）
@@ -108,7 +108,7 @@ faapi build                    # 构建（逐文件编译（bundle: false） .ts
 node dist/main         # 启动生产服务器（main.js 内部调 createProdApp 读 dist/ 产物三元组）
 ```
 
-`createApp` / `createProdApp` / `createDevApp` 主要供编程式调用场景使用（如自定义启动器、测试场景），`dist/main.js` 内部也调用它们完成启动。
+启动入口唯一（零入口）：业务不写 main.ts、不写自定义启动器。`$start` 是唯一公开启动导出（`$` 前缀 = 框架内部标记，仅供生成的 `dist/main.js` 使用）；`createProdApp` / `createDevApp` 为框架内部模块（不公开导出，`faapi dev` CLI 编排与生成入口专用）。
 
 配置分两类：
 
@@ -154,9 +154,9 @@ dev 和 prod 生成完全一致的产物集（`faapi-config.js` + `faapi-routes.
 | `resources/`（运行时静态文件，`src/resources/` 原样复制——不编译、不被任何扫描器识别；dev watcher 监听变化增量同步，详见 `src/cli/copyResources.md`） | `.faapi/resources/` | `dist/resources/` |
 | `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
 
-- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `generateToolArtifacts` 生成 `faapi-tools.js`（**仅 tool 清单，不预生成 zod.js**），调 `copyResources` 镜像复制 `src/resources/` → `.faapi/resources/`（无该目录时跳过），调 `createDevApp()` + `listen()`（含 `reloadRoutes`/`reloadTools` 热替换能力 + toolRegistry 水合），watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` / `app.reloadTools()` 热替换路由/tool；`src/resources/` 下任意扩展名文件走增量复制/删除，不进编译调度器）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
-- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js` + `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 编译本地 TS 插件（config.plugins 的 path 声明 → `dist/plugins/`，保留相对结构）+ 生成 `dist/faapi-routes.js` + 生成 `dist/faapi-tools.js`（tool 清单，可选）+ 每个 handler/tool 的 `zod.js` + 复制 `src/resources/` → `dist/resources/`（原样镜像，无该目录时跳过）+ 生成 `dist/main.js` 启动入口（零入口设计：内部 import `createProdApp` + `loadEnv` + 兜底 `NODE_ENV` + `listen`），不启动服务器
-- `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`createProdApp()` 读 `FAAPI_DIST`（未设置时默认 `dist`），水合 `dist/faapi-routes.js` 路由清单 + 水合 `dist/faapi-tools.js` tool 清单到 `toolRegistry`，`loadConfig` 读 `dist/faapi-config.js`，运行时按需 import `zod.js` 做 zod safeParse
+- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `generateToolArtifacts` 生成 `faapi-tools.js`（**仅 tool 清单，不预生成 zod.js**），调 `copyResources` 镜像复制 `src/resources/` → `.faapi/resources/`（无该目录时跳过），调 `createDevApp()`（内部：createAppBase → **加载执行 `src/bootstrap.ts`** → 追加热替换方法）+ `listen()`，watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` / `app.reloadTools()` 热替换路由/tool；`src/resources/` 下任意扩展名文件走增量复制/删除，不进编译调度器）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
+- `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js`（含 `src/bootstrap.ts → dist/bootstrap.js`）+ `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 编译本地 TS 插件（config.plugins 的 path 声明 → `dist/plugins/`，保留相对结构）+ 生成 `dist/faapi-routes.js` + 生成 `dist/faapi-tools.js`（tool 清单，可选）+ 每个 handler/tool 的 `zod.js` + 复制 `src/resources/` → `dist/resources/`（原样镜像，无该目录时跳过）+ 生成 `dist/main.js` 启动入口（零入口设计：内部 import `$start` + `loadEnv` + 兜底 `NODE_ENV`），不启动服务器
+- `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`$start()` 读 `FAAPI_DIST`（未设置时默认 `dist`），内部 `createProdApp`（水合 `dist/faapi-routes.js` 路由清单 + `dist/faapi-tools.js` tool 清单 + `loadConfig` 读 `dist/faapi-config.js` + **加载执行 `src/bootstrap.ts` 编译产物 `dist/bootstrap.js`**）后 `listen()`，运行时按需 import `zod.js` 做 zod safeParse
 
 `FAAPI_DIST` 是路径参数而非模式标志——`createAppBase` 内部无 `if (isDev)` 分支，统一水合 `faapi-routes.js` + `faapi-tools.js`、统一 `loadConfig(dist)` 读配置、统一按需 import `zod.js`。dev 的 `createDevApp` 在 `createAppBase` 基础上增加 `reloadRoutes` + `reloadTools`（重新生成 + 重新水合 tool 清单），prod 的 `createProdApp` 直接返回 `createAppBase` 结果。
 
@@ -172,7 +172,7 @@ dev 和 build 都采用 `bundle: false` 逐文件编译，每个 `.ts` 独立编
 
 `NODE_ENV` 用于 `loadEnv` 选择 `.env.{env}` 文件（按 `NODE_ENV || 'development'` 决定）。调用方在调 `loadEnv` 之前自行兜底 `NODE_ENV`：dev 设 `development`，prod 设 `production`。环境变量注入 `process.env` 供 `faapi.config.ts` 通过 `process.env.XXX` 读取。多环境差异通过 `.env` 系列文件实现。
 
-启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`node dist/main` → `production`（由 `main.js` 入口兜底）。build 产物中源码内的 `process.env.NODE_ENV` 已被 `define` 编译期替换为 `"production"`（死代码消除）；dev 中运行时读取环境变量。如果业务配置中有运行时读取 `process.env.NODE_ENV` 的逻辑（如 `onReady` 钩子），需启动时显式设置或由部署环境注入。
+启动时按 mode 兜底设置 `NODE_ENV`（仅在未显式设置时，不覆盖用户意图）：`faapi`/`faapi dev` → `development`，`node dist/main` → `production`（由 `main.js` 入口兜底）。build 产物中源码内的 `process.env.NODE_ENV` 已被 `define` 编译期替换为 `"production"`（死代码消除）；dev 中运行时读取环境变量。如果业务配置中有运行时读取 `process.env.NODE_ENV` 的逻辑（如 `app:ready` 事件订阅端），需启动时显式设置或由部署环境注入。
 
 CORS 等运行时配置通过 `faapi.config.ts` 配置；框架元信息（port/dist）通过环境变量传入。
 
@@ -240,7 +240,7 @@ export const injectors: InjectorMap = {
 
 ### 5.5 配置文件（faapi.config.ts）
 
-在项目根目录创建 `faapi.config.ts`，支持生命周期钩子、自定义业务配置、全局中间件等。
+在项目根目录创建 `faapi.config.ts`，支持自定义业务配置、全局中间件等（事件订阅写 `src/bootstrap.ts`，见下文与 `packages/faapi/src/cli/bootstrap.md`）。
 
 **统一响应格式与错误处理**：框架内置自动响应包装（`config.response` 配置），handler `return` 普通值时自动用 `ok` 函数包裹（默认 `{ data: T }`），错误用 `ctx.fail()` 返回（默认 `{ error: { message, ...code? } }`）。响应格式参考业界通用做法（Stripe / Facebook Graph / JSON:API）。
 
@@ -345,34 +345,35 @@ export default {
 // faapi.config.ts
 import type { FaapiConfig } from '@faapi/faapi';
 
+// 生命周期/流程扩展统一为 app 事件（7.x）——订阅写 src/bootstrap.ts（框架约定启动文件,
+// createProdApp/createDevApp 在 app 创建后、listen 前加载执行,见 packages/faapi/src/cli/bootstrap.md）：
+//
+// import { getApp } from '@faapi/faapi';
+//
+// export default async function bootstrap() {
+//   const app = getApp(); // 此刻 app 已创建、事件未发射
+//   app.on('app:boot', ({ server }) => {
+//     // listen 前事件：启动校验（环境变量、下游依赖）、DB 迁移等"失败即不该暴露端口"的逻辑。
+//     // 订阅端抛错 → listen() reject 且 server.listen 未调用，端口不暴露（app:ready 在
+//     // listen 回调内发射,失败时端口已开——启动校验放 app:boot,资源初始化放 app:ready）
+//     if (!process.env.DB_HOST) throw new Error('DB_HOST is required');
+//   });
+//   app.on('app:ready', ({ rootDir, server, registries, config }) => {
+//     // listen 后事件：初始化数据库连接、Redis 等
+//     // 载荷（LifecycleContext）携带 config：faapi.config 全量活引用，与请求
+//     // ctx.config 同一对象——订阅端读业务配置；agent 块经 config.agent 读回可整体
+//     // 透传 @faapi/agent 的 createAgentDeps({ agentConfig })（生命周期内组装 agent 场景，如重启续跑）
+//   });
+//   app.on('app:close', ({ server }) => {
+//     // 停机事件（任务 drain 之后）：清理资源、优雅关闭
+//   });
+//   app.on('request:error', ({ error, ctx }) => {
+//     // 请求错误已被处理为响应、响应发出后发射（参考 Fastify onError 语义,观察类留痕口径）
+//     // 订阅端抛错 console.error 留痕，不修改已发出的响应
+//   });
+// }
+
 export default {
-  // 生命周期钩子
-  lifecycle: {
-    // listen 前钩子：启动校验（环境变量、下游依赖）、DB 迁移等"失败即不该暴露端口"的逻辑。
-    // 抛错 → listen() reject 且 server.listen 未调用，端口不暴露（onReady 在 listen 回调内，
-    // 失败时端口已开——启动校验放 onBoot，资源初始化放 onReady）
-    async onBoot({ rootDir, routes }) {
-      if (!process.env.DB_HOST) throw new Error('DB_HOST is required');
-    },
-    async onReady({ rootDir, routes, server, registries, config }) {
-      // 初始化数据库连接、Redis 等
-      // 钩子 ctx（LifecycleContext）携带 config：faapi.config 全量活引用，与请求
-      // ctx.config 同一对象——钩子内读业务配置；agent 块经 config.agent 读回可整体
-      // 透传 @faapi/agent 的 createAgentDeps({ agentConfig })（生命周期内组装 agent 场景，如重启续跑）
-      console.log(`Server ready with ${routes.length} routes`);
-    },
-    async onClose({ rootDir, server }) {
-      // 清理资源、优雅关闭
-      console.log('Server shutting down');
-    },
-    // 请求错误已被处理为响应、响应发出后触发（参考 Fastify onError 语义）
-    // 用于副作用：日志/告警/链路追踪，不修改已发出的响应；自身抛错 console.error 留痕
-    // （不影响已发出的响应，但不静默吞掉）
-    // 错误兜底链：全局中间件 try/catch → 内置 formatErrorResponse 兜底 → 仍失败则最简 500
-    onError(error, ctx) {
-      console.error(`[onError] ${ctx.method} ${ctx.path}`, error);
-    },
-  },
 
   // 扩展 ctx：挂载自定义方法/属性，配合 declare module '@faapi/faapi' 增强 FaapiContext 类型
   extendContext(ctx) {
@@ -462,31 +463,30 @@ export default {
                                                  //   （result.traceId / done.traceId / trace.traceId）；
                                                  //   traceIdTemplate 自定义注入文案（须含 {traceId} 占位符）。
                                                  //   详见 @faapi/agent 的 traceId.md
-    // 鉴权钩子（authHooks，详见 @faapi/agent 的 authHooks.md）：
-    //   beforeToolCall——所有 tool + sub-agent 执行前的守卫（agent- 前缀为 sub-agent，
-    //   派发工具名经主包 subAgentToolName 生成，前缀常量 SUB_AGENT_TOOL_PREFIX）。
-    //   void 放行 / { error } 拒绝（回传 LLM）/ { args } 改写后放行（强制注入可信值）
-    //   afterToolCall——成功执行后审计；filterTools——LLM 可见 tools 清单过滤。
-    //   ctx 为 AgentToolContext（必有，框架三路径合成——HTTP 完整请求 ctx 收窄 /
-    //   任务 carry+任务级能力合成，见 packages/faapi/src/runtime/agentToolContext.md；
-    //   业务字段由 tool 自定义 ctx 校验类型声明、框架声明即校验——构建期提取生成
-    //   schema、分发点 safeParse 不满足不调 handler；需要框架字段时交叉标注
-    //   `ctx: OrderCtx & AgentToolContext`，不要 extends——构建期提取会抛错），
-    //   全链路传递到钩子与 tool handler (args, ctx)；beforeToolCall 允许返回 Promise
-    beforeToolCall(name, args, ctx) {
-      if (!ctx.workspace) return { error: 'workspace context required' };
-      if ('workspaceId' in args) args.workspaceId = ctx.workspace.id;
-    },
-    filterTools(tools, ctx) {
-      // tools 为 OpenAI 规范形（type: 'function' + function.name），6.0.0 起；
-      // sub-agent 派发工具名为 agent-<agentName>（旧版 agent. 点号前缀已废弃——
-      // 点号违反 OpenAI 兼容协议的工具名字符集，强校验上游整单 400）
-      return tools.filter((t) => t.function.name.startsWith('agent-') || isAllowed(ctx?.workspace, t.function.name));
-    },
+    // 注意：原 authHooks 三钩子（beforeToolCall/afterToolCall/filterTools）已移除
+    // （7.x 事件化）——tool 链鉴权/审计/可见性过滤改经 app 事件订阅（文件顶层）：
+    //   app.on('agent:before-tool-call', (e) => {
+    //     // 所有 tool + sub-agent 执行前的守卫（agent- 前缀为 sub-agent,派发工具名
+    //     // 经主包 subAgentToolName 生成,前缀常量 SUB_AGENT_TOOL_PREFIX 判别）。
+    //     // e.args 可整体改写（强制注入可信值）；e.error = '...' 拒绝（回传 LLM）。
+    //     // e.ctx 为 AgentToolContext（必有，框架三路径合成——HTTP 完整请求 ctx 收窄 /
+    //     // 任务 carry+任务级能力合成，见 packages/faapi/src/runtime/agentToolContext.md；
+    //     // 业务字段由 tool 自定义 ctx 校验类型声明、框架声明即校验——构建期提取生成
+    //     // schema、分发点 safeParse 不满足不调 handler；需要框架字段时交叉标注
+    //     // `ctx: OrderCtx & AgentToolContext`，不要 extends——构建期提取会抛错）
+    //     if (!e.ctx.workspace) e.error = 'workspace context required';
+    //     if ('workspaceId' in e.args) e.args.workspaceId = e.ctx.workspace.id;
+    //   });
+    //   app.on('agent:after-tool-call', (e) => { /* 成功执行后审计（观察类留痕口径） */ });
+    //   app.on('agent:filter-tools', (e) => {
+    //     // e.tools 为 OpenAI 规范形（type: 'function' + function.name）,含 agent-as-tool;
+    //     // sub-agent 派发工具名为 agent-<agentName>；只影响可见性不拦执行（硬闸配 before-tool-call）
+    //     e.tools = e.tools.filter((t) => t.function.name.startsWith('agent-') || isAllowed(e.ctx?.workspace, t.function.name));
+    //   });
     // 进程级 deps 配方（6.51 起可选）：真实签名 (deps: AgentDeps) => AgentDeps
     // （AgentDeps 从 @faapi/agent 导入标注）。在 createAgentDeps 装配之上、显式
     // overrides 之前应用——插件注入的 AgentHandle 与业务自组装两路同源；典型
-    // 用途：schema 富化包装 / resolveSubAgentInput 派发材料 / providers 复用
+    // 用途：schema 富化包装 / providers 复用
     // decorateDeps: decorateAgentDeps,
   },
 
@@ -598,7 +598,7 @@ handler `throw err`                       → formatErrorResponse      → 走 f
 
 - 缺省 / `true`：console 输出（`[ISO 时间] LEVEL [scope] message fields-JSON`，console 出口阈值 `consoleLevel` 默认 `'info'`，warn/error 走 stderr）
 - `false`：全部静默（含 error 与请求日志，测试降噪）
-- `LogConfig`：双出口独立阈值（egg transport 模型）——`level` 管管道出口（文件/sink 收到的条目，**不配不过滤**，`LOG_LEVEL` env 同源）；`consoleLevel` 管 console 出口（不配 `'info'`，`false` 关 console）；两者互不牵扯（文件可只存 error、console 看全）。输出目标二选一：`dir` egg 风格文件输出（默认 `app.log` 全量 + `error.log` 仅 error dup；`splitByLevel: true` 按级别四文件；`stdout` 默认 true 双写）或 `sink` 自定义管道接管（接 pino/winston），互斥同时配置报错；`flushLogging()` 供 `lifecycle.onClose` 刷盘
+- `LogConfig`：双出口独立阈值（egg transport 模型）——`level` 管管道出口（文件/sink 收到的条目，**不配不过滤**，`LOG_LEVEL` env 同源）；`consoleLevel` 管 console 出口（不配 `'info'`，`false` 关 console）；两者互不牵扯（文件可只存 error、console 看全）。输出目标二选一：`dir` egg 风格文件输出（默认 `app.log` 全量 + `error.log` 仅 error dup；`splitByLevel: true` 按级别四文件；`stdout` 默认 true 双写）或 `sink` 自定义管道接管（接 pino/winston），互斥同时配置报错；`flushLogging()` 供 `app:close` 事件订阅端刷盘
 - 请求日志无条件并入管道：条目转 `LogEntry`（level 按 status 映射 2xx/3xx→info、4xx→warn、5xx→error，scope `access`，fields 携带 requestId/method/path/status/durationMs）与业务日志同文件/同 sink/console 出口；`config.log.accessLog: false` 关闭请求日志。编程式自定义输出经 `middlewares: [logger({ log })]` 自行组装（`logger` 中间件仍导出）
 
 `ctx.requestId`：请求头 `x-request-id` 第一段优先（网关透传场景跨服务串联），否则 `crypto.randomUUID()` 生成；请求日志中间件的结构化条目同样附带该字段，业务日志与请求日志可经 requestId 关联。
@@ -658,7 +658,7 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 **提示词模板注入（config.vars 静态声明）**：agent config 支持 `vars: Record<string, string | number | boolean>`（静态字面量，启动期求值进 `AgentCore.vars`）——`systemPrompt` / `systemPromptFile` 内容中的 `{{key}}` 占位符每次 run / sub-agent 派发按 vars 渲染（每次 run 渲染、不缓存，dev 改 prompt 文件立即生效；缺失/非法占位符显式抛 `AgentError` 不发起 LLM 请求；未声明 vars 完全不渲染，存量提示词逐字节现状）。vars 在 agent 元数据上，顶层 run 与 sub-agent 派发全链一致生效；同一 agent 每次运行渲染相同内容（「同一提示词模板复用 + agent 间静态特化」场景），每次运行不同的动态内容走 user input 或派发入参。渲染为 `@faapi/agent` 内部模块（不进公开导出面），语法/值渲染/转义细则见 `packages/agent/src/promptTemplate.md`，声明求值与校验见 `packages/faapi/src/agents/loadAgents.md`。
 - **`agentRegistry.hydrateAgentRegistry` 是整体替换语义**——agent 定位清单来自构建期产物、声明数据启动期求值，reload 时整体重新求值，**dev 模式 watcher 每次改文件都触发 reload**，外部加载的动态数据不要混入同一 registry
 
-**注册表实例化（app 实例级状态）**：注册表 + agent handle 工厂为 **app 实例级状态**——`createAppBase` 创建独立实例（`AppRegistries`），水合、请求链路（`FaapiContext.registries`）、插件（`PluginContext.registries`）、lifecycle 钩子（`LifecycleContext.registries`）均读写 app 自己的实例，`app.close()` 随实例销毁。**faapi 单进程单 app（多 app 同进程不支持）**——`createAppBase` 检测到进程内已有存活 app 时显式抛错，先 `close()` 才能再建（单例语义、全局日志、`readResource` 绑定等进程级资源都以唯一 app 为前提）。各模块保留的全局函数（`getTool` / `listAgents` 等）是**默认实例**的便捷访问器（编程式直调 / 测试用），与 app 实例相互独立——经全局函数水合的数据不会进入任何 app 的请求链路。
+**注册表实例化（app 实例级状态）**：注册表 + agent handle 工厂为 **app 实例级状态**——`createAppBase` 创建独立实例（`AppRegistries`），水合、请求链路（`FaapiContext.registries`）、插件（`PluginContext.registries`）、生命周期事件订阅端（`app:boot`/`app:ready`/`app:close` 载荷的 `registries`）均读写 app 自己的实例，`app.close()` 随实例销毁。**faapi 单进程单 app（多 app 同进程不支持）**——`createAppBase` 检测到进程内已有存活 app 时显式抛错，先 `close()` 才能再建（单例语义、全局日志、`readResource` 绑定等进程级资源都以唯一 app 为前提）。各模块保留的全局函数（`getTool` / `listAgents` 等）是**默认实例**的便捷访问器（编程式直调 / 测试用），与 app 实例相互独立——经全局函数水合的数据不会进入任何 app 的请求链路。
 
 ### 5.7 内置注入类型
 
@@ -697,7 +697,7 @@ export async function GET() {
 }
 ```
 
-**安全读取入口**：主包导出的 `readResource(relativePath, encoding?)` 是唯一读取入口——参数为相对路径，只能读 resources 内的文件，绝对路径 / `..` 穿越 / 符号链接逃逸均抛错（详见 `src/utils/readResource.md`）。读取根在 `createAppBase` 启动时绑定（进程级 globalThis，单 app 强制保证唯一）、隔离任务 worker 由入口从快照播种（数据源为 `TaskQueueDeps.resourcesDir` 内部字段，不进业务上下文）、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定。**`resourcesDir` 各上下文数据字段已删除**（FaapiContext / WsContext / TaskContext / PluginContext / AppBase / lifecycle 钩子参数）——字段助长 `path.join` + `fs.readFile` 的无防护绕行读法，读取统一走 `readResource`。agent config 支持 `systemPromptFile`（相对本目录的路径字面量，与 `systemPrompt` 互斥二选一）——运行时每次 run 经免传参 `readResource` 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。空目录与目录级删除不处理（按文件级同步）。
+**安全读取入口**：主包导出的 `readResource(relativePath, encoding?)` 是唯一读取入口——参数为相对路径，只能读 resources 内的文件，绝对路径 / `..` 穿越 / 符号链接逃逸均抛错（详见 `src/utils/readResource.md`）。读取根在 `createAppBase` 启动时绑定（进程级 globalThis，单 app 强制保证唯一）、隔离任务 worker 由入口从快照播种（数据源为 `TaskQueueDeps.resourcesDir` 内部字段，不进业务上下文）、testing 直调经 `createTestContext` 的 `resourcesDir` 选项绑定。**`resourcesDir` 各上下文数据字段已删除**（FaapiContext / WsContext / TaskContext / PluginContext / AppBase / `app:*` 事件载荷）——字段助长 `path.join` + `fs.readFile` 的无防护绕行读法，读取统一走 `readResource`。agent config 支持 `systemPromptFile`（相对本目录的路径字面量，与 `systemPrompt` 互斥二选一）——运行时每次 run 经免传参 `readResource` 读文件内容作为 system 消息，dev 改 prompt 文件立即生效。空目录与目录级删除不处理（按文件级同步）。
 
 输入字段二分口径：**`query` / `params` / `body` 恒为校验转换后的值，`rawQuery` / `rawParams` / `rawBody` 恒为原始值**，在 ctx、目录/全局中间件、handler 注入所有访问点一致（挂载时序详见 `src/server/createServer.md` 的「输入字段口径」）。全局中间件 `await next()` 之前 `ctx.rawParams`/`ctx.rawQuery` 已可用（路由匹配已提前到中间件链之前），`ctx.rawBody`/`ctx.body` 为 undefined（请求体流只能消费一次的物理限制）。
 
@@ -787,7 +787,7 @@ it('GET 返回分页数据', async () => {
 
 `createTestContext(options)` 是测试入口，接受 `{ method?, path, query?, headers?, params?, config?, ip? }` 对象，免去手写 `new Request('http://localhost/...')` 的样板代码。
 
-`invokeHandler(handler, ctx, body?, middlewares?, injectors?)` 支持传入中间件链和注入器，可测试鉴权拦截、依赖注入等场景。不走 schema 校验（zod.js 由 build 生成）；如需测试完整请求链路（含 schema、全局中间件），用 `createProdApp` + `app.inject()`（需先 `faapi build`）。
+`invokeHandler(handler, ctx, body?, middlewares?, injectors?)` 支持传入中间件链和注入器，可测试鉴权拦截、依赖注入等场景。不走 schema 校验（zod.js 由 build 生成）；完整请求链路（含 schema、全局中间件）用 `createTestServer`（HTTP 域事件经 `appEvents` 选项注入总线断言）；app 级场景（config + 插件 + 事件 + 任务）走真实零入口 e2e（`faapi build` + `node dist/main` + fetch 真端口）。`app.inject` 保留在运行中的 app 上（`getApp().inject`，Next.js RSC 同进程场景）。
 
 agent 流程测试（真 reactLoop + 真工具 + 假 LLM）走 `@faapi/faapi/testing` 的 `createAgentTestHarness`——测试进程内扫描 agent/tool 源码，水合与生产同接口的注册表视图 + loader 桥接（对位 `createTestServer`：不依赖 build 产物、不建 app、单进程单 app 零占用）；假 LLM 用 `@faapi/agent` 的 `createScriptLLM`（按序回放回合、快照请求、用尽即抛）。`schemaMode: 'generated'` 时现场生成 zod.js 并按生产口径校验入参。详见 `src/testing.md` 与 `src/agentTestHarness.md`。
 
@@ -798,14 +798,14 @@ agent 流程测试（真 reactLoop + 真工具 + 假 LLM）走 `@faapi/faapi/tes
 基于外部队列驱动的异步任务能力：handler / lifecycle / cron 把耗时工作投递到队列，驱动 worker 按 task 元信息（并发数、重试）消费执行。
 
 - **任务定义（文件约定，两种声明 API）**：`src/tasks/<name>/task.ts` = **进程内任务**（`FaapiTaskMeta = { concurrency? / retries? / cron? }`，`run(payload, taskCtx: TaskContext)`）；`src/tasks/<name>/worker.ts` = **隔离任务**（`FaapiWorkerTaskMeta = { timeoutMs 必填 / graceMs? / concurrency? / retries? / cron? }`，`run(payload, taskCtx: IsolatedTaskContext)`）——文件名即执行语义，运行时判据是清单 `mode` 字段而非 timeoutMs 有无。meta 值必须是纯字面量——数字字段支持下划线分隔，`cron` 为引号字符串；表达式/动态值不被零 import 扫描识别，声明了但无法识别时构建期抛错（逐字段列后果与修复指引，不警告后忽略）；声明错位（task.ts 声明 `timeoutMs`/`graceMs`、worker.ts 缺 `timeoutMs`、同目录两种文件并存）同样构建期抛错并附迁移指引，详见 `packages/faapi/src/tasks/scanTasks.md`（`graceMs` 为取消宽限期毫秒数，仅隔离任务生效，默认 5s）+ `run(payload, taskCtx)`；`run` 首参类型声明必填（如 `Payload` interface；确无入参契约显式声明 `type Payload = unknown` 生成恒通过 schema），缺失构建期抛错；类型声明走 AST → zod 代码生成，入队时校验（不合法抛 `ValidationError`；运行时 schema 产物缺失同样抛错不静默放行）；`run` 第二参 ctx 类型标注与文件种类不符（worker.ts 标 `TaskContext` / task.ts 标 `IsolatedTaskContext`）构建期报错（generateTaskArtifacts AST 校验）
-- **超时取消真终止（worker 隔离执行）**：任务以 `worker.ts` 声明（`timeoutMs` 必填，60s ~ 23h 扫描期校验）后在独立 worker 线程执行，超时两段式取消——先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀，判定超时即执行真正终止（Node 主线程无法强杀协程，进程内"不再等待"式超时是假取消）。任务记录新增 `cancelled` 状态：被框架终止（超时终止/停机取消）记 `cancelled`，与 run 自身失败的 `failed` 分流。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、config/registries 为派发时刻快照（config 经 `collectConfigSnapshot` 纯数据投影——函数值不进快照（lifecycle 钩子/`task.onFailed`/log sink/middlewares 等宿主行为面不跨线程，与 registries 快照同款边界），其余值 structuredClone 保真，含非函数不可克隆值派发显式报错列路径，见 `configSnapshot.md`）。两个上下文类型显式分开：进程内 `TaskContext`（config 活引用全量）/ 隔离 `IsolatedTaskContext`（config 纯数据快照），suspend/resumed 两路径语义零差（隔离路径经 RPC 回传宿主执行同一信封写入，见 `taskSuspend.md`），完整差异表见 `packages/faapi/src/tasks/taskTypes.md`。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。派发受**全局 worker 并发预算**约束（`IsolatedWorkerBudget`：每进程同时运行的 worker 数默认 `max(1, os.availableParallelism() - 1)`，`config.task.maxIsolatedWorkers` 调整；席位等待上限 30s——低于 pgboss expire_in 的 60s 缓冲不侵蚀执行预算，超限显式失败交驱动重试；排队等待不计入 `timeoutMs`，见 `packages/faapi/src/tasks/isolatedWorkerBudget.md`）；worker 内存可经 task meta `maxOldGenerationSizeMb` 透传 Node `resourceLimits` 硬限（下限 16 MB，超限 V8 杀 worker 任务显式失败，见 `scanTasks.md`）。详见 `packages/faapi/src/tasks/taskWorker.md`
+- **超时取消真终止（worker 隔离执行）**：任务以 `worker.ts` 声明（`timeoutMs` 必填，60s ~ 23h 扫描期校验）后在独立 worker 线程执行，超时两段式取消——先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀，判定超时即执行真正终止（Node 主线程无法强杀协程，进程内"不再等待"式超时是假取消）。任务记录新增 `cancelled` 状态：被框架终止（超时终止/停机取消）记 `cancelled`，与 run 自身失败的 `failed` 分流。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、config/registries 为派发时刻快照（config 经 `collectConfigSnapshot` 纯数据投影——函数值不进快照（`app:*` 事件订阅端/`task:failed` 订阅端/log sink/middlewares 等宿主行为面不跨线程，与 registries 快照同款边界），其余值 structuredClone 保真，含非函数不可克隆值派发显式报错列路径，见 `configSnapshot.md`）。两个上下文类型显式分开：进程内 `TaskContext`（config 活引用全量）/ 隔离 `IsolatedTaskContext`（config 纯数据快照），suspend/resumed 两路径语义零差（隔离路径经 RPC 回传宿主执行同一信封写入，见 `taskSuspend.md`），完整差异表见 `packages/faapi/src/tasks/taskTypes.md`。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。派发受**全局 worker 并发预算**约束（`IsolatedWorkerBudget`：每进程同时运行的 worker 数默认 `max(1, os.availableParallelism() - 1)`，`config.task.maxIsolatedWorkers` 调整；席位等待上限 30s——低于 pgboss expire_in 的 60s 缓冲不侵蚀执行预算，超限显式失败交驱动重试；排队等待不计入 `timeoutMs`，见 `packages/faapi/src/tasks/isolatedWorkerBudget.md`）；worker 内存可经 task meta `maxOldGenerationSizeMb` 透传 Node `resourceLimits` 硬限（下限 16 MB，超限 V8 杀 worker 任务显式失败，见 `scanTasks.md`）。详见 `packages/faapi/src/tasks/taskWorker.md`
 - **任务侧注册表只读视图（TaskContext.registries）**：两条执行路径均注入 `taskCtx.registries`（agent/tool 元数据的只读查询视图，不含 hydrate/clear 写接口），任务内组装/调用 agent 不再依赖 `getApp()`——注册表为 app 实例级，全局访问器读的是 app 启动从不水合的默认实例，`getApp()` 在隔离 worker 内也不可用（globalThis 独立），任务侧曾没有任何注册表访问路径。任务内组装 agent 的 deps 装配走 `@faapi/agent` 的 `createAgentDeps`（注册表视图直传，插件 setup 同一实现——不再手拼访问器）。进程内传活引用（`createTaskRegistriesView`）；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（agents 含 filePath 完整元数据 + tools）postMessage 传入、worker 内重建视图——**快照语义**：视图反映派发时刻的注册表，执行中途 reload 变更不影响当次执行。详见 `packages/faapi/src/tasks/taskTypes.md`
 - **任务侧轻量补全通道（TaskContext.llm）**：两条执行路径均注入 `taskCtx.llm`（`@faapi/agent` 插件加载且 `agent.llms` 可解析时；一次性 LLM 补全官方出口，见 5.7 `llm` 注入行与 `packages/agent/src/lightComplete.md`）。进程内从 `registries.llm` store 惰性读取（插件晚于队列构造注册）；隔离路径传 `agent.llms` 纯数据快照、worker 内动态加载 `@faapi/agent` 重建（llms 已配置但不可解析时显式抛错含安装指引，任务失败——不静默旁路；llms 未配置时 `llm` 为 `undefined`，能力不存在非降级）——工具循环仍走 registries.agent 组装 Agent，`llm` 只承接一次性补全
 - **任务事件原语（taskCtx.emit / subscribe / listEvents）**：任务执行中经 `taskCtx.emit(data)` 发射过程事件（agent 流式 chunk、阶段标记等），宿主侧 `TaskClient.subscribe(name, handler)` 实时订阅（本进程同步扇出，不回放历史，handler 抛错 console.error 留痕）+ `listEvents(name, { jobId? })` 查询历史（单执行内 seq 升序；`TaskEvent = { task, jobId, attempt, seq, at, data }`）——与 `progress` 的差异：progress 是单值覆盖槽（派发清空），事件是过程历史（seq 跨 attempt 连续、重试不清、attempt 标注）。仅 running 状态生效（终态后忽略，与 progress 同口径）；隔离路径值经 `{ type: 'event' }` 消息回传宿主——须可结构化克隆（不可克隆按执行错误处理），取消判定后（宽限期内）到达不采纳。事件存本进程有界内存（单执行 1000 / 全局 10000 两级上限），生命周期与任务记录绑定，**驱动零改动**（与组记账进驱动刻意对比：组记账要跨实例正确，事件是观测面）；隔离任务 `taskCtx.tasks.subscribe` 显式拒绝（回调不可跨线程），`listEvents` 经 RPC 白名单可用。agent 事件不设专用管道 API——`agent.stream` chunk 原样 `emit` 即成管道（主包对 `@faapi/agent` 保持解耦，消费端本就要按 chunk 字段做业务分发）；完整契约见 `packages/faapi/src/tasks/taskEvents.md`
-- **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle 钩子的 `{ tasks }` 全部指向同一 app 实例 TaskClient；cron（croner）到点自动入队空 payload，复用同一队列与执行模型
-- **执行上下文携带（carry）与 taskCtx.agent 静默组装（7.1 起；7.2 起两条路径齐备）**：`enqueue/enqueueGroup/enqueueChain` 的 `opts.carry` 声明执行上下文快照（身份/标记等**纯数据**，enqueue 时刻校验可结构化克隆，显式抛错），随任务 envelope 持久化（驱动载荷包装形态）跨实例/重启正确，执行端还原 `taskCtx.carry`（未携带归一空对象）；任务内续投自动继承（显式传 carry 整体覆盖）、resume 激活重投继承挂起前 carry、cron 触发为空对象。`taskCtx.agent` 惰性通道的执行 ctx 按 `createTaskToolContext` 配方合成（carry 数据字段落顶层 + AgentToolContext 契约字段 tasks/log/signal 后置，见 `packages/faapi/src/tasks/taskToolContext.md`）——进程内经 agentHandle 工厂构造（与 HTTP 请求链同一份 baseDeps），**隔离任务 agent 循环收敛宿主**：worker 内 `taskCtx.agent` 是 run-only RPC 句柄（`AgentRpcHandle`，`@faapi/agent` declare module 增强注入）——`taskCtx.agent.run(input, { agent, ...options })` 经单次 `agent-run` RPC 收敛宿主执行完整 agent 循环（provider、tools、beforeToolCall 钩子、sub-agent 全在宿主进程，db 等资源单实例、业务函数零跨线程；宿主侧由 `@faapi/agent` 插件注册 `agentRunner`，TaskQueue 派发时注入 `onAgentRun` → `agentRunner.runAgent`）；`options.agent` 必填、provider 实例与不可克隆值显式报错（fail-fast）。插件未加载时进程内通道 `undefined`、隔离路径不携带 agent 通道（能力不存在非降级）。类型：`TaskContext.agent` 为 `AgentHandle | undefined`（进程内完整句柄）、`IsolatedTaskContext.agent` 为 `AgentRpcHandle | undefined`（隔离 run-only）。身份在 enqueue 处声明一次（`carry: { currentUserId: ctx.currentUserId }`），任务端零声明零组装。tool handler 第二参数的 ctx 由业务自定义校验类型声明、框架声明即校验（`ctxTypeName` 构建期提取 → 分发点 safeParse，不满足不调 handler；`AgentToolContext` 为框架字段载体，交叉标注携带——见 `packages/faapi/src/runtime/agentToolContext.md`；无 app 场景用 `createStandaloneToolContext`）。详见 `packages/faapi/src/tasks/taskTypes.md`
+- **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 `app:boot`/`app:ready`/`app:close` 事件载荷的 `{ tasks }` 全部指向同一 app 实例 TaskClient；cron（croner）到点自动入队空 payload，复用同一队列与执行模型
+- **执行上下文携带（carry）与 taskCtx.agent 静默组装（7.1 起；7.2 起两条路径齐备）**：`enqueue/enqueueGroup/enqueueChain` 的 `opts.carry` 声明执行上下文快照（身份/标记等**纯数据**，enqueue 时刻校验可结构化克隆，显式抛错），随任务 envelope 持久化（驱动载荷包装形态）跨实例/重启正确，执行端还原 `taskCtx.carry`（未携带归一空对象）；任务内续投自动继承（显式传 carry 整体覆盖）、resume 激活重投继承挂起前 carry、cron 触发为空对象。`taskCtx.agent` 惰性通道的执行 ctx 按 `createTaskToolContext` 配方合成（carry 数据字段落顶层 + AgentToolContext 契约字段 tasks/log/signal 后置，见 `packages/faapi/src/tasks/taskToolContext.md`）——进程内经 agentHandle 工厂构造（与 HTTP 请求链同一份 baseDeps），**隔离任务 agent 循环收敛宿主**：worker 内 `taskCtx.agent` 是 run-only RPC 句柄（`AgentRpcHandle`，`@faapi/agent` declare module 增强注入）——`taskCtx.agent.run(input, { agent, ...options })` 经单次 `agent-run` RPC 收敛宿主执行完整 agent 循环（provider、tools、agent:before-tool-call 等事件发射、sub-agent 全在宿主进程，db 等资源单实例、业务函数零跨线程；宿主侧由 `@faapi/agent` 插件注册 `agentRunner`，TaskQueue 派发时注入 `onAgentRun` → `agentRunner.runAgent`）；`options.agent` 必填、provider 实例与不可克隆值显式报错（fail-fast）。插件未加载时进程内通道 `undefined`、隔离路径不携带 agent 通道（能力不存在非降级）。类型：`TaskContext.agent` 为 `AgentHandle | undefined`（进程内完整句柄）、`IsolatedTaskContext.agent` 为 `AgentRpcHandle | undefined`（隔离 run-only）。身份在 enqueue 处声明一次（`carry: { currentUserId: ctx.currentUserId }`），任务端零声明零组装。tool handler 第二参数的 ctx 由业务自定义校验类型声明、框架声明即校验（`ctxTypeName` 构建期提取 → 分发点 safeParse，不满足不调 handler；`AgentToolContext` 为框架字段载体，交叉标注携带——见 `packages/faapi/src/runtime/agentToolContext.md`；无 app 场景用 `createStandaloneToolContext`）。详见 `packages/faapi/src/tasks/taskTypes.md`
 - **幂等投递（dedupId）**：`enqueue` 可选幂等键——同键任务在队列系统保留期内不重复入队（重复投递返回已存在任务 id）。pgboss 映射 send 自定义 id（要求 UUID，驱动内 SHA-1 确定性映射）；bullmq 映射 jobId。**cron 投递自动携带 `cron:<任务名>:<计划触发时刻>` 键**——多 worker 实例同窗只入队一份（依赖实例时钟同步），解决多实例 cron 重复投递
-- **失败钩子**：`config.task.onFailed({ task, jobId, attempt, willRetry, cancelled, error })`——每次执行失败/取消后触发（含将重试的失败），用于告警/死信上报等副作用；自身抛错 `console.error` 留痕（不影响驱动重试决策，但不静默吞掉）
+- **失败事件**：`task:failed` app 事件（载荷 `{ task, jobId, attempt, willRetry, cancelled, error }`）——每次执行失败/取消后发射（含将重试的失败），用于告警/死信上报等副作用；订阅端抛错 `console.error` 留痕（不影响驱动重试决策，但不静默吞掉）。原 `config.task.onFailed` 钩子已移除（7.x 事件化），经 `getApp().on('task:failed', ...)` 订阅（bootstrap 或运行期模块顶层）
 - **管理能力（TaskClient 扩展 + TaskDriver 可选方法）**：`list(name?)`（同步，本进程快照）、`listQueued(name?)`（持久化队列视图，驱动记录与本进程记录按 id 合并、本进程优先）、`cancel(name, id)`、`retry(name, id)`。驱动方法全部可选、按队列系统能力实现——BullMQ 全支持（list 状态映射 / cancel=job.remove / retry=job.retry）；pg-boss v12 经 `findJobs` 全支持（六态精确映射，含 cancelled 可查——BullMQ 无此状态）；BullMQ 无 cancelled（cancel=job.remove 移除不可查），驱动未实现时显式抛错不静默降级。能力边界见 `packages/faapi/src/tasks/driverTypes.md`
 - **任务组原语（组投递 / 记账 / fan-in）**：`tasks.enqueueGroup(name, payloads, { groupId?, onComplete?, onFailure? })` 一次投递 N 个同构子任务——成员 dedupId 自动派生（`faapi-group:<groupId>:<index>`，替代业务自拼序号）、同 groupId 幂等重投自愈（长任务扇出的 groupId 建议从业务键派生，发起任务重试即天然补投）；框架在**驱动侧**记账（`TaskDriver.groups` 可选能力——pg-boss 表 / Redis hash，跨实例/重启正确，未实现显式抛错不降级）；全部成员落定（重试耗尽后的终态）时自动入队 `onComplete` 回调任务（payload = `TaskGroupSummary` 契约，回调是普通任务不是闭包，入队 dedupId 兜底至多一份）；失败语义按组声明（`'fail-fast'` 取消余下 / `'run-to-completion'` 跑完记 partial，缺省后者）；`tasks.getGroup(id)` 查计数快照；`TaskContext.tasks` / `IsolatedTaskContext.tasks` 必有字段（隔离路径 postMessage RPC 代理回宿主执行）——任务内扇出不绕 `getApp()`。切分策略是业务知识不在框架范围；完整语义与已声明边界（回调入队崩溃窗口经重投自愈、组记录常驻驱动存储不自动清理、fail-fast 不中断在跑成员）见 `packages/faapi/src/tasks/taskGroups.md`
 - **链式任务原语（键控单飞 / 自续投）**：`tasks.enqueueChain(name, payload, { chainKey })` 按链键单飞——同键活跃任务（pending/running/retry）存在则不投返回现状（`{ enqueued: false, jobId, status }`），无活跃才入队（dedupId 框架托管 `faapi-chain:<chainKey>:<时间戳>`，终态后可重投——固定幂等键在队列保留期占坑误挡续投由托管消除）；任务执行路径（`taskCtx.tasks` 两条执行路径）调用自动排除自身 job（任务内自续投不被自身 running 态挡住——活跃查证排除样板与漏写静默断链风险由框架消除），`ctx.tasks`/`app.tasks`/`tasks` 注入不排除；活跃查证走 `TaskDriver.list` 通道（驱动未实现显式抛错，与 listQueued 同口径），chainKey 经载荷包装随任务持久化（与组标识同机制，交付/查询还原为 `TaskJob.chainKey`）。与任务组正交：组是并行扇出 + fan-in，链是串行单飞 + 自续投，不互相替代。适用"长时 agent 调用分段推进、段尾查业务断点自续投下一段"场景（分段粒度与断点事实源是业务知识，链无 fan-in——最后一跳不续投即自然终止）；完整语义与已声明边界（活跃查证快照非事务的并发登记竞态窗口、快照容量漏判边界）见 `packages/faapi/src/tasks/taskChain.md`
@@ -862,7 +862,7 @@ async function Page() {
 
 1. **显式抛错**（默认）——fail fast + 可行动的错误信息（含修复指引，`{ cause }` 保留原始错误）；构建期能发现的不留到运行时（如任务 Payload 声明必填、meta 字面量守卫）
 2. **显式声明能力边界**——某路径上能力不存在就让它不存在并写进类型与文档（如隔离任务 config 快照不含函数字段（宿主回调面不跨线程，见 `configSnapshot.md`）、GET/HEAD body 恒 undefined、插件未加载时 `llm`/`agent` 注入 undefined、隔离任务 `tasks.subscribe` 显式拒绝）；误用由编译期或响亮的运行时错误暴露
-3. **留痕不改主流程**——副作用钩子（lifecycle `onError`、任务 `onFailed`、`onFailure`）自身失败 `console.error` 留痕，不影响已定语义但不静默；OS 级物理约束（如文件 sink 磁盘满）首次失败留痕
+3. **留痕不改主流程**——观察类事件订阅端（`request:error`、`task:failed`、`agent:after-tool-call`，原 lifecycle `onError` / 任务 `onFailed` 等钩子）自身失败 `console.error` 留痕，不影响已定语义但不静默；OS 级物理约束（如文件 sink 磁盘满）首次失败留痕
 
 **与 ddd 技能的关系**：全局 ddd 技能中"确有必须降级的场景总结到项目根 `fallback.md`"的条款在本仓库由本节取代——本仓库不设 `fallback.md`；若未来确需例外，必须经维护者决策并在本节追加留痕（场景 + 为什么必须降 + 降级后的实际行为 + 恢复条件），未留痕的降级按静默降级处理（视为实现未完成）。
 
@@ -877,7 +877,7 @@ async function Page() {
 - 测试文件使用 `.test.ts`，端到端测试使用 `.e2e.test.ts`。
 - 路由根目录固定为 `src/`（参照 Next.js src 目录约定）：API 路由放在 `src/api/` 下。
 - 用户路由文件统一使用 `handler.ts`，放在 `src/api/` 下，导出 HTTP 方法名（`GET`、`POST` 等）；导出 `WS` 函数即声明 WebSocket 路由（与 HTTP 方法同级）。
-- 框架采用零入口设计——用户无需编写 `main.ts`：dev 由 `faapi dev` 内部编排（调 `createDevApp` + `listen`），prod 由 `faapi build` 自动生成 `dist/main.js` 启动入口（内部 import `createProdApp` + `listen`），`node dist/main` 直接启动。用户自定义启动逻辑通过 `faapi.config.ts` 的 `lifecycle.onReady` / `onClose` 钩子实现。`createApp` / `createProdApp` / `createDevApp` 主要供编程式调用场景使用（如自定义启动器、测试场景），`createApp` 为 `createProdApp` 的向后兼容别名。
+- 框架采用零入口设计——用户无需编写 `main.ts`：dev 由 `faapi dev` 内部编排（调内部 `createDevApp` + `listen`），prod 由 `faapi build` 自动生成 `dist/main.js` 启动入口（内部 import `$start` + `loadEnv` + 兜底 `NODE_ENV`），`node dist/main` 直接启动。`$start` 是唯一公开启动导出（`$` 前缀 = 框架内部标记，仅供生成入口使用，业务不应直接调用）；`createProdApp` / `createDevApp` 为不公开导出的内部模块。用户自定义启动逻辑（事件订阅、初始化）写 `src/bootstrap.ts`（原 `lifecycle` 钩子 / `onAppEvent`——7.x 全量事件化，见 `packages/faapi/src/cli/bootstrap.md`）。**升级迁移**：`createApp`/`createProdApp`/`createDevApp`/`onAppEvent` 已删除，存量 `dist/main.js` 需重跑 `faapi build` 重新生成；启动逻辑迁到 `src/bootstrap.ts`。
 - 中间件文件使用 `middlewares.ts`，导出默认数组。
 - 动态路由目录使用 `[name]`：`[id]`。
 - Catch-all 路由目录使用 `[...name]`：`[...slug]`。
@@ -896,7 +896,7 @@ async function Page() {
 
 ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重度，400 优先）。
 
-中间件模块加载/校验失败时（语法错误 / 路径不存在 / 运行时抛错 / 导出形态非法）显式抛错，不降级为空 bundle——空 bundle 让服务带病运行（鉴权/CORS 中间件静默失效后请求绕过横切能力），比显式失败更危险。命中路由的请求 500（`onError` 钩子可感知）；加载失败不写缓存，下次请求重试。开发期 watcher 会因 `reloadRoutes` 触发重新加载（清缓存 + 按需编译），实现自愈。dev 按需编译中间件产物失败同样冒泡为请求 500。
+中间件模块加载/校验失败时（语法错误 / 路径不存在 / 运行时抛错 / 导出形态非法）显式抛错，不降级为空 bundle——空 bundle 让服务带病运行（鉴权/CORS 中间件静默失效后请求绕过横切能力），比显式失败更危险。命中路由的请求 500（`request:error` 事件可感知）；加载失败不写缓存，下次请求重试。开发期 watcher 会因 `reloadRoutes` 触发重新加载（清缓存 + 按需编译），实现自愈。dev 按需编译中间件产物失败同样冒泡为请求 500。
 
 ### 6.3 类型校验策略
 

@@ -9,7 +9,7 @@
  * 覆盖（三条都是真实 worker 线程 + 真实 @faapi/agent 插件 runner，仅 LLM 端点 mock）：
  * 1. 工具与守卫在宿主执行（carry 身份传导）——beforeToolCall 守卫 / handler marker /
  *    afterToolCall 审计同轮触发；循环结果按 agent-run-result 回传 worker 收敛
- * 2. resolveRootInput 钩子（decorateDeps 接线）在宿主生效——LLM 请求消息含钩子
+ * 2. agent:root-input 事件（emitAppEvent 接线）在宿主生效——LLM 请求消息含订阅端改写
  *    组装的输入与任务合成 ctx 身份（carry 身份可读）
  * 3. Input 校验失败以任务错误浮出——声明 Input 的 agent 派发形态对象入参校验不过，
  *    runAgent 抛 AgentError → RPC ok:false → worker 侧 reject → 任务失败（真实 zod.js
@@ -27,7 +27,6 @@ import { runTaskInWorker } from '@faapi/faapi/src/tasks/taskWorker';
 import { createAppRegistries, createLogger, createTaskToolContext } from '@faapi/faapi';
 import type { AgentMetadata, LlmConfig, PluginContext, ToolMetadata } from '@faapi/faapi';
 import agentPlugin from './plugin';
-import type { AgentDeps } from './agent';
 import type { AgentRunner } from '@faapi/faapi';
 
 // 宿主侧 provider fetch 走本机 127.0.0.1——绕过开发机代理（同主包 e2e 约定）
@@ -245,7 +244,7 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
     mockLlm.server.close();
   }, 25000);
 
-  it('resolveRootInput 钩子（decorateDeps 接线）在宿主生效（钩子不可克隆但循环在宿主）', async () => {
+  it('agent:root-input 事件（emitAppEvent 接线）在宿主发射且改写生效（总线不可克隆但循环在宿主）', async () => {
     const mockLlm = await startMockLlm([
       { choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] },
     ]);
@@ -267,8 +266,9 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
       filePath: path.join(dir, 'agent.js'),
       systemPrompt: '你是天气助手',
     };
-    // 钩子引用宿主闭包（读 ctx 身份）——不可跨线程；循环在宿主，全量可见。
-    // decorateDeps 由插件 setup 经 createAgentDeps 应用（config 声明钩子的生产路径）
+    // 事件订阅引用宿主闭包（读 ctx 身份）——不可跨线程；循环在宿主，全量可见。
+    // emitAppEvent 由插件 setup 经 createAgentDeps overrides 注入（生产路径，
+    // 来源 registries.appEvents.emit）——宿主订阅 app 总线即可改写
     const ctx = {
       rootDir: dir,
       registries: createAppRegistries(),
@@ -279,17 +279,15 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
         agent: {
           llms,
           maxTurns: 5,
-          decorateDeps: (deps: AgentDeps): AgentDeps => ({
-            ...deps,
-            resolveRootInput: async (_name, input, hookCtx) =>
-              `${input}\n\n[宿主注入:${(hookCtx as { currentUserId?: number }).currentUserId}]`,
-          }),
         },
       },
       options: undefined,
     } as unknown as PluginContext;
     ctx.registries.agent.hydrate([agentMeta]);
     ctx.registries.tool.hydrate([toolMeta]);
+    ctx.registries.appEvents.on('agent:root-input', (e) => {
+      e.input = `${e.input}\n\n[宿主注入:${(e.ctx as { currentUserId?: number }).currentUserId}]`;
+    });
     agentPlugin.setup(ctx);
     const runner = ctx.registries.agentRunner.get() as AgentRunner;
 

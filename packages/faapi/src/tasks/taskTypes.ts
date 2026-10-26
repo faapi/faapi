@@ -623,6 +623,11 @@ export interface TaskQueue extends TaskClient {
 export interface TaskQueueDeps {
   registry: TaskRegistry;
   rootDir: string;
+  /**
+   * app 事件总线（`task:failed` 事件发射源，原 onFailed 钩子——7.x 事件化）。
+   * 缺省（裸 createTaskQueue 的测试/嵌入场景）不发射——能力边界，非降级
+   */
+  appEvents?: import('../events/appEventBus.js').AppEventBus;
   /** faapi.config.ts 全量配置——注入进程内路径的 TaskContext.config（必填：无配置文件传空对象；隔离任务不传 config） */
   config: FaapiContextConfig;
   /**
@@ -678,15 +683,10 @@ export interface TaskQueueDeps {
    * 由语义层调用，独立 worker 线程执行 + 超时两段式取消；测试注入 spy 验证执行路径路由
    */
   runIsolated?: TaskWorkerRunner;
-  /**
-   * 执行失败/取消钩子（config.task.onFailed）——每次 process 抛错后触发
-   * （含将重试的失败）；用于告警/死信上报等副作用，自身抛错被忽略
-   */
-  onFailed?: TaskFailedHandler;
 }
 
 /**
- * 任务失败信息（onFailed 钩子参数）
+ * 任务失败信息（`task:failed` 事件载荷，原 onFailed 钩子参数——7.x 事件化）
  *
  * willRetry 按任务 meta.retries 推算（attempt <= retries 时驱动会重试）；
  * cancelled = 执行被框架终止（超时终止/停机取消），与 run 自身失败区分。
@@ -699,5 +699,3 @@ export interface TaskFailedInfo {
   cancelled: boolean;
   error: string;
 }
-
-export type TaskFailedHandler = (info: TaskFailedInfo) => Promise<void> | void;

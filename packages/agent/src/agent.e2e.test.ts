@@ -20,14 +20,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // @faapi/faapi 公开 API
-import {
-  createProdApp,
-  clearAgentHandleFactory,
-  loadToolModule,
-  loadToolSchema,
-} from '@faapi/faapi';
+import { clearAgentHandleFactory, loadToolModule, loadToolSchema } from '@faapi/faapi';
 
 // @faapi/faapi 内部模块（深路径，e2e 测试专用，tsc 通过 exclude 跳过检查）
+import { createProdApp } from '@faapi/faapi/src/cli/createProdApp';
 import { compileDevRoutes } from '@faapi/faapi/src/cli/compileDevRoutes';
 import { compileConfig } from '@faapi/faapi/src/cli/compileConfig';
 import { scanRoutes } from '@faapi/faapi/src/routers/scanRoutes';

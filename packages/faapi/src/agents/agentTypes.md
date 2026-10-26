@@ -53,7 +53,7 @@ export interface AgentCore {
 - `systemPrompt` 工厂函数——**每次 run** 求值，与 `systemPromptFile`「每次 run 读文件」语义对齐：按 env/DB 等运行时状态切换人设。工厂返回非 string 在 run 期抛 `AgentError`（启动期无法验证返回类型）
 - `tools` / `agents` / `vars` / `maxTurns` / `description` / `inputDescription`——**启动期注册时一次求值**，仅接受静态值（注册表拓扑数据 + 隔离快照可克隆）
 
-systemPrompt 三来源统一管线：内联串 / 文件 / 函数 → vars 渲染 → 装饰钩子（`resolveSystemPrompt`，见 `@faapi/agent` 的 [agent.md](../../../agent/src/agent.md)）。
+systemPrompt 三来源统一管线：内联串 / 文件 / 函数 → vars 渲染 → `agent:system-prompt` 事件（原 `resolveSystemPrompt` 钩子，7.x 事件化——见 `@faapi/agent` 的 [agent.md](../../../agent/src/agent.md)）。
 
 ## AgentMetadata（文件型 agent 完整元数据）
 

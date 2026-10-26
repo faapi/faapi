@@ -1,4 +1,7 @@
 import { AgentAbortError } from './provider';
+import { APP_EVENT, agentInputEventName } from '@faapi/faapi';
+import type { AgentToolContext, AppEventEmitter } from '@faapi/faapi';
+import { AgentError } from './agentErrors';
 import type {
   LLMMessage,
   LLMProvider,
@@ -168,6 +171,20 @@ export interface ReactLoopConfig {
    * 优先级 options > 全局 config > 默认 false。
    */
   enableTracing?: boolean;
+  /**
+   * app 事件上下文（可选——`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传；
+   * 未接线时不携带,每轮发送前事件不发射、循环零开销）
+   *
+   * 已接线时每轮 provider 调用前发射 [appEventBus](../../faapi/src/events/appEventBus.md)
+   * 的 `agent:input` / `agent:input:<agentName>`——handler 原地改写发送副本
+   * （不落历史,扇出后校验非空数组）。见 reactLoop.md「agent:input 每轮发送前事件」。
+   */
+  appEvent?: {
+    emit: AppEventEmitter;
+    agentName: string;
+    depth: number;
+    ctx: AgentToolContext;
+  };
 }
 
 /**
@@ -451,6 +468,40 @@ async function resolveOutgoingMessages(
   return trimHistory(messages, budget);
 }
 
+/**
+ * agent:input 每轮发送前事件（见主包 events/appEventBus.md 与 reactLoop.md 同名章节）
+ *
+ * appEvent 已接线时发射通用名 + 专属名（同一载荷对象,先通用后专属）,handler 原地
+ * 改写 messages——改写仅作用本轮发送副本（本地 messages / result.messages / 续跑源
+ * 不受影响,与历史裁剪同一口径;trace 的 inputSnapshot 记录改写后实际发送内容）。
+ * 扇出后校验 messages 为非空数组,否则抛 AgentError（fail fast,不发 LLM 请求）;
+ * handler 抛错原样上抛走 run/stream 既有错误链;appEvent 未接线时原样返回
+ * （能力边界,非降级——不发射零开销）
+ */
+async function emitAgentInputEvent(
+  messages: LLMMessage[],
+  config: ReactLoopConfig,
+): Promise<LLMMessage[]> {
+  const appEvent = config.appEvent;
+  if (!appEvent) return messages;
+  const payload = {
+    agentName: appEvent.agentName,
+    depth: appEvent.depth,
+    messages,
+    ctx: appEvent.ctx,
+  };
+  await appEvent.emit(APP_EVENT.agentInput, payload);
+  await appEvent.emit(agentInputEventName(appEvent.agentName), payload);
+  if (!Array.isArray(payload.messages) || payload.messages.length === 0) {
+    throw new AgentError(
+      `agent:input event for agent "${appEvent.agentName}" must leave messages a non-empty array (the outgoing messages for this turn), got ${
+        Array.isArray(payload.messages) ? 'empty array' : typeof payload.messages
+      }`,
+    );
+  }
+  return payload.messages;
+}
+
 function buildRequestExtras(config: ReactLoopConfig) {
   return {
     tools: config.tools,
@@ -522,8 +573,12 @@ export async function reactLoop(
     loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
-    // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变
-    const outgoingMessages = await resolveOutgoingMessages(messages, config);
+    // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变；
+    // 随后 agent:input 每轮发送前事件（handler 可再改写本轮发送副本,同副本口径）
+    const outgoingMessages = await emitAgentInputEvent(
+      await resolveOutgoingMessages(messages, config),
+      config,
+    );
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
     const inputSnapshot = enableTracing ? [...outgoingMessages] : undefined;
     // 执行中取消由 provider 请求中断传播——附上断点历史重抛（不含未完成的 assistant 消息，
@@ -761,8 +816,12 @@ export async function* reactLoopStream(
     loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
-    // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变
-    const outgoingMessages = await resolveOutgoingMessages(messages, config);
+    // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变；
+    // 随后 agent:input 每轮发送前事件（handler 可再改写本轮发送副本,同副本口径）
+    const outgoingMessages = await emitAgentInputEvent(
+      await resolveOutgoingMessages(messages, config),
+      config,
+    );
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
     const inputSnapshot = enableTracing ? [...outgoingMessages] : undefined;
     let turnContent = '';

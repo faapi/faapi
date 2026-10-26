@@ -1220,17 +1220,19 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('onFailed：执行失败后触发，willRetry 按 meta.retries 推算', async () => {
+  it('task:failed 事件：执行失败后发射，willRetry 按 meta.retries 推算', async () => {
     const registry = createTaskRegistry();
     registry.hydrate([{ name: 'flaky', filePath: 'd.js', mode: 'inline', retries: 2 }]);
-    const onFailed = vi.fn(async () => {});
+    const registries = createAppRegistries();
+    const failed = vi.fn();
+    registries.appEvents.on('task:failed', failed);
     const fake = makeFakeDriver();
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
       config: {},
       driver: fake.driver,
-      onFailed,
+      appEvents: registries.appEvents,
       loadTaskModule: async () => ({
         run: async () => {
           throw new Error('boom');
@@ -1241,7 +1243,7 @@ describe('createTaskQueue', () => {
     queue.start();
     const { id } = await queue.enqueue('flaky');
     await expect(fake.dispatch('flaky', {}, 1)).rejects.toThrow('boom');
-    expect(onFailed).toHaveBeenCalledWith({
+    expect(failed).toHaveBeenCalledWith({
       task: 'flaky',
       jobId: id,
       attempt: 1,
@@ -1252,12 +1254,14 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('onFailed：取消路径触发且 cancelled 为 true；自身抛错 console.error 留痕（不影响队列）', async () => {
+  it('task:failed：取消路径发射且 cancelled 为 true；订阅端抛错 console.error 留痕（不影响队列）', async () => {
     const registry = createTaskRegistry();
     registry.hydrate([{ name: 'heavy', filePath: 'd.js', mode: 'isolated', timeoutMs: 100 }]);
-    const onFailed = vi.fn(async (_info: unknown) => {
+    const failed = vi.fn(async (_info: unknown) => {
       throw new Error('hook blew up');
     });
+    const registries = createAppRegistries();
+    registries.appEvents.on('task:failed', failed);
     const fake = makeFakeDriver();
     const runIsolated = vi.fn(async () => {
       throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
@@ -1268,7 +1272,7 @@ describe('createTaskQueue', () => {
       rootDir: '/fake',
       config: {},
       driver: fake.driver,
-      onFailed,
+      appEvents: registries.appEvents,
       runIsolated: runIsolated as never,
       loadTaskModule: async () => ({}),
       loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
@@ -1276,16 +1280,16 @@ describe('createTaskQueue', () => {
     queue.start();
     await queue.enqueue('heavy');
     await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/timed out/);
-    expect(onFailed).toHaveBeenCalledTimes(1);
-    expect(onFailed.mock.calls[0]![0]).toMatchObject({
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(failed.mock.calls[0]![0]).toMatchObject({
       task: 'heavy',
       attempt: 1,
       willRetry: false,
       cancelled: true,
     });
-    // 钩子自身抛错不再静默：console.error 留痕
+    // 订阅端抛错不再静默：console.error 留痕
     expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('onFailed hook threw for "heavy"'),
+      expect.stringContaining('task:failed subscriber threw for "heavy"'),
       expect.any(Error),
     );
     // 记录已写入，钩子抛错不影响队列

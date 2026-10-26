@@ -186,14 +186,13 @@ export default [
     expect(routes).toContain('GET');
 
     // 5. main.js 启动入口内容（零入口设计：build 阶段自动生成）
-    //    默认 dist 不写入 createProdApp 参数（用默认 dist）
+    //    默认 dist 不写入 $start 参数（用默认 dist）
     //    注入 NODE_ENV 兜底 + loadEnv 调用
     const mainContent = readFileSync(join(tempDir, OUT, 'main.js'), 'utf-8');
-    expect(mainContent).toContain("import { createProdApp, loadEnv } from '@faapi/faapi'");
+    expect(mainContent).toContain("import { loadEnv, $start } from '@faapi/faapi'");
     expect(mainContent).toContain("if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production'");
     expect(mainContent).toContain('loadEnv(process.cwd())');
-    expect(mainContent).toContain('await createProdApp()');
-    expect(mainContent).toContain('await app.listen()');
+    expect(mainContent).toContain('await $start()');
 
     // 6. faapi-config.js：build 时编译基础配置
     //    db.host 为基础配置值（多环境差异通过 .env 文件实现，见 loadEnv）
@@ -243,7 +242,7 @@ export default {
     expect(pluginProd).toMatch(/from ["']\.\.\/lib\/helper\.js["']/);
   }, 20000);
 
-  it('CLI 选项：--dist 改变产物根目录 + 写入 main.js 的 createProdApp 参数', async () => {
+  it('CLI 选项：--dist 改变产物根目录 + 写入 main.js 的 $start 参数', async () => {
     writeFile('src/api/hello/handler.ts', `export function GET() { return 'ok'; }\n`);
     writeFile(
       'tsconfig.json',
@@ -260,12 +259,11 @@ export default {
 
     // main.js 包含实际产物目录参数（<dist>，JSON.stringify 生成合法字符串字面量）
     const mainContent = readFileSync(join(tempDir, 'build-output/main.js'), 'utf-8');
-    expect(mainContent).toContain('createProdApp({ dist: "build-output" })');
+    expect(mainContent).toContain('$start({ dist: "build-output" })');
     // 注入 NODE_ENV 兜底 + loadEnv 调用
     expect(mainContent).toContain("if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production'");
     expect(mainContent).toContain('loadEnv(process.cwd())');
-    // listen() 无参，端口由运行时 PORT 环境变量决定
-    expect(mainContent).toContain('await app.listen()');
+    // listen 已并入 $start（完整启动：水合 + bootstrap + listen）
   }, 15000);
 
   it('CLI 选项：--dist 含 Windows 反斜杠路径时 main.js 不被转义损坏', async () => {
@@ -280,9 +278,9 @@ export default {
 
     const mainContent = readFileSync(join(tempDir, '.\\build', 'main.js'), 'utf-8');
     // 生成的必须是合法字符串字面量（\\ 转义），运行时取值仍为 .\build
-    expect(mainContent).toContain('createProdApp({ dist: ".\\\\build" })');
+    expect(mainContent).toContain('$start({ dist: ".\\\\build" })');
     // 反推验证：eval 字面量还原出原始路径
-    const literal = mainContent.match(/createProdApp\(\{ dist: (".*") \}\)/)?.[1];
+    const literal = mainContent.match(/\$start\(\{ dist: (".*") \}\)/)?.[1];
     expect(literal ? JSON.parse(literal) : null).toBe('.\\build');
   }, 15000);
 

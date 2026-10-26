@@ -2,6 +2,8 @@
 
 一句话概括：dev 模式应用启动 API——委托 `createAppBase` 并附加 `reloadRoutes`/`reloadTools`/`reloadAgents`/`reloadTasks` 热替换能力（重新扫描 + 重生成清单产物 + 更新注册表/路由引用）。
 
+> **框架内部模块（7.x 起不公开导出）**——仅供生成的 `dist/main.js`（`$start`）与 CLI 编排使用，业务不应直接调用。启动逻辑写 `src/bootstrap.ts`（见 [bootstrap](./bootstrap.md)）。
+
 ## 为什么需要
 
 dev 模式需要热替换：文件变更后 watcher 增量编译 `.ts` → `.faapi/*.js`，再调 `app.reloadRoutes()` 重新扫描路由并更新 server 引用，调 `app.reloadTools()` 重新扫描 tools 并重生成 `faapi-tools.js`，调 `app.reloadAgents()` 重生成 `faapi-agents.js` 并重新求值 agent 声明，无需重启进程。

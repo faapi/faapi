@@ -67,7 +67,7 @@ export interface AgentSnapshotRecord
 
 | 维度 | `TaskContext`（进程内，默认） | `IsolatedTaskContext`（隔离） |
 |------|------------------------------|------------------------------|
-| `config` | `FaapiContextConfig` **必有**——活引用全量配置，与 handler `ctx.config` 同一对象，增强类型字段全可读、函数字段可调用（同进程） | **必有**——派发时刻**纯数据快照**（`collectConfigSnapshot`，见 configSnapshot.md）：函数值（lifecycle 钩子 / `task.onFailed` / log sink / middlewares 等宿主行为面）不进快照（与 registries 快照同款边界），其余值结构化克隆保真（Date/Map/Set 原样）；含非函数不可克隆值时**派发显式报错**（列路径），不剔除不降级 |
+| `config` | `FaapiContextConfig` **必有**——活引用全量配置，与 handler `ctx.config` 同一对象，增强类型字段全可读、函数字段可调用（同进程） | **必有**——派发时刻**纯数据快照**（`collectConfigSnapshot`，见 configSnapshot.md）：函数值（lifecycle 钩子 / `task:failed` 事件订阅端（原 onFailed 钩子） / log sink / middlewares 等宿主行为面）不进快照（与 registries 快照同款边界），其余值结构化克隆保真（Date/Map/Set 原样）；含非函数不可克隆值时**派发显式报错**（列路径），不剔除不降级 |
 | `registries` | 活引用视图，反映实时状态 | 派发时刻**快照**在 worker 内重建，中途 reload 不影响当次执行 |
 | `llm` | `registries.llm` 活引用（共享 providers 单例） | **纯转发代理**——complete 经单次 llm-complete RPC 回宿主，宿主从 `AppRegistries.llm` 取派发时刻注册的通道执行（LLM IO 全在宿主，worker 不加载 `@faapi/agent`）；`options.onFailure` 钩子不可跨线程（显式拒绝）；`options.signal` 剥离后转发，业务级取消经 llm-abort 回传宿主 abort 对应请求；任务取消（宿主发起）同样中断宿主侧 in-flight 请求 |
 | `log` | 直写 `config.log` 管道 | postMessage 回传宿主输出——**fields 须可结构化克隆**（不可克隆按执行错误处理） |

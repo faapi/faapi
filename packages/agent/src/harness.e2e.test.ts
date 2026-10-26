@@ -19,7 +19,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createProdApp, loadToolModule as loadToolModuleImpl, type AppBase } from '@faapi/faapi';
+import { loadToolModule as loadToolModuleImpl, type AppBase } from '@faapi/faapi';
+import { createProdApp } from '@faapi/faapi/src/cli/createProdApp';
 import { createAgentTestHarness, type AgentTestHarness } from '@faapi/faapi/testing';
 
 // @faapi/faapi 内部模块（深路径，e2e 测试专用，tsc 通过 exclude 跳过检查）

@@ -222,7 +222,7 @@ export function writeLogEntry(entry: LogEntry): void {
 /**
  * 刷盘文件日志缓冲（不结束流，flush 后可继续写）
  *
- * 优雅停机场景在 `lifecycle.onClose` 调用，确保缓冲中的条目落盘后再退出进程；
+ * 优雅停机场景在 `app:close` 事件订阅端调用（原 lifecycle.onClose 钩子——7.x 事件化），确保缓冲中的条目落盘后再退出进程；
  * 测试场景断言文件内容前调用。无文件管道（未配置 `config.log.dir`）时为 no-op。
  */
 export function flushLogging(): Promise<void> {

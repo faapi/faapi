@@ -8,7 +8,6 @@ export type { LoggerOptions } from './middlewares/logger';
 export type { HelmetOptions } from './middlewares/helmet';
 export type {
   FaapiConfig,
-  LifecycleHooks,
   LifecycleContext,
   ResponseConfig,
   AgentConfig,
@@ -73,6 +72,35 @@ export type {
 export { createAppRegistries, createTaskRegistriesView } from './injection/registries';
 // 轻量 LLM 补全通道规范类型（实现在 @faapi/agent 的 createLightComplete，见其 lightComplete.md）
 export type { LlmComplete, LlmCompleteOptions } from './injection/llmTypes';
+// LLM 线格式消息规范类型（自 @faapi/agent provider 迁入——事件载荷引用，agent 侧 re-export）
+export type { LLMMessage, LLMToolCall, LLMToolDefinition } from './events/llmMessageTypes';
+// app 级事件总线（契约与事件目录见 src/events/appEventBus.md）
+export {
+  createAppEventBus,
+  APP_EVENT,
+  agentRootInputEventName,
+  agentInputEventName,
+  agentBeforeToolCallEventName,
+  agentAfterToolCallEventName,
+  agentFilterToolsEventName,
+  agentSystemPromptEventName,
+  agentSubAgentContextEventName,
+} from './events/appEventBus';
+export type {
+  AppEventBus,
+  AppEventHandler,
+  AppEventEmitter,
+  FaapiAppEventMap,
+  FaapiAppEventName,
+  AgentRootInputEvent,
+  AgentInputEvent,
+  BeforeToolCallEvent,
+  AfterToolCallEvent,
+  FilterToolsEvent,
+  SystemPromptEvent,
+  SubAgentContextEvent,
+  RequestErrorEvent,
+} from './events/appEventBus';
 // 任务子系统（队列式异步任务，详见 src/tasks/README.md）
 export type {
   FaapiTaskMeta,
@@ -91,7 +119,6 @@ export type {
   TaskRegistriesSnapshot,
   AgentSnapshotRecord,
   TaskFailedInfo,
-  TaskFailedHandler,
   TaskGroupSummary,
   TaskGroupSnapshot,
   TaskGroupOnFailure,
@@ -128,8 +155,8 @@ export {
 } from './injection/agentRegistry';
 export { getTool } from './injection/toolRegistry';
 // sub-agent 派发工具名（agent-<agentName>）——OpenAI 兼容协议工具名字符集约束下的
-// 唯一生成入口；authHooks（beforeToolCall/filterTools）用 SUB_AGENT_TOOL_PREFIX 判别
-// sub-agent 调用，不硬编码前缀字符串
+// 唯一生成入口；agent:before-tool-call / agent:filter-tools 事件订阅端用
+// SUB_AGENT_TOOL_PREFIX 判别 sub-agent 调用，不硬编码前缀字符串
 export {
   LLM_TOOL_NAME_PATTERN,
   SUB_AGENT_TOOL_PREFIX,
@@ -178,13 +205,11 @@ export {
 } from './errors/httpErrors';
 export { FaapiError } from './errors/FaapiError';
 
-// 高层编程式启动 API（参考 NestJS NestFactory.create()）
-// dev/prod 拆分：createDevApp（含 reloadRoutes 热替换）/ createProdApp（精简）
-// createApp 为 createProdApp 的向后兼容别名
-export { createDevApp, type DevApp } from './cli/createDevApp';
-export { createProdApp, type ProdApp } from './cli/createProdApp';
-export { createApp, type App, type CreateAppOptions } from './cli/createApp';
-export { getApp } from './cli/createAppCore';
+// 零入口唯一化：`$start` 是唯一公开启动导出（`$` 前缀 = 框架内部标记，仅供生成的
+// dist/main.js 使用，业务不应直接调用）；createProdApp/createDevApp 为不公开导出的
+// 内部模块（CLI 编排专用）。启动逻辑写 src/bootstrap.ts（见 src/cli/bootstrap.md）
+export { $start, type StartOptions } from './cli/start';
+export { getApp, type AppBase } from './cli/createAppCore';
 export type { InjectOptions, InjectResponse } from './cli/createAppCore';
 
 // runHub——交互式 run 传输中枢（run 与 HTTP 解耦 + 订阅式消费，详见 src/runhub/runHub.md）

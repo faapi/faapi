@@ -31,6 +31,7 @@ import { helmet, type HelmetOptions } from '../middlewares/helmet';
 import { compression, type CompressionOptions } from '../middlewares/compression';
 import { etag, type EtagOptions } from '../middlewares/etag';
 import type { AppRegistries } from '../injection/registries';
+import { APP_EVENT, type AppEventBus } from '../events/appEventBus';
 import { logger as loggerMiddleware } from '../middlewares/logger';
 import type { FaapiMiddleware } from '../middlewares/middlewareTypes';
 import type { InjectorMap } from '../middlewares/injectorTypes';
@@ -199,8 +200,6 @@ export interface CreateServerOptions {
   /** 产物输出目录（如 '.faapi' 或 'dist'），用于计算 schema 路径 */
   dist: string;
   cors?: CorsOptions | boolean;
-  /** 请求错误钩子（在错误响应生成后调用，用于副作用；不修改已发出的响应） */
-  onError?: (error: unknown, ctx: FaapiContext) => Promise<void> | void;
   /** 自定义业务配置（来自 faapi.config.ts，注入到 ctx.config） */
   config?: FaapiContextConfig;
   /** WebSocket 路由清单（空数组则不挂载 WS 支持） */
@@ -250,7 +249,6 @@ export function createServer(options: CreateServerOptions): {
     rootDir,
     dist,
     cors: corsOption,
-    onError,
     config,
     wsRoutes,
     middlewares: globalMiddlewares,
@@ -332,7 +330,6 @@ export function createServer(options: CreateServerOptions): {
       req,
       res,
       outerMiddlewares,
-      onError,
       config,
       globalInjectors,
       bodyLimit,
@@ -665,35 +662,36 @@ async function sendSuccessResponse(response: Response, res: ServerResponse): Pro
 }
 
 /**
- * 发送错误响应 + 触发 onError 副作用
+ * 发送错误响应 + 发射 request:error 事件（原 lifecycle.onError 钩子——7.x 事件化）
  *
  * 错误处理兜底链(参考 Fastify 语义):
  *   1. 框架内置 formatErrorResponse 兜底(handler 抛错时)——读 ctx.config.response.fail
  *      自定义包装函数,确保错误格式与 ctx.fail() 主动错误响应一致
  *   2. 内置兜底仍抛错 → 最简 500 JSON 响应
- *   3. 响应发出后 → onError 触发副作用(不修改已发出的响应)
+ *   3. 响应发出后 → request:error 事件发射(不修改已发出的响应)
  *   注:业务方如需进一步自定义错误响应,在全局中间件中 try/catch next() 即可
  *
  * `ctx` 可为 undefined——请求准备阶段抛错（如 content-length 超限）时尚未构造 ctx,
- * 此时错误格式用默认 fail 包装,onError 不触发（与原"裸 500"路径一致）。
+ * 此时错误格式用默认 fail 包装,request:error 不发射（与原"裸 500"路径一致）。
  */
 async function sendErrorResponse(
   err: unknown,
   meta: ResponseMeta,
   res: ServerResponse,
-  onError: ((error: unknown, ctx: FaapiContext) => Promise<void> | void) | undefined,
+  appEvents: AppEventBus | undefined,
   ctx: FaapiContext | undefined,
 ): Promise<void> {
   await sendNodeResponse(mergeMeta(buildErrorResponse(err, ctx?.config), meta), res);
 
-  // 响应已发出，触发 onError 副作用（日志/告警/链路追踪）。钩子自身抛错 console.error
-  // 留痕——不能影响已发出的响应（响应先于钩子发出），但静默吞掉会让业务方误以为
-  // 告警/链路管道健康
-  if (onError && ctx) {
+  // 响应已发出，发射 request:error 观察（日志/告警/链路追踪——观察类留痕口径）。
+  // 订阅端抛错 console.error 留痕——不能影响已发出的响应（响应先于事件发出），但
+  // 静默吞掉会让业务方误以为告警/链路管道健康。appEvents 缺席（裸 createServer
+  // 的测试/嵌入场景）→ 不发射（能力边界，非降级）
+  if (appEvents && ctx) {
     try {
-      await onError(err, ctx);
+      await appEvents.emit(APP_EVENT.requestError, { error: err, ctx });
     } catch (hookErr) {
-      console.error('[faapi] lifecycle onError hook threw:', hookErr);
+      console.error('[faapi] request:error subscriber threw:', hookErr);
     }
   }
 }
@@ -705,7 +703,6 @@ async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   outerMiddlewares: FaapiMiddleware[],
-  onError: ((error: unknown, ctx: FaapiContext) => Promise<void> | void) | undefined,
   config: FaapiContextConfig | undefined,
   globalInjectors: InjectorMap | undefined,
   bodyLimit: number,
@@ -792,16 +789,16 @@ async function handleRequest(
     }
   } catch (err: unknown) {
     // 客户端已断开或响应已完成：网络中断/连接销毁不是服务端错误，
-    // 不向已销毁的连接写 500（写入无效），也不触发 onError 误报
+    // 不向已销毁的连接写 500（写入无效），也不触发 request:error 误报
     if (res.destroyed || res.writableEnded) return;
     // SSE 流已开始（响应头已发出）：无法再改发错误响应——流由 writer 关闭自然
-    // 收尾（invokeHandler 的 autoClose 保证），仍触发 onError 副作用供告警观测
+    // 收尾（invokeHandler 的 autoClose 保证），仍发射 request:error 供告警观测
     if (sseEarlySent) {
-      if (onError && ctx) {
+      if (registries?.appEvents && ctx) {
         try {
-          await onError(err, ctx);
+          await registries.appEvents.emit(APP_EVENT.requestError, { error: err, ctx });
         } catch {
-          // onError 自身抛错不影响已发出的响应
+          // 订阅端抛错不影响已发出的响应（观察类留痕口径——emit 内已 console.error）
         }
       }
       return;
@@ -813,6 +810,6 @@ async function handleRequest(
       res.setHeader('Connection', 'close');
       res.once('finish', () => req.destroy());
     }
-    await sendErrorResponse(err, meta, res, onError, ctx);
+    await sendErrorResponse(err, meta, res, registries?.appEvents, ctx);
   }
 }

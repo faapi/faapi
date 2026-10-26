@@ -40,8 +40,8 @@ messages / tools / assistant message / usage 的规范形**直接采用 OpenAI c
 
 | 类型 | 说明 |
 | --- | --- |
-| `LLMMessage` | 对话消息，OpenAI chat completions 形状（role + content + 可选 `tool_calls` / `tool_call_id`） |
-| `LLMToolCall` | assistant 消息内的 tool 调用，OpenAI 形状（`id` + `type: 'function'` + `function: { name, arguments }`，`arguments` 为 JSON 字符串） |
+| `LLMMessage` | 对话消息，OpenAI chat completions 形状（role + content + 可选 `tool_calls` / `tool_call_id`）。**规范定义在主包**（[llmMessageTypes](../../faapi/src/events/llmMessageTypes.md)——`agent:input` 事件载荷类型由主包持有，与 `LlmComplete` 同款先例），本包 re-export 保持导入路径不变 |
+| `LLMToolCall` | assistant 消息内的 tool 调用，OpenAI 形状（`id` + `type: 'function'` + `function: { name, arguments }`，`arguments` 为 JSON 字符串）。规范定义同上（主包持有，本包 re-export） |
 | `LLMToolDefinition` | tool 定义，OpenAI 形状（`type: 'function'` + `function: { name, description?, parameters? }`） |
 | `LLMCompleteRequest` | complete / stream 的入参（messages + tools + 可选 model / temperature / maxTokens） |
 | `LLMResponse` | complete 的返回（message + stopReason + usage） |

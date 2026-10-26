@@ -92,7 +92,9 @@ const agentPlugin: FaapiPlugin = {
     }
 
     // 全局 agent 运行时配置经 agentConfig 复合块整体透传（拆装清单在
-    // createAgentDeps 的 toAgentRuntimeConfig 单一维护——新增旋钮两路自动到达）
+    // createAgentDeps 的 toAgentRuntimeConfig 单一维护——新增旋钮两路自动到达）。
+    // overrides 注入 app 事件发射器（appEventBus——agent:root-input / agent:input
+    // 接缝的发射源,业务方经 getApp().on 订阅;app 实例注册表,close 随实例清理）
     const rootDir = ctx.rootDir;
     const baseDeps = createAgentDeps({
       registries,
@@ -101,6 +103,7 @@ const agentPlugin: FaapiPlugin = {
       // ctx 必填契约下的 baseDeps 占位：工厂每次请求以请求 ctx 覆盖（下方 register），
       // 占位 ctx 不会被任何 tool 调用消费——缺省桩的诚实性由 standaloneToolContext 保证
       ctx: createStandaloneToolContext(),
+      overrides: { emitAppEvent: registries.appEvents.emit },
     });
 
     // 轻量补全通道注册到 registries.llm——handler 的 `llm` 注入参数与任务执行上下文

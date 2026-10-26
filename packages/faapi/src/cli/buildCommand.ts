@@ -194,28 +194,31 @@ export async function buildCommand(options?: BuildOptions): Promise<void> {
   }
 
   // 9. 生成启动入口 main.js（零入口设计：用户无需编写 main.ts）
-  //    内部 import @faapi/faapi 的 createProdApp + loadEnv + listen
-  //    运行时 `node <dist>/main` 直接启动：loadEnv 加载 .env → createProdApp 水合产物 → listen
+  //    内部 import @faapi/faapi 的 $start（零入口唯一启动导出——$ 前缀 = 框架内部标记）
+  //    运行时 `node <dist>/main` 直接启动：loadEnv 加载 .env → $start（水合产物 +
+  //    加载执行 src/bootstrap.ts 编译产物 + listen）
   //    --dist 选项写入 main.js（非默认 dist 时），端口由运行时 PORT 环境变量决定
   console.log('\n[9/9] Generating entry file...');
   const mainPath = path.resolve(rootDir, outdir, 'main.js');
-  // 非默认 dist 时写入 createProdApp 参数，让 prod 启动时能定位到产物目录
+  // 非默认 dist 时写入 $start 参数，让 prod 启动时能定位到产物目录
   // JSON.stringify 生成合法 JS 字符串字面量：Windows 反斜杠路径（.\build 的 \b 是退格转义）
   // 与含引号路径不再损坏
-  const createProdAppArgs =
+  const startArgs =
     options?.dist && options.dist !== DEFAULT_DIST ? `{ dist: ${JSON.stringify(outdir)} }` : '';
   const mainContent = `// 由 faapi build 自动生成，请勿手动编辑
-import { createProdApp, loadEnv } from '@faapi/faapi';
+import { loadEnv, $start } from '@faapi/faapi';
 
 // 兜底 NODE_ENV（未显式设置时）+ 加载 .env 系列文件到 process.env
 if (!process.env.NODE_ENV) process.env.NODE_ENV = 'production';
 loadEnv(process.cwd());
 
-const app = await createProdApp(${createProdAppArgs});
-await app.listen();
+await $start(${startArgs});
 `;
   await fs.promises.writeFile(mainPath, mainContent, 'utf-8');
   console.log(`  Written to ${mainPath}`);
+  if (fs.existsSync(path.resolve(rootDir, 'src/bootstrap.ts'))) {
+    console.log('  bootstrap: src/bootstrap.ts compiled to bootstrap.js (loaded before listen)');
+  }
 
   console.log('\nfaapi build completed');
 }

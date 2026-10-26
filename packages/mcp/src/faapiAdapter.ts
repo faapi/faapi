@@ -16,7 +16,7 @@
  *    ```ts
  *    plugins: [['@faapi/mcp', { path: '/mcp' }]]
  *    ```
- *    需配合 mcp.tool() 注册（通常在 lifecycle.onReady 中）。
+ *    需配合 mcp.tool() 注册（通常在 app:ready 事件订阅端,src/bootstrap.ts）。
  *
  * 函数即接口：MCP endpoint 就是 faapi 的一个路由。
  */

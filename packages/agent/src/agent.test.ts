@@ -13,7 +13,18 @@ import type {
   LlmConfig,
   ToolMetadata,
   ToolModule,
+  AppEventEmitter,
+  AgentInputEvent,
+  AgentRootInputEvent,
+  BeforeToolCallEvent,
+  AfterToolCallEvent,
+  FilterToolsEvent,
+  SystemPromptEvent,
+  SubAgentContextEvent,
+  FaapiAppEventMap,
+  FaapiAppEventName,
 } from '@faapi/faapi';
+import { createAppEventBus } from '@faapi/faapi';
 import { createStandaloneToolContext } from './standaloneToolContext';
 import type {
   LLMProvider,
@@ -39,6 +50,28 @@ declare module '@faapi/faapi' {
 
 /** 业务类型交叉标注：路径依赖可选字段 + 框架契约（AgentToolContext 增强关闭后的合法形态） */
 type CtxWithUser = AgentToolContext & { currentUserId?: number };
+
+/** 构造事件收集器：bus（业务订阅入口）+ 发射记录 + 注入 deps 的 emitAppEvent */
+function createEventCollector() {
+  const bus = createAppEventBus();
+  type AgentEventPayload =
+    | AgentRootInputEvent
+    | AgentInputEvent
+    | BeforeToolCallEvent
+    | AfterToolCallEvent
+    | FilterToolsEvent
+    | SystemPromptEvent
+    | SubAgentContextEvent;
+  const emitted: Array<{ name: string; payload: AgentEventPayload }> = [];
+  const emitAppEvent = async <K extends FaapiAppEventName>(
+    name: K,
+    payload: FaapiAppEventMap[K],
+  ): Promise<FaapiAppEventMap[K]> => {
+    emitted.push({ name, payload: payload as AgentEventPayload });
+    return bus.emit(name, payload);
+  };
+  return { bus, emitted, emitAppEvent };
+}
 
 // ─── Mock 数据构造器 ─────────────────────────────────
 
@@ -202,22 +235,7 @@ function createDeps(opts: {
   loadToolModuleImpl?: (filePath: string, functionName: string) => Promise<ToolModule>;
   resolveToolSchemaImpl?: (tool: ToolMetadata) => Promise<ToolSchemaResolution | undefined>;
   resolveAgentInputSchemaImpl?: (agent: AgentMetadata) => Promise<ToolSchemaResolution | undefined>;
-  resolveSystemPromptImpl?: (name: string, meta: AgentCore, base: string) => Promise<string>;
-  resolveSubAgentContextImpl?: (
-    subName: string,
-    args: Record<string, unknown>,
-    ctx: AgentToolContext,
-  ) => Promise<string | undefined>;
-  resolveSubAgentInputImpl?: (
-    subName: string,
-    args: Record<string, unknown>,
-    ctx: AgentToolContext,
-  ) => Promise<Record<string, unknown> | undefined>;
-  resolveRootInputImpl?: (
-    agentName: string,
-    input: string,
-    ctx: AgentToolContext,
-  ) => Promise<string | undefined>;
+  emitAppEvent?: AppEventEmitter;
   getToolImpl?: (name: string) => ToolMetadata | undefined;
 }): AgentDeps {
   const toolsByName = new Map<string, ToolMetadata>();
@@ -260,10 +278,7 @@ function createDeps(opts: {
     resolveAgentInputSchema: opts.resolveAgentInputSchemaImpl
       ? (agent) => opts.resolveAgentInputSchemaImpl!(agent)
       : undefined,
-    resolveSystemPrompt: opts.resolveSystemPromptImpl,
-    resolveSubAgentContext: opts.resolveSubAgentContextImpl,
-    resolveSubAgentInput: opts.resolveSubAgentInputImpl,
-    resolveRootInput: opts.resolveRootInputImpl,
+    emitAppEvent: opts.emitAppEvent,
   };
 }
 
@@ -554,7 +569,11 @@ describe('Agent', () => {
       expect(completeCalls).not.toHaveBeenCalled();
     });
 
-    it('渲染发生在装饰钩子之前:钩子收到渲染后的 base', async () => {
+    it('渲染发生在 system-prompt 事件之前:订阅端收到渲染后的 base', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:system-prompt', (e: SystemPromptEvent) => {
+        e.prompt = `decorated(${e.prompt})`;
+      });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
       ]);
@@ -562,7 +581,7 @@ describe('Agent', () => {
         createDeps({
           provider,
           agent: agentMeta({ systemPrompt: '{{name}}', vars: { name: 'x' } }),
-          resolveSystemPromptImpl: async (_name, _meta, base) => `decorated(${base})`,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
@@ -612,7 +631,7 @@ describe('Agent', () => {
     });
   });
 
-  describe('resolveSystemPrompt 装饰钩子', () => {
+  describe('agent:system-prompt systemPrompt 装饰事件', () => {
     /** 创建临时 resources 目录并绑定读取根（免传参 readResource 依赖进程级绑定） */
     function useResourcesDir(files: Record<string, string>): () => void {
       const resDir = join(
@@ -631,7 +650,7 @@ describe('Agent', () => {
       };
     }
 
-    it('阴性对照：无钩子时内联字面量与文件内容原样透传（逐字节现状）', async () => {
+    it('阴性对照：未接线（emitAppEvent 缺席）时内联字面量与文件内容原样透传（逐字节现状）', async () => {
       const cleanup = useResourcesDir({ 'prompts/review.md': 'from-file' });
       try {
         const { provider, completeCalls } = createMockProvider([
@@ -651,7 +670,7 @@ describe('Agent', () => {
           content: 'inline-literal',
         });
 
-        // 文件 base：同一配方（无钩子）下原样透传
+        // 文件 base：同一配方（未接线）下原样透传
         const fileDeps = createDeps({
           provider,
           agent: agentMeta({ systemPromptFile: 'prompts/review.md' }),
@@ -666,31 +685,45 @@ describe('Agent', () => {
       }
     });
 
-    it('装饰内联 base：钩子收 (agentName, meta, base)，返回值即最终 system 消息', async () => {
-      const meta = agentMeta({ systemPrompt: 'base-prompt' });
-      const hook = vi.fn(async (_name: string, _meta: AgentCore, base: string) => {
-        return `decorated(${base})`;
+    it('装饰内联 base：事件载荷收（agentName, vars 渲染后 prompt, ctx），改写即最终 system 消息', async () => {
+      const events = createEventCollector();
+      const handler = vi.fn((e: SystemPromptEvent) => {
+        expect(e.agentName).toBe('researcher');
+        e.prompt = `decorated(${e.prompt})`;
       });
+      events.bus.on('agent:system-prompt', handler);
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
       ]);
-      const agent = new Agent(createDeps({ provider, agent: meta, resolveSystemPromptImpl: hook }));
+      const agent = new Agent(
+        createDeps({
+          provider,
+          ctx: toolCtx42,
+          agent: agentMeta({ systemPrompt: 'base-prompt' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
 
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
-      expect(hook).toHaveBeenCalledTimes(1);
-      expect(hook).toHaveBeenCalledWith('researcher', meta, 'base-prompt');
+      expect(handler).toHaveBeenCalledTimes(1);
+      const payload = events.emitted.filter((e) => e.name === 'agent:system-prompt')[0]
+        .payload as unknown as SystemPromptEvent;
+      // 载荷为同一对象引用——收集到的是 handler 改写后的最终值
+      expect(payload.prompt).toBe('decorated(base-prompt)');
+      expect((payload.ctx as CtxWithUser).currentUserId).toBe(42);
       expect(completeCalls.mock.calls[0][0].messages[0]).toEqual({
         role: 'system',
         content: 'decorated(base-prompt)',
       });
     });
 
-    it('装饰文件 base：钩子收到 systemPromptFile 文件内容作为 base', async () => {
+    it('装饰文件 base：事件载荷收到 systemPromptFile 文件内容作为 base', async () => {
       const cleanup = useResourcesDir({ 'prompts/review.md': 'file-base' });
       try {
-        const hook = vi.fn(async (_name: string, _meta: AgentCore, base: string) => {
-          return `${base} + protocol`;
+        const events = createEventCollector();
+        events.bus.on('agent:system-prompt', (e: SystemPromptEvent) => {
+          e.prompt = `${e.prompt} + protocol`;
         });
         const { provider, completeCalls } = createMockProvider([
           llmResponse({ content: 'ok', stopReason: 'stop' }),
@@ -699,13 +732,16 @@ describe('Agent', () => {
           createDeps({
             provider,
             agent: agentMeta({ systemPromptFile: 'prompts/review.md' }),
-            resolveSystemPromptImpl: hook,
+            emitAppEvent: events.emitAppEvent,
           }),
         );
 
         await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
-        expect(hook).toHaveBeenCalledWith('researcher', expect.anything(), 'file-base');
+        const payload = events.emitted.filter((e) => e.name === 'agent:system-prompt')[0]
+          .payload as unknown as SystemPromptEvent;
+        // 载荷为同一对象引用——收集到的是 handler 改写后的最终值
+        expect(payload.prompt).toBe('file-base + protocol');
         expect(completeCalls.mock.calls[0][0].messages[0]).toEqual({
           role: 'system',
           content: 'file-base + protocol',
@@ -715,7 +751,7 @@ describe('Agent', () => {
       }
     });
 
-    it('全树覆盖：主控与派发 sub-agent 的 system 消息均被装饰（一次注入,无需双包装）', async () => {
+    it('全树覆盖：主控与派发 sub-agent 的 system 消息均被装饰；专属名按 agent 路由', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
@@ -724,15 +760,16 @@ describe('Agent', () => {
         llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
         llmResponse({ content: 'final', stopReason: 'stop' }),
       ]);
-      const hook = vi.fn(
-        async (name: string, _meta: AgentCore, base: string) => `${base} [+${name}]`,
-      );
+      const events = createEventCollector();
+      events.bus.on('agent:system-prompt', (e: SystemPromptEvent) => {
+        e.prompt = `${e.prompt} [+${e.agentName}]`;
+      });
       const agent = new Agent(
         createDeps({
           provider,
           agent: agentMeta({ systemPrompt: 'master-base', agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSystemPromptImpl: hook,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
@@ -743,14 +780,20 @@ describe('Agent', () => {
       expect(completeCalls.mock.calls[0][0].messages[0].content).toBe('master-base [+researcher]');
       expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('sub-base [+writer]');
       expect(completeCalls.mock.calls[2][0].messages[0].content).toBe('master-base [+researcher]');
-      // 钩子每次 run / 每次派发各一次：主控 run 一次 + 子代理派发一次（父轮2 复用同一次 run 的 config）
-      expect(hook).toHaveBeenCalledTimes(2);
+      // 每次 run / 每次派发各发射一次：主控 run 一次 + 子代理派发一次（父轮2 复用同一次 run 的 config）
+      const spEvents = events.emitted.filter((e) => e.name === 'agent:system-prompt');
+      expect(spEvents).toHaveLength(2);
+      // 专属名同发射数（每 run / 每派发各一次:researcher 1 次,writer 1 次）
+      expect(
+        events.emitted.filter((e) => e.name === 'agent:system-prompt:researcher'),
+      ).toHaveLength(1);
+      expect(events.emitted.filter((e) => e.name === 'agent:system-prompt:writer')).toHaveLength(1);
     });
 
-    it('base 不可读：systemPromptFile 缺失仍抛 AgentError，钩子不被调用', async () => {
+    it('base 不可读：systemPromptFile 缺失仍抛 AgentError，事件不发射', async () => {
       const cleanup = useResourcesDir({});
       try {
-        const hook = vi.fn(async (_name: string, _meta: AgentCore, base: string) => base);
+        const events = createEventCollector();
         const { provider } = createMockProvider([
           llmResponse({ content: 'ok', stopReason: 'stop' }),
         ]);
@@ -758,21 +801,24 @@ describe('Agent', () => {
           createDeps({
             provider,
             agent: agentMeta({ systemPromptFile: 'prompts/missing.md' }),
-            resolveSystemPromptImpl: hook,
+            emitAppEvent: events.emitAppEvent,
           }),
         );
 
         await expect(agent.run('hi', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrow(
           AgentError,
         );
-        expect(hook).not.toHaveBeenCalled();
+        expect(events.emitted.filter((e) => e.name.startsWith('agent:system-prompt'))).toHaveLength(
+          0,
+        );
       } finally {
         cleanup();
       }
     });
 
-    it('钩子抛错原样上抛：run 以既有错误路径失败，不被静默吞掉', async () => {
-      const hook = vi.fn(async () => {
+    it('handler 抛错原样上抛：run 以既有错误路径失败，不被静默吞掉', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:system-prompt', () => {
         throw new Error('decorator exploded');
       });
       const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
@@ -780,7 +826,7 @@ describe('Agent', () => {
         createDeps({
           provider,
           agent: agentMeta({ systemPrompt: 'base' }),
-          resolveSystemPromptImpl: hook,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
@@ -789,8 +835,8 @@ describe('Agent', () => {
       );
     });
 
-    it('新鲜度：每次 run / 每次派发各调用一次（与现行文件直读同款）', async () => {
-      const hook = vi.fn(async (_name: string, _meta: AgentCore, base: string) => base);
+    it('新鲜度：每次 run / 每次派发各发射一次（与现行文件直读同款）', async () => {
+      const events = createEventCollector();
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
         llmResponse({ content: 'ok', stopReason: 'stop' }),
@@ -799,7 +845,7 @@ describe('Agent', () => {
         createDeps({
           provider,
           agent: agentMeta({ systemPrompt: 'base' }),
-          resolveSystemPromptImpl: hook,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
@@ -807,11 +853,11 @@ describe('Agent', () => {
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(completeCalls).toHaveBeenCalledTimes(2);
-      expect(hook).toHaveBeenCalledTimes(2);
+      expect(events.emitted.filter((e) => e.name === 'agent:system-prompt')).toHaveLength(2);
     });
   });
 
-  describe('resolveSubAgentContext 派发上下文钩子', () => {
+  describe('agent:sub-agent-context 派发上下文事件', () => {
     /** 派发 writer 的三响应序列（主控轮1 → 子循环 → 主控轮2） */
     function dispatchResponses(args: Record<string, unknown> = { input: '查' }) {
       return [
@@ -842,11 +888,13 @@ describe('Agent', () => {
       });
     });
 
-    it('接线后追加：子代理 system = base + \\n\\n + 产出；钩子收（真实 agent 名, args, ctx）', async () => {
-      const hook = vi.fn(
-        async (subName: string, args: Record<string, unknown>, ctx: CtxWithUser) =>
-          `ctx[${subName}:${JSON.stringify(args)}:${ctx.currentUserId}]`,
-      );
+    it('接线后追加：子代理 system = base + \\n\\n + context；载荷收（真实 agent 名, args, ctx）', async () => {
+      const events = createEventCollector();
+      const handler = vi.fn((e: SubAgentContextEvent) => {
+        expect(e.subName).toBe('writer');
+        e.context = `ctx[${e.subName}:${JSON.stringify(e.args)}:${(e.ctx as CtxWithUser).currentUserId}]`;
+      });
+      events.bus.on('agent:sub-agent-context', handler);
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
         createDeps({
@@ -854,33 +902,41 @@ describe('Agent', () => {
           ctx: toolCtx42,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentContextImpl: hook,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
       // subName 是真实 agent 名（非派发名 agent-writer）；args 为派发入参；ctx 为 deps.ctx
-      expect(hook).toHaveBeenCalledTimes(1);
-      expect(hook).toHaveBeenCalledWith('writer', { input: '查' }, toolCtx42);
-      // 追加不替换：base 在前、产出在后、\n\n 分隔
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ subName: 'writer', args: { input: '查' } }),
+      );
+      // 追加不替换：base 在前、context 在后、\n\n 分隔
       expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
         role: 'system',
         content: 'sub-base\n\nctx[writer:{"input":"查"}:42]',
       });
-      // 根调用不触发钩子（主控无 systemPrompt，不插 system 消息，首条为 user）
+      // 根调用不发射（主控无 systemPrompt，不插 system 消息，首条为 user）
       expect(completeCalls.mock.calls[0][0].messages[0].role).not.toBe('system');
     });
 
-    it('与 resolveSystemPrompt 职责正交：最终 system = 装饰结果 + \\n\\n + 上下文块', async () => {
+    it('与 agent:system-prompt 职责正交：最终 system = 装饰结果 + \\n\\n + context', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:system-prompt', (e: SystemPromptEvent) => {
+        e.prompt = `decorated(${e.prompt})`;
+      });
+      events.bus.on('agent:sub-agent-context', (e: SubAgentContextEvent) => {
+        e.context = 'snapshot-block';
+      });
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
         createDeps({
           provider,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSystemPromptImpl: async (_name, _meta, base) => `decorated(${base})`,
-          resolveSubAgentContextImpl: async () => 'snapshot-block',
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
@@ -891,35 +947,43 @@ describe('Agent', () => {
       );
     });
 
-    it('返回 undefined / 空串跳过：不产生空块与尾部分隔符，system 与 base 一致', async () => {
-      const hook = vi.fn(async (subName: string) => (subName === 'writer' ? '' : undefined));
+    it('context 设空串跳过：不产生空块与尾部分隔符，system 与 base 一致', async () => {
+      const events = createEventCollector();
+      const handler = vi.fn((e: SubAgentContextEvent) => {
+        e.context = e.subName === 'writer' ? '' : 'other';
+      });
+      events.bus.on('agent:sub-agent-context', handler);
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
         createDeps({
           provider,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentContextImpl: hook,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      expect(hook).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledTimes(1);
       expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
         role: 'system',
         content: 'sub-base',
       });
     });
 
-    it('空 base：子代理无 systemPrompt 时最终 system 即钩子产出', async () => {
+    it('空 base：子代理无 systemPrompt 时最终 system 即 context 产出', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:sub-agent-context', (e: SubAgentContextEvent) => {
+        e.context = 'only-block';
+      });
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
         createDeps({
           provider,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer' })],
-          resolveSubAgentContextImpl: async () => 'only-block',
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
@@ -931,8 +995,12 @@ describe('Agent', () => {
       });
     });
 
-    it('富 schema 校验失败 → 钩子不被调用，error 回灌主控', async () => {
-      const hook = vi.fn(async () => 'should-not-inject');
+    it('富 schema 校验失败 → 事件不发射，error 回灌主控', async () => {
+      const events = createEventCollector();
+      const handler = vi.fn((e: SubAgentContextEvent) => {
+        e.context = 'should-not-inject';
+      });
+      events.bus.on('agent:sub-agent-context', handler);
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           toolCalls: [toolCall('c1', 'agent-writer', { novelId: 'n1' })],
@@ -954,22 +1022,23 @@ describe('Agent', () => {
             jsonSchema: { type: 'object' },
             validate: () => ({ ok: false, error: 'chapterId is required' }),
           }),
-          resolveSubAgentContextImpl: hook,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.content).toBe('parent-final');
-      expect(hook).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
       const toolMsg = completeCalls.mock.calls[1][0].messages.find(
         (m: LLMMessage) => m.role === 'tool',
       );
       expect(toolMsg!.content).toMatch(/chapterId is required/);
     });
 
-    it('钩子抛错：走 per-tool 错误链回灌主控 LLM，run 不崩', async () => {
-      const hook = vi.fn(async () => {
+    it('handler 抛错：走 per-tool 错误链回灌主控 LLM，run 不崩', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:sub-agent-context', () => {
         throw new Error('context exploded');
       });
       // 抛错路径没有子循环请求——主控轮1（派发）+ 主控轮2（消费错误回灌）两响应
@@ -985,7 +1054,7 @@ describe('Agent', () => {
           provider,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentContextImpl: hook,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
@@ -993,7 +1062,6 @@ describe('Agent', () => {
 
       // run 正常收尾，错误作为 tool 结果回传主控 LLM（不吞不降级、不冒泡为 run 失败）
       expect(result.content).toBe('final');
-      expect(hook).toHaveBeenCalledTimes(1);
       const toolMsg = completeCalls.mock.calls[1][0].messages.find(
         (m: LLMMessage) => m.role === 'tool',
       );
@@ -1003,16 +1071,20 @@ describe('Agent', () => {
     it('同轮并行派发：各自实例各自注入，无交叉污染', async () => {
       const writer = agentMeta({ name: 'writer', systemPrompt: 'w-base' });
       const reviewer = agentMeta({ name: 'reviewer', systemPrompt: 'r-base' });
+      const events = createEventCollector();
+      events.bus.on('agent:sub-agent-context', (e: SubAgentContextEvent) => {
+        e.context = `ctx[${e.subName}]`;
+      });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           toolCalls: [
-            toolCall('c1', 'agent-writer', { input: '写' }),
-            toolCall('c2', 'agent-reviewer', { input: '审' }),
+            toolCall('c1', 'agent-writer', { input: 'a' }),
+            toolCall('c2', 'agent-reviewer', { input: 'b' }),
           ],
           stopReason: 'tool_calls',
         }),
-        llmResponse({ content: 'w', stopReason: 'stop' }),
-        llmResponse({ content: 'r', stopReason: 'stop' }),
+        llmResponse({ content: 'w-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'r-answer', stopReason: 'stop' }),
         llmResponse({ content: 'final', stopReason: 'stop' }),
       ]);
       const agent = new Agent(
@@ -1020,140 +1092,352 @@ describe('Agent', () => {
           provider,
           agent: agentMeta({ agents: ['writer', 'reviewer'] }),
           subAgents: [writer, reviewer],
-          resolveSubAgentContextImpl: async (subName, args) =>
-            `${subName}:${(args as { input: string }).input}`,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(result.content).toBe('final');
-      // 两个子循环请求（索引 1、2）的 system 各自注入各自产出——顺序无关断言
-      const subContents = completeCalls.mock.calls
-        .slice(1, 3)
-        .map((c) => c[0].messages[0].content)
-        .sort();
-      expect(subContents).toEqual(['r-base\n\nreviewer:审', 'w-base\n\nwriter:写']);
+      // 两个派发各自注入各自的 context（system 内容互不串扰）
+      const systems = completeCalls.mock.calls
+        .map((c) => c[0].messages[0])
+        .filter((m: LLMMessage) => m.role === 'system');
+      expect(systems).toContainEqual({ role: 'system', content: 'w-base\n\nctx[writer]' });
+      expect(systems).toContainEqual({ role: 'system', content: 'r-base\n\nctx[reviewer]' });
     });
+  });
 
-    it('sub-sub 孙代理传导：每层派发各自调用（writer 派发一次 + 孙派发一次）', async () => {
-      const writer = agentMeta({ name: 'writer', systemPrompt: 'w-base', agents: ['grandchild'] });
-      const grandchild = agentMeta({ name: 'grandchild', systemPrompt: 'g-base' });
-      const { provider, completeCalls } = createMockProvider([
-        // 主控轮1 → writer 轮1 → 孙循环 → writer 轮2 → 主控轮2
-        llmResponse({
-          toolCalls: [toolCall('c1', 'agent-writer', { input: 'w-args' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({
-          toolCalls: [toolCall('d1', 'agent-grandchild', { input: 'g-args' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({ content: 'grandchild-answer', stopReason: 'stop' }),
-        llmResponse({ content: 'writer-final', stopReason: 'stop' }),
-        llmResponse({ content: 'final', stopReason: 'stop' }),
-      ]);
-      const deps = createDeps({
-        provider,
-        agent: agentMeta({ agents: ['writer'] }),
-        subAgents: [writer, grandchild],
-        resolveSubAgentContextImpl: async (subName, args) =>
-          `${subName}:${(args as { input: string }).input}`,
+  describe('agent:root-input 根调用接缝（depth 1）', () => {
+    /** 组装示例：动态块在前 + 真实输入收尾（业务收尾形态自定） */
+    function composeAssembled(input: string): string {
+      return `<memory>动态块</memory>\n\n<user_input>\n${input}\n</user_input>`;
+    }
+
+    /** 续跑历史（纯 user/assistant 消息,tool 配对无关） */
+    function resumeHistory(): LLMMessage[] {
+      return [
+        { role: 'user', content: '第一轮输入' },
+        { role: 'assistant', content: '第一轮回复' },
+      ];
+    }
+
+    it('fresh run：事件收（agent 名, 原始 input, ctx），改写产物为首条 user 消息并持久进 result.messages', async () => {
+      const events = createEventCollector();
+      const handler = vi.fn((e: AgentRootInputEvent) => {
+        expect(e.agentName).toBe('researcher');
+        expect(e.input).toBe('go');
+        expect((e.ctx as CtxWithUser).currentUserId).toBe(42);
+        e.input = composeAssembled(e.input);
       });
-      // createDeps 默认只挂根的 sub-agents——覆盖为两层解析（与两层嵌套冒泡测试同款）
-      deps.resolveSubAgents = (name: string) =>
-        name === 'researcher' ? [writer] : name === 'writer' ? [grandchild] : [];
-      const agent = new Agent(deps);
-
-      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      expect(result.content).toBe('final');
-      // call 1 = writer 子循环、call 2 = 孙循环：各自 base + 各自产出
-      expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('w-base\n\nwriter:w-args');
-      expect(completeCalls.mock.calls[2][0].messages[0].content).toBe(
-        'g-base\n\ngrandchild:g-args',
-      );
-    });
-
-    it('单字段 input 模式与富 schema coerce 后 args 均按实际派发入参传钩子', async () => {
-      const writer = {
-        core: agentMeta({ name: 'writer' }),
-        entry: agentEntry({ name: 'writer', inputTypeName: 'Input' }),
-      };
-      const hook = vi.fn(async (_subName: string, args: Record<string, unknown>) =>
-        typeof args.chapterId === 'number' ? 'coerced' : 'raw',
-      );
+      events.bus.on('agent:root-input', handler);
       const { provider, completeCalls } = createMockProvider([
-        llmResponse({
-          toolCalls: [toolCall('c1', 'agent-writer', { novelId: 'n1', chapterId: '3' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({ content: 'sub', stopReason: 'stop' }),
-        llmResponse({ content: 'final', stopReason: 'stop' }),
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
       ]);
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [writer.core],
-          subAgentEntries: [writer.entry],
-          resolveAgentInputSchemaImpl: async () => ({
-            jsonSchema: { type: 'object' },
-            validate: () => ({ ok: true, value: { novelId: 'n1', chapterId: 3 } }),
-          }),
-          resolveSubAgentContextImpl: hook,
+          ctx: toolCtx42,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      // 通用名 + 专属名各发射一次（同一载荷对象）；emitted 同时含本轮 agent:input 发射,按名过滤
+      const rootEmitted = events.emitted.filter((e) => e.name.startsWith('agent:root-input'));
+      expect(rootEmitted.map((e) => e.name)).toEqual([
+        'agent:root-input',
+        'agent:root-input:researcher',
+      ]);
+      expect(rootEmitted[0].payload).toBe(rootEmitted[1].payload);
+      // LLM 请求的首条 user 消息 = 改写产物（system 原样在前）
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[0]).toEqual({ role: 'system', content: 'base' });
+      expect(request.messages[1]).toEqual({ role: 'user', content: composeAssembled('go') });
+      // 产物持久进循环历史并随 result.messages 导出（业务落库依据）
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe(composeAssembled('go'));
+    });
+
+    it('续跑轮：历史 + 新 input，事件触发且改写产物为历史末尾追加的 user 消息', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        e.input = composeAssembled(e.input);
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: '第二轮回复', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('第二轮输入', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+        messages: resumeHistory(),
+      });
+
+      const rootEmitted = events.emitted.filter((e) => e.name === 'agent:root-input');
+      expect(rootEmitted).toHaveLength(1);
+      const payload = rootEmitted[0].payload as AgentRootInputEvent;
+      expect(payload.agentName).toBe('researcher');
+      // 载荷为同一对象引用——收集器记到的是 handler 改写后的最终值
+      expect(payload.input).toBe(composeAssembled('第二轮输入'));
+      // LLM 请求:历史(无 system 时自动补齐) + 末尾改写后的新 user 消息
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({
+        role: 'user',
+        content: composeAssembled('第二轮输入'),
+      });
+      // 产物持久进 result.messages——块随历史继承（落库后下轮经 options.messages 传回）
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe(composeAssembled('第二轮输入'));
+    });
+
+    it('纯续跑（messages + 无 input）不发射', async () => {
+      const events = createEventCollector();
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: '续答', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await agent.run(undefined, {
+        agent: 'researcher',
+        model: 'gpt-4o',
+        messages: resumeHistory(),
+      });
+
+      expect(events.emitted.filter((e) => e.name === 'agent:root-input')).toHaveLength(0);
+      // 历史原样发送,无新 user 消息
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.filter((m: LLMMessage) => m.role === 'user')).toHaveLength(1);
+    });
+
+    it('未改写：user 消息为原始 input（handler 不动载荷 = 原样放行）', async () => {
+      const events = createEventCollector();
+      const handler = vi.fn();
+      events.bus.on('agent:root-input', handler);
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({ role: 'user', content: 'go' });
+      expect(result.messages[1]).toEqual({ role: 'user', content: 'go' });
+    });
+
+    it('接线但无订阅者：no-op，输入原样', async () => {
+      const events = createEventCollector(); // 有发射器、零订阅
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(events.emitted.filter((e) => e.name.startsWith('agent:root-input'))).toHaveLength(2);
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({ role: 'user', content: 'go' });
+      expect(result.messages[1]).toEqual({ role: 'user', content: 'go' });
+    });
+
+    it('改写结果整体替换 user 输入（不拼接、不被二次加工）；专属名后发射、可覆盖通用名改写', async () => {
+      const events = createEventCollector();
+      const order: string[] = [];
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        order.push('generic');
+        e.input = `${e.input}+generic`;
+      });
+      events.bus.on('agent:root-input:researcher', (e: AgentRootInputEvent) => {
+        order.push('specific');
+        expect(e.input).toBe('go+generic'); // 同一载荷对象：专属看到通用改写
+        e.input = `<user_input>\n${e.input.split('+generic')[0]}\n</user_input>`; // 覆盖
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      // 钩子收到的是 coerce 后的 value（chapterId 已是 number），注入发生在子循环 system
-      expect(hook).toHaveBeenCalledWith(
-        'writer',
-        { novelId: 'n1', chapterId: 3 },
-        expect.anything(),
-      );
-      expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('coerced');
+      expect(order).toEqual(['generic', 'specific']);
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({
+        role: 'user',
+        content: '<user_input>\ngo\n</user_input>',
+      });
     });
 
-    it('流式父循环同款接线：子代理 system 同样被追加', async () => {
-      const { provider, streamCalls } = createMockStreamProvider([
-        [
-          {
-            toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
-            finishReason: 'tool_calls',
-          },
-        ],
-        [{ deltaContent: '子内容', finishReason: 'stop' }],
-        [{ deltaContent: 'final', finishReason: 'stop' }],
+    it('派发路径同样触发：载荷 agentName 为子代理名，改写进子对话首条 user 消息', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        if (e.agentName === 'writer') e.input = `${e.input}+material`;
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
       ]);
       const agent = new Agent(
         createDeps({
           provider,
+          ctx: toolCtx42,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentContextImpl: async () => 'stream-block',
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 发射序列：根调用（researcher）先、子代理派发（writer）后,各含通用+专属
+      // （每轮另有 agent:input 发射,按名过滤）
+      const rootNames = events.emitted
+        .filter((e) => e.name.startsWith('agent:root-input'))
+        .map((e) => e.name);
+      expect(rootNames).toEqual([
+        'agent:root-input',
+        'agent:root-input:researcher',
+        'agent:root-input',
+        'agent:root-input:writer',
+      ]);
+      const dispatchPayload = events.emitted.filter((e) => e.name === 'agent:root-input')[1]
+        .payload as AgentRootInputEvent;
+      expect(dispatchPayload.agentName).toBe('writer');
+      // 载荷为同一对象引用——收集到的是 handler 改写后的最终值
+      expect(dispatchPayload.input).toBe('查+material');
+      expect((dispatchPayload.ctx as CtxWithUser).currentUserId).toBe(42);
+      // 子代理首条 user 消息 = 改写产物
+      const childRequest = completeCalls.mock.calls[1][0];
+      const childUser = childRequest.messages.find((m: LLMMessage) => m.role === 'user');
+      expect(childUser!.content).toBe('查+material');
+      // system 不被触碰
+      expect(childRequest.messages[0]).toEqual({ role: 'system', content: 'sub-base' });
+    });
+
+    it.each([
+      ['null', null],
+      ['数字', 42],
+      ['对象', { block: 'x' }],
+      ['数组', ['a']],
+      ['空串', ''],
+      ['空白串', '   \n\t '],
+    ])('形状守卫：handler 把 input 改成 %s 抛 AgentError，且不发 LLM 请求', async (_label, bad) => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        (e as { input: unknown }).input = bad;
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        AgentError,
+      );
+      // 校验在循环启动前 fail fast——LLM 请求未发出
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('handler 抛错：原样上抛走 run 既有错误链（发起 LLM 请求前显式失败）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', () => {
+        throw new Error('root assembly exploded');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        'root assembly exploded',
+      );
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('流式一致：改写产物进 stream 请求首条 user 消息并随 done.messages 导出', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        e.input = composeAssembled(e.input);
+      });
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'ok', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
 
-      expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
-      // 子循环请求（第 2 次 stream 调用）的 system 已追加
-      const childRequest = streamCalls.mock.calls[1][0];
-      expect(childRequest.messages[0]).toEqual({
-        role: 'system',
-        content: 'sub-base\n\nstream-block',
-      });
+      expect(events.emitted.filter((e) => e.name.startsWith('agent:root-input'))).toHaveLength(2);
+      const request = streamCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({ role: 'user', content: composeAssembled('go') });
+      const done = chunks.at(-1)!.done!;
+      const lastUser = [...done.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe(composeAssembled('go'));
     });
   });
 
-  describe('resolveSubAgentInput 派发入参改写钩子', () => {
-    /** 派发 writer 的三响应序列（主控轮1 → 子循环 → 主控轮2） */
-    function dispatchResponses(args: Record<string, unknown> = { input: '查' }) {
+  describe('agent:input 每轮发送前事件', () => {
+    /** 主控派发 writer 的三响应序列（主控轮1 → 子循环 → 主控轮2） */
+    function dispatchResponses() {
       return [
         llmResponse({
-          toolCalls: [toolCall('c1', 'agent-writer', args)],
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
           stopReason: 'tool_calls',
         }),
         llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
@@ -1161,97 +1445,165 @@ describe('Agent', () => {
       ];
     }
 
-    /** 从子循环请求消息中取首条 user 消息内容 */
-    function firstUserMessage(messages: LLMMessage[]): string {
-      const msg = messages.find((m: LLMMessage) => m.role === 'user');
-      if (!msg || typeof msg.content !== 'string') throw new Error('no user message in child loop');
-      return msg.content;
-    }
-
-    it('阴性对照：未接线时子代理首条 user 消息为原始 input 字符串', async () => {
+    it('每轮 LLM 调用恰好发射一次：派发流程主控两轮 + 子循环一轮 = 3 次,agentName/depth 正确', async () => {
+      const events = createEventCollector();
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
         createDeps({
           provider,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      // 子循环请求（第 2 次 complete 调用）：system 原样、user 为交接单原文
-      expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
-        role: 'system',
-        content: 'sub-base',
+      expect(completeCalls).toHaveBeenCalledTimes(3);
+      const inputEvents = events.emitted.filter((e) => e.name === 'agent:input');
+      expect(inputEvents).toHaveLength(3);
+      const seq = inputEvents.map((e) => {
+        const p = e.payload as AgentInputEvent;
+        return { agentName: p.agentName, depth: p.depth };
       });
-      expect(firstUserMessage(completeCalls.mock.calls[1][0].messages)).toBe('查');
+      expect(seq).toEqual([
+        { agentName: 'researcher', depth: 1 },
+        { agentName: 'writer', depth: 2 },
+        { agentName: 'researcher', depth: 1 },
+      ]);
+      // 每轮同时发射专属名
+      expect(events.emitted.filter((e) => e.name === 'agent:input:researcher')).toHaveLength(2);
+      expect(events.emitted.filter((e) => e.name === 'agent:input:writer')).toHaveLength(1);
     });
 
-    it('改写后 args 进子代理首条 user 消息（材料附件）；钩子收（真实 agent 名, args, ctx）；system 原样无追加', async () => {
-      const hook = vi.fn(
-        async (subName: string, args: Record<string, unknown>, ctx: CtxWithUser) => ({
-          ...args,
-          contextMaterial: `material[${subName}]:${ctx.currentUserId}`,
-        }),
-      );
-      const afterToolCall = vi.fn();
-      const { provider, completeCalls } = createMockProvider(dispatchResponses());
+    it('载荷 messages 为本轮发送副本（含历史裁剪后的完整轮组），ctx 为 deps.ctx', async () => {
+      const events = createEventCollector();
+      const seen: LLMMessage[][] = [];
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        seen.push(e.messages.map((m) => ({ ...m })));
+        expect((e.ctx as CtxWithUser).currentUserId).toBe(42);
+      });
+      const { provider } = createMockProvider(dispatchResponses());
       const agent = new Agent(
         createDeps({
           provider,
           ctx: toolCtx42,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentInputImpl: hook,
-          config: { traceId: false, afterToolCall },
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      // subName 是真实 agent 名（非派发名 agent-writer）；args 为原始派发入参；ctx 为 deps.ctx
-      expect(hook).toHaveBeenCalledTimes(1);
-      expect(hook).toHaveBeenCalledWith('writer', { input: '查' }, toolCtx42);
-      // 改写后的 args（多字段形状）stringify 为子代理首条 user 消息——材料进 user 通道
-      expect(firstUserMessage(completeCalls.mock.calls[1][0].messages)).toBe(
-        JSON.stringify({ input: '查', contextMaterial: 'material[writer]:42' }),
-      );
-      // system 不被触碰（无任何追加段）
-      expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
-        role: 'system',
-        content: 'sub-base',
-      });
-      // afterToolCall 审计收改写后 args（全链一致）
-      expect(afterToolCall).toHaveBeenCalledWith(
-        'agent-writer',
-        { input: '查', contextMaterial: 'material[writer]:42' },
-        'sub-answer',
-        toolCtx42,
-      );
+      // 主控轮1：无 systemPrompt 仅 user；子循环轮：sub system + user；主控轮2：历史含 tool 配对
+      expect(seen[0]).toEqual([{ role: 'user', content: 'go' }]);
+      expect(seen[1][0]).toEqual({ role: 'system', content: 'sub-base' });
+      const parentTurn2 = seen[2];
+      expect(parentTurn2.some((m) => m.role === 'assistant' && m.tool_calls?.length)).toBe(true);
+      expect(parentTurn2.some((m) => m.role === 'tool')).toBe(true);
     });
 
-    it('返回 undefined 原样放行：子代理 user 消息与未接线一致', async () => {
-      const hook = vi.fn(async () => undefined);
-      const { provider, completeCalls } = createMockProvider(dispatchResponses());
+    it('改写只影响本轮发送：LLM 请求看到改写,本地历史与 result.messages 保持原样', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        // 对每轮发送副本注入临时提示段（副本口径——不入历史）
+        e.messages = [...e.messages, { role: 'system', content: 'per-turn-hint' }];
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentInputImpl: hook,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
-      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      expect(hook).toHaveBeenCalledTimes(1);
-      expect(firstUserMessage(completeCalls.mock.calls[1][0].messages)).toBe('查');
+      // 发送请求包含改写追加的提示段
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({ role: 'system', content: 'per-turn-hint' });
+      // 本地历史与 result.messages 无提示段（副本口径）
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser).toEqual({ role: 'user', content: 'go' });
+      expect(result.messages.some((m) => m.content === 'per-turn-hint')).toBe(false);
     });
 
-    it('钩子抛错：走 per-tool 错误链回灌主控 LLM，run 不崩', async () => {
-      const hook = vi.fn(async () => {
-        throw new Error('input rewrite exploded');
+    it('流式同款：改写进 stream 请求，done.messages 保持原样', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        e.messages = [...e.messages, { role: 'system', content: 'stream-hint' }];
+      });
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'ok', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      const request = streamCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({ role: 'system', content: 'stream-hint' });
+      const done = chunks.at(-1)!.done!;
+      expect(done.messages.some((m) => m.content === 'stream-hint')).toBe(false);
+    });
+
+    it('扇出后 messages 为空数组：抛 AgentError 不发 LLM 请求', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        (e as { messages: unknown }).messages = [];
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        AgentError,
+      );
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('handler 抛错：走 run 既有错误链（发起 LLM 请求前显式失败）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', () => {
+        throw new Error('turn hook exploded');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        'turn hook exploded',
+      );
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('派发路径：子代理轮 handler 抛错被 per-tool catch 回灌主控 LLM，run 不崩', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input:writer', () => {
+        throw new Error('child turn exploded');
       });
       // 抛错路径没有子循环请求——主控轮1（派发）+ 主控轮2（消费错误回灌）两响应
       const { provider, completeCalls } = createMockProvider([
@@ -1266,7 +1618,7 @@ describe('Agent', () => {
           provider,
           agent: agentMeta({ agents: ['writer'] }),
           subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentInputImpl: hook,
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
@@ -1274,436 +1626,10 @@ describe('Agent', () => {
 
       // run 正常收尾，错误作为 tool 结果回传主控 LLM（不吞不降级、不冒泡为 run 失败）
       expect(result.content).toBe('final');
-      expect(hook).toHaveBeenCalledTimes(1);
       const toolMsg = completeCalls.mock.calls[1][0].messages.find(
         (m: LLMMessage) => m.role === 'tool',
       );
-      expect(toolMsg!.content).toMatch(/input rewrite exploded/);
-    });
-
-    it('返回非法形状（数组 / null）：抛 AgentError 回灌主控 LLM', async () => {
-      const hook = vi.fn(async () => ['not', 'an', 'object'] as unknown as Record<string, unknown>);
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({
-          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({ content: 'final', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentInputImpl: hook,
-        }),
-      );
-
-      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      expect(result.content).toBe('final');
-      const toolMsg = completeCalls.mock.calls[1][0].messages.find(
-        (m: LLMMessage) => m.role === 'tool',
-      );
-      // AgentError 的 message 回灌主控（含钩子名与修复指引——与放行/原样路径可区分）
-      expect(toolMsg!.content).toMatch(/resolveSubAgentInput.*plain object/s);
-    });
-
-    it('富 schema 校验失败 → 钩子不被调用，error 回灌主控', async () => {
-      const hook = vi.fn(async () => ({ input: 'rewritten' }));
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({
-          toolCalls: [toolCall('c1', 'agent-writer', { novelId: 'n1' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({ content: 'parent-final', stopReason: 'stop' }),
-      ]);
-      const writer = {
-        core: agentMeta({ name: 'writer' }),
-        entry: agentEntry({ name: 'writer', inputTypeName: 'Input' }),
-      };
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [writer.core],
-          subAgentEntries: [writer.entry],
-          resolveAgentInputSchemaImpl: async () => ({
-            jsonSchema: { type: 'object' },
-            validate: () => ({ ok: false, error: 'chapterId is required' }),
-          }),
-          resolveSubAgentInputImpl: hook,
-        }),
-      );
-
-      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      expect(result.content).toBe('parent-final');
-      expect(hook).not.toHaveBeenCalled();
-      const toolMsg = completeCalls.mock.calls[1][0].messages.find(
-        (m: LLMMessage) => m.role === 'tool',
-      );
-      expect(toolMsg!.content).toMatch(/chapterId is required/);
-    });
-
-    it('改写发生在校验之后：合成材料字段不受 Input schema 约束（不声明也存活，user 含该字段）', async () => {
-      const { provider, completeCalls } = createMockProvider(dispatchResponses());
-      const writer = {
-        core: agentMeta({ name: 'writer', systemPrompt: 'sub-base' }),
-        entry: agentEntry({ name: 'writer', inputTypeName: 'Input' }),
-      };
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [writer.core],
-          subAgentEntries: [writer.entry],
-          resolveAgentInputSchemaImpl: async () => ({
-            jsonSchema: { type: 'object' },
-            // 校验通过并 coerce 剥未知键（产物语义）——但改写在其后，合成字段不受约束
-            validate: (args: Record<string, unknown>) => ({ ok: true, value: { ...args } }),
-          }),
-          resolveSubAgentInputImpl: async (_subName, args) => ({
-            ...args,
-            contextMaterial: 'server-synthesized',
-          }),
-        }),
-      );
-
-      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      // 子循环正常启动（第 2 次 complete），改写加的未声明字段进入 user 消息
-      expect(completeCalls).toHaveBeenCalledTimes(3);
-      expect(firstUserMessage(completeCalls.mock.calls[1][0].messages)).toBe(
-        JSON.stringify({ input: '查', contextMaterial: 'server-synthesized' }),
-      );
-    });
-
-    it('与 resolveSubAgentContext 并存：context 钩子收改写后 args；system 追加块 + user 材料两通道各就各位', async () => {
-      const contextHook = vi.fn(
-        async (subName: string, args: Record<string, unknown>) =>
-          `ctx-block[${subName}:${(args as { input: string }).input}]`,
-      );
-      const inputHook = vi.fn(
-        async (_subName: string, args: Record<string, unknown>) =>
-          ({ ...args, contextMaterial: 'material' }) as Record<string, unknown>,
-      );
-      const { provider, completeCalls } = createMockProvider(dispatchResponses());
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentInputImpl: inputHook,
-          resolveSubAgentContextImpl: contextHook,
-        }),
-      );
-
-      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      // context 钩子收到改写后的最终 args（input 改写钩子返回值含材料字段）
-      expect(contextHook).toHaveBeenCalledWith(
-        'writer',
-        { input: '查', contextMaterial: 'material' },
-        expect.anything(),
-      );
-      // system = base + context 块（追加通道）；user = 改写后 args stringify（user 通道）
-      expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
-        role: 'system',
-        content: 'sub-base\n\nctx-block[writer:查]',
-      });
-      expect(firstUserMessage(completeCalls.mock.calls[1][0].messages)).toBe(
-        JSON.stringify({ input: '查', contextMaterial: 'material' }),
-      );
-    });
-
-    it('流式父循环同款接线：子代理首条 user 消息同样被改写', async () => {
-      const { provider, streamCalls } = createMockStreamProvider([
-        [
-          {
-            toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
-            finishReason: 'tool_calls',
-          },
-        ],
-        [{ deltaContent: '子内容', finishReason: 'stop' }],
-        [{ deltaContent: 'final', finishReason: 'stop' }],
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveSubAgentInputImpl: async (_subName, args) => ({
-            ...args,
-            contextMaterial: 'stream-material',
-          }),
-        }),
-      );
-
-      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
-
-      expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
-      // 子循环请求（第 2 次 stream 调用）的首条 user 消息已含改写材料
-      const childRequest = streamCalls.mock.calls[1][0];
-      expect(childRequest.messages[0]).toEqual({ role: 'system', content: 'sub-base' });
-      const userMsg = childRequest.messages.find((m: LLMMessage) => m.role === 'user');
-      expect(userMsg!.content).toBe(
-        JSON.stringify({ input: '查', contextMaterial: 'stream-material' }),
-      );
-    });
-  });
-
-  describe('resolveRootInput 根调用输入组装钩子', () => {
-    /** 组装示例：动态块在前 + 真实输入收尾（业务收尾形态自定） */
-    function composeAssembled(input: string): string {
-      return `<memory>动态块</memory>\n\n<user_input>\n${input}\n</user_input>`;
-    }
-
-    /** 续跑历史（纯 user/assistant 消息,tool 配对无关） */
-    function resumeHistory(): LLMMessage[] {
-      return [
-        { role: 'user', content: '第一轮输入' },
-        { role: 'assistant', content: '第一轮回复' },
-      ];
-    }
-
-    it('fresh run：钩子收（agent 名, 原始 input, ctx），组装产物为首条 user 消息并持久进 result.messages', async () => {
-      const hook = vi.fn(async (agentName: string, input: string, ctx: CtxWithUser) => {
-        expect(agentName).toBe('researcher');
-        expect(input).toBe('go');
-        expect(ctx.currentUserId).toBe(42);
-        return composeAssembled(input);
-      });
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'ok', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          ctx: toolCtx42,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          resolveRootInputImpl: hook,
-        }),
-      );
-
-      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      expect(hook).toHaveBeenCalledTimes(1);
-      // LLM 请求的首条 user 消息 = 组装产物（system 原样在前）
-      const request = completeCalls.mock.calls[0][0];
-      expect(request.messages[0]).toEqual({ role: 'system', content: 'base' });
-      expect(request.messages[1]).toEqual({ role: 'user', content: composeAssembled('go') });
-      // 产物持久进循环历史并随 result.messages 导出（业务落库依据）
-      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
-      expect(lastUser!.content).toBe(composeAssembled('go'));
-    });
-
-    it('续跑轮：历史 + 新 input，组装产物为历史末尾追加的 user 消息并进 result.messages', async () => {
-      const hook = vi.fn(async (_name: string, input: string) => composeAssembled(input));
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: '第二轮回复', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          resolveRootInputImpl: hook,
-        }),
-      );
-
-      const result = await agent.run('第二轮输入', {
-        agent: 'researcher',
-        model: 'gpt-4o',
-        messages: resumeHistory(),
-      });
-
-      expect(hook).toHaveBeenCalledTimes(1);
-      expect(hook).toHaveBeenCalledWith('researcher', '第二轮输入', expect.anything());
-      // LLM 请求:历史(无 system 时自动补齐) + 末尾组装后的新 user 消息
-      const request = completeCalls.mock.calls[0][0];
-      expect(request.messages.at(-1)).toEqual({
-        role: 'user',
-        content: composeAssembled('第二轮输入'),
-      });
-      // 产物持久进 result.messages——块随历史继承（落库后下轮经 options.messages 传回）
-      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
-      expect(lastUser!.content).toBe(composeAssembled('第二轮输入'));
-    });
-
-    it('纯续跑（messages + 无 input）不触发钩子', async () => {
-      const hook = vi.fn(async () => composeAssembled('不应被调用'));
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: '续答', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          resolveRootInputImpl: hook,
-        }),
-      );
-
-      await agent.run(undefined, {
-        agent: 'researcher',
-        model: 'gpt-4o',
-        messages: resumeHistory(),
-      });
-
-      expect(hook).not.toHaveBeenCalled();
-      // 历史原样发送,无新 user 消息
-      const request = completeCalls.mock.calls[0][0];
-      expect(request.messages.filter((m: LLMMessage) => m.role === 'user')).toHaveLength(1);
-    });
-
-    it('返回 undefined 原样放行：user 消息为原始 input', async () => {
-      const hook = vi.fn(async () => undefined);
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'ok', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          resolveRootInputImpl: hook,
-        }),
-      );
-
-      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      const request = completeCalls.mock.calls[0][0];
-      expect(request.messages[1]).toEqual({ role: 'user', content: 'go' });
-      expect(result.messages[1]).toEqual({ role: 'user', content: 'go' });
-    });
-
-    it('派发路径不触发：根钩子仅根调用一次，子代理组装仍归 resolveSubAgentInput', async () => {
-      const rootHook = vi.fn(async (_name: string, input: string) => composeAssembled(input));
-      const subHook = vi.fn(async (_subName: string, args: Record<string, unknown>) => ({
-        ...args,
-        contextMaterial: 'dispatch-material',
-      }));
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({
-          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
-        llmResponse({ content: 'final', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
-          resolveRootInputImpl: rootHook,
-          resolveSubAgentInputImpl: subHook,
-        }),
-      );
-
-      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      // 根钩子仅触发一次（根调用）,不随派发进入子循环
-      expect(rootHook).toHaveBeenCalledTimes(1);
-      expect(rootHook).toHaveBeenCalledWith('researcher', 'go', expect.anything());
-      expect(subHook).toHaveBeenCalledTimes(1);
-      // 子代理首条 user 消息 = 派发钩子的改写产物,无根组装痕迹
-      const childRequest = completeCalls.mock.calls[1][0];
-      const childUser = childRequest.messages.find((m: LLMMessage) => m.role === 'user');
-      expect(childUser!.content).toBe(
-        JSON.stringify({ input: '查', contextMaterial: 'dispatch-material' }),
-      );
-    });
-
-    it.each([
-      ['null', null],
-      ['数字', 42],
-      ['对象', { block: 'x' }],
-      ['数组', ['a']],
-      ['空串', ''],
-      ['空白串', '   \n\t '],
-    ])('形状守卫：返回 %s 抛 AgentError，且不发 LLM 请求', async (_label, bad) => {
-      const hook = vi.fn(async () => bad as unknown as string | undefined);
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'ok', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          resolveRootInputImpl: hook,
-        }),
-      );
-
-      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
-        AgentError,
-      );
-      // 组装在循环启动前 fail fast——LLM 请求未发出
-      expect(completeCalls).not.toHaveBeenCalled();
-    });
-
-    it('钩子抛错：原样上抛走 run 既有错误链（发起 LLM 请求前显式失败）', async () => {
-      const hook = vi.fn(async () => {
-        throw new Error('root assembly exploded');
-      });
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'ok', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          resolveRootInputImpl: hook,
-        }),
-      );
-
-      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
-        'root assembly exploded',
-      );
-      expect(completeCalls).not.toHaveBeenCalled();
-    });
-
-    it('流式一致：组装产物进 stream 请求首条 user 消息并随 done.messages 导出', async () => {
-      const hook = vi.fn(async (_name: string, input: string) => composeAssembled(input));
-      const { provider, streamCalls } = createMockStreamProvider([
-        [{ deltaContent: 'ok', finishReason: 'stop' }],
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          resolveRootInputImpl: hook,
-        }),
-      );
-
-      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
-
-      expect(hook).toHaveBeenCalledTimes(1);
-      const request = streamCalls.mock.calls[0][0];
-      expect(request.messages[1]).toEqual({ role: 'user', content: composeAssembled('go') });
-      const done = chunks.at(-1)!.done!;
-      const lastUser = [...done.messages].reverse().find((m) => m.role === 'user');
-      expect(lastUser!.content).toBe(composeAssembled('go'));
-    });
-
-    it('组装产物整体替换 user 输入（不拼接、不被二次加工）', async () => {
-      const hook = vi.fn(async (_name: string, input: string) => composeAssembled(input));
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'ok', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          resolveRootInputImpl: hook,
-        }),
-      );
-
-      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      const request = completeCalls.mock.calls[0][0];
-      expect(request.messages[1]).toEqual({
-        role: 'user',
-        content: composeAssembled('go'),
-      });
+      expect(toolMsg!.content).toMatch(/child turn exploded/);
     });
   });
 
@@ -1920,7 +1846,7 @@ describe('Agent', () => {
       expect(outcome).toBe('pending');
     });
 
-    it('afterToolCall 钩子抛错只留痕,不把成功的 tool 结果变成错误回传 LLM', async () => {
+    it('after-tool-call 订阅端抛错只留痕,不把成功的 tool 结果变成错误回传 LLM', async () => {
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           toolCalls: [toolCall('c1', 'weather_getWeather', {})],
@@ -1928,10 +1854,12 @@ describe('Agent', () => {
         }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
       ]);
-      const afterToolCall = vi.fn(() => {
+      const after = vi.fn(() => {
         throw new Error('audit down');
       });
       const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const events = createEventCollector();
+      events.bus.on('agent:after-tool-call', after);
       const agent = new Agent(
         createDeps({
           provider,
@@ -1941,18 +1869,18 @@ describe('Agent', () => {
             handler: async () => ({ temp: 25 }),
             functionName,
           }),
-          config: { afterToolCall },
+          emitAppEvent: events.emitAppEvent,
         }),
       );
 
       const result = await agent.run('w?', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('done');
-      // LLM 第二轮收到的是真实结果,而非审计系统的报错
+      // LLM 第二轮收到的是真实结果,而非审计系统的报错（观察类留痕口径）
       const toolMsg = completeCalls.mock.calls[1][0].messages.find(
         (m: LLMMessage) => m.role === 'tool',
       );
       expect(String(toolMsg!.content)).toContain('25');
-      expect(afterToolCall).toHaveBeenCalledTimes(1);
+      expect(after).toHaveBeenCalledTimes(1);
       expect(errSpy).toHaveBeenCalled();
       errSpy.mockRestore();
     });
@@ -4062,91 +3990,13 @@ describe('Agent', () => {
     expect(request.signal).toBe(controller.signal);
   });
 
-  describe('鉴权钩子（authHooks）', () => {
-    // 合规 ctx（createStandaloneToolContext 构造，业务增强字段走 overrides）——
+  describe('agent tool 链事件（原 authHooks 三钩子）', () => {
+    // 合规 ctx（createStandaloneToolContext 构造，业务增强字段走交叉标注）——
     // 框架三路径合成之外的第四种合法来源（测试/编程式）
     const ctx = createStandaloneToolContext({
       method: 'POST',
       path: '/api/agent',
       currentUserId: 42,
-    });
-
-    it('类型契约:AgentDeps.ctx 必填且为 AgentToolContext（钩子 ctx 参数同型）', () => {
-      expectTypeOf<AgentDeps['ctx']>().toEqualTypeOf<AgentToolContext>();
-      // 业务类型交叉标注满足契约（增强已关闭，交叉标注是业务字段唯一通道）
-      expectTypeOf<CtxWithUser>().toMatchTypeOf<AgentToolContext>();
-      // AgentRuntimeConfig 钩子签名同步收紧（显式标注 Partial<FaapiContext> 的钩子实现是迁移点）
-      expectTypeOf<
-        Parameters<NonNullable<AgentRuntimeConfig['beforeToolCall']>>[2]
-      >().toEqualTypeOf<AgentToolContext>();
-      expectTypeOf<
-        Parameters<NonNullable<AgentRuntimeConfig['afterToolCall']>>[3]
-      >().toEqualTypeOf<AgentToolContext>();
-      expectTypeOf<
-        Parameters<NonNullable<AgentRuntimeConfig['filterTools']>>[1]
-      >().toEqualTypeOf<AgentToolContext>();
-    });
-
-    it('beforeToolCall 支持异步（Promise 守卫）——隔离路径 RPC 垫片的接缝', async () => {
-      const handler = vi.fn(async () => ({ ok: true }));
-      const { provider, completeCalls } = toolCallProvider();
-      // 异步守卫：拒绝语义经 Promise 透传（await 化后同步/异步钩子同语义）
-      const beforeToolCall = vi.fn(async () => ({ error: 'unauthenticated (async guard)' }));
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta(),
-          tools: [toolMeta()],
-          loadToolModuleImpl: async () => ({
-            handler: handler as (...args: unknown[]) => unknown,
-            functionName: 'getWeather',
-          }),
-          config: { beforeToolCall },
-        }),
-      );
-
-      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      expect(handler).not.toHaveBeenCalled();
-      // 异步守卫的 { error } 与同步同语义：回传 LLM（tool 结果消息）
-      const secondRequest = completeCalls.mock.calls[1][0];
-      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
-      expect(JSON.stringify(toolMsg?.content)).toContain('unauthenticated');
-    });
-
-    it('任务侧合规 ctx 直传:硬闸钩子与 handler 读到同一身份字段', async () => {
-      // tool 鉴权硬闸（业务侧形态,fail-closed）——读契约 ctx 的业务字段
-      let seenUserId: number | undefined;
-      const handler = vi.fn(async (_args: unknown, hookCtx?: CtxWithUser) => {
-        if (hookCtx?.currentUserId === undefined) return { error: 'unauthenticated' };
-        seenUserId = hookCtx.currentUserId;
-        return { ok: true };
-      });
-      const beforeToolCall = vi.fn(
-        (_name: string, _args: Record<string, unknown>, hookCtx?: CtxWithUser) => {
-          if (hookCtx?.currentUserId === undefined) return { error: 'workspace context required' };
-        },
-      );
-      const toolCtx = createStandaloneToolContext({ currentUserId: 42 });
-      const { provider } = toolCallProvider();
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta(),
-          tools: [toolMeta()],
-          loadToolModuleImpl: async () => ({
-            handler: handler as (...args: unknown[]) => unknown,
-            functionName: 'getWeather',
-          }),
-          config: { beforeToolCall },
-          ctx: toolCtx,
-        }),
-      );
-
-      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      // 硬闸放行（ctx 携带身份）→ handler 读到身份执行
-      expect(beforeToolCall).toHaveBeenCalledWith('weather_getWeather', { city: '北京' }, toolCtx);
-      expect(seenUserId).toBe(42);
-      expect(handler).toHaveBeenCalledTimes(1);
     });
 
     function toolCallProvider() {
@@ -4159,31 +4009,11 @@ describe('Agent', () => {
       ]);
     }
 
-    it('beforeToolCall 放行（void）: handler 正常执行且收到 ctx', async () => {
-      const handler = vi.fn(async () => ({ ok: true }));
-      const { provider } = toolCallProvider();
-      const beforeToolCall = vi.fn(() => undefined);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta(),
-          tools: [toolMeta()],
-          loadToolModuleImpl: async () => ({
-            handler: handler as (...args: unknown[]) => unknown,
-            functionName: 'getWeather',
-          }),
-          config: { beforeToolCall },
-          ctx,
-        }),
-      );
-
-      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      expect(beforeToolCall).toHaveBeenCalledWith('weather_getWeather', { city: '北京' }, ctx);
-      expect(handler).toHaveBeenCalledTimes(1);
-    });
-
-    it('beforeToolCall 拒绝: handler 不执行,{ error } 回传 LLM', async () => {
-      const handler = vi.fn(async () => ({ ok: true }));
+    function toolAgent(
+      events: ReturnType<typeof createEventCollector>,
+      opts: { ctx?: AgentToolContext; handler?: (...args: unknown[]) => unknown } = {},
+    ) {
+      const handler = vi.fn(opts.handler ?? (async () => ({ ok: true })));
       const { provider, completeCalls } = toolCallProvider();
       const agent = new Agent(
         createDeps({
@@ -4194,12 +4024,87 @@ describe('Agent', () => {
             handler: handler as (...args: unknown[]) => unknown,
             functionName: 'getWeather',
           }),
-          config: {
-            beforeToolCall: () => ({ error: 'workspace context required' }),
-          },
-          ctx,
+          emitAppEvent: events.emitAppEvent,
+          ctx: opts.ctx ?? ctx,
         }),
       );
+      return { agent, handler, completeCalls };
+    }
+
+    it('类型契约:AgentDeps.ctx 必填且为 AgentToolContext（事件载荷 ctx 同型）', () => {
+      expectTypeOf<AgentDeps['ctx']>().toEqualTypeOf<AgentToolContext>();
+      // 业务类型交叉标注满足契约（增强已关闭，交叉标注是业务字段唯一通道）
+      expectTypeOf<CtxWithUser>().toMatchTypeOf<AgentToolContext>();
+      // 事件载荷 ctx 契约同步锚定
+      expectTypeOf<BeforeToolCallEvent['ctx']>().toEqualTypeOf<AgentToolContext>();
+      expectTypeOf<AfterToolCallEvent['ctx']>().toEqualTypeOf<AgentToolContext>();
+      expectTypeOf<FilterToolsEvent['ctx']>().toEqualTypeOf<AgentToolContext>();
+    });
+
+    it('before-tool-call 支持异步 handler（Promise 扇出）——拒绝语义经 Promise 透传', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:before-tool-call', async (e: BeforeToolCallEvent) => {
+        e.error = 'unauthenticated (async guard)';
+      });
+      const { agent, handler, completeCalls } = toolAgent(events);
+
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+      expect(handler).not.toHaveBeenCalled();
+      // 异步拒绝与同步同语义：{ error } 回传 LLM（tool 结果消息）
+      const secondRequest = completeCalls.mock.calls[1][0];
+      const toolMsg = secondRequest.messages.find((m: LLMMessage) => m.role === 'tool');
+      expect(JSON.stringify(toolMsg?.content)).toContain('unauthenticated');
+    });
+
+    it('任务侧合规 ctx 直传:硬闸订阅端与 handler 读到同一身份字段', async () => {
+      // tool 鉴权硬闸（业务侧形态,fail-closed）——读契约 ctx 的业务字段
+      let seenUserId: number | undefined;
+      const handler = vi.fn(async (_args: unknown, hookCtx?: CtxWithUser) => {
+        if (hookCtx?.currentUserId === undefined) return { error: 'unauthenticated' };
+        seenUserId = hookCtx.currentUserId;
+        return { ok: true };
+      });
+      const events = createEventCollector();
+      const before = vi.fn((e: BeforeToolCallEvent) => {
+        if ((e.ctx as CtxWithUser).currentUserId === undefined) {
+          e.error = 'workspace context required';
+        }
+      });
+      events.bus.on('agent:before-tool-call', before);
+      const toolCtx = createStandaloneToolContext({ currentUserId: 42 });
+      const { agent } = toolAgent(events, {
+        ctx: toolCtx,
+        handler: handler as (...args: unknown[]) => unknown,
+      });
+
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+      // 硬闸放行（ctx 携带身份）→ handler 读到身份执行
+      expect(before).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'weather_getWeather', args: { city: '北京' } }),
+      );
+      expect(seenUserId).toBe(42);
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('before-tool-call 放行: handler 正常执行且载荷收（name, args, ctx）', async () => {
+      const events = createEventCollector();
+      const before = vi.fn();
+      events.bus.on('agent:before-tool-call', before);
+      const { agent, handler } = toolAgent(events);
+
+      await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+      expect(before).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'weather_getWeather', args: { city: '北京' }, ctx }),
+      );
+      expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it('before-tool-call 拒绝: handler 不执行,error 回传 LLM', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:before-tool-call', (e: BeforeToolCallEvent) => {
+        e.error = 'workspace context required';
+      });
+      const { agent, handler, completeCalls } = toolAgent(events);
 
       await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(handler).not.toHaveBeenCalled();
@@ -4208,30 +4113,22 @@ describe('Agent', () => {
       expect(JSON.stringify(toolMsg?.content)).toContain('workspace context required');
     });
 
-    it('beforeToolCall 改写: handler 收到改写后的 args + ctx 第二参数', async () => {
-      const handler = vi.fn(async () => ({ ok: true }));
-      const { provider } = toolCallProvider();
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta(),
-          tools: [toolMeta()],
-          loadToolModuleImpl: async () => ({
-            handler: handler as (...args: unknown[]) => unknown,
-            functionName: 'getWeather',
-          }),
-          config: {
-            beforeToolCall: (_name, args) => ({ args: { ...args, workspaceId: 'ws-1' } }),
-          },
-          ctx,
-        }),
-      );
+    it('before-tool-call 改写: handler 收到改写后的 args', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:before-tool-call', (e: BeforeToolCallEvent) => {
+        e.args = { ...e.args, workspaceId: 'ws-1' };
+      });
+      const { agent, handler } = toolAgent(events);
 
       await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
       expect(handler).toHaveBeenCalledWith({ city: '北京', workspaceId: 'ws-1' }, ctx);
     });
 
-    it('beforeToolCall 对 sub-agent 递归（agent-x）同样拦截,拒绝时子循环不执行', async () => {
+    it('before-tool-call 对 sub-agent 递归（agent-x）同样拦截,拒绝时子循环不执行', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:before-tool-call', (e: BeforeToolCallEvent) => {
+        if (e.name.startsWith('agent-')) e.error = 'sub-agent not allowed';
+      });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           toolCalls: [toolCall('c1', 'agent-analyst', { q: 'x' })],
@@ -4245,10 +4142,7 @@ describe('Agent', () => {
           agent: agentMeta({ agents: ['analyst'] }),
           subAgents: [agentMeta({ name: 'analyst', systemPrompt: 'sub' })],
           subAgentEntries: [agentEntry({ name: 'analyst' })],
-          config: {
-            beforeToolCall: (name) =>
-              name.startsWith('agent-') ? { error: 'sub-agent not allowed' } : undefined,
-          },
+          emitAppEvent: events.emitAppEvent,
           ctx,
         }),
       );
@@ -4261,56 +4155,41 @@ describe('Agent', () => {
       expect(JSON.stringify(toolMsg?.content)).toContain('sub-agent not allowed');
     });
 
-    it('afterToolCall 成功后调用（name, args, result, ctx),拒绝时不调用', async () => {
-      const handler = vi.fn(async () => ({ ok: true, temp: 25 }));
-      const afterToolCall = vi.fn();
+    it('after-tool-call 成功后发射（name, args, result, ctx）,拒绝时不发射', async () => {
+      const events = createEventCollector();
+      const after = vi.fn((e: AfterToolCallEvent) => {
+        expect(e.result).toEqual({ ok: true, temp: 25 });
+      });
+      events.bus.on('agent:after-tool-call', after);
 
-      // 拒绝场景：afterToolCall 不调用
-      const { provider: deniedProvider } = toolCallProvider();
-      const denied = new Agent(
-        createDeps({
-          provider: deniedProvider,
-          agent: agentMeta(),
-          tools: [toolMeta()],
-          loadToolModuleImpl: async () => ({
-            handler: handler as (...args: unknown[]) => unknown,
-            functionName: 'getWeather',
-          }),
-          config: {
-            beforeToolCall: () => ({ error: 'denied' }),
-            afterToolCall,
-          },
-          ctx,
-        }),
-      );
-      await denied.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      expect(afterToolCall).not.toHaveBeenCalled();
+      // 拒绝场景：after-tool-call 不发射
+      const deniedEvents = createEventCollector();
+      deniedEvents.bus.on('agent:before-tool-call', (e: BeforeToolCallEvent) => {
+        e.error = 'denied';
+      });
+      deniedEvents.bus.on('agent:after-tool-call', after);
+      const denied = toolAgent(deniedEvents);
+      await denied.agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
+      expect(after).not.toHaveBeenCalled();
 
-      // 放行场景：成功后调用
-      const { provider } = toolCallProvider();
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta(),
-          tools: [toolMeta()],
-          loadToolModuleImpl: async () => ({
-            handler: handler as (...args: unknown[]) => unknown,
-            functionName: 'getWeather',
-          }),
-          config: { afterToolCall },
-          ctx,
-        }),
-      );
+      // 放行场景：成功后发射
+      const { agent } = toolAgent(events);
       await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      expect(afterToolCall).toHaveBeenCalledWith(
-        'weather_getWeather',
-        { city: '北京' },
-        { ok: true, temp: 25 },
-        ctx,
-      );
+      expect(after).toHaveBeenCalledTimes(1);
+      const payload = events.emitted.filter((e) => e.name === 'agent:after-tool-call')[0]
+        .payload as unknown as AfterToolCallEvent;
+      expect(payload.name).toBe('weather_getWeather');
+      expect(payload.args).toEqual({ city: '北京' });
+      expect(payload.ctx).toBe(ctx);
     });
 
-    it('filterTools 过滤 LLM 可见 tools 清单（含 agent-as-tool）', async () => {
+    it('filter-tools 过滤 LLM 可见 tools 清单（含 agent-as-tool），载荷带 agentName', async () => {
+      const events = createEventCollector();
+      const filter = vi.fn((e: FilterToolsEvent) => {
+        expect(e.agentName).toBe('researcher');
+        e.tools = e.tools.filter((t) => !t.function.name.startsWith('admin.'));
+      });
+      events.bus.on('agent:filter-tools', filter);
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'done', stopReason: 'stop' }),
       ]);
@@ -4320,14 +4199,13 @@ describe('Agent', () => {
           agent: agentMeta({ agents: ['analyst'] }),
           tools: [toolMeta(), toolMeta({ name: 'admin.deleteUser', functionName: 'deleteUser' })],
           subAgents: [agentMeta({ name: 'analyst' })],
-          config: {
-            filterTools: (tools) => tools.filter((t) => !t.function.name.startsWith('admin.')),
-          },
+          emitAppEvent: events.emitAppEvent,
           ctx,
         }),
       );
 
       await agent.run('hi', { agent: 'researcher', model: 'gpt-4o' });
+      expect(filter).toHaveBeenCalledTimes(1);
       const request = completeCalls.mock.calls[0][0];
       const names = request.tools.map((t: { function: { name: string } }) => t.function.name);
       expect(names).toContain('weather_getWeather');
@@ -4335,7 +4213,7 @@ describe('Agent', () => {
       expect(names).not.toContain('admin.deleteUser');
     });
 
-    it('钩子未配置时行为不变: tool 正常执行,ctx 仍传给 handler', async () => {
+    it('未订阅时行为不变: tool 正常执行,ctx 仍传给 handler', async () => {
       const handler = vi.fn(async () => ({ ok: true }));
       const { provider } = toolCallProvider();
       const agent = new Agent(
@@ -4830,8 +4708,8 @@ describe('sub-agent 派发工具命名与路由', () => {
   });
 });
 
-describe('resolveRootInput 与既有注入边界', () => {
-  it('无扩展面接线：user 消息原样（现状逐字节阴性对照）', async () => {
+describe('agent 事件与既有注入边界', () => {
+  it('emitAppEvent 未接线（编程式裸 Agent）：user 消息原样（现状逐字节阴性对照——能力边界非降级）', async () => {
     const { provider, completeCalls } = createMockProvider([
       llmResponse({ content: 'ok', stopReason: 'stop' }),
     ]);

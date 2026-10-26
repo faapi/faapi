@@ -17,6 +17,7 @@ import { generateAgentArtifacts } from './generateAgentArtifacts';
 import { scanTasks, TASK_PATTERNS } from '../tasks/scanTasks';
 import { generateTaskArtifacts } from './generateTaskArtifacts';
 import { ensureCompiled } from './compileOnDemand';
+import { loadBootstrap } from './bootstrap';
 import { invalidateMiddlewareCache } from '../middlewares/loadMiddlewares';
 import { invalidateProgramCache } from '../ast/createProgram';
 import { invalidateSchemaCache } from '../validators/validateInput';
@@ -55,26 +56,28 @@ export interface DevApp extends AppBase {
 let suppressProgramInvalidation = false;
 
 /**
- * dev 模式应用启动 API
+ * dev 模式应用启动（**框架内部模块——不公开导出**）
  *
- * 在 createAppBase（共享逻辑）基础上增加 `reloadRoutes` 热替换能力，供 `faapi dev` watcher 调用。
+ * 仅供 `faapi dev` CLI 编排使用（devCommand 内部导入），业务不应直接调用——
+ * 零入口是唯一入口，启动逻辑写 `src/bootstrap.ts`（见 [bootstrap](./bootstrap.md)）。
+ *
+ * 在 createAppBase（共享逻辑）基础上增加 `reloadRoutes` 等热替换能力，供 watcher 调用。
  *
  * 与 createProdApp 的区别：
- * - dev：含 reloadRoutes（重新扫描路由 + 重新生成 schema + 清缓存 + 更新 server 路由引用）
- * - prod：精简，无 reloadRoutes（产物已固化，运行时不重建）
+ * - dev：含 reload*（重新扫描路由 + 重新生成 schema + 清缓存 + 更新 server 路由引用）
+ * - prod：精简，无 reload*（产物已固化，运行时不重建）
  *
- * 由 `devCommand` 直接调用，devCommand 持有 app 引用并传给 watcher。
- *
- * @example
- * ```ts
- * // devCommand 内部
- * const app = await createDevApp();
- * await app.listen();
- * startWatcher({ rootDir, app, devDist });
- * ```
+ * 返回前加载执行 `src/bootstrap.ts`（app 已创建、事件未发射——bootstrap 订阅窗口）。
  */
 export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> {
   const { app, ctx } = await createAppBase(options);
+  try {
+    await loadBootstrap(ctx.rootDir, ctx.dist, { onDemand: true });
+  } catch (err) {
+    // bootstrap 失败的 app 不可用：清理单例与注册表后上抛（可修复重建，不留孤儿单例）
+    await app.close();
+    throw err;
+  }
 
   const devApp = app as DevApp;
 

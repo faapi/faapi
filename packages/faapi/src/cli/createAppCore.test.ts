@@ -1,9 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import http from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createAppBase, getApp, type CreateAppOptions } from './createAppCore';
+import type { AgentToolContext } from '../runtime/agentToolContext';
+
+/** 最小合规 AgentToolContext 桩（契约字段 tasks/log/signal——事件订阅测试不消费其内容） */
+const toolCtx = {
+  tasks: undefined,
+  log: undefined,
+  signal: undefined,
+} as unknown as AgentToolContext;
 import { readResource } from '../utils/readResource';
 import { compileDevRoutes } from './compileDevRoutes';
 import { compileConfig } from './compileConfig';
@@ -94,6 +102,45 @@ describe('createAppBase', () => {
     expect(app.dist).toBe('dist');
     expect('resourcesDir' in app).toBe(false);
     await app.close();
+  });
+
+  it('app.on 订阅框架事件（目录强类型），emit 经 app 实例总线扇出', async () => {
+    writeHandler();
+    await compileArtifacts('dist');
+    const { app } = await createAppBase(options());
+    const received: string[] = [];
+    const off = app.on('agent:root-input', (e) => {
+      received.push(`${e.agentName}:${e.input}`);
+      e.input = 'rewritten';
+    });
+    // app.emit 未公开——发射走 registries.appEvents（插件/框架内部接线位）
+    const payload = { agentName: 'researcher', input: 'go', ctx: toolCtx };
+    const returned = await app.registries.appEvents.emit('agent:root-input', payload);
+    expect(received).toEqual(['researcher:go']);
+    expect(returned.input).toBe('rewritten');
+    off();
+    await app.registries.appEvents.emit('agent:root-input', {
+      agentName: 'researcher',
+      input: 'go',
+      ctx: toolCtx,
+    });
+    expect(received).toEqual(['researcher:go']);
+    await app.close();
+  });
+
+  it('app.close() 清空 appEvents 订阅（app 实例级生命周期）', async () => {
+    writeHandler();
+    await compileArtifacts('dist');
+    const { app } = await createAppBase(options());
+    const handler = vi.fn();
+    app.on('agent:root-input', handler);
+    await app.close();
+    await app.registries.appEvents.emit('agent:root-input', {
+      agentName: 'researcher',
+      input: 'go',
+      ctx: toolCtx,
+    });
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('options.dist 覆盖时 app.dist 随之定位（dev .faapi 场景）', async () => {
@@ -846,7 +893,7 @@ export function POST(body: CreateUserBody) {
  * 存在"接受连接但不服务"的窗口。onBoot 在 server.listen 调用之前执行，
  * 适合环境变量校验、下游依赖检查等"失败即不该暴露端口"的逻辑。
  */
-describe('lifecycle onBoot（listen 前钩子）', () => {
+describe('app:boot / app:ready / app:close 事件（app.on 直订，createAppBase 后 listen 前的内部窗口）', () => {
   let tempDir: string;
 
   beforeEach(() => {
@@ -863,7 +910,7 @@ describe('lifecycle onBoot（listen 前钩子）', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  /** 写 faapi.config.ts + handler + 编译产物（同进程 globalThis 传递钩子事件） */
+  /** 写 faapi.config.ts + handler + 编译产物（同进程 globalThis 传递事件记录） */
   async function setupApp(configContent: string, handlerSource?: string) {
     writeFileSync(join(tempDir, 'faapi.config.ts'), configContent, 'utf-8');
     const handlerPath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
@@ -883,72 +930,56 @@ describe('lifecycle onBoot（listen 前钩子）', () => {
     await generateSchemaFiles(sorted, tempDir, 'dist');
   }
 
-  it('onBoot 在 server.listen 之前触发（listening === false），先于 onReady', async () => {
-    await setupApp(`const g = globalThis;
-g.__onbootEvents = [];
-export default {
-  lifecycle: {
-    onBoot(ctx) {
-      g.__onbootEvents.push(['onBoot', ctx.server.listening]);
-    },
-    onReady(ctx) {
-      g.__onbootEvents.push(['onReady', ctx.server.listening]);
-    },
-  },
-};
-`);
+  it('app:boot 在 server.listen 之前发射（listening === false），先于 app:ready', async () => {
+    await setupApp(`export default {};\n`);
 
+    // 内部窗口：createAppBase 返回后、listen 前直订（bootstrap 约定文件即落在这条缝上）
+    const timeline: [string, boolean][] = [];
     const { app } = await createAppBase({ rootDir: tempDir, port: 0 });
+    const offBoot = app.on('app:boot', (e) => {
+      void timeline.push(['app:boot', e.server.listening]);
+    });
+    const offReady = app.on('app:ready', (e) => {
+      void timeline.push(['app:ready', e.server.listening]);
+    });
     try {
       await app.listen();
 
-      const events = (globalThis as { __onbootEvents?: unknown[][] }).__onbootEvents ?? [];
-      // onBoot 先于 onReady；onBoot 时 server 未监听，onReady 时已监听
-      expect(events[0]).toEqual(['onBoot', false]);
-      expect(events[1]).toEqual(['onReady', true]);
+      // app:boot 先于 app:ready；boot 时 server 未监听,ready 时已监听
+      expect(timeline[0]).toEqual(['app:boot', false]);
+      expect(timeline[1]).toEqual(['app:ready', true]);
     } finally {
+      offBoot();
+      offReady();
       await app.close();
     }
   });
 
-  it('onBoot 抛错时 listen() reject 且端口未暴露', async () => {
-    await setupApp(`export default {
-  lifecycle: {
-    async onBoot() {
-      throw new Error('DB_HOST is required');
-    },
-  },
-};
-`);
+  it('app:boot 订阅端抛错时 listen() reject 且端口未暴露', async () => {
+    await setupApp(`export default {};\n`);
 
     const port = 20000 + Math.floor(Math.random() * 10000);
     const { app } = await createAppBase({ rootDir: tempDir, port });
+    const off = app.on('app:boot', () => {
+      throw new Error('DB_HOST is required');
+    });
     try {
-      // listen() 以 onBoot 的原始错误 reject
+      // listen() 以订阅端的原始错误 reject（传播口径——失败端口不暴露语义不变）
       await expect(app.listen()).rejects.toThrow('DB_HOST is required');
       // 端口未暴露：连接被拒（ECONNREFUSED）
       await expect(fetch(`http://localhost:${port}/api/hello`)).rejects.toThrow();
       // listen 失败，app.server 未绑定
       expect(app.server).toBeNull();
     } finally {
+      off();
       // listen 失败的 app 仍需 close（单 app 强制下遗留存活 app 会卡住后续创建）
       await app.close();
     }
   });
 
-  it('onBoot/onReady/onClose 收到 config——与请求 ctx.config 同一对象（活引用）', async () => {
+  it('app:boot/ready/close 载荷 config 与请求 ctx.config 同一对象（活引用）；close 在 drain 后发射', async () => {
     await setupApp(
-      `const g = globalThis;
-g.__lifecycleConfigs = [];
-export default {
-  answer: 42,
-  lifecycle: {
-    onBoot(ctx) { g.__lifecycleConfigs.push(['onBoot', ctx.config]); },
-    onReady(ctx) { g.__lifecycleConfigs.push(['onReady', ctx.config]); },
-    onClose(ctx) { g.__lifecycleConfigs.push(['onClose', ctx.config]); },
-  },
-};
-`,
+      `export default { answer: 42 };\n`,
       `const g = globalThis;
 export function GET(ctx) {
   g.__requestConfig = ctx.config;
@@ -957,24 +988,67 @@ export function GET(ctx) {
 `,
     );
 
+    const configs: [string, unknown][] = [];
     const { app } = await createAppBase({ rootDir: tempDir, port: 0 });
+    const offs = [
+      app.on('app:boot', (e) => void configs.push(['app:boot', e.config])),
+      app.on('app:ready', (e) => void configs.push(['app:ready', e.config])),
+      app.on('app:close', (e) => void configs.push(['app:close', e.config])),
+    ];
+
     await app.listen();
     const res = await app.inject({ method: 'GET', path: '/api/hello' });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ data: { answer: 42 } });
     await app.close();
+    for (const off of offs) off();
 
     const g = globalThis as {
-      __lifecycleConfigs?: [string, unknown][];
       __requestConfig?: unknown;
     };
-    const configs = g.__lifecycleConfigs ?? [];
-    expect(configs.map(([name]) => name)).toEqual(['onBoot', 'onReady', 'onClose']);
-    // 三个钩子收到的 config 均与请求 ctx.config 同一对象（活引用，非快照副本）
+    expect(configs.map(([name]) => name)).toEqual(['app:boot', 'app:ready', 'app:close']);
+    // 三个事件载荷的 config 均与请求 ctx.config 同一对象（活引用，非快照副本）
     for (const [, config] of configs) {
       expect(config).toBe(g.__requestConfig);
     }
     expect((g.__requestConfig as { answer: number }).answer).toBe(42);
+  });
+
+  it('request:error 事件：handler 抛错响应发出后发射（载荷 error + ctx），订阅端抛错留痕', async () => {
+    const handlerPath = join(tempDir, 'src', 'api', 'hello', 'handler.ts');
+    mkdirSync(join(handlerPath, '..'), { recursive: true });
+    writeFileSync(handlerPath, `export function GET() { throw new Error('boom'); }\n`, 'utf-8');
+    writeFileSync(join(tempDir, 'faapi.config.ts'), `export default {};\n`, 'utf-8');
+    await compileDevRoutes({ rootDir: tempDir, dist: 'dist' });
+    await compileConfig({ rootDir: tempDir, dist: 'dist' });
+    const { routes, wsRoutes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], 'dist');
+    const sorted = sortRoutes(routes);
+    const serialized = serializeRoutes(sorted, wsRoutes, tempDir, 'dist');
+    await writeRoutesModule(serialized, join(tempDir, 'dist', 'faapi-routes.js'));
+    await generateSchemaFiles(sorted, tempDir, 'dist');
+
+    const seen: Array<{ message: string; hasCtx: boolean }> = [];
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { app } = await createAppBase({ rootDir: tempDir, port: 0 });
+    const off = app.on('request:error', (e) => {
+      seen.push({ message: (e.error as Error).message, hasCtx: !!e.ctx });
+      throw new Error('observer blew up'); // 观察类留痕口径：不干扰已发出响应
+    });
+    try {
+      const res = await app.inject({ method: 'GET', path: '/api/hello' });
+      // 错误响应正常发出（500），订阅端抛错不影响
+      expect(res.status).toBe(500);
+      // 发射时序：request:error 在响应写出后 await（观察类副作用）——inject 于响应
+      // end 即返回,此处等一个 tick 再断言
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(seen).toEqual([{ message: 'boom', hasCtx: true }]);
+      // 留痕不静默
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      off();
+      errSpy.mockRestore();
+      await app.close();
+    }
   });
 });
 

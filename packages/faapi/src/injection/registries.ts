@@ -6,6 +6,7 @@ import type { TaskRegistry } from '../tasks/taskRegistry';
 import { createTaskRegistry } from '../tasks/taskRegistry';
 import type { LlmComplete } from './llmTypes';
 import { subAgentToolName } from './subAgentToolName';
+import { createAppEventBus, type AppEventBus } from '../events/appEventBus';
 
 /**
  * app 级注册表（方案 A：注册表实例化）
@@ -338,6 +339,8 @@ export interface AppRegistries {
   llm: LlmChannelStore;
   /** agent 循环执行器（`@faapi/agent` 插件注册；未加载插件时为空——worker 内 taskCtx.agent 不挂载） */
   agentRunner: AgentRunnerStore;
+  /** app 事件总线（`agent:root-input` / `agent:input` 等，见 [appEventBus](../events/appEventBus.md)——业务方经 `getApp().on(...)` 订阅，`app.close()` 清空） */
+  appEvents: AppEventBus;
 }
 
 /**
@@ -402,7 +405,8 @@ export function createAppRegistries(): AppRegistries {
   const taskHandle = createTaskHandleStore();
   const llm = createLlmChannelStore();
   const agentRunner = createAgentRunnerStore();
-  return { tool, agent, task, agentHandle, taskHandle, llm, agentRunner };
+  const appEvents = createAppEventBus();
+  return { tool, agent, task, agentHandle, taskHandle, llm, agentRunner, appEvents };
 }
 
 /**
