@@ -23,6 +23,7 @@ description: "开发 faapi 框架本身。Invoke when 在 faapi 仓库内新增/
 | 理解架构 / dev·build·prod 链路 / 产物机制 | 读 AGENTS.md「架构」（统一产物驱动、零入口设计、按需编译），再按需读模块 DDD 文档 | AGENTS.md「架构」 |
 | 新增 `@faapi/<name>` 子包 | 按 AGENTS.md「新增子包配置清单」逐项配置并跑完末节验证；npm 上包不存在时先用 `npm-empty-publish` 技能发占位包、配 Trusted Publisher | AGENTS.md「新增子包配置清单」 |
 | 测试 / 质量门禁 | `pnpm -r run typecheck` + `typecheck:test` / `lint` / `test` / `build`——typecheck 与 typecheck:test 是两个独立 script，后者用 tsconfig.test.json 单独严查测试文件，只跑前者会漏掉测试类型错误（CI 两者都跑，已两次因漏跑挂在发布门禁）；本地快速反馈用包内 `test:unit`，提交前跑全量 | AGENTS.md「技术栈」/「新增子包配置清单·验证」 |
+| 删除公开 API（钩子/导出/配置字段）后的文档同步 | 残留检查 grep 必须**覆盖全文件类型**（`.ts` + `.md`）——`.md` 里的示例代码块不进 typecheck，编译器兜不住文档漂移，只扫 `*.ts` 会漏（v7.9.0 文档滞后事故：agent.md/testServer.md/testing.md/README 的旧示例由业务方发现）。操作：对每个被删符号全仓 grep（含根 README.md 与 AGENTS.md），逐条判断「用户态表述 → 改新口径 / 历史叙述与内部实现描述 → 保留」；目录级 README.md（`src/**/README.md`）与根 README 一并扫 | AGENTS.md「6.6 测试确定性约定」（教训同源：本地绿 ≠ 正确） |
 | 发正式版 | 走 `npm-stable-release` 技能（changeset 升版本 + 打 tag） | AGENTS.md「交付完成定义·发布相关补充约定」 |
 | 提交变更 | Conventional Commits（commitlint 强制）；`packages/faapi`、`packages/schema` 的用户可见变更必须随 PR 附 changeset（`pnpm changeset`），CHANGELOG 不手写 | AGENTS.md「交付完成定义」 |
 | 用户可见变更（新能力 / 行为变化 / 配置字段） | **不做自动同步**——个人技能库 `faapi-dev` 的更新由维护者在正式发版后手动同步、自行触发；框架侧不代为同步，也不预测发版版本 | AGENTS.md「交付完成定义」 |
