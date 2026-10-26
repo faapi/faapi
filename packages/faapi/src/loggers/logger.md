@@ -133,7 +133,7 @@ export default {
 - **输出到 stdout/stderr**：默认 console sink 的 debug/info 走 stdout、warn/error 走 stderr，`docker logs` 直接可见；容器内**不写日志文件**，采集交给 Docker logging driver（json-file / fluentd / loki 等）或 k8s 采集器
 - **结构化采集**：接 Loki/ELK/Datadog 时按上一节接 pino sink——JSON 行到 stdout，单流（pino 不像默认 console 分流 stderr）对采集器更友好；`requestId` 已在每条业务日志与请求日志条目中，跨服务串联可用，多副本部署可在 sink 里补 `hostname` 等 Pod 维度字段
 - **级别调整不改镜像**：`docker run -e LOG_LEVEL=debug`（compose `environment:` / k8s `env` 同理）。faapi 的 `loadEnv` 也会把镜像内 `.env` 加载进 `process.env`，但运行期注入用 `-e` 最常见。注意优先级：`config.log.level` 显式值 > `LOG_LEVEL` env > 不过滤——容器场景建议 config 只写 `sink` 不写死 level，级别交给环境变量
-- **优雅停机不丢日志**：`docker stop` 发 SIGTERM → faapi（listen 时已注册 SIGTERM/SIGINT handler）自动优雅关闭——drain 在跑任务、执行 `lifecycle.onClose` 后退出 → pino 的 flush 挂在 `onClose`（见上节示例）；Docker 默认 10s 宽限期足够，超时 SIGKILL 强杀时异步缓冲仍可能丢（同所有 Node 进程）
+- **优雅停机不丢日志**：`docker stop` 发 SIGTERM → faapi（listen 时已注册 SIGTERM/SIGINT handler）自动优雅关闭——drain 在跑任务、发射 `app:close` 事件（订阅端写 `src/bootstrap.ts`）后退出 → pino 的 flush 挂在 `app:close` 订阅端（见上节示例）；Docker 默认 10s 宽限期足够，超时 SIGKILL 强杀时异步缓冲仍可能丢（同所有 Node 进程）
 
 ```yaml
 # docker-compose.yml 示例

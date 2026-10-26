@@ -1,6 +1,6 @@
 # generateRoutes
 
-一句话概括：build 时序列化路由清单为 JS 模块，生产 `createApp` 时水合还原（传递 middlewarePaths，不预加载中间件）。
+一句话概括：build 时序列化路由清单为 JS 模块，生产启动（`createAppBase` 水合）时还原（传递 middlewarePaths，不预加载中间件）。
 
 ## 为什么需要
 

@@ -7,7 +7,7 @@
 `Agent` 类按依赖注入设计（`AgentDeps` 访问器签名与 faapi 核心对称），装配逻辑原本是 `@faapi/agent` 插件 setup 的内部实现（plugin.ts 闭包）。两类场景被迫镜像这份拼装：
 
 1. **任务内组装**——`TaskContext.registries` 只读视图在手，但任务的 `taskCtx` 没有 agentHandle 工厂（那是 HTTP 请求链路的注入通道），任务内跑 agent 只能 `new Agent(deps)` 手拼：7 个注册表访问器 + `loadToolModule` 桥接 + schema 解析器接线，逐字段复刻框架工厂
-2. **自组装**——业务要在框架工厂产物之上叠加自己的配方（`resolveSystemPrompt` 装饰、schema 富化、`maxHistoryTokens` 等），而框架工厂不透传定制点；业务于是整体绕开插件工厂自建组装点，deps 拼装随之复刻一份
+2. **自组装**——业务要在框架工厂产物之上叠加自己的配方（`emitAppEvent` 桥接独立事件总线、schema 富化、`maxHistoryTokens` 等），而框架工厂不透传定制点；业务于是整体绕开插件工厂自建组装点，deps 拼装随之复刻一份
 
 框架文档（`agent.md`「派发入参 schema 声明」的编程式组装路径、`toolSchemaResolver.md` 任务侧示例）展示的就是手拼形态——框架亲手把定制业务推向机械。本模块把「从 registries + llms 构造 deps」抽为单一实现：插件 setup 改调它，任务内/自组装也调它，机械只此一份。
 
@@ -16,7 +16,7 @@
 ## 使用场景
 
 - **任务内组装 agent**（主要场景）：进程内任务用静默通道 `taskCtx.agent`（框架以 carry + 任务级能力合成契约 ctx 构造，见 faapi 的 taskToolContext.md）；手工组装时 `new Agent(createAgentDeps({ registries: taskCtx.registries, ctx: createTaskToolContext({ carry: taskCtx.carry, tasks: taskCtx.tasks, log: taskCtx.log, signal: taskCtx.signal }), agentConfig: taskCtx.config.agent }))`——`AgentDeps.ctx` 为**必填**的 `AgentToolContext` 契约（类型声明在主包，三路径合成规则见 faapi 的 agentToolContext.md）
-- **自组装单点**：业务组装工厂（如 writer 的 `buildAppAgent`）用 `overrides` 叠加差异项——`resolveSystemPrompt` 装饰、`resolveSubAgentContext` 派发上下文供数、schema 富化包装、config 覆盖——访问器拼装不再复刻
+- **自组装单点**：业务组装工厂（如 writer 的 `buildAppAgent`）用 `overrides` 叠加差异项——`emitAppEvent` 桥接、schema 富化包装、config 覆盖——访问器拼装不再复刻（流程类扩展已全量事件化，订阅 `src/bootstrap.ts`，不走 overrides）
 - **插件 setup**：`@faapi/agent` 插件内部同样经本工厂装配（与任务侧单一实现，不出现适配漂移）
 - **测试设施**：`createAgentTestHarness` 的 `registries` + `loadToolModule` 可经 `overrides` 接进同一装配（harness 自带桥接形态与此工厂同构）
 

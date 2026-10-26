@@ -16,7 +16,7 @@ faapi 需要统一的环境变量加载机制，让数据库连接、API 密钥�
 
 - `faapi dev` 启动时：`devCommand` 最早阶段先兜底 `NODE_ENV=development`（未显式设置时），再调 `loadEnv(rootDir)`
 - `node dist/main` 启动时：`main.js` 入口最早阶段先兜底 `NODE_ENV=production`（未显式设置时），再调 `loadEnv(cwd)`
-- 编程式调用：用户在 `createProdApp` 之前手动调用 `loadEnv`
+- 零入口 prod：生成的 `dist/main.js` 在 `$start()` 之前调用 `loadEnv(cwd)`（业务无需手动调用）
 
 ## API
 

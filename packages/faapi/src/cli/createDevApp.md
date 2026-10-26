@@ -86,7 +86,6 @@ watcher 一轮重建串行调 `reloadAll`：开头 `invalidateProgramCache()` �
 
 - `createAppCore.ts` - `createAppBase` 共享编排核心，本函数直接委托
 - `createProdApp.ts` - prod 模式对应物（精简，无 `reloadRoutes`）
-- `createApp.ts` - `createProdApp` 的向后兼容别名
 - `devCommand.ts` - `faapi dev` 命令，内部调用 `createDevApp` + `listen` + 启动 watcher
 - `watcher.ts` - 接收 app 引用，文件变更时调 `app.reloadAll()` 批量热替换
 - `../routers/scanRoutes.ts` - `reloadRoutes` 重新扫描路由（零 import，仅读源码 + 正则）

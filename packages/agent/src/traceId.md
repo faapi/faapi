@@ -32,7 +32,7 @@
 
 ### 注入提示词
 
-- **位置**:最终 system 消息**末尾**——在 `resolveSystemPrompt` 钩子与 `subAgentContextBlock` 之后由框架统一追加,不经过装饰钩子(框架级元数据不参与应用层装饰)
+- **位置**:最终 system 消息**末尾**——在 `agent:system-prompt` 事件改写结果与 `subAgentContextBlock` 之后由框架统一追加,不经过事件装饰(框架级元数据不参与应用层装饰)
 - **默认模板**(英文,中性元数据措辞):
 
   ```

@@ -137,7 +137,7 @@ const llm = createScriptLLM([
 | 方式 | 依赖产物 | 真 reactLoop | 真注册表 | 单 app 占用 | 适用场景 |
 |------|---------|-------------|---------|------------|---------|
 | 手搓注册表桩 | 否 | ✅ | 否（漂移面） | 否 | （历史方式，已被本设施取代） |
-| `createProdApp` + `Agent` | ✅（先 build） | ✅ | ✅ | **是** | 已有 build 产物的全链路验证 |
+| 零入口真实 E2E（`faapi build` + `node dist/main`） | ✅（先 build） | ✅ | ✅ | **是** | app 级行为全链路验证（config + 插件 + 事件 + 任务） |
 | **`createAgentTestHarness` + `Agent`** | **否（现场编译）** | **✅** | **✅（同管线）** | **否** | **agent 流程集成测试** |
 
 ## 局限性

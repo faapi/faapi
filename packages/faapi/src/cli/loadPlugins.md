@@ -4,13 +4,13 @@
 
 ## 为什么需要
 
-替代 `createApp` 中硬编码的 `try { import('@faapi/schema') }`，让插件加载声明式、可扩展。用户在 faapi.config.ts 的 plugins 字段声明插件，框架统一加载，主包零硬编码。
+替代 `createAppBase` 中硬编码的 `try { import('@faapi/schema') }`（≤6.x），让插件加载声明式、可扩展。用户在 faapi.config.ts 的 plugins 字段声明插件，框架统一加载，主包零硬编码。
 
 插件可通过 `ctx.wrapHandler` / `ctx.wrapUpgradeHandler` 在 server.listen 之前包装请求处理逻辑，用于集成其他框架（如 Next.js）。
 
 ## 使用场景
 
-`createApp` 在 server 创建后、listen 之前调用 loadPlugins，收集包装器后由 `applyPluginWrappers` 应用到 server。
+`createAppBase` 在 server 创建后、listen 之前调用 loadPlugins，收集包装器后由 `applyPluginWrappers` 应用到 server。
 
 ## 插件声明格式
 
@@ -67,5 +67,5 @@ loadPlugins 返回 `{ handlerWrappers, upgradeWrappers }`，由 `applyPluginWrap
 ## 相关模块
 
 - [pluginTypes.ts](../configs/pluginTypes.md) - FaapiPlugin / PluginContext / PluginDeclaration 类型
-- [createApp.ts](./createApp.md) - 调用方（listen 之前调用）
+- [createAppCore.ts](./createAppCore.md) - 调用方（listen 之前调用）
 - [startServer.ts](../server/startServer.md) - `applyPluginWrappers` 工具函数

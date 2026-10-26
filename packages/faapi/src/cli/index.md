@@ -19,9 +19,9 @@
 - dev：`faapi dev` 内部调 `createDevApp()` + `listen()`
 - prod：`faapi build` 自动生成 `dist/main.js` 启动入口（内部 import `createProdApp` + `listen`），`node dist/main` 直接启动
 
-用户自定义启动逻辑（初始化数据库、注册信号处理等）通过 `faapi.config.ts` 的 `lifecycle.onReady` / `onClose` 钩子实现，dev/prod 都执行。
+用户自定义启动逻辑（事件订阅、初始化数据库等）通过 `src/bootstrap.ts` 约定启动文件实现（框架在 app 创建后、listen 前加载执行，`getApp().on(...)` 订阅，见 [bootstrap](./bootstrap.md)），dev/prod 都执行。
 
-`createApp` / `createProdApp` / `createDevApp` 主要供编程式调用场景使用（如自定义启动器），`dist/main.js` 内部也调用它们完成启动。
+`createProdApp` / `createDevApp` 为**不公开导出的内部模块**（CLI 编排与生成入口专用，业务零入口）；公开启动导出仅 `$start`。
 
 ## 产物三元组
 
@@ -57,7 +57,6 @@ dev 和 prod 生成完全一致的产物三元组，差异仅由 `FAAPI_DIST` �
 - `createAppCore.ts` - dev/prod 共享的 `createAppBase` 编排核心
 - `createDevApp.ts` - dev 入口（含 reloadRoutes 热替换）
 - `createProdApp.ts` - prod 入口（精简，由 `dist/main.js` 内部调用）
-- `createApp.ts` - `createProdApp` 的向后兼容别名
 - `compileDevRoutes.ts` / `compileBuildRoutes.ts` - dev/build 专用编译
 - `compileConfig.ts` - 编译合并配置文件为 `faapi-config.js`
 - `loadConfig.ts` - 加载 `faapi-config.js` 产物（统一读 dist）

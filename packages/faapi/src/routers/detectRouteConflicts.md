@@ -14,4 +14,4 @@
 ## 相关模块
 
 - `routeTypes.ts` - 使用路由类型
-- `createApp.ts` - 可选调用检测
+- `generateRoutes.ts` - 路由清单水合时的冲突上报消费方

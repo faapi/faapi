@@ -80,7 +80,7 @@ LLM 一轮可返回多个 tool_call，非流式路径**并行执行**（`Promise
 
 - **结果按 tool_calls 声明顺序回传**（与完成顺序无关），tool 消息与 id 的配对语义不变
 - **每个 toolCall 独立 try/catch**——单个失败不影响其余的结果回传
-- **`beforeToolCall` / `afterToolCall` 钩子会并发触发**——业务方钩子不应依赖调用顺序（读 ctx 做鉴权/改写与顺序无关）
+- **`agent:before-tool-call` / `agent:after-tool-call` 事件会并发触发**——订阅端不应依赖事件顺序（读 ctx 做鉴权/改写与顺序无关）
 - 流式路径（`reactLoopStream`）保持**串行**——chunk 的 yield 顺序受消费端约束
 
 ### usage 与 turns 的整树口径（sub-agent 冒泡）
