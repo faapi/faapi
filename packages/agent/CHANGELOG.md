@@ -1,5 +1,7 @@
 # @faapi/agent
 
+## 7.10.0
+
 ## 7.9.0
 
 ### Minor Changes
