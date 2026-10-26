@@ -12,7 +12,7 @@
 
 ## FaapiConfig 字段
 
-应用行为配置（CORS、lifecycle、middlewares、业务配置等）从 `faapi.config.ts` 读取；框架元信息（port/dist）通过环境变量传入,不放在 config 内。
+应用行为配置（CORS、middlewares、业务配置等）从 `faapi.config.ts` 读取；事件订阅写 `src/bootstrap.ts`（见 [appEventBus](../events/appEventBus.md)）；框架元信息（port/dist）通过环境变量传入,不放在 config 内。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -21,7 +21,6 @@
 | `bodyLimit` | `number` | 请求体大小上限 |
 | `logger` | `LoggerOptions \| boolean` | 请求日志配置,默认启用 |
 | `http2` | `boolean` | 是否启用 HTTP/2 |
-| `lifecycle` | `LifecycleHooks` | 生命周期钩子（onReady/onClose/onError） |
 | `middlewares` | `FaapiMiddleware[]` | 全局中间件（最外层） |
 | `injectors` | `InjectorMap` | 全局注入器映射表 |
 | `plugins` | `PluginDeclaration[]` | 插件声明数组 |

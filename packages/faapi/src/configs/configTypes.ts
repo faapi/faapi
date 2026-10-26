@@ -378,8 +378,6 @@ export interface AgentConfig {
    * 都走同一工厂，配方一次声明两路到达。典型用途：
    * - `resolveToolSchema` / `resolveAgentInputSchema`：schema 富化包装
    *   （条件必填注入 LLM 可见 JSON Schema，运行时校验链路不变）
-   * - `resolveSubAgentInput`：派发边界按子代理入参预取库内数据
-   *   （服务端合成材料进子代理首条 user 消息）
    * - `providers` 复用：按 llms 引用缓存的进程级单例
    *
    * 装饰函数应当纯组装（spread + 覆盖差异项）；抛错原样冒泡（fail fast，
