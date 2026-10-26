@@ -485,7 +485,6 @@ async function emitAgentInputEvent(
   const appEvent = config.appEvent;
   if (!appEvent) return messages;
   const payload = {
-    agentName: appEvent.agentName,
     depth: appEvent.depth,
     messages,
     ctx: appEvent.ctx,

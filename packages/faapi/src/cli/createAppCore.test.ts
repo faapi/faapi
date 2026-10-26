@@ -110,21 +110,20 @@ describe('createAppBase', () => {
     const { app } = await createAppBase(options());
     const received: string[] = [];
     const off = app.on('agent:root-input', (e) => {
-      received.push(`${e.agentName}:${e.input}`);
+      received.push(e.input);
       e.input = 'rewritten';
     });
     // app.emit 未公开——发射走 registries.appEvents（插件/框架内部接线位）
-    const payload = { agentName: 'researcher', input: 'go', ctx: toolCtx };
+    const payload = { input: 'go', ctx: toolCtx };
     const returned = await app.registries.appEvents.emit('agent:root-input', payload);
-    expect(received).toEqual(['researcher:go']);
+    expect(received).toEqual(['go']);
     expect(returned.input).toBe('rewritten');
     off();
     await app.registries.appEvents.emit('agent:root-input', {
-      agentName: 'researcher',
       input: 'go',
       ctx: toolCtx,
     });
-    expect(received).toEqual(['researcher:go']);
+    expect(received).toEqual(['go']); // 退订后不再收到第二次发射
     await app.close();
   });
 
@@ -136,7 +135,6 @@ describe('createAppBase', () => {
     app.on('agent:root-input', handler);
     await app.close();
     await app.registries.appEvents.emit('agent:root-input', {
-      agentName: 'researcher',
       input: 'go',
       ctx: toolCtx,
     });

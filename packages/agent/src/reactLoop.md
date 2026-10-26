@@ -133,9 +133,9 @@ export interface SubAgentToolResult {
 
 `ReactLoopConfig.appEvent` 已接线（`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传）时，每轮 `resolveOutgoingMessages`（历史裁剪/压缩）之后、`provider.complete/stream` 之前，经其发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:input` 与 `agent:input:<agentName>`（先通用后专属，同一载荷对象顺序串联）：
 
-- **载荷**：`{ agentName, depth, messages, ctx }`——`messages` 为本轮发送副本（裁剪/压缩后），handler 可原地改写 `messages` 数组（增删改消息对象均生效）。
+- **载荷**：`{ depth, messages, ctx }`——不含 agent 名（按 agent 路由订阅专属名 `agent:input:<agentName>`，名字在事件名里）；`messages` 为本轮发送副本（裁剪/压缩后），handler 可原地改写 `messages` 数组（增删改消息对象均生效）。
 - **副本口径**：改写仅作用**本轮发送**——本地 `messages` / `result.messages` / `done.messages` / 续跑源不受影响（与历史裁剪同一口径）。跨轮持久改写用 `agent:root-input`（进历史）。
-- **触发面**：首轮、工具轮、子代理各轮（`agentName` = 子代理名、`depth` > 1）、续跑轮全部触发——每轮 LLM 调用恰好一次。
+- **触发面**：首轮、工具轮、子代理各轮（`depth` > 1）、续跑轮全部触发——每轮 LLM 调用恰好一次。
 - **扇出后校验**：`messages` 必须为非空数组，否则抛 `AgentError`（fail fast，不发 LLM 请求）。
 - **错误传播**：handler 抛错走 run / stream 既有错误链（发起 LLM 请求前显式失败，非流式路径同 `provider.complete` 错误处理；不吞不降级）。
 - **未接线**：`appEvent` 缺席 → 事件不发射、消息原样（能力边界，非降级）。

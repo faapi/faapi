@@ -168,9 +168,9 @@ describe('@faapi/agent plugin', () => {
 
     it('emitAppEvent 接线：deps 发射落到 app 实例的 appEvents 总线（getApp().on 可收）', async () => {
       const ctx = makeCtx(fullAgentConfig);
-      const received: Array<{ name: string; input: string }> = [];
+      const received: string[] = [];
       ctx.registries.appEvents.on('agent:root-input', (e) => {
-        received.push({ name: e.agentName, input: e.input });
+        received.push(e.input);
       });
       plugin.setup(ctx);
       const factory = setupAndCaptureFactory(ctx);
@@ -179,8 +179,8 @@ describe('@faapi/agent plugin', () => {
       await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
 
       // 通用订阅收到一次发射（专属名 agent:root-input:researcher 是独立目录项,
-      // 另有专属订阅位）,载荷来自 agent:root-input 接缝
-      expect(received).toEqual([{ name: 'researcher', input: 'hello' }]);
+      // 另有专属订阅位）,载荷来自 agent:root-input 接缝（不含 agent 名）
+      expect(received).toEqual(['hello']);
     });
 
     it('工厂返回 Agent 实例（满足 AgentHandle）', () => {

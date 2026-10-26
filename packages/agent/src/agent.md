@@ -205,7 +205,7 @@ export const config = {
 | 项 | 语义 |
 | --- | --- |
 | base 解析顺序 | `systemPromptFile` 优先直读，失败抛 `AgentError`（事件不发射）；内联缺省 `''`（reactLoop 按 truthy 处理，不插 system 消息）。agent config 声明 `vars` 时 base 先经 vars 渲染（见上方「vars 提示词模板变量」），事件载荷收到渲染后内容 |
-| 载荷 | `{ agentName, prompt, ctx }`——handler 改写 `prompt`；多 handler 串联（专属看到通用改写） |
+| 载荷 | `{ prompt, ctx }`——不含 agent 名（按 agent 路由订阅专属名 `agent:system-prompt:<agentName>`，名字在事件名里）；handler 改写 `prompt`；多 handler 串联（专属看到通用改写） |
 | 错误传播 | handler 抛错原样上抛，走 run / stream 既有错误链；不吞不降级（**传播**口径） |
 | 调用时机 | 每次 run / stream、每次 sub-agent 派发各一次（`buildLoopConfig` 内，与现行文件直读同款新鲜度——dev 改 prompt 文件立即生效） |
 | 子代理传导 | deps 全树共享（emitAppEvent 随 deps 传导）——一次订阅覆盖主控与全部可达子代理 |
@@ -218,7 +218,8 @@ import { getApp } from '@faapi/faapi';
 
 // 启动期订阅写 src/bootstrap.ts（框架在 listen 前加载执行）;运行期可订阅于任意拿得到 app 的位置
 getApp().on('agent:system-prompt:chapter-writer', async (e) => {
-  const protocol = await loadProtocolBlock(e.agentName); // 应用层装饰：共享协议块 / 条件块 / DB 运行时层
+  // 专属订阅即按 agent 路由——agent 名在事件名里,载荷不含 agentName
+  const protocol = await loadProtocolBlock('chapter-writer'); // 应用层装饰：共享协议块 / 条件块 / DB 运行时层
   e.prompt = `${e.prompt}\n\n${protocol}`;
 });
 ```
@@ -236,7 +237,7 @@ getApp().on('agent:system-prompt:chapter-writer', async (e) => {
 | 项 | 语义 |
 | --- | --- |
 | 调用时机 | 仅 `executeSubAgent` 内、派发入参校验通过之后、子循环启动之前发射——`args` 已是 coerce 后的可信值；根调用不发射 |
-| 载荷 | `{ subName, args, context?, ctx }`——`subName` 是**真实 agent 名**（非 `agent-<name>` 派发名）；`args` 为校验后的派发入参；handler 设置 `context`（多 handler 后设覆盖） |
+| 载荷 | `{ args, context?, ctx }`——不含 subName（按子代理路由订阅专属名 `agent:sub-agent-context:<subName>`，名字在事件名里）；`args` 为校验后的派发入参；handler 设置 `context`（多 handler 后设覆盖） |
 | 追加语义 | `context` **追加**不替换——子代理最终 system = `agent:system-prompt` 链路结果 + `\n\n` + context。业务不碰 base |
 | 跳过规则 | 不设或空串不追加（不产生空块 / 前导分隔符）；子代理 base 为空串时最终 system 即 context 产出 |
 | 实例隔离 | 每次派发构造独立子 Agent 实例——同轮 `Promise.all` 并行派发各自注入，无交叉污染 |
@@ -262,6 +263,7 @@ getApp().on('agent:sub-agent-context:chapter-writer', async (e) => {
 `buildLoopConfig` 在 `agentName` 解析与注册校验之后、循环启动之前，对**非空 `input`**（任意 depth）经 `deps.emitAppEvent` 发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:root-input` 与 `agent:root-input:<agentName>`（先通用后专属，同一载荷对象）：
 
 - **触发语义**：「本次对话的首条 user 消息」——depth=1 是根调用输入；depth≥2 是子代理派发（`executeSubAgent` → `subAgent.run/stream(extractSubAgentUserInput(args))`，事件载荷 `input` 为派发入参 schema 校验、提取后的 user 输入字符串——即子代理 LLM 实际看到的首条 user 消息）；纯续跑（`options.messages` + 无 `input`）不触发。
+- **载荷形制**：`{ input, ctx }`——不含 `agentName`。按 agent 路由订阅专属名 `agent:root-input:<agentName>`（agent 名在事件名里），通用订阅 `agent:root-input` 是 agent 无关的横切处理——避免两条等价分流路径并存的使用困惑。
 - **改写语义**：handler 原地修改 `payload.input`；扇出结束后框架校验 `input` 必须为非空字符串，否则抛 `AgentError`（fail fast，业务代码 bug 不静默忽略）。改写产物整体替换本次 user 输入（不拼接、不被二次加工）。
 - **产物去向**：进循环历史并随 `result.messages`（非流式）/ `done.messages`（流式）导出——业务落库、续跑链继承、前端按标记渲染全链可见。组装发生在循环启动前，trace 的 `inputSnapshot` 如实反映改写后的 LLM 输入。
 - **错误传播**：depth=1 抛错走 run / stream 既有错误链（发起 LLM 请求前显式失败，无 per-tool 回灌语义）；depth≥2 抛错被 reactLoop per-tool catch 回传主控 LLM（主控可调整派发参数重试）。
@@ -429,7 +431,7 @@ return {
 
 - **`maxAgentDepth`**：默认 3。depth 从 1（根）开始,sub-agent 为 2、3...,超出抛 `AgentRecursionError`
 - **派发入参校验（富 schema 模式）**：sub 元数据声明 `inputTypeName`（handler.ts 顶层 `Input` 导出,见「派发入参 schema 声明」）且 `deps.resolveAgentInputSchema` 已接线时,执行前 `validate(args)`——失败返回 `{ error }` 回灌主控 LLM 重试（与常规 tool 校验失败同语义,不进入子循环）;通过后以 coerce 后的 value 继续传导。解析结果 `undefined`（声明了但 zod.js 缺失/损坏）抛 `AgentError` 显式失败。resolver 未接线（编程式组装/测试）或未声明 `Input` 时跳过校验,行为与历史版本一致
-- **派发上下文事件**：`emitAppEvent` 已接线时,校验通过后发射 `agent:sub-agent-context` / `agent:sub-agent-context:<subName>`（载荷 `subName`/`args`/`ctx`,handler 设置 `context`）——产出注入本子 Agent 实例,子循环 `buildLoopConfig` 在 `agent:system-prompt` 改写结果之后以 `\n\n` 追加为最终 system 消息（见「`agent:sub-agent-context` 派发上下文事件」）。未接线 / 未设 `context` / 空串时逐字节现状
+- **派发上下文事件**：`emitAppEvent` 已接线时,校验通过后发射 `agent:sub-agent-context` / `agent:sub-agent-context:<subName>`（载荷 `args`/`ctx`,不含 subName——按子代理路由订阅专属名,名字在事件名里;handler 设置 `context`）——产出注入本子 Agent 实例,子循环 `buildLoopConfig` 在 `agent:system-prompt` 改写结果之后以 `\n\n` 追加为最终 system 消息（见「`agent:sub-agent-context` 派发上下文事件」）。未接线 / 未设 `context` / 空串时逐字节现状
 - **首条 user 消息事件**：派发入参校验通过后，子循环 `buildLoopConfig` 对非空 `input` 发射 `agent:root-input` / `agent:root-input:<subName>` 事件（载荷 `input` 为提取后的 user 输入字符串），handler 可改写——改写产物即子代理首条 user 消息并进子对话历史（见「`agent:root-input` 对话首条 user 消息事件」）。`emitAppEvent` 未接线时输入原样
 - **`getAgentEntry` vs `getAgent`**：`getAgentEntry` 返回 `AgentMetadata`（含 `filePath` + `inputTypeName`）,`getAgent` 返回 `AgentCore`。两者都仅查文件 registry。sub-agent 必须是文件型 agent
 - **默认 reactLoop + provider 继承**：sub-agent 统一走默认循环,调 `subAgent.run(input, { agent, provider, model, enableTracing })`——继承父调用解析出的 provider 与 model（外部 provider 或 llms 解析结果;config.model 已移除,sub 无自身 model 可声明,恒沿用父调用解析结果）。user 消息的提取规则：args 恰为单字段 `{ input: <string> }`（与默认入参 schema 形状一致）时直传 `input` 字符串;其余形状（宽松模型多传字段 / 传空对象 / 老客户端任意 JSON）`JSON.stringify(args)` 兜底,不丢信息、向后兼容。`enableTracing=true` 时 subAgent.run 返回的 `result.trace`（agentName 已被 `Agent.run` 填为 subName）附在 `SubAgentToolResult` 的 `trace` 字段返回给 reactLoop,reactLoop 识别后发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原完整调用树）。`usage` / `turns` 字段始终携带（子循环整树口径,reactLoop 上卷进父 run 台账,详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」）。`usage` / `turns` 缺省（如 provider 不返回用量）时 reactLoop 跳过对应累加

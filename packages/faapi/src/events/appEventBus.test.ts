@@ -23,7 +23,6 @@ describe('createAppEventBus', () => {
     bus.on('agent:root-input', handler);
 
     const payload: AgentRootInputEvent = {
-      agentName: 'writer',
       input: 'go',
       ctx: toolCtx,
     };
@@ -45,7 +44,7 @@ describe('createAppEventBus', () => {
       order.push('second');
     });
 
-    await bus.emit('agent:input', { agentName: 'a', depth: 1, messages: [], ctx: toolCtx });
+    await bus.emit('agent:input', { depth: 1, messages: [], ctx: toolCtx });
 
     expect(order).toEqual(['slow-first', 'second']);
   });
@@ -61,7 +60,7 @@ describe('createAppEventBus', () => {
       e.input = `${e.input} [b]`;
     });
 
-    const payload = { agentName: 'a', input: 'go', ctx: toolCtx } as AgentRootInputEvent;
+    const payload: AgentRootInputEvent = { input: 'go', ctx: toolCtx };
     const returned = await bus.emit('agent:root-input', payload);
 
     expect(seen).toEqual(['[a] go']);
@@ -71,7 +70,6 @@ describe('createAppEventBus', () => {
   it('无订阅者 emit 为 no-op，原样返回载荷', async () => {
     const bus = createAppEventBus();
     const payload: AgentInputEvent = {
-      agentName: 'a',
       depth: 1,
       messages: [{ role: 'user', content: 'x' }],
       ctx: toolCtx,
@@ -87,7 +85,7 @@ describe('createAppEventBus', () => {
     off();
     off(); // 幂等
 
-    await bus.emit('agent:root-input', { agentName: 'a', input: 'x', ctx: toolCtx });
+    await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
     expect(handler).not.toHaveBeenCalled();
   });
 
@@ -106,12 +104,12 @@ describe('createAppEventBus', () => {
       order.push('c');
     });
 
-    await bus.emit('agent:root-input', { agentName: 'a', input: 'x', ctx: toolCtx });
+    await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
     // 快照语义：本次 emit 内已注册的 handler 均执行
     expect(order).toEqual(['a', 'b', 'c']);
 
     order.length = 0;
-    await bus.emit('agent:root-input', { agentName: 'a', input: 'x', ctx: toolCtx });
+    await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
     // 下一次发射起 b 不再被调用
     expect(order).toEqual(['a', 'c']);
   });
@@ -125,7 +123,7 @@ describe('createAppEventBus', () => {
     bus.on('agent:input', after);
 
     await expect(
-      bus.emit('agent:input', { agentName: 'a', depth: 1, messages: [], ctx: toolCtx }),
+      bus.emit('agent:input', { depth: 1, messages: [], ctx: toolCtx }),
     ).rejects.toThrowError('handler exploded');
     expect(after).not.toHaveBeenCalled();
   });
@@ -137,8 +135,8 @@ describe('createAppEventBus', () => {
     bus.on('agent:input', handler);
 
     bus.clear();
-    await bus.emit('agent:root-input', { agentName: 'a', input: 'x', ctx: toolCtx });
-    await bus.emit('agent:input', { agentName: 'a', depth: 1, messages: [], ctx: toolCtx });
+    await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
+    await bus.emit('agent:input', { depth: 1, messages: [], ctx: toolCtx });
 
     expect(handler).not.toHaveBeenCalled();
   });

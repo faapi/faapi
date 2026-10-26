@@ -134,7 +134,6 @@ describe('executeTool 校验顺序——ctx 声明即校验先于 before-tool-ca
   it('ctx 完整：事件在 handler 前正常发射（守卫语义不变,顺序 guard → after）', async () => {
     const events = createCollector();
     events.bus.on('agent:before-tool-call', (e) => {
-      expect(e.name).toBe('order_getOrder');
       expect(e.args).toEqual({ orderId: 'o1' });
       expect((e.ctx as unknown as { currentUserId: number }).currentUserId).toBe(42);
     });

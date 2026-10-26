@@ -709,7 +709,9 @@ export class Agent {
     // agent.md 同名章节）：传入非空 input 时触发（任意 depth——depth 1 为根调用输入,
     // depth ≥ 2 为子代理派发的首条 user 消息;纯续跑无新输入不触发）。handler 原地
     // 改写 payload.input,通用名与专属名（agent:root-input:<agentName>）同一载荷对象
-    // 先通用后专属顺序发射;扇出后校验 input 必须为非空字符串,否则抛 AgentError
+    // 先通用后专属顺序发射;载荷不含 agent 名（按 agent 路由统一走专属名订阅,
+    // agent 名在事件名里——避免「载荷 agentName 分流」与「专属名订阅」两条等价
+    // 路径并存的使用困惑）;扇出后校验 input 必须为非空字符串,否则抛 AgentError
     // （fail fast,空白串按空处理避免续跑轮输入被静默丢弃）。改写产物整体替换本次
     // user 输入——作为本次对话的首条 user 消息进循环历史并随 result.messages /
     // done.messages 导出;handler 抛错原样上抛走 run/stream 既有错误链;emitAppEvent
@@ -717,7 +719,7 @@ export class Agent {
     // （能力边界,非降级——替代已移除的 resolveRootInput / resolveSubAgentInput 双钩子）
     let effectiveInput = input;
     if (this.deps.emitAppEvent && input) {
-      const payload = { agentName, input, ctx: this.deps.ctx };
+      const payload = { input, ctx: this.deps.ctx };
       await this.deps.emitAppEvent(APP_EVENT.agentRootInput, payload);
       await this.deps.emitAppEvent(agentRootInputEventName(agentName), payload);
       if (typeof payload.input !== 'string' || payload.input.trim() === '') {
@@ -882,10 +884,11 @@ export class Agent {
       }
     }
     // agent:system-prompt 事件（原 resolveSystemPrompt 钩子——7.x 事件化）：handler
-    // 改写 payload.prompt 即最终 system 消息;专属名按 agent 路由;handler 抛错原样
-    // 上抛走 run/stream 既有错误链（传播口径）;未接线时原样返回 base（逐字节现状）
+    // 改写 payload.prompt 即最终 system 消息;载荷不含 agent 名（专属名按 agent 路由,
+    // 名字在事件名里）;handler 抛错原样上抛走 run/stream 既有错误链（传播口径）;
+    // 未接线时原样返回 base（逐字节现状）
     if (this.deps.emitAppEvent) {
-      const payload: SystemPromptEvent = { agentName, prompt: base, ctx: this.deps.ctx };
+      const payload: SystemPromptEvent = { prompt: base, ctx: this.deps.ctx };
       await this.deps.emitAppEvent(APP_EVENT.agentSystemPrompt, payload);
       await this.deps.emitAppEvent(agentSystemPromptEventName(agentName), payload);
       return payload.prompt;
@@ -995,10 +998,11 @@ export class Agent {
     // await 兼容：隔离任务路径的钩子经 RPC 垫片转发宿主执行（异步）
     const defs = Array.from(definitions.values());
     // agent:filter-tools 事件（原 filterTools 钩子——7.x 事件化）：LLM 可见清单
-    // 组装末尾发射,handler 原地 filter/splice（载荷带 agentName,专属名按 agent 路由）。
-    // 只影响可见性不拦执行;handler 抛错原样上抛（传播口径）;未接线时清单原样
+    // 组装末尾发射,handler 原地 filter/splice（载荷不含 agent 名,专属名按 agent
+    // 路由——名字在事件名里）。只影响可见性不拦执行;handler 抛错原样上抛（传播口径）;
+    // 未接线时清单原样
     if (this.deps.emitAppEvent) {
-      const payload: FilterToolsEvent = { agentName, tools: defs, ctx: this.deps.ctx };
+      const payload: FilterToolsEvent = { tools: defs, ctx: this.deps.ctx };
       await this.deps.emitAppEvent(APP_EVENT.agentFilterTools, payload);
       await this.deps.emitAppEvent(agentFilterToolsEventName(agentName), payload);
       return payload.tools;
@@ -1090,12 +1094,13 @@ export class Agent {
 
     // 执行守卫事件（agent:before-tool-call,原 beforeToolCall 钩子——7.x 事件化）：
     // 在 ctx 声明即校验之后、sub-agent 分流之前——一个事件同时覆盖常规 tool 与
-    // sub-agent 递归。handler 原地改写 args / 设置 error;扇出后统一判定:error 非空
-    // 不执行目标（error 回传 LLM）,否则以（可能改写的）payload.args 继续。handler
-    // 抛错原样上抛被 per-tool catch 回传主控 LLM（传播口径）;emitAppEvent 未接线时
-    // 不发射、参数原样（能力边界,非降级）
+    // sub-agent 递归。handler 原地改写 args / 设置 error（载荷不含 tool 名,专属名
+    // agent:before-tool-call:<toolName> 承载按 tool 路由——名字在事件名里）;扇出后
+    // 统一判定:error 非空不执行目标（error 回传 LLM）,否则以（可能改写的）payload.args
+    // 继续。handler 抛错原样上抛被 per-tool catch 回传主控 LLM（传播口径）;
+    // emitAppEvent 未接线时不发射、参数原样（能力边界,非降级）
     if (this.deps.emitAppEvent) {
-      const payload: BeforeToolCallEvent = { name, args, ctx: this.deps.ctx };
+      const payload: BeforeToolCallEvent = { args, ctx: this.deps.ctx };
       await this.deps.emitAppEvent(APP_EVENT.agentBeforeToolCall, payload);
       await this.deps.emitAppEvent(agentBeforeToolCallEventName(name), payload);
       if (payload.error !== undefined) return { error: payload.error };
@@ -1245,7 +1250,6 @@ export class Agent {
     // 回传主控 LLM（传播口径）;未接线时不发射
     if (this.deps.emitAppEvent) {
       const payload: SubAgentContextEvent = {
-        subName,
         args,
         context: undefined,
         ctx: this.deps.ctx,
@@ -1450,10 +1454,10 @@ export async function executeToolCall(
 /**
  * agent:after-tool-call 事件（原 afterToolCall 钩子——7.x 事件化,观察类留痕口径）
  *
- * tool / sub-agent 成功返回后发射（异常路径不发射）;name 语义与原钩子一致
- * （常规 tool 为 tool 名,sub-agent 为派发名 agent-<name>）。载荷 result 为观察面,
- * 改写不回写执行链路;订阅端抛错 console.error 留痕——不隔离会把成功的 tool 结果
- * 变成错误回传 LLM（审计故障劫持执行语义）。emitAppEvent 未接线时不发射。
+ * tool / sub-agent 成功返回后发射（异常路径不发射）;载荷不含 tool 名（专属名
+ * agent:after-tool-call:<toolName> 承载按 tool 路由——名字在事件名里）。载荷 result
+ * 为观察面,改写不回写执行链路;订阅端抛错 console.error 留痕——不隔离会把成功的
+ * tool 结果变成错误回传 LLM（审计故障劫持执行语义）。emitAppEvent 未接线时不发射。
  */
 function emitAfterToolCallEventOnDeps(
   deps: AgentDeps,
@@ -1463,7 +1467,7 @@ function emitAfterToolCallEventOnDeps(
 ): void {
   if (!deps.emitAppEvent) return;
   const { emitAppEvent } = deps;
-  const payload: AfterToolCallEvent = { name, args, result, ctx: deps.ctx };
+  const payload: AfterToolCallEvent = { args, result, ctx: deps.ctx };
   void Promise.resolve()
     .then(() =>
       emitAppEvent(APP_EVENT.agentAfterToolCall, payload).then(() =>

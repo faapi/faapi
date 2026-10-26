@@ -17,10 +17,14 @@ import type { TaskFailedInfo } from '../tasks/taskTypes';
 
 // ─── 事件载荷 ────────────────────────────────────────
 
-/** `agent:root-input` 载荷——本次对话的首条 user 消息（handler 可原地改写 input） */
+/**
+ * `agent:root-input` 载荷——本次对话的首条 user 消息（handler 可原地改写 input）
+ *
+ * **不含 agent 名**：`agent:root-input` 与 `agent:root-input:<agentName>` 双订阅
+ * 并存时，载荷里的 agent 名与专属事件名冗余（两条等价分流路径并存造成使用困惑）——
+ * 按 agent 路由统一走专属名订阅（agent 名在事件名里），通用订阅是 agent 无关的横切处理。
+ */
 export interface AgentRootInputEvent {
-  /** 本次对话的 agent 名（子代理派发时为子代理名） */
-  agentName: string;
   /** 本次对话首条 user 输入（根调用为 run/stream 入参;子代理为派发入参提取产物） */
   input: string;
   /** 请求上下文（HTTP 路径为请求收窄 ctx;任务路径为任务合成 ctx） */
@@ -29,8 +33,6 @@ export interface AgentRootInputEvent {
 
 /** `agent:input` 载荷——本轮将发送给 LLM 的消息副本（handler 可原地改写 messages） */
 export interface AgentInputEvent {
-  /** 当前循环的 agent 名 */
-  agentName: string;
   /** 递归深度（根循环 = 1） */
   depth: number;
   /** 本轮发送副本（历史裁剪/压缩后）——改写仅作用本轮发送,不落历史 */
@@ -83,11 +85,14 @@ export type AppEventEmitter = <K extends FaapiAppEventName>(
 ) => Promise<FaapiAppEventMap[K]>;
 
 // ─── agent 工具链 / systemPrompt / 派发上下文载荷（原 authHooks 等钩子迁移）──
+//
+// agent 域载荷统一不含路由键（agent 名 / tool 名）——`:<agentName>` / `:<toolName>`
+// 专属名订阅承载实体路由（名字在事件名里），通用名订阅是实体无关的横切处理；
+// 载荷再带实体名与专属事件名冗余，两条等价分流路径并存造成使用困惑（口径见
+// appEventBus.md「通用名与专属名的分工」）。
 
 /** `agent:before-tool-call` 载荷——tool/sub-agent 执行前守卫（原 beforeToolCall 钩子） */
 export interface BeforeToolCallEvent {
-  /** tool 名或派发名 `agent-<name>`（与原 beforeToolCall 钩子同语义） */
-  name: string;
   /** LLM 传入的入参——handler 可整体替换（`payload.args = {...}`） */
   args: Record<string, unknown>;
   ctx: AgentToolContext;
@@ -97,7 +102,6 @@ export interface BeforeToolCallEvent {
 
 /** `agent:after-tool-call` 载荷——成功执行后审计（原 afterToolCall 钩子,观察面） */
 export interface AfterToolCallEvent {
-  name: string;
   args: Record<string, unknown>;
   /** 成功结果（改写不回写执行链路——观察类事件） */
   result: unknown;
@@ -106,8 +110,6 @@ export interface AfterToolCallEvent {
 
 /** `agent:filter-tools` 载荷——LLM 可见 tools 清单过滤（原 filterTools 钩子） */
 export interface FilterToolsEvent {
-  /** 本次 run/stream 的 agent 名 */
-  agentName: string;
   /** handler 原地 filter/splice（含 agent-as-tool 派发项） */
   tools: LLMToolDefinition[];
   ctx: AgentToolContext;
@@ -115,7 +117,6 @@ export interface FilterToolsEvent {
 
 /** `agent:system-prompt` 载荷——systemPrompt 装饰（原 resolveSystemPrompt 钩子） */
 export interface SystemPromptEvent {
-  agentName: string;
   /** vars 渲染后的 base——handler 改写即最终 system 消息 */
   prompt: string;
   ctx: AgentToolContext;
@@ -123,8 +124,6 @@ export interface SystemPromptEvent {
 
 /** `agent:sub-agent-context` 载荷——派发边界供数（原 resolveSubAgentContext 钩子） */
 export interface SubAgentContextEvent {
-  /** 真实 agent 名（非派发名） */
-  subName: string;
   /** 校验后的派发入参 */
   args: Record<string, unknown>;
   /** handler 设置 → 追加进子代理 system（\n\n 拼接；不设/空串跳过；多 handler 后设覆盖） */

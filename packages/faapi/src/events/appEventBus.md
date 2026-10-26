@@ -10,9 +10,11 @@
 
 ### agent 域（改写类，含 `:<agentName>`/`:<toolName>` 专属变体）
 
+> **载荷统一口径**：agent 域载荷不含实体名（agent 名 / tool 名）——专属名订阅承载实体路由（名字在事件名里），通用订阅是实体无关的横切处理，避免「载荷字段分流」与「专属名订阅」两条等价路径并存的使用困惑。
+
 | 事件名 | 载荷 | 触发时机（替代的旧钩子） |
 | --- | --- | --- |
-| `agent:root-input` | `AgentRootInputEvent` | 所有 agent 对话首次 user 消息发送前——根调用（depth=1）与子代理派发（depth≥2）；纯续跑不触发（原 `resolveRootInput` + `resolveSubAgentInput`） |
+| `agent:root-input` | `AgentRootInputEvent`（`{ input, ctx }`） | 所有 agent 对话首次 user 消息发送前——根调用（depth=1）与子代理派发（depth≥2）；纯续跑不触发（原 `resolveRootInput` + `resolveSubAgentInput`） |
 | `agent:input` | `AgentInputEvent` | 每轮 LLM 调用前（含首轮、工具轮、子代理各轮、续跑轮）（无旧钩子对应，7.x 新增） |
 | `agent:before-tool-call` | `BeforeToolCallEvent` | tool/sub-agent 执行前——ctx 声明即校验之后、白名单与分流之前；handler 原地改写 `args`、设 `error` 拒绝（原 `config.agent.beforeToolCall`） |
 | `agent:after-tool-call` | `AfterToolCallEvent` | tool/sub-agent 成功执行后（异常路径不触发）；name 为 tool 名（sub-agent 为派发名 `agent-<name>`）（原 `config.agent.afterToolCall`） |
@@ -21,30 +23,27 @@
 | `agent:sub-agent-context` | `SubAgentContextEvent` | 子代理派发入参校验通过后；handler 设 `context` 为追加进子代理 system 的上下文块（多 handler 后设覆盖）（原 deps `resolveSubAgentContext`） |
 
 ```ts
+// agent 域载荷统一不含路由键（agent 名 / tool 名）——专属名订阅承载实体路由
+// （名字在事件名里）,通用订阅是实体无关的横切处理（见下方「通用名与专属名的分工」）
 export interface BeforeToolCallEvent {
-  name: string;               // tool 名或派发名 agent-<name>（与原 beforeToolCall 钩子同语义）
   args: Record<string, unknown>; // handler 可整体替换（payload.args = {...}）
   ctx: AgentToolContext;
   error?: string;             // handler 设置即拒绝执行（扇出后统一判定,回传 LLM）
 }
 export interface AfterToolCallEvent {
-  name: string;
   args: Record<string, unknown>;
   result: unknown;            // 成功结果（观察/审计面,改写不回写）
   ctx: AgentToolContext;
 }
 export interface FilterToolsEvent {
-  agentName: string;          // 本次 run/stream 的 agent 名（比原钩子多——专属订阅可按 agent 路由）
   tools: LLMToolDefinition[]; // handler 原地 filter/splice
   ctx: AgentToolContext;
 }
 export interface SystemPromptEvent {
-  agentName: string;
   prompt: string;             // vars 渲染后的 base——handler 改写即最终 system 消息
   ctx: AgentToolContext;
 }
 export interface SubAgentContextEvent {
-  subName: string;            // 真实 agent 名（非派发名）
   args: Record<string, unknown>; // 校验后的派发入参
   context?: string;           // handler 设置 → 追加进子代理 system（\n\n 拼接,空串/不设跳过）
   ctx: AgentToolContext;
@@ -101,6 +100,7 @@ export default async function bootstrap() {
 - handler 同步或返回 `Promise`；`emit` 按注册顺序 `await` 依次执行。
 - **改写语义**：handler 原地修改载荷（或对标记可赋值的字段整体赋值，如 `payload.args` / `payload.context`）；多 handler 顺序串联（后者看到前者改写结果）。
 - **通用名与专属名的顺序**：每个接缝先发射通用名、后发射专属名（`agent:input:<agentName>` 等），**同一载荷对象**顺序串联——专属 handler 看得到通用 handler 的改写并可覆盖。
+- **通用名与专属名的分工（agent 域统一口径）**：专属名（`agent:root-input:<agentName>`、`agent:before-tool-call:<toolName>` 等）是按实体（agent/tool）路由的入口——名字在事件名里；**通用名载荷不含实体名**（agent 名 / tool 名一概不在载荷上）——通用订阅做实体无关的横切处理（租户改写、审计打标、全量守卫等），需要按实体分流时订阅对应专属名。
 - 订阅返回退订函数（幂等）；无订阅者 emit 为 no-op；订阅集合随 `app.close()` 清空。
 
 ## 错误口径（两类，按接缝性质锚定）

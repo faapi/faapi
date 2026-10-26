@@ -47,9 +47,9 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
 
 ### `agent:before-tool-call`（执行守卫）
 
-`executeTool` 在 **ctx 声明即校验之后**发射（sub-agent 派发分流**之前**）——校验先于事件：ctx 装配错误是编程/装配问题（前置条件不满足），不流进业务订阅端，handler 只面对合成正确的 ctx 做业务鉴权。一个事件同时覆盖常规 tool（`name = 'weather_getWeather'`）与 sub-agent 递归（`name = 'agent-researcher'`，派发工具名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)），业务方按前缀区分策略（用主包导出的 `SUB_AGENT_TOOL_PREFIX` 判别，不硬编码字符串）；专属名 `agent:before-tool-call:<name>` 按 tool/派发名路由。
+`executeTool` 在 **ctx 声明即校验之后**发射（sub-agent 派发分流**之前**）——校验先于事件：ctx 装配错误是编程/装配问题（前置条件不满足），不流进业务订阅端，handler 只面对合成正确的 ctx 做业务鉴权。一个事件同时覆盖常规 tool 与 sub-agent 递归（派发工具名见 [subAgentToolName](../../faapi/src/injection/subAgentToolName.md)）；载荷不含 tool 名——按 tool/派发名路由订阅专属名 `agent:before-tool-call:<name>`（常规 tool 为 tool 名、sub-agent 为派发名 `agent-<name>`，名字在事件名里）。
 
-载荷 `{ name, args, ctx, error? }`。handler 同步/异步均可（事件扇出 `await`）：
+载荷 `{ args, ctx, error? }`。handler 同步/异步均可（事件扇出 `await`）：
 
 | handler 行为 | 语义 |
 |------|------|
@@ -61,11 +61,11 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
 
 ### `agent:after-tool-call`（审计）
 
-tool / sub-agent **成功返回后**发射（异常路径不发射）——审计/日志/计量。载荷 `{ name, args, result, ctx }`，观察面：改写 `result` 不回写执行链路。错误口径为**留痕**（handler 抛错 `console.error`，不改变成功结果——与原钩子留痕约定一致）。
+tool / sub-agent **成功返回后**发射（异常路径不发射）——审计/日志/计量。载荷 `{ args, result, ctx }`（不含 tool 名——按 tool/派发名路由订阅专属名 `agent:after-tool-call:<name>`），观察面：改写 `result` 不回写执行链路。错误口径为**留痕**（handler 抛错 `console.error`，不改变成功结果——与原钩子留痕约定一致）。
 
 ### `agent:filter-tools`（可见性过滤）
 
-`buildToolDefinitions` 组装完 LLM 可见 tools 清单后发射（每次 `run` / `stream` 生效）。载荷 `{ agentName, tools, ctx }`——handler 原地 `filter`/`splice` tools 数组（含 agent-as-tool 的 `agent-x` 派发项）。tools 为 OpenAI chat completions 规范形（`type: 'function'` + `function: { name, description?, parameters? }`），按 `tool.function.name` 过滤；专属名 `agent:filter-tools:<agentName>` 按 agent 路由。
+`buildToolDefinitions` 组装完 LLM 可见 tools 清单后发射（每次 `run` / `stream` 生效）。载荷 `{ tools, ctx }`（不含 agent 名——按 agent 路由订阅专属名 `agent:filter-tools:<agentName>`）——handler 原地 `filter`/`splice` tools 数组（含 agent-as-tool 的 `agent-x` 派发项）。tools 为 OpenAI chat completions 规范形（`type: 'function'` + `function: { name, description?, parameters? }`），按 `tool.function.name` 过滤——可见性过滤所需的 tool 名从数组项自取，不依赖载荷字段。
 
 **只影响可见性，不拦执行**：被过滤的 tool 在注册表中仍存在，LLM 幻觉调用时 `executeTool` 照常查到并执行——**看不到 ≠ 调不到**。硬闸必须配 `agent:before-tool-call`；`agent:filter-tools` 的价值是省一轮调用与缩小 LLM 决策面，安全语义由第 3 层保证。错误口径为**传播**。
 
@@ -76,12 +76,18 @@ tool / sub-agent **成功返回后**发射（异常路径不发射）——审�
 import { getApp } from '@faapi/faapi';
 
 const app = getApp();
+// 通用订阅：实体无关的横切守卫（ctx 硬闸 + 参数强制注入——不依赖 tool 名,载荷不含 name）
 app.on('agent:before-tool-call', (e) => {
-  if (e.name.startsWith('agent-')) return;              // sub-agent 派发按业务策略放行
-  if (!isAllowed(e.ctx, e.name)) e.error = 'tool not allowed in this workspace';
+  if (!e.ctx.workspace) e.error = 'workspace context required';
   if ('workspaceId' in e.args) e.args.workspaceId = (e.ctx as CtxWithUser).workspace?.id;
 });
+// 按 tool/派发名路由订阅专属名（名字在事件名里）——差异化策略逐 tool 声明;
+// sub-agent 派发名同形态：agent:before-tool-call:agent-<name>
+app.on('agent:before-tool-call:admin_deleteUser', (e) => {
+  if (!isAdmin(e.ctx)) e.error = 'tool not allowed in this workspace';
+});
 app.on('agent:filter-tools', (e) => {
+  // 可见性过滤按 tools 数组项的 function.name 过滤（不依赖载荷字段）
   e.tools = e.tools.filter((t) => t.function.name.startsWith('agent-') || isAllowed(e.ctx, t.function.name));
 });
 ```

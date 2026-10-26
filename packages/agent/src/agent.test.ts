@@ -685,10 +685,10 @@ describe('Agent', () => {
       }
     });
 
-    it('装饰内联 base：事件载荷收（agentName, vars 渲染后 prompt, ctx），改写即最终 system 消息', async () => {
+    it('装饰内联 base：事件载荷收（vars 渲染后 prompt, ctx；不含 agent 名），改写即最终 system 消息', async () => {
       const events = createEventCollector();
       const handler = vi.fn((e: SystemPromptEvent) => {
-        expect(e.agentName).toBe('researcher');
+        expect('agentName' in e).toBe(false); // 载荷不含 agent 名——按 agent 路由用专属名订阅
         e.prompt = `decorated(${e.prompt})`;
       });
       events.bus.on('agent:system-prompt', handler);
@@ -762,7 +762,7 @@ describe('Agent', () => {
       ]);
       const events = createEventCollector();
       events.bus.on('agent:system-prompt', (e: SystemPromptEvent) => {
-        e.prompt = `${e.prompt} [+${e.agentName}]`;
+        e.prompt = `${e.prompt} +decorated`;
       });
       const agent = new Agent(
         createDeps({
@@ -777,9 +777,9 @@ describe('Agent', () => {
 
       expect(result.content).toBe('final');
       // 主控两次请求（轮1 + 轮2）均用装饰后的 system；子循环一次请求用装饰后的 sub base
-      expect(completeCalls.mock.calls[0][0].messages[0].content).toBe('master-base [+researcher]');
-      expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('sub-base [+writer]');
-      expect(completeCalls.mock.calls[2][0].messages[0].content).toBe('master-base [+researcher]');
+      expect(completeCalls.mock.calls[0][0].messages[0].content).toBe('master-base +decorated');
+      expect(completeCalls.mock.calls[1][0].messages[0].content).toBe('sub-base +decorated');
+      expect(completeCalls.mock.calls[2][0].messages[0].content).toBe('master-base +decorated');
       // 每次 run / 每次派发各发射一次：主控 run 一次 + 子代理派发一次（父轮2 复用同一次 run 的 config）
       const spEvents = events.emitted.filter((e) => e.name === 'agent:system-prompt');
       expect(spEvents).toHaveLength(2);
@@ -888,11 +888,11 @@ describe('Agent', () => {
       });
     });
 
-    it('接线后追加：子代理 system = base + \\n\\n + context；载荷收（真实 agent 名, args, ctx）', async () => {
+    it('接线后追加：子代理 system = base + \\n\\n + context；载荷收（args, ctx；不含 subName）', async () => {
       const events = createEventCollector();
       const handler = vi.fn((e: SubAgentContextEvent) => {
-        expect(e.subName).toBe('writer');
-        e.context = `ctx[${e.subName}:${JSON.stringify(e.args)}:${(e.ctx as CtxWithUser).currentUserId}]`;
+        expect('subName' in e).toBe(false); // 载荷不含 subName——按子代理路由用专属名订阅
+        e.context = `ctx[${JSON.stringify(e.args)}:${(e.ctx as CtxWithUser).currentUserId}]`;
       });
       events.bus.on('agent:sub-agent-context', handler);
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
@@ -908,15 +908,13 @@ describe('Agent', () => {
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      // subName 是真实 agent 名（非派发名 agent-writer）；args 为派发入参；ctx 为 deps.ctx
+      // args 为派发入参；ctx 为 deps.ctx
       expect(handler).toHaveBeenCalledTimes(1);
-      expect(handler).toHaveBeenCalledWith(
-        expect.objectContaining({ subName: 'writer', args: { input: '查' } }),
-      );
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ args: { input: '查' } }));
       // 追加不替换：base 在前、context 在后、\n\n 分隔
       expect(completeCalls.mock.calls[1][0].messages[0]).toEqual({
         role: 'system',
-        content: 'sub-base\n\nctx[writer:{"input":"查"}:42]',
+        content: 'sub-base\n\nctx[{"input":"查"}:42]',
       });
       // 根调用不发射（主控无 systemPrompt，不插 system 消息，首条为 user）
       expect(completeCalls.mock.calls[0][0].messages[0].role).not.toBe('system');
@@ -950,7 +948,7 @@ describe('Agent', () => {
     it('context 设空串跳过：不产生空块与尾部分隔符，system 与 base 一致', async () => {
       const events = createEventCollector();
       const handler = vi.fn((e: SubAgentContextEvent) => {
-        e.context = e.subName === 'writer' ? '' : 'other';
+        e.context = '';
       });
       events.bus.on('agent:sub-agent-context', handler);
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
@@ -1068,12 +1066,16 @@ describe('Agent', () => {
       expect(toolMsg!.content).toMatch(/context exploded/);
     });
 
-    it('同轮并行派发：各自实例各自注入，无交叉污染', async () => {
+    it('同轮并行派发：专属名订阅各自注入各自实例，无交叉污染', async () => {
       const writer = agentMeta({ name: 'writer', systemPrompt: 'w-base' });
       const reviewer = agentMeta({ name: 'reviewer', systemPrompt: 'r-base' });
       const events = createEventCollector();
-      events.bus.on('agent:sub-agent-context', (e: SubAgentContextEvent) => {
-        e.context = `ctx[${e.subName}]`;
+      // 按子代理路由订阅专属名（名字在事件名里,载荷不含 subName）
+      events.bus.on('agent:sub-agent-context:writer', (e: SubAgentContextEvent) => {
+        e.context = 'ctx[writer]';
+      });
+      events.bus.on('agent:sub-agent-context:reviewer', (e: SubAgentContextEvent) => {
+        e.context = 'ctx[reviewer]';
       });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
@@ -1122,10 +1124,10 @@ describe('Agent', () => {
       ];
     }
 
-    it('fresh run：事件收（agent 名, 原始 input, ctx），改写产物为首条 user 消息并持久进 result.messages', async () => {
+    it('fresh run：事件收（原始 input, ctx；载荷不含 agent 名），改写产物为首条 user 消息并持久进 result.messages', async () => {
       const events = createEventCollector();
       const handler = vi.fn((e: AgentRootInputEvent) => {
-        expect(e.agentName).toBe('researcher');
+        expect('agentName' in e).toBe(false); // 载荷不含 agent 名——按 agent 路由用专属名订阅
         expect(e.input).toBe('go');
         expect((e.ctx as CtxWithUser).currentUserId).toBe(42);
         e.input = composeAssembled(e.input);
@@ -1187,7 +1189,7 @@ describe('Agent', () => {
       const rootEmitted = events.emitted.filter((e) => e.name === 'agent:root-input');
       expect(rootEmitted).toHaveLength(1);
       const payload = rootEmitted[0].payload as AgentRootInputEvent;
-      expect(payload.agentName).toBe('researcher');
+      expect('agentName' in payload).toBe(false);
       // 载荷为同一对象引用——收集器记到的是 handler 改写后的最终值
       expect(payload.input).toBe(composeAssembled('第二轮输入'));
       // LLM 请求:历史(无 system 时自动补齐) + 末尾改写后的新 user 消息
@@ -1303,10 +1305,10 @@ describe('Agent', () => {
       });
     });
 
-    it('派发路径同样触发：载荷 agentName 为子代理名，改写进子对话首条 user 消息', async () => {
+    it('派发路径同样触发：专属名订阅改写子对话首条 user 消息（载荷不含 agent 名）', async () => {
       const events = createEventCollector();
-      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
-        if (e.agentName === 'writer') e.input = `${e.input}+material`;
+      events.bus.on('agent:root-input:writer', (e: AgentRootInputEvent) => {
+        e.input = `${e.input}+material`;
       });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
@@ -1341,8 +1343,8 @@ describe('Agent', () => {
       ]);
       const dispatchPayload = events.emitted.filter((e) => e.name === 'agent:root-input')[1]
         .payload as AgentRootInputEvent;
-      expect(dispatchPayload.agentName).toBe('writer');
-      // 载荷为同一对象引用——收集到的是 handler 改写后的最终值
+      expect('agentName' in dispatchPayload).toBe(false);
+      // 载荷为同一对象引用——收集到的是专属 handler 改写后的最终值
       expect(dispatchPayload.input).toBe('查+material');
       expect((dispatchPayload.ctx as CtxWithUser).currentUserId).toBe(42);
       // 子代理首条 user 消息 = 改写产物
@@ -1445,7 +1447,7 @@ describe('Agent', () => {
       ];
     }
 
-    it('每轮 LLM 调用恰好发射一次：派发流程主控两轮 + 子循环一轮 = 3 次,agentName/depth 正确', async () => {
+    it('每轮 LLM 调用恰好发射一次：派发流程主控两轮 + 子循环一轮 = 3 次,depth 正确（载荷不含 agent 名）', async () => {
       const events = createEventCollector();
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
@@ -1464,14 +1466,14 @@ describe('Agent', () => {
       expect(inputEvents).toHaveLength(3);
       const seq = inputEvents.map((e) => {
         const p = e.payload as AgentInputEvent;
-        return { agentName: p.agentName, depth: p.depth };
+        return { depth: p.depth, hasAgentName: 'agentName' in p };
       });
       expect(seq).toEqual([
-        { agentName: 'researcher', depth: 1 },
-        { agentName: 'writer', depth: 2 },
-        { agentName: 'researcher', depth: 1 },
+        { depth: 1, hasAgentName: false },
+        { depth: 2, hasAgentName: false },
+        { depth: 1, hasAgentName: false },
       ]);
-      // 每轮同时发射专属名
+      // 每轮同时发射专属名（按 agent 路由的入口——名字在事件名里）
       expect(events.emitted.filter((e) => e.name === 'agent:input:researcher')).toHaveLength(2);
       expect(events.emitted.filter((e) => e.name === 'agent:input:writer')).toHaveLength(1);
     });
@@ -4078,24 +4080,20 @@ describe('Agent', () => {
       });
 
       await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      // 硬闸放行（ctx 携带身份）→ handler 读到身份执行
-      expect(before).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'weather_getWeather', args: { city: '北京' } }),
-      );
+      // 硬闸放行（ctx 携带身份）→ handler 读到身份执行（载荷不含 tool 名）
+      expect(before).toHaveBeenCalledWith(expect.objectContaining({ args: { city: '北京' } }));
       expect(seenUserId).toBe(42);
       expect(handler).toHaveBeenCalledTimes(1);
     });
 
-    it('before-tool-call 放行: handler 正常执行且载荷收（name, args, ctx）', async () => {
+    it('before-tool-call 放行: handler 正常执行且载荷收（args, ctx）', async () => {
       const events = createEventCollector();
       const before = vi.fn();
       events.bus.on('agent:before-tool-call', before);
       const { agent, handler } = toolAgent(events);
 
       await agent.run('weather?', { agent: 'researcher', model: 'gpt-4o' });
-      expect(before).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'weather_getWeather', args: { city: '北京' }, ctx }),
-      );
+      expect(before).toHaveBeenCalledWith(expect.objectContaining({ args: { city: '北京' }, ctx }));
       expect(handler).toHaveBeenCalledTimes(1);
     });
 
@@ -4124,10 +4122,11 @@ describe('Agent', () => {
       expect(handler).toHaveBeenCalledWith({ city: '北京', workspaceId: 'ws-1' }, ctx);
     });
 
-    it('before-tool-call 对 sub-agent 递归（agent-x）同样拦截,拒绝时子循环不执行', async () => {
+    it('before-tool-call 对 sub-agent 递归（agent-x）同样拦截,拒绝时子循环不执行（专属名订阅按派发名路由）', async () => {
       const events = createEventCollector();
-      events.bus.on('agent:before-tool-call', (e: BeforeToolCallEvent) => {
-        if (e.name.startsWith('agent-')) e.error = 'sub-agent not allowed';
+      // 按 tool/派发名路由订阅专属名（名字在事件名里,载荷不含 name）
+      events.bus.on('agent:before-tool-call:agent-analyst', (e: BeforeToolCallEvent) => {
+        e.error = 'sub-agent not allowed';
       });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
@@ -4155,7 +4154,7 @@ describe('Agent', () => {
       expect(JSON.stringify(toolMsg?.content)).toContain('sub-agent not allowed');
     });
 
-    it('after-tool-call 成功后发射（name, args, result, ctx）,拒绝时不发射', async () => {
+    it('after-tool-call 成功后发射（args, result, ctx）,拒绝时不发射', async () => {
       const events = createEventCollector();
       const after = vi.fn((e: AfterToolCallEvent) => {
         expect(e.result).toEqual({ ok: true, temp: 25 });
@@ -4178,15 +4177,15 @@ describe('Agent', () => {
       expect(after).toHaveBeenCalledTimes(1);
       const payload = events.emitted.filter((e) => e.name === 'agent:after-tool-call')[0]
         .payload as unknown as AfterToolCallEvent;
-      expect(payload.name).toBe('weather_getWeather');
+      expect('name' in payload).toBe(false); // 载荷不含 tool 名——按 tool 路由用专属名订阅
       expect(payload.args).toEqual({ city: '北京' });
       expect(payload.ctx).toBe(ctx);
     });
 
-    it('filter-tools 过滤 LLM 可见 tools 清单（含 agent-as-tool），载荷带 agentName', async () => {
+    it('filter-tools 过滤 LLM 可见 tools 清单（含 agent-as-tool），载荷收（tools, ctx；不含 agent 名）', async () => {
       const events = createEventCollector();
       const filter = vi.fn((e: FilterToolsEvent) => {
-        expect(e.agentName).toBe('researcher');
+        expect('agentName' in e).toBe(false); // 载荷不含 agent 名——按 agent 路由用专属名订阅
         e.tools = e.tools.filter((t) => !t.function.name.startsWith('admin.'));
       });
       events.bus.on('agent:filter-tools', filter);
