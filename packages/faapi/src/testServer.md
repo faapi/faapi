@@ -17,7 +17,7 @@
 
 这些步骤在框架自身的 6 个 E2E 测试文件中各复刻一份，业务方复制成本高、易错（漏掉 `invalidateSchemaCache` 会导致测试串扰）。
 
-通过公开 `createTestServer`，业务方一行代码完成 setup，`close()` 一行完成 teardown，覆盖 80% E2E 测试场景。剩余场景（自定义 createServer 选项、HTTP/2、需要读 config 的全链路）可降级到 `createProdApp + app.inject` 或直接组合底层 API。
+通过公开 `createTestServer`，业务方一行代码完成 setup，`close()` 一行完成 teardown，覆盖 80% E2E 测试场景。剩余场景（config 驱动组装 + 插件 + 事件 + 任务的 app 级行为）走真实零入口 E2E（`faapi build` + `node dist/main` + fetch 真端口）；特殊 createServer 选项可组合底层 API。
 
 ## 使用场景
 
@@ -25,7 +25,7 @@
 - 测试 WebSocket 路由（搭配 `connectWs` from `wsTestClient`）
 - 测试 SSE / 流式响应（`inject` 的 mockRes 不支持 pipe，必须用真实 listen）
 - 测试 CORS / Helmet / Logger 中间件（需真实 HTTP 响应头）
-- 测试错误兜底链（`formatErrorResponse` → `onError` 钩子）
+- 测试错误兜底链（`formatErrorResponse` → `request:error` 事件——经 `appEvents` 选项注入总线断言）
 
 ## 公开 API
 
@@ -36,7 +36,7 @@ import { createTestServer, type TestServer, type TestServerOptions } from '@faap
 | 符号 | 说明 |
 |------|------|
 | `createTestServer(options)` | 一键启动测试服务器，返回 `TestServer` |
-| `TestServerOptions` | 入参类型：`rootDir` 必填，`patterns`/`dist`/`cors`/`middlewares`/`injectors`/`helmet`/`logger`/`onError`/`config`/`bodyLimit` 可选（`wsRoutes` 由 `scanRoutes` 自动扫描，不接受传入） |
+| `TestServerOptions` | 入参类型：`rootDir` 必填，`patterns`/`dist`/`cors`/`middlewares`/`injectors`/`helmet`/`appEvents`/`config`/`bodyLimit` 可选（`wsRoutes` 由 `scanRoutes` 自动扫描，不接受传入） |
 | `TestServer` | 返回类型：含 `server`/`baseUrl`/`routes`/`wsRoutes`/`close()` |
 
 ### 入参 `TestServerOptions`
@@ -48,10 +48,9 @@ import { createTestServer, type TestServer, type TestServerOptions } from '@faap
 | `dist` | `string` | 自动 `mkdtemp` 临时目录 | schema 产物输出目录（绝对路径或相对 `rootDir`） |
 | `cors` | `CorsOptions \| boolean` | `false`（测试默认禁用，避免污染断言） | CORS 中间件配置 |
 | `helmet` | `HelmetOptions \| boolean` | `false` | 安全头配置 |
-| `logger` | `LoggerOptions \| boolean` | `false`（避免污染测试输出） | 请求日志配置 |
 | `middlewares` | `FaapiMiddleware[]` | `undefined` | 全局中间件（外层洋葱） |
 | `injectors` | `InjectorMap` | `undefined` | 全局注入器 |
-| `onError` | `(error, ctx) => void` | `undefined` | 请求错误钩子 |
+| `appEvents` | `AppEventBus` | `undefined` | app 事件总线注入（`request:error` 等 HTTP 域事件观察面——业务测试自行 `createAppEventBus()` 构造传入；缺省无总线、事件不发射，能力边界非降级） |
 | `config` | `Record<string, unknown>` | `undefined` | 业务配置（注入到 `ctx.config`） |
 | `bodyLimit` | `number` | `10MB` | 请求体大小限制 |
 
@@ -146,17 +145,17 @@ afterAll(() => ts.close());
 |------|------------|---------|----------|------------|------------|---------|
 | 直接调 handler | 否 | 否 | 否 | 否 | 否 | 纯逻辑 |
 | `createContext` + `invokeHandler` | 否 | 否 | 否 | 显式传入 | 否 | 注入/中间件 |
-| `createProdApp` + `app.inject` | 否 | ✅ | ✅ | ✅ | 否 | 完整链路（无端口） |
 | **`createTestServer` + `fetch`** | **✅（listen 0）** | **自动生成** | **✅** | **✅** | **✅** | **E2E（含 SSE/WS/CORS）** |
+| 零入口真实 E2E（`faapi build` + `node dist/main` + fetch） | ✅ | ✅ | ✅ | ✅ | ✅ | app 级行为（config + 插件 + 事件 + 任务） |
 
 ## 局限性
 
 | 局限 | 替代方案 |
 |------|---------|
-| 不读 `faapi.config.ts`（仅用传入的 options） | 用 `createProdApp`（需先 `faapi build`） |
-| 不加载插件（`plugins` 字段） | 用 `createProdApp` |
-| 不执行 `lifecycle.onReady` / `onClose` | 用 `createProdApp` |
-| 无服务器 mock 注入（`app.inject`） | 用 `createProdApp + app.inject` |
+| 不读 `faapi.config.ts`（仅用传入的 options） | 零入口真实 E2E（`faapi build` + `node dist/main` + fetch） |
+| 不加载插件（`plugins` 字段） | 同上（插件随 app 编排加载） |
+| 不发射 `app:boot`/`app:ready`/`app:close`（无 app 编排） | 同上 |
+| `app.inject`（无服务器同进程调用） | 运行中的 app 上调用（`getApp().inject`——Next.js RSC 场景不变） |
 
 ## vitest 环境下的别名解析与 vi.mock
 

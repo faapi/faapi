@@ -35,7 +35,7 @@ graph TD
         B2 --> C2["dist/ + dist/main.js"]
     end
     subgraph prod["prod 模式（node dist/main）"]
-        A3["node dist/main"] --> D2["createProdApp()"]
+        A3["node dist/main"] --> D2["$start()"]
         D2 --> C3["读 dist/ 产物三元组"]
     end
     C1 --> S["Server"]
@@ -92,16 +92,16 @@ faapi                      # 编译 src/ → .faapi/，启动 dev server + watch
 
 访问 `http://localhost:3000/api/user?page=1&pageSize=10` 即可获取数据。
 
-框架采用零入口设计——无需编写 `main.ts`：dev 由 CLI 内部编排，prod 由 `faapi build` 自动生成 `dist/main.js` 启动入口。自定义启动逻辑（初始化数据库等）通过 `faapi.config.ts` 的 `lifecycle.onReady` / `onClose` 钩子实现。
+框架采用零入口设计——无需编写 `main.ts`：dev 由 CLI 内部编排，prod 由 `faapi build` 自动生成 `dist/main.js` 启动入口。自定义启动逻辑（事件订阅、初始化数据库等）写 `src/bootstrap.ts` 约定启动文件（框架在 app 创建后、listen 前加载执行，`getApp().on(...)` 订阅），详见 [packages/faapi/src/cli/bootstrap.md](./packages/faapi/src/cli/bootstrap.md)。
 
 ### 生产部署
 
 ```bash
 faapi build                # 编译 .ts → dist/，生成路由清单 + schema + dist/main.js
-node dist/main             # 启动生产服务器（dist/main.js 内部调 createProdApp + listen）
+node dist/main             # 启动生产服务器（dist/main.js 内部调 $start：水合产物 + bootstrap + listen）
 ```
 
-`dist/main.js` 由 `faapi build` 自动生成，内部 `import { createProdApp } from '@faapi/faapi'` 并 `listen`。框架元信息通过环境变量传入：
+`dist/main.js` 由 `faapi build` 自动生成，内部 `import { loadEnv, $start } from '@faapi/faapi'`（`$` 前缀 = 框架内部标记，仅供生成入口使用）。框架元信息通过环境变量传入：
 
 ```bash
 PORT=8080 node dist/main
@@ -118,7 +118,7 @@ faapi build                # 构建（编译 .ts → dist/，生成路由清单 
 node dist/main             # 启动生产服务器（需先 build，运行 dist/main.js）
 ```
 
-应用行为配置（CORS、middlewares、lifecycle 等）通过 `faapi.config.ts` 配置。框架元信息（port 等）通过环境变量（`PORT`）控制。
+应用行为配置（CORS、middlewares 等）通过 `faapi.config.ts` 配置；事件订阅写 `src/bootstrap.ts`。框架元信息（port 等）通过环境变量（`PORT`）控制。
 
 ## 文档
 

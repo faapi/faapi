@@ -2,7 +2,7 @@
 
 一句话概括：agent / tools 调用链的鉴权与横切支持——请求上下文（ctx）全链路传递 + `agent:before-tool-call` / `agent:after-tool-call` / `agent:filter-tools` 三个 app 事件（7.x 起，原 `beforeToolCall` / `afterToolCall` / `filterTools` 三钩子已移除、由事件承载），覆盖"agent → tool"与"agent → sub-agent"全部调用。
 
-> 历史注记：三钩子原在 `faapi.config.ts` 的 `agent` 块声明（`AgentConfig`），7.x 起统一迁移为 [appEventBus](../../faapi/src/events/appEventBus.md) 事件——业务方经 `getApp().on(...)` / `onAppEvent(...)` 订阅，不再需要配置声明面。
+> 历史注记：三钩子原在 `faapi.config.ts` 的 `agent` 块声明（`AgentConfig`），7.x 起统一迁移为 [appEventBus](../../faapi/src/events/appEventBus.md) 事件——业务方经 `getApp().on(...)` 订阅（启动期写 `src/bootstrap.ts` 约定文件——框架在 listen 前加载执行），不再需要配置声明面。
 
 ## 为什么需要
 
@@ -72,15 +72,16 @@ tool / sub-agent **成功返回后**发射（异常路径不发射）——审�
 ## 订阅位置
 
 ```ts
-// faapi.config.ts 顶层（启动早期订阅）或任意拿得到 app 的位置（getApp().on）
-import { onAppEvent } from '@faapi/faapi';
+// src/bootstrap.ts（框架约定启动文件，机制见 [../faapi/src/cli/bootstrap.md](../../faapi/src/cli/bootstrap.md)）或运行期任意拿得到 app 的位置
+import { getApp } from '@faapi/faapi';
 
-onAppEvent('agent:before-tool-call', (e) => {
+const app = getApp();
+app.on('agent:before-tool-call', (e) => {
   if (e.name.startsWith('agent-')) return;              // sub-agent 派发按业务策略放行
   if (!isAllowed(e.ctx, e.name)) e.error = 'tool not allowed in this workspace';
   if ('workspaceId' in e.args) e.args.workspaceId = (e.ctx as CtxWithUser).workspace?.id;
 });
-onAppEvent('agent:filter-tools', (e) => {
+app.on('agent:filter-tools', (e) => {
   e.tools = e.tools.filter((t) => t.function.name.startsWith('agent-') || isAllowed(e.ctx, t.function.name));
 });
 ```

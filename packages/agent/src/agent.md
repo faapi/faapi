@@ -214,9 +214,10 @@ export const config = {
 订阅示例：
 
 ```ts
-import { onAppEvent } from '@faapi/faapi';
+import { getApp } from '@faapi/faapi';
 
-onAppEvent('agent:system-prompt:chapter-writer', async (e) => {
+// 启动期订阅写 src/bootstrap.ts（框架在 listen 前加载执行）;运行期可订阅于任意拿得到 app 的位置
+getApp().on('agent:system-prompt:chapter-writer', async (e) => {
   const protocol = await loadProtocolBlock(e.agentName); // 应用层装饰：共享协议块 / 条件块 / DB 运行时层
   e.prompt = `${e.prompt}\n\n${protocol}`;
 });
@@ -246,9 +247,9 @@ onAppEvent('agent:system-prompt:chapter-writer', async (e) => {
 订阅示例：
 
 ```ts
-import { onAppEvent } from '@faapi/faapi';
+import { getApp } from '@faapi/faapi';
 
-onAppEvent('agent:sub-agent-context:chapter-writer', async (e) => {
+getApp().on('agent:sub-agent-context:chapter-writer', async (e) => {
   const snapshot = await buildContextPacket(e.args.novelId, e.args.chapterNo, e.ctx?.currentUserId);
   e.context = snapshot; // 框架追加进子代理 system 消息，业务不碰 base
 });

@@ -147,8 +147,8 @@ it('handler 通过 ctx.json 返回自定义响应', async () => {
 
 | 局限 | 说明 | 替代方案 |
 |------|------|----------|
-| 不走 schema 校验 | zod.js 由 build 生成，测试时无产物 | 用 E2E 测试（`createProdApp` + `app.inject` 或 `listen` + `fetch`） |
-| 不走全局中间件 | 全局中间件由 `faapi.config.ts` 配置，`invokeHandler` 只走传入的中间件 | 显式传入中间件数组，或用 `createProdApp` 启动完整 app |
+| 不走 schema 校验 | zod.js 由 build 生成，测试时无产物 | 用 E2E 测试（`createTestServer` 自动生成 schema，或零入口真实 E2E `listen` + `fetch`） |
+| 不走全局中间件 | 全局中间件由 `faapi.config.ts` 配置，`invokeHandler` 只走传入的中间件 | 显式传入中间件数组，或用 `createTestServer` 走完整链路 |
 | SSE / 流式响应 | `invokeHandler` 支持，但需注意 `ctx.sse()` 返回的 Response 不可在测试中消费流 | 测试 SSE 时用 E2E |
 | 不走文件上传解析 | `files` / `fields` 注入需 `parseMultipart`，`invokeHandler` 的 `body` 参数为已解析结果 | 自行构造 `body = { files: [], fields: {} }` 传入 |
 
@@ -158,7 +158,6 @@ it('handler 通过 ctx.json 返回自定义响应', async () => {
 |------|---------|-----------|---------|--------|---------|-----------|
 | **直接调用 handler** | 纯逻辑测试 | 否 | 否 | 否 | 否 | 否 |
 | **`createTestContext` + `invokeHandler`** | 注入/中间件/序列化测试 | 否 | 否 | ✅ | ✅（显式传入） | 否 |
-| `createProdApp` + `app.inject()` | 完整请求链路（无端口） | 否 | ✅ | ✅ | ✅ | ✅ |
 | **`createTestServer` + `fetch`** | **E2E（含 SSE/WS/CORS）** | **✅（listen 0）** | **自动生成** | **✅** | **✅** | **✅** |
 | `connectWs` + `queue.next()` | WS 路由测试 | — | — | — | — | — |
 
@@ -248,15 +247,16 @@ const result = await agent.run('北京天气', { agent: 'researcher', provider: 
 
 详见 [agentTestHarness.md](./agentTestHarness.md) 与 `@faapi/agent` 的 `scriptLlm.md`。
 
-### 何时用 createTestServer / 何时用 createProdApp
+### 何时用 createTestServer / 何时用零入口真实 E2E
 
 | 场景 | 推荐方式 |
 |------|---------|
-| 不需要真实 HTTP 端口的完整链路测试 | `createProdApp + app.inject`（需先 `faapi build`） |
+| 完整请求链路测试（schema + 全局中间件） | `createTestServer + fetch`（自动 schema，无需 build） |
 | 需要 SSE / 流式响应 / 真实 HTTP 头 | `createTestServer + fetch` |
 | 需要 WebSocket 路由测试 | `createTestServer + connectWs` |
-| 需要读 `faapi.config.ts` / 加载插件 / 执行 lifecycle | `createProdApp` |
-| 临时调试 / 单文件测试 | `createTestServer`（自动 schema，无需 build） |
+| HTTP 域事件观察（`request:error`） | `createTestServer` 的 `appEvents` 选项（自行构造总线注入） |
+| app 级行为（读 `faapi.config.ts` / 加载插件 / `app:boot` 等事件 / 任务子系统） | 零入口真实 E2E（`faapi build` + `node dist/main` + fetch 真端口） |
+| 同进程无服务器调用 | 运行中 app 的 `app.inject`（`getApp().inject`——Next.js RSC 场景） |
 
 ## 相关模块
 

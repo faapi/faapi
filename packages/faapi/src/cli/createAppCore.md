@@ -139,8 +139,7 @@ async function Page() {
 ## 相关模块
 
 - `createDevApp.ts` - dev 模式启动，基于 `createAppBase` 增加 `reloadRoutes` + `reloadTools`（重新生成 + 重新水合 tool 清单）
-- `createProdApp.ts` - prod 模式启动，直接委托 `createAppBase`
-- `createApp.ts` - `createProdApp` 的向后兼容别名
+- `createProdApp.ts` - prod 模式启动（内部模块，不公开导出），直接委托 `createAppBase` + bootstrap 加载
 - `loadConfig.ts` - 读 `<dist>/faapi-config.js`
 - `createServer.ts` - 创建 HTTP server + 路由匹配 + 请求处理
 - `loadPlugins.ts` - 加载插件并返回 handler/upgrade 包装器
