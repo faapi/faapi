@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createProdApp } from './createProdApp';
@@ -129,15 +129,28 @@ ${bootstrapBody ?? ''}`,
   it('prod 形态：源码比产物新（改了源码没重新 build）→ 抛错指引 faapi build', async () => {
     await compileArtifacts();
     writeProdBootstrap('');
-    // 覆写 src/bootstrap.ts 使其 mtime 新于产物（产物 stale）
+    // 覆写 src/bootstrap.ts 并显式把 mtime 推到未来——CI 文件系统两次写入可能落在
+    // 同一 mtime 刻度（产物 fresh 误判、不抛错），utimesSync 保证「源码新于产物」确定成立
     mkdirSync(join(tempDir, 'src'), { recursive: true });
+    const srcPath = join(tempDir, 'src', 'bootstrap.ts');
     writeFileSync(
-      join(tempDir, 'src', 'bootstrap.ts'),
+      srcPath,
       `export default async function () { throw new Error('stale source'); }\n`,
       'utf-8',
     );
+    const future = new Date(Date.now() + 60_000);
+    utimesSync(srcPath, future, future);
 
-    await expect(createProdApp({ rootDir: tempDir, port: 0 })).rejects.toThrow(/faapi build/);
+    // 防御式断言：无论哪条路径都不留孤儿单例（stale 误判 resolve 时 close，
+    // 否则单 app 强制守卫会连带打挂后续用例——CI stable job 曾因此级联失败）
+    const result = await createProdApp({ rootDir: tempDir, port: 0 }).then(
+      (app) => ({ resolved: true as const, app, err: undefined as unknown }),
+      (err) => ({ resolved: false as const, app: undefined, err }),
+    );
+    if (result.resolved) await result.app.close();
+    expect(result.resolved).toBe(false);
+    expect(result.err).toBeInstanceOf(Error);
+    expect((result.err as Error).message).toMatch(/faapi build/);
   });
 
   it('dev 形态：src/bootstrap.ts 经 ensureCompiled 依赖闭包编译后执行', async () => {
