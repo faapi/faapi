@@ -85,12 +85,10 @@ describe('loadAgents', () => {
       ).toThrow(/未知 config 字段 "systemPromt"/);
     });
 
-    it('历史字段 model 静默忽略（豁免白名单，不做残留检测报错）', () => {
-      const meta = evaluateAgentDeclaration(
-        { config: { systemPrompt: 'x', model: 'gpt-4o' } },
-        locator,
-      );
-      expect(meta.systemPrompt).toBe('x');
+    it('非白名单字段撞白名单报错', () => {
+      expect(() =>
+        evaluateAgentDeclaration({ config: { systemPrompt: 'x', model: 'gpt-4o' } }, locator),
+      ).toThrow(/未知 config 字段 "model"/);
     });
 
     it('systemPrompt 与 systemPromptFile 互斥', () => {

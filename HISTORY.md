@@ -26,7 +26,7 @@
 | agent 域事件载荷上的实体名字段（`agentName` / `name` / `subName`） | 专属名订阅 `agent:<event>:<实体名>`（名字在事件名里） | 「载荷字段分流」与「专属名订阅」两条等价路径并存造成使用困惑 | 7.10.0 |
 | `config.task.onFailed` 钩子 | `task:failed` 事件 | 事件化 | 7.9.0 |
 | agent 自定义 `run` 导出（含 `loadAgentModule` / `AgentModule` / `hasConfig` / `hasRun` 公开 API） | 声明式 `config` + 默认 reactLoop；编排代码注册为 tool；多 agent 协作用 `config.agents`。`run` 导出不被读取 | 自定义 run 绕过 schema 校验 / trace / 事件守卫，不可观测 | 6.24.0 |
-| agent `config.model`、全局 `defaultAgent` / `defaultLlm` | `agent.run(input, { agent, model })` 调用侧显式指定（config.model 声明静默忽略）；sub-agent 派发沿用父解析结果 | 模型档位是调用侧决策，不属于 agent 声明 | 7.2.0（config.model）；defaultAgent/defaultLlm 更早 |
+| agent `config.model`、全局 `defaultAgent` / `defaultLlm` | `agent.run(input, { agent, model })` 调用侧显式指定（config.model 声明撞「未知 config 字段」白名单通用报错）；sub-agent 派发沿用父解析结果 | 模型档位是调用侧决策，不属于 agent 声明 | 7.2.0（config.model）；defaultAgent/defaultLlm 更早 |
 | 构建期 TS AST 提取 agent `config` 字面量进 `faapi-agents.js` 数据清单 + `@agent` JSDoc 覆盖名 | 运行时启动期求值（`loadAgents`），清单仅做定位；agent 名由目录推导（残留标签静默忽略） | 字面量提取挡住动态需求（按 env/DB 切人设被迫绕道全局面） | 6.45.0（覆盖名）/ 7.6.0（运行时求值） |
 | `@tool` JSDoc 覆盖名 | tool 名 = 目录路径 + 函数名推导（嵌套段 `_` 连接）；残留标签静默忽略 | 覆盖名让注册名与目录结构脱钩 | 6.45.0 |
 | sub-agent 派发工具名 `agent.<name>` 点号前缀；tool 嵌套名 `.` 连接 | `agent-<name>`（`subAgentToolName`）；`_` 连接 | OpenAI 兼容协议硬约束 `^[a-zA-Z0-9_-]+$`，强校验上游（DeepSeek / OpenAI）整单 400 | 6.28.0 |
@@ -62,11 +62,11 @@
 | agent handler 导出 `run` | 启动期求值阶段抛错 | `run` 导出被忽略（声明式执行） |
 | 残留 `@tool` JSDoc 标签 | schema 提取抛 `SchemaExtractionError` | 标签静默忽略，名字仍由目录推导 |
 | `task.driver: 'memory'` | 专属迁移错误 | 落入未知驱动通用报错 |
-| agent config 声明 `model` | 专属迁移报错（本无） | 静默忽略——`LEGACY_CONFIG_FIELDS`（`loadAgents`）豁免「未知 config 字段」白名单（7.14.0 及以前为白名单通用报错；类型层 `AgentConfig` 的 index signature 允许该键） |
+| agent config 声明 `model` | 专属迁移报错（本无） | 撞「未知 config 字段」白名单通用报错（`loadAgents` 的 `KNOWN_CONFIG_FIELDS` 不含 `model`，功能性校验维持，无专属护栏；类型层 `AgentConfig` 的 index signature 允许该键） |
 
-构建期**功能校验**不属于残留检测，维持不变（如 `task.ts` 声明 `timeoutMs` / `graceMs` 的错位报错、`worker.ts` 缺 `timeoutMs` 必填报错、同目录两种任务文件并存的歧义报错、**未知 config 字段白名单报错**——均为现行约定的一致性校验，拼写错误防护对全新未知字段仍然生效）；**已知历史字段**（当前仅 `model`）经 `LEGACY_CONFIG_FIELDS` 豁免白名单、静默忽略。
+构建期**功能校验**不属于残留检测，维持不变（如 `task.ts` 声明 `timeoutMs` / `graceMs` 的错位报错、`worker.ts` 缺 `timeoutMs` 必填报错、同目录两种任务文件并存的歧义报错、**未知 config 字段白名单报错**——均为现行约定的一致性校验；agent config 的 `KNOWN_CONFIG_FIELDS` 白名单不含 `model`，声明 `model` 会撞通用报错，无专属护栏）。
 
-> 勘误（2026-10-28）：`@faapi/faapi` 7.14.0 CHANGELOG 中「agent config 声明 `model`：文档口径修正——运行时本无检测，声明被忽略」为**错误描述**——当时运行时存在未知字段白名单通用报错（`loadAgents.test.ts` 有断言），`config.model` 声明会被拒绝；7.15.0 起按本节规范改为 `LEGACY_CONFIG_FIELDS` 豁免、静默忽略。CHANGELOG 由 changesets 生成不回改，以本台账为准。
+> 勘误（2026-10-28）：`@faapi/faapi` 7.14.0 CHANGELOG 中「agent config 声明 `model`：文档口径修正——运行时本无检测，声明被忽略」为**错误描述**——运行时存在未知字段白名单通用报错（`loadAgents.test.ts` 有断言），`config.model` 声明会被拒绝。本节表格为准确口径；CHANGELOG 由 changesets 生成不回改，以本台账为准。
 
 ### 1.2 有意保留的兼容面（不是残留）
 
@@ -98,7 +98,6 @@
 | **业务项目从 `@faapi/faapi` import 类型踩坑**（llm 项目 `api-types.ts` 注释记录） | `@faapi/next` client 目录所有类型独立声明 |
 | **轻量补全失败被静默吞掉**：切章分类超时静默回落纯正则，整书错误切分无人知晓 | `lightComplete` 传输失败恒抛 `LLMProviderError`，无降级出口 |
 | **两条等价路径并存**：载荷实体名 vs 专属名订阅；root-input 可写 `input` vs `addInput` + `{{rawInput}}` | 单一路径原则——7.10.0 / 7.12.0+ 两次收敛（见第 1 节） |
-| **历史痕迹清扫误删现行行为描述**（2026-10-28）：把「声明 model 启动期求值阶段抛错」误判为历史尾巴改成「声明被忽略」——实际是通用白名单校验在报错（`loadAgents.test.ts` 有断言），清扫时只搜了专属检测、未验证通用路径；同批夹带的行为变更（`FAAPI_CONFIG_KEYS` 键删除）未经测试锚定即合入 | 删改「抛错 / 报错 / 拒绝」类描述前必须 grep `throw` + 测试断言验证现行真伪；行为面变更与文档清扫**分离**，各自走 DDD 流程（已补：勘误 3ee7405、行为锚定 0fbc5f0） |
 | **禁止降级历史处置（原 `fallback.md` 九条，全部了结）**：任务 payload 无声明跳过校验 / 隔离任务错误 props 不可克隆丢 props / 日志 fields 不可序列化降级提示文本 / 隔离任务日志 fields 不可克隆丢 fields / 隔离任务 `taskCtx.llm` 插件不可解析 warn+undefined / 中间件加载失败空 bundle / 插件失败汇总后继续启动 / 任务 meta 非字面量警告后忽略——以上八条均改为显式失败；隔离任务 config JSON 快照改为不传 config（后以纯数据投影承接） | AGENTS.md 5.6.4 三种显式出口（抛错 / 声明能力边界 / 留痕不改主流程） |
 
 ---
