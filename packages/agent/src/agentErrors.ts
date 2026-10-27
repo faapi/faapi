@@ -13,7 +13,7 @@
  *
  * agent 未注册等不可恢复错误时抛出（调用方负责捕获）。
  * sub-agent 递归超限用 {@link AgentRecursionError}。
- * 历史压缩策略输出违反不变量（[historyCompaction.md](./historyCompaction.md)）同抛此类型。
+ * 历史超限事件 `replace` 产物校验失败等 agent 域契约违反同抛此类型。
  */
 export class AgentError extends Error {
   constructor(message: string) {

@@ -16,6 +16,11 @@ const toolCtx = {
   signal: undefined,
 } as unknown as AgentToolContext;
 
+/** 最小合规 agent:input 载荷（总线单测只关心扇出语义,不消费 addInput/messages） */
+function inputPayload(): AgentInputEvent {
+  return { depth: 1, messages: [], addInput: () => {}, ctx: toolCtx };
+}
+
 describe('createAppEventBus', () => {
   it('on + emit：handler 收到载荷，emit 返回同一载荷', async () => {
     const bus = createAppEventBus();
@@ -44,7 +49,7 @@ describe('createAppEventBus', () => {
       order.push('second');
     });
 
-    await bus.emit('agent:input', { depth: 1, messages: [], ctx: toolCtx });
+    await bus.emit('agent:input', inputPayload());
 
     expect(order).toEqual(['slow-first', 'second']);
   });
@@ -70,9 +75,8 @@ describe('createAppEventBus', () => {
   it('无订阅者 emit 为 no-op，原样返回载荷', async () => {
     const bus = createAppEventBus();
     const payload: AgentInputEvent = {
-      depth: 1,
+      ...inputPayload(),
       messages: [{ role: 'user', content: 'x' }],
-      ctx: toolCtx,
     };
     const returned = await bus.emit('agent:input', payload);
     expect(returned).toBe(payload);
@@ -122,9 +126,7 @@ describe('createAppEventBus', () => {
     });
     bus.on('agent:input', after);
 
-    await expect(
-      bus.emit('agent:input', { depth: 1, messages: [], ctx: toolCtx }),
-    ).rejects.toThrowError('handler exploded');
+    await expect(bus.emit('agent:input', inputPayload())).rejects.toThrowError('handler exploded');
     expect(after).not.toHaveBeenCalled();
   });
 
@@ -136,7 +138,7 @@ describe('createAppEventBus', () => {
 
     bus.clear();
     await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
-    await bus.emit('agent:input', { depth: 1, messages: [], ctx: toolCtx });
+    await bus.emit('agent:input', inputPayload());
 
     expect(handler).not.toHaveBeenCalled();
   });
@@ -150,12 +152,12 @@ describe('createAppEventBus', () => {
     bus.on('agent:root-input', generic);
     bus.on(agentRootInputEventName('writer'), specific);
 
-    const inputPayload = { agentName: 'writer', depth: 1, messages: [], ctx: toolCtx };
-    await bus.emit('agent:input', inputPayload);
+    const payload = { ...inputPayload(), agentName: 'writer' };
+    await bus.emit('agent:input', payload);
     expect(specific).not.toHaveBeenCalled(); // 通用名发射不触发专属订阅
 
-    await bus.emit(agentInputEventName('writer'), inputPayload);
-    expect(specific).toHaveBeenCalledWith(inputPayload);
+    await bus.emit(agentInputEventName('writer'), payload);
+    expect(specific).toHaveBeenCalledWith(payload);
 
     const rootPayload = { agentName: 'writer', input: 'x', ctx: toolCtx };
     await bus.emit(agentRootInputEventName('writer'), rootPayload);

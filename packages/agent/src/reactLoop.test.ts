@@ -11,8 +11,27 @@ import type {
   LLMStopReason,
 } from './provider';
 import type { AgentTrace, TracingToolResult } from './trace';
+import type { AgentToolContext, AppEventEmitter } from '@faapi/faapi';
 
 // ─── Mock 工具 ──────────────────────────────────────
+
+/** 超限/输入事件 appEvent 桩：按事件名消费载荷（reactLoop 引擎层直测用） */
+function stubAppEvent(onEmit?: (name: string, payload: Record<string, unknown>) => void): {
+  emit: AppEventEmitter;
+  agentName: string;
+  depth: number;
+  ctx: AgentToolContext;
+} {
+  return {
+    emit: async (name, payload) => {
+      onEmit?.(name, payload as unknown as Record<string, unknown>);
+      return payload;
+    },
+    agentName: 'r',
+    depth: 1,
+    ctx: {} as AgentToolContext,
+  };
+}
 
 /** 构造规范形 LLMToolCall（arguments 对象转 JSON 字符串） */
 function toolCall(id: string, name: string, args: Record<string, unknown> = {}): LLMToolCall {
@@ -1295,82 +1314,97 @@ describe('tracing — reactLoop + reactLoopStream', () => {
     expect(second.map((m: LLMMessage) => m.role)).toEqual(['system', 'user', 'assistant', 'tool']);
   });
 
-  it('maxHistoryTokens 超预算时裁掉最旧轮组，system 与初始 user 保留', async () => {
-    // 预算只够装下 system + user + 最近一轮：第一轮 assistant/tool 被裁
+  it('maxHistoryTokens 超预算时发射超限事件,未 replace 则原样发送（零内置裁剪）', async () => {
+    const emitted: Array<{ name: string; payload: { estimatedTokens: number; budget: number } }> =
+      [];
+    const { provider, completeCalls } = createMockProvider([
+      llmResponse({ content: 'done', stopReason: 'stop' }),
+    ]);
+
+    await reactLoop('go', {
+      provider,
+      systemPrompt: 'sys',
+      executeTool: async () => 'r',
+      maxHistoryTokens: 1, // 1 token ≈ 2 字符,任何历史必超
+      appEvent: stubAppEvent((name, payload) => {
+        if (name === 'agent:history-over-budget') {
+          emitted.push({
+            name,
+            payload: payload as { estimatedTokens: number; budget: number },
+          });
+        }
+      }),
+    });
+
+    // 超限事件发射,载荷携带估算与阈值
+    expect(emitted.map((e) => e.name)).toContain('agent:history-over-budget');
+    const over = emitted.find((e) => e.name === 'agent:history-over-budget')!;
+    expect(over.payload.estimatedTokens).toBeGreaterThan(1);
+    expect(over.payload.budget).toBe(1);
+    // 未 replace → 历史原样发送（框架零内置裁剪）
+    const first = completeCalls.mock.calls[0][0].messages;
+    expect(first.map((m: LLMMessage) => m.role)).toEqual(['system', 'user']);
+  });
+
+  it('超限事件 replace：当轮发送替换后历史,后续轮次继承（落账）', async () => {
+    const replaced = [
+      { role: 'system', content: 'compact' },
+      { role: 'user', content: 'summary' },
+    ] as LLMMessage[];
     const { provider, completeCalls } = createMockProvider([
       llmResponse({
         toolCalls: [toolCall('c1', 't1', {})],
         stopReason: 'tool_calls',
       }),
-      llmResponse({
-        toolCalls: [toolCall('c2', 't2', {})],
-        stopReason: 'tool_calls',
-      }),
       llmResponse({ content: 'done', stopReason: 'stop' }),
     ]);
 
-    await reactLoop('go', {
+    // 胖输入（3000 字符约 1500 tokens > 1000）→ 轮1超限;替换后轮2低于阈值不再发射
+    await reactLoop('r'.repeat(3000), {
       provider,
       systemPrompt: 'sys',
-      executeTool: async () => 'r'.repeat(200), // tool 结果很大，轮组很快超预算
-      maxHistoryTokens: 120, // ≈240 字符：system+user+单轮装得下，两轮装不下
-    });
-
-    // 第三轮请求：最旧轮组（c1 的 assistant + tool）已被裁掉，system/user 保留
-    const third = completeCalls.mock.calls[2][0].messages;
-    const roles = third.map((m: LLMMessage) => m.role);
-    expect(roles[0]).toBe('system');
-    expect(roles[1]).toBe('user');
-    expect(third.some((m: LLMMessage) => m.tool_call_id === 'c1')).toBe(false);
-    expect(third.some((m: LLMMessage) => m.tool_call_id === 'c2')).toBe(true);
-  });
-
-  it('裁剪以轮组为原子单位：assistant.toolCalls 与 tool 结果不拆散', async () => {
-    // 一轮带 2 个 toolCalls，tool 结果也大——轮组要么完整保留要么整体消失
-    const { provider, completeCalls } = createMockProvider([
-      llmResponse({
-        toolCalls: [toolCall('a1', 't1', {}), toolCall('a2', 't2', {})],
-        stopReason: 'tool_calls',
+      executeTool: async () => 'r',
+      maxHistoryTokens: 1000,
+      appEvent: stubAppEvent((name, payload) => {
+        if (name === 'agent:history-over-budget') {
+          (payload as unknown as { replace: (h: LLMMessage[]) => void }).replace(replaced);
+        }
       }),
-      llmResponse({ content: 'done', stopReason: 'stop' }),
-    ]);
-
-    await reactLoop('go', {
-      provider,
-      executeTool: async () => 'x'.repeat(500),
-      maxHistoryTokens: 10, // 极小预算：轮组必然放不下，但最近轮组强制保留
     });
 
-    // 第二轮：轮组超预算仍完整保留（至少保留最近一轮），且配对完整
+    // 轮1发送 = 替换后历史（原始胖输入不再出现）
+    const first = completeCalls.mock.calls[0][0].messages;
+    expect(first).toEqual(replaced);
+    // 轮2（tool 轮）继承替换后历史（追加轮组,替换产物不被回滚）
     const second = completeCalls.mock.calls[1][0].messages;
-    const assistant = second.find((m: LLMMessage) => m.role === 'assistant');
-    expect(assistant?.tool_calls).toHaveLength(2);
-    const toolIds = second
-      .filter((m: LLMMessage) => m.role === 'tool')
-      .map((m: LLMMessage) => m.tool_call_id);
-    expect(toolIds).toEqual(['a1', 'a2']);
+    expect(second.slice(0, 2)).toEqual(replaced);
+    expect(second.at(-1)!.role).toBe('tool');
   });
 
-  it('流式循环同样执行裁剪', async () => {
+  it('流式循环同样发射超限事件且 replace 生效', async () => {
+    const replaced = [
+      { role: 'system', content: 'compact' },
+      { role: 'user', content: 'summary' },
+    ] as LLMMessage[];
     const { provider, streamCalls } = createMockStreamProvider([
-      [{ toolCalls: [toolCall('c1', 't1', {})], finishReason: 'tool_calls' }],
-      [{ toolCalls: [toolCall('c2', 't2', {})], finishReason: 'tool_calls' }],
       [{ deltaContent: 'done', finishReason: 'stop' }],
     ]);
 
-    const chunks = [];
-    for await (const chunk of reactLoopStream('go', {
+    for await (const _chunk of reactLoopStream('go', {
       provider,
       systemPrompt: 'sys',
-      executeTool: async () => 'r'.repeat(200),
-      maxHistoryTokens: 120,
+      executeTool: async () => 'r',
+      maxHistoryTokens: 1,
+      appEvent: stubAppEvent((name, payload) => {
+        if (name === 'agent:history-over-budget') {
+          (payload as unknown as { replace: (h: LLMMessage[]) => void }).replace(replaced);
+        }
+      }),
     })) {
-      chunks.push(chunk);
+      // 消费到 done 为止
     }
 
-    const third = streamCalls.mock.calls[2][0].messages;
-    expect(third.some((m: LLMMessage) => m.tool_call_id === 'c1')).toBe(false);
-    expect(third.some((m: LLMMessage) => m.tool_call_id === 'c2')).toBe(true);
+    expect(streamCalls.mock.calls[0][0].messages).toEqual(replaced);
   });
 
   it('同轮多个 tool_call 并行执行（并发峰值 > 1）', async () => {

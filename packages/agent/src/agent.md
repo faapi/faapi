@@ -54,8 +54,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | `loadToolModule(...)` | [loadToolModule](../../faapi/src/loaders/loadToolModule.md) | 动态 import tool handler |
 | `resolveToolSchema?(tool)` | Phase 3.5 实现 | tool input 的 JSON Schema + 校验函数（基于 `zod.js` + `z.toJSONSchema`） |
 | `resolveAgentInputSchema?(agent)` | 同上（同一 resolver 实例） | sub-agent 派发入参 schema 解析（`AgentMetadata` 的 `inputTypeName` → zod.js → JSON Schema + 校验函数），见「派发入参 schema 声明」；未提供时派发一律走单字段 `input` 模式（编程式组装的向后兼容） |
-| `emitAppEvent?(name, payload)` | —（`@faapi/agent` 插件经 `overrides` 注入） | app 事件发射器（[appEventBus](../../faapi/src/events/appEventBus.md)）：`agent:system-prompt` / `agent:sub-agent-context` / `agent:before-tool-call` / `agent:after-tool-call` / `agent:filter-tools` / `agent:root-input` / `agent:input` 七接缝经此发射。未注入（未加载插件 / 编程式裸 Agent）→ 事件不发射、行为原样（能力边界） |
-| `emitAppEvent?(name, payload)` | —（`@faapi/agent` 插件经 `overrides` 注入） | app 事件发射器（[appEventBus](../../faapi/src/events/appEventBus.md)）：`agent:root-input` / `agent:input` 两接缝经此发射。未注入（未加载插件 / 编程式裸 Agent）→ 事件不发射、输入原样（能力边界） |
+| `emitAppEvent?(name, payload)` | —（`@faapi/agent` 插件经 `overrides` 注入） | app 事件发射器（[appEventBus](../../faapi/src/events/appEventBus.md)）：`agent:system-prompt` / `agent:sub-agent-context` / `agent:before-tool-call` / `agent:after-tool-call` / `agent:filter-tools` / `agent:root-input` / `agent:input` / `agent:history-over-budget` 八接缝经此发射。未注入（未加载插件 / 编程式裸 Agent）→ 事件不发射、行为原样（能力边界） |
 
 ### `AgentDeps.ctx`（执行上下文契约，必填）
 
@@ -114,9 +113,8 @@ class Agent {
 | `temperature` | `options.temperature` | — | `LlmConfig.temperature`（provider 级透传） |
 | `maxTokens` | `options.maxTokens` | — | `LlmConfig.maxTokens`（provider 级透传） |
 | `maxTurns` | — | `meta.maxTurns` | `AgentRuntimeConfig.maxTurns` |
-| `maxHistoryTokens` | — | — | `AgentRuntimeConfig.maxHistoryTokens`（未设置 = 不裁剪） |
+| `maxHistoryTokens` | — | — | `AgentRuntimeConfig.maxHistoryTokens`（历史超限事件触发阈值,未设置 = 不估算不发射;框架零内置裁剪——超限承接见 [reactLoop.md](./reactLoop.md) 的 `agent:history-over-budget` 章节） |
 | `toolTimeoutMs` | — | — | `AgentRuntimeConfig.toolTimeoutMs`（未设置 = 不限时;`faapi.config` 的 `agent.toolTimeoutMs` 经 `toAgentRuntimeConfig` 拆装到达） |
-| `historyCompactor` | — | — | `AgentRuntimeConfig.historyCompactor`（缺省 = 现行截断；子代理共享根 deps 全树生效，见 [historyCompaction.md](./historyCompaction.md);不进 faapi.config 声明面——经 `agent.decorateDeps` 配方或 `overrides.config` 装配,见 [agentDeps.md](./agentDeps.md)） |
 | `enableTracing` | `options.enableTracing` | — | `AgentRuntimeConfig.enableTracing`（默认 `false`） |
 | `traceId` | `options.traceId`（显式指定,全局关闭也生效） | — | 自动生成（`AgentRuntimeConfig.traceId` 默认 `true`;显式 `false` 整体关闭）——生成/注入/链式规则详见 [traceId.md](./traceId.md) |
 
@@ -284,7 +282,7 @@ getApp().on('agent:root-input:chapter-writer', async (e) => {
 // 续跑轮经 options.messages 传回,块随历史继承
 ```
 
-每轮 LLM 调用前的消息改写（`agent:input`，发送副本口径、不落历史）见 [reactLoop](./reactLoop.md) 的「agent:input 每轮发送前事件」。
+每轮 LLM 调用前的补充输入（`agent:input`，`addInput` 片段按序拼接落账进历史、append-only 不可变）见 [reactLoop](./reactLoop.md) 的「agent:input 每轮发送前事件（历史编辑窗口）」。
 
 ### sub-agent 派发工具命名（subAgentToolName）
 

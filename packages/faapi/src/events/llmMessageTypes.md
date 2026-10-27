@@ -10,7 +10,7 @@
 
 ## 使用场景
 
-- `AgentInputEvent.messages` 载荷类型（`agent:input` 事件改写面）
+- `AgentInputEvent.messages` 载荷类型（`agent:input` 事件历史只读快照）
 - `@faapi/agent` 的 `provider.ts` re-export（导入路径兼容层）
 - 业务方在事件 handler 中读写消息历史时的类型标注
 

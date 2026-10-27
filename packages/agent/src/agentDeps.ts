@@ -51,8 +51,7 @@ export interface CreateAgentDepsOptions {
    * 可整体透传 `ctx.config.agent` / `taskCtx.config.agent` 读回值。llms 逐项
    * `createProvider` 转换 providers Map（model key 解析用），旋钮经
    * `toAgentRuntimeConfig` 全量拆装（清单单一维护，含 enableTracing /
-   * toolTimeoutMs）。策略对象（`historyCompactor` 等类型不在声明面的旋钮）经
-   * `decorateDeps` 配方或 `overrides.config` 装配。缺省为空 Map + 无 config
+   * toolTimeoutMs / maxHistoryTokens 等声明面旋钮）。缺省为空 Map + 无 config
    * （外部 provider 模式——`agent.run(input, { provider })` 每次显式注入）
    */
   agentConfig?: AgentConfig;

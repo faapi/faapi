@@ -31,12 +31,60 @@ export interface AgentRootInputEvent {
   ctx: AgentToolContext;
 }
 
-/** `agent:input` 载荷——本轮将发送给 LLM 的消息副本（handler 可原地改写 messages） */
+/**
+ * `agent:input` 载荷——每轮 LLM 调用前的历史编辑窗口（append-only 不可变账本）
+ *
+ * **不含 agent 名**（同 `AgentRootInputEvent` 口径）：按 agent 路由走
+ * `agent:input:<agentName>` 专属名订阅，通用订阅是 agent 无关的横切处理。
+ *
+ * 写面只有 `addInput`：补充的文本片段在扇出结束后按 index 升序稳定排序（同 index
+ * 保持调用序）、`'\n\n'` 拼接，前置进当轮输入消息（当轮无新输入的工具轮/纯续跑轮
+ * 为新增 user 消息）——**落账进对话历史，后续轮次 / result.messages / 断点续跑链
+ * 全部可见，落账即不可变**。`messages` 是深冻结只读快照，整体替换赋值抛迁移错误
+ * （消息改写面已移除，历史不开放改写）。
+ */
 export interface AgentInputEvent {
   /** 递归深度（根循环 = 1） */
   depth: number;
-  /** 本轮发送副本（历史裁剪/压缩后）——改写仅作用本轮发送,不落历史 */
-  messages: LLMMessage[];
+  /** 历史只读快照（深冻结克隆，读取口径；任何写操作抛 TypeError，整体替换赋值抛迁移错误） */
+  readonly messages: readonly LLMMessage[];
+  /**
+   * 补充输入片段（本轮暂存，扇出结束后落账进历史）
+   *
+   * @param text 片段文本（框架不包裹不转义，`<system-reminder>` 等标签包裹是订阅端自己的事）
+   * @param index 排序序号（升序稳定排序，同 index 保持调用序；缺省 100——显式小号插前、
+   *   大号插后；推荐留隙 10/20/30 便于后续插入不牵动既有序号）
+   */
+  addInput(text: string, index?: number): void;
+  /** 请求上下文（同 AgentRootInputEvent.ctx） */
+  ctx: AgentToolContext;
+}
+
+/**
+ * `agent:history-over-budget` 载荷——历史超过 `maxHistoryTokens` 阈值，压缩由业务承接
+ *
+ * 框架不内置任何裁剪/压缩：本事件是历史长度控制的唯一承接面。业务调 `replace`
+ * 用压缩产物**整体替换循环历史**（落账：后续轮次 / result.messages / 断点续跑链
+ * 全部可见且不可变）；不调 = 历史原样发送。事件按轮估算、命中即发射、当轮至多
+ * 一次；后续轮次重新估算、仍超限再发射。**不含 agent 名**（同 agent 域统一口径）。
+ */
+export interface AgentHistoryOverBudgetEvent {
+  /** 递归深度（根循环 = 1） */
+  depth: number;
+  /** 框架估算的历史 token 数（字符数 / 2，中英混合保守值，不引入 tokenizer 依赖） */
+  estimatedTokens: number;
+  /** 触发本事件的 `maxHistoryTokens` 阈值 */
+  budget: number;
+  /** 当前历史只读快照（深冻结克隆，读取口径；写操作抛 TypeError） */
+  readonly messages: readonly LLMMessage[];
+  /**
+   * 用压缩产物整体替换循环历史（落账；多 handler 后调覆盖先调；不调 = 原样发送）
+   *
+   * @param history 压缩后的完整历史——扇出结束后校验非空 + 消息角色合法 +
+   *   `assistant.tool_calls` 与 tool 结果配对完整（与续跑历史同款约束），违反抛
+   *   `AgentError` 且替换不生效
+   */
+  replace(history: LLMMessage[]): void;
   /** 请求上下文（同 AgentRootInputEvent.ctx） */
   ctx: AgentToolContext;
 }
@@ -51,6 +99,7 @@ export interface AgentInputEvent {
 export interface FaapiAppEventMap {
   'agent:root-input': AgentRootInputEvent;
   'agent:input': AgentInputEvent;
+  'agent:history-over-budget': AgentHistoryOverBudgetEvent;
   'agent:before-tool-call': BeforeToolCallEvent;
   'agent:after-tool-call': AfterToolCallEvent;
   'agent:filter-tools': FilterToolsEvent;
@@ -63,6 +112,7 @@ export interface FaapiAppEventMap {
   'task:failed': TaskFailedInfo;
   [k: `agent:root-input:${string}`]: AgentRootInputEvent;
   [k: `agent:input:${string}`]: AgentInputEvent;
+  [k: `agent:history-over-budget:${string}`]: AgentHistoryOverBudgetEvent;
   [k: `agent:before-tool-call:${string}`]: BeforeToolCallEvent;
   [k: `agent:after-tool-call:${string}`]: AfterToolCallEvent;
   [k: `agent:filter-tools:${string}`]: FilterToolsEvent;
@@ -150,6 +200,7 @@ export interface RequestErrorEvent {
 export const APP_EVENT = {
   agentRootInput: 'agent:root-input',
   agentInput: 'agent:input',
+  agentHistoryOverBudget: 'agent:history-over-budget',
   agentBeforeToolCall: 'agent:before-tool-call',
   agentAfterToolCall: 'agent:after-tool-call',
   agentFilterTools: 'agent:filter-tools',
@@ -170,6 +221,13 @@ export function agentRootInputEventName(agentName: string): `agent:root-input:${
 /** 指定 agent 的 `agent:input` 专属事件名 */
 export function agentInputEventName(agentName: string): `agent:input:${string}` {
   return `agent:input:${agentName}`;
+}
+
+/** 指定 agent 的 `agent:history-over-budget` 专属事件名 */
+export function agentHistoryOverBudgetEventName(
+  agentName: string,
+): `agent:history-over-budget:${string}` {
+  return `agent:history-over-budget:${agentName}`;
 }
 
 /** 指定 tool/派发名的 `agent:before-tool-call` 专属事件名 */

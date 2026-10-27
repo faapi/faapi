@@ -16,6 +16,7 @@ import type {
   AppEventEmitter,
   AgentInputEvent,
   AgentRootInputEvent,
+  AgentHistoryOverBudgetEvent,
   BeforeToolCallEvent,
   AfterToolCallEvent,
   FilterToolsEvent,
@@ -406,40 +407,31 @@ describe('Agent', () => {
       expect(completeCalls).toHaveBeenCalledTimes(1);
     });
 
-    it('config.maxHistoryTokens 全局配置接线 reactLoop:超预算裁掉最旧轮组', async () => {
+    it('config.maxHistoryTokens 全局配置接线 reactLoop:超预算发射超限事件', async () => {
       // 回归:AgentRuntimeConfig.maxHistoryTokens 必须从 deps.config 透传进 ReactLoopConfig
       // （此前 buildLoopConfig 从不读取该字段,全局配置静默失效）。
-      // 大 tool 结果 + 小预算 → 第三轮请求里第一轮（c1）必须被裁掉
-      const handler = vi.fn(async () => ({ data: 'r'.repeat(400) }));
+      // 载荷形状/replace 契约全量见「agent:history-over-budget」describe
+      const events = createEventCollector();
       const { provider, completeCalls } = createMockProvider([
-        llmResponse({
-          toolCalls: [toolCall('c1', 'weather_getWeather', {})],
-          stopReason: 'tool_calls',
-        }),
-        llmResponse({
-          toolCalls: [toolCall('c2', 'weather_getWeather', {})],
-          stopReason: 'tool_calls',
-        }),
         llmResponse({ content: 'done', stopReason: 'stop' }),
       ]);
       const agent = new Agent(
         createDeps({
           provider,
-          agent: agentMeta(),
-          tools: [toolMeta()],
-          loadToolModuleImpl: async (filePath, functionName) => ({
-            handler: handler as (...args: unknown[]) => unknown,
-            functionName,
-          }),
-          config: { maxHistoryTokens: 120 }, // ≈240 字符:system+user+单轮装得下,两轮装不下
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+          config: { traceId: false, maxHistoryTokens: 1 }, // 1 token ≈ 2 字符,任何历史必超
         }),
       );
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      const third = completeCalls.mock.calls[2][0].messages;
-      expect(third.some((m: LLMMessage) => m.tool_call_id === 'c1')).toBe(false);
-      expect(third.some((m: LLMMessage) => m.tool_call_id === 'c2')).toBe(true);
+      expect(events.emitted.filter((e) => e.name === 'agent:history-over-budget')).toHaveLength(1);
+      // 未调 replace → 历史原样发送（框架零内置裁剪,长度控制由订阅端承接）
+      expect(completeCalls.mock.calls[0][0].messages).toEqual([
+        { role: 'system', content: 'base' },
+        { role: 'user', content: 'go' },
+      ]);
     });
 
     it('thinking:provider 返回 reasoning_content → result.reasoning 透出,历史剥离', async () => {
@@ -1434,7 +1426,26 @@ describe('Agent', () => {
     });
   });
 
-  describe('agent:input 每轮发送前事件', () => {
+  /** tool 轮用 deps：声明 weather tool + 桩 loadToolModule（agent:input / 超限事件两组用例共用） */
+  function toolTurnDeps(
+    provider: LLMProvider,
+    emitAppEvent: AppEventEmitter,
+    opts: { config?: AgentRuntimeConfig } = {},
+  ): AgentDeps {
+    return createDeps({
+      provider,
+      agent: agentMeta({ systemPrompt: 'base' }),
+      tools: [toolMeta()],
+      loadToolModuleImpl: async () => ({
+        handler: async () => ({ temp: 25 }),
+        functionName: 'getWeather',
+      }),
+      emitAppEvent,
+      config: opts.config,
+    });
+  }
+
+  describe('agent:input 每轮发送前事件（历史编辑窗口）', () => {
     /** 主控派发 writer 的三响应序列（主控轮1 → 子循环 → 主控轮2） */
     function dispatchResponses() {
       return [
@@ -1444,6 +1455,17 @@ describe('Agent', () => {
         }),
         llmResponse({ content: 'sub-answer', stopReason: 'stop' }),
         llmResponse({ content: 'final', stopReason: 'stop' }),
+      ];
+    }
+
+    /** tool 轮两响应序列（轮1 tool_calls → 轮2 stop），构造「当轮无新输入」的轮次 */
+    function toolTurnResponses() {
+      return [
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
       ];
     }
 
@@ -1478,87 +1500,42 @@ describe('Agent', () => {
       expect(events.emitted.filter((e) => e.name === 'agent:input:writer')).toHaveLength(1);
     });
 
-    it('载荷 messages 为本轮发送副本（含历史裁剪后的完整轮组），ctx 为 deps.ctx', async () => {
+    it('载荷 messages 为历史只读快照：深冻结,结构写与字段写都抛 TypeError', async () => {
       const events = createEventCollector();
-      const seen: LLMMessage[][] = [];
+      const errors: string[] = [];
       events.bus.on('agent:input', (e: AgentInputEvent) => {
-        seen.push(e.messages.map((m) => ({ ...m })));
-        expect((e.ctx as CtxWithUser).currentUserId).toBe(42);
+        if (e.depth !== 1) return;
+        expect(e.messages).toEqual([
+          { role: 'system', content: 'base' },
+          { role: 'user', content: 'go' },
+        ]);
+        try {
+          (e.messages as LLMMessage[]).push({ role: 'user', content: 'x' });
+        } catch (err) {
+          errors.push((err as Error).message);
+        }
+        try {
+          (e.messages[0] as { content: string }).content = 'hacked';
+        } catch (err) {
+          errors.push((err as Error).message);
+        }
       });
-      const { provider } = createMockProvider(dispatchResponses());
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
       const agent = new Agent(
         createDeps({
           provider,
-          ctx: toolCtx42,
-          agent: agentMeta({ agents: ['writer'] }),
-          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          agent: agentMeta({ systemPrompt: 'base' }),
           emitAppEvent: events.emitAppEvent,
         }),
       );
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      // 主控轮1：无 systemPrompt 仅 user；子循环轮：sub system + user；主控轮2：历史含 tool 配对
-      expect(seen[0]).toEqual([{ role: 'user', content: 'go' }]);
-      expect(seen[1][0]).toEqual({ role: 'system', content: 'sub-base' });
-      const parentTurn2 = seen[2];
-      expect(parentTurn2.some((m) => m.role === 'assistant' && m.tool_calls?.length)).toBe(true);
-      expect(parentTurn2.some((m) => m.role === 'tool')).toBe(true);
+      // 两类写操作都被冻结挡下（快照深冻结——数组结构与消息对象字段均不可写）
+      expect(errors).toHaveLength(2);
     });
 
-    it('改写只影响本轮发送：LLM 请求看到改写,本地历史与 result.messages 保持原样', async () => {
-      const events = createEventCollector();
-      events.bus.on('agent:input', (e: AgentInputEvent) => {
-        // 对每轮发送副本注入临时提示段（副本口径——不入历史）
-        e.messages = [...e.messages, { role: 'system', content: 'per-turn-hint' }];
-      });
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'ok', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          emitAppEvent: events.emitAppEvent,
-        }),
-      );
-
-      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      // 发送请求包含改写追加的提示段
-      const request = completeCalls.mock.calls[0][0];
-      expect(request.messages.at(-1)).toEqual({ role: 'system', content: 'per-turn-hint' });
-      // 本地历史与 result.messages 无提示段（副本口径）
-      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
-      expect(lastUser).toEqual({ role: 'user', content: 'go' });
-      expect(result.messages.some((m) => m.content === 'per-turn-hint')).toBe(false);
-    });
-
-    it('流式同款：改写进 stream 请求，done.messages 保持原样', async () => {
-      const events = createEventCollector();
-      events.bus.on('agent:input', (e: AgentInputEvent) => {
-        e.messages = [...e.messages, { role: 'system', content: 'stream-hint' }];
-      });
-      const { provider, streamCalls } = createMockStreamProvider([
-        [{ deltaContent: 'ok', finishReason: 'stop' }],
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          emitAppEvent: events.emitAppEvent,
-        }),
-      );
-
-      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
-
-      const request = streamCalls.mock.calls[0][0];
-      expect(request.messages.at(-1)).toEqual({ role: 'system', content: 'stream-hint' });
-      const done = chunks.at(-1)!.done!;
-      expect(done.messages.some((m) => m.content === 'stream-hint')).toBe(false);
-    });
-
-    it('扇出后 messages 为空数组：抛 AgentError 不发 LLM 请求', async () => {
+    it('messages 整体替换赋值抛迁移错误（写面收敛为 addInput）', async () => {
       const events = createEventCollector();
       events.bus.on('agent:input', (e: AgentInputEvent) => {
         (e as { messages: unknown }).messages = [];
@@ -1575,15 +1552,16 @@ describe('Agent', () => {
       );
 
       await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
-        AgentError,
+        /addInput/,
       );
       expect(completeCalls).not.toHaveBeenCalled();
     });
 
-    it('handler 抛错：走 run 既有错误链（发起 LLM 请求前显式失败）', async () => {
+    it('addInput 首轮落账：片段前置进当轮输入消息,发送与 result.messages 同源可见', async () => {
       const events = createEventCollector();
-      events.bus.on('agent:input', () => {
-        throw new Error('turn hook exploded');
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        if (e.depth !== 1) return;
+        e.addInput('A');
       });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
@@ -1596,18 +1574,120 @@ describe('Agent', () => {
         }),
       );
 
-      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
-        'turn hook exploded',
-      );
-      expect(completeCalls).not.toHaveBeenCalled();
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 发送请求：片段前置在原输入之前（「块在前、输入收尾」）
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({ role: 'user', content: 'A\n\ngo' });
+      // 落账进历史：result.messages 同源可见（append-only 账本,与旧「不落历史」语义相反）
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe('A\n\ngo');
     });
 
-    it('派发路径：子代理轮 handler 抛错被 per-tool catch 回灌主控 LLM，run 不崩', async () => {
+    it('多监听合并为一条消息：index 升序稳定排序,同 index 保持调用序,缺省 100 居中', async () => {
       const events = createEventCollector();
-      events.bus.on('agent:input:writer', () => {
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        e.addInput('缺省一'); // index=100,调用序1
+        e.addInput('大号', 200);
+        e.addInput('缺省二'); // index=100,调用序2
+        e.addInput('小号', 10);
+        e.addInput('同号', 100); // 显式 100,调用序3——与缺省组同号,保持调用序
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 期望顺序:小号(10) → 缺省一 → 缺省二 → 同号(同 100,按调用序排缺省组后) → 大号(200)
+      const expected = ['小号', '缺省一', '缺省二', '同号', '大号'].join('\n\n');
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({ role: 'user', content: `${expected}\n\ngo` });
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe(`${expected}\n\ngo`);
+    });
+
+    it('空白片段过滤;全部为空时不落账（原样发送）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        e.addInput('  ');
+        e.addInput('');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({ role: 'user', content: 'go' });
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe('go');
+    });
+
+    it('工具轮落账：片段作为新增 user 消息追加（tool 结果之后）', async () => {
+      const events = createEventCollector();
+      let turn = 0;
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        turn += 1;
+        if (turn === 2) e.addInput('second-turn-note');
+      });
+      const { provider, completeCalls } = createMockProvider(toolTurnResponses());
+      const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 轮2发送请求：新增 user 消息紧随 tool 结果
+      const request2 = completeCalls.mock.calls[1][0];
+      expect(request2.messages.at(-2)!.role).toBe('tool');
+      expect(request2.messages.at(-1)).toEqual({ role: 'user', content: 'second-turn-note' });
+      // 落账进历史（最终 assistant 之前）
+      expect(result.messages.at(-1)).toEqual({ role: 'assistant', content: 'done' });
+      expect(result.messages.at(-2)).toEqual({ role: 'user', content: 'second-turn-note' });
+    });
+
+    it('跨轮可见且不可变：轮1落账片段,轮2快照含它且写它抛错', async () => {
+      const events = createEventCollector();
+      let turn = 0;
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        turn += 1;
+        if (turn === 1) {
+          e.addInput('turn-one');
+          return;
+        }
+        // 轮2：快照含轮1落账片段（当轮输入消息 = 前置产物）,且仍只读
+        const inputMsg = e.messages.find((m) => m.role === 'user');
+        expect(inputMsg!.content).toBe('turn-one\n\ngo');
+        expect(() => (e.messages as LLMMessage[]).shift()).toThrow();
+      });
+      const { provider } = createMockProvider(toolTurnResponses());
+      const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(turn).toBe(2);
+    });
+
+    it('事务性：订阅端抛错,暂存整批丢弃、历史零污染（经 per-tool 回灌路径观察）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input:writer', (e: AgentInputEvent) => {
+        e.addInput('dirty');
         throw new Error('child turn exploded');
       });
-      // 抛错路径没有子循环请求——主控轮1（派发）+ 主控轮2（消费错误回灌）两响应
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
           toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
@@ -1632,6 +1712,396 @@ describe('Agent', () => {
         (m: LLMMessage) => m.role === 'tool',
       );
       expect(toolMsg!.content).toMatch(/child turn exploded/);
+      // 抛错前已暂存的片段未落账（历史零污染——事务性 all-or-nothing）
+      expect(JSON.stringify(result.messages)).not.toContain('dirty');
+    });
+
+    it('根路径订阅端抛错：走 run 既有错误链（发起 LLM 请求前显式失败）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', () => {
+        throw new Error('turn hook exploded');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        'turn hook exploded',
+      );
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('纯续跑轮（无新输入）：片段作为新增 user 消息追加', async () => {
+      const events = createEventCollector();
+      let stage = 0;
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        if (stage === 2) e.addInput('resume-note');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'first', stopReason: 'stop' }),
+        llmResponse({ content: 'second', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      stage = 1;
+      const first = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+      stage = 2;
+      const second = await agent.run('', {
+        agent: 'researcher',
+        model: 'gpt-4o',
+        messages: first.messages,
+      });
+
+      // 续跑轮无新输入 → 片段为新增 user 消息（本轮发送可见 + 落账进历史）
+      const request = completeCalls.mock.calls[1][0];
+      expect(request.messages.at(-1)).toEqual({ role: 'user', content: 'resume-note' });
+      expect(second.messages.at(-1)).toEqual({ role: 'assistant', content: 'second' });
+      expect(second.messages.at(-2)).toEqual({ role: 'user', content: 'resume-note' });
+    });
+
+    it('流式同款：片段进 stream 请求并落账进 done.messages', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        e.addInput('stream-note');
+      });
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'ok', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      const request = streamCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({ role: 'user', content: 'stream-note\n\ngo' });
+      const done = chunks.at(-1)!.done!;
+      const lastUser = [...done.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe('stream-note\n\ngo');
+    });
+
+    it('超限但未订阅超限事件：原样发送（框架零内置裁剪的阴性对照）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        if (e.depth !== 1) return;
+        e.addInput('note');
+      });
+      // 预算极小（1 token ≈ 2 字符）,任何历史必超——但未订阅 replace,历史原样发送
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+          config: { traceId: false, maxHistoryTokens: 1, enableTracing: true },
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 超限事件照常发射,无订阅端 replace → 历史原样
+      expect(events.emitted.filter((e) => e.name === 'agent:history-over-budget')).toHaveLength(1);
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({ role: 'user', content: 'note\n\ngo' });
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe('note\n\ngo');
+      expect(result.trace).toBeDefined();
+    });
+  });
+
+  describe('agent:history-over-budget 历史超限事件（压缩的业务承接面）', () => {
+    /** 超限用 deps：预算 1 token(≈2 字符),任何历史必超 */
+    function overBudgetDeps(
+      provider: LLMProvider,
+      emitAppEvent: AppEventEmitter,
+      config: Partial<AgentRuntimeConfig> = {},
+    ): AgentDeps {
+      return createDeps({
+        provider,
+        agent: agentMeta({ systemPrompt: 'base' }),
+        emitAppEvent,
+        config: { traceId: false, maxHistoryTokens: 1, ...config },
+      });
+    }
+
+    /** 压缩产物（结构完整的最小历史） */
+    function compactHistory(): LLMMessage[] {
+      return [
+        { role: 'system', content: 'compact' },
+        { role: 'user', content: 'summary' },
+      ];
+    }
+
+    it('超限触发：载荷携带 depth/estimatedTokens/budget/只读快照,专属名同发', async () => {
+      const events = createEventCollector();
+      const seen: number[] = [];
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        seen.push(e.estimatedTokens);
+        expect(e.depth).toBe(1);
+        expect(e.budget).toBe(1);
+        expect(e.messages).toEqual([
+          { role: 'system', content: 'base' },
+          { role: 'user', content: 'go' },
+        ]);
+        // 只读快照：写操作抛 TypeError（同 agent:input 口径）
+        expect(() => (e.messages as LLMMessage[]).pop()).toThrow();
+      });
+      const { provider } = createMockProvider([llmResponse({ content: 'ok', stopReason: 'stop' })]);
+      const agent = new Agent(overBudgetDeps(provider, events.emitAppEvent));
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!).toBeGreaterThan(1);
+      expect(
+        events.emitted.filter((e) => e.name === 'agent:history-over-budget:researcher'),
+      ).toHaveLength(1);
+    });
+
+    it('replace 落账：当轮发送与 result.messages 均为替换后历史,root-input 不重触发', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace(compactHistory());
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(overBudgetDeps(provider, events.emitAppEvent));
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 当轮发送即替换后历史
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages).toEqual([
+        { role: 'system', content: 'compact' },
+        { role: 'user', content: 'summary' },
+      ]);
+      // 落账进历史：result.messages 同源（原始 'go' 历史被整体替换）
+      expect(result.messages.slice(0, 2)).toEqual(compactHistory());
+      // 压缩不视为新对话：root-input 整个 run 恰好一次（不重触发）
+      expect(events.emitted.filter((e) => e.name === 'agent:root-input')).toHaveLength(1);
+    });
+
+    it('多 handler 后调覆盖先调：最终替换为最后一次产物', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace([{ role: 'system', content: 'first' }]);
+      });
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace(compactHistory());
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(overBudgetDeps(provider, events.emitAppEvent));
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls.mock.calls[0][0].messages).toEqual(compactHistory());
+    });
+
+    it('replace 空历史：抛 AgentError 不发 LLM 请求', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace([]);
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(overBudgetDeps(provider, events.emitAppEvent));
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        AgentError,
+      );
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('replace 断裂 tool 配对（孤立 tool 结果）：抛 AgentError', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace([
+          { role: 'system', content: 'compact' },
+          { role: 'tool', content: 'orphan', tool_call_id: 'c9' },
+        ]);
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(overBudgetDeps(provider, events.emitAppEvent));
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        AgentError,
+      );
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('事务性：订阅端 replace 后抛错,替换未生效、历史零污染（per-tool 回灌路径观察）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget:writer', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace([
+          { role: 'system', content: 'zz-replaced' },
+          { role: 'user', content: 'zz-summary' },
+        ]);
+        throw new Error('compact handler exploded');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'final', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ agents: ['writer'] }),
+          subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub-base' })],
+          emitAppEvent: events.emitAppEvent,
+          config: { traceId: false, maxHistoryTokens: 1 },
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // run 正常收尾（错误回灌主控）,子代理历史未被替换
+      expect(result.content).toBe('final');
+      expect(JSON.stringify(result.messages)).not.toContain('zz-replaced');
+      expect(completeCalls).toHaveBeenCalledTimes(2);
+    });
+
+    it('跨轮：replace 后下轮重新估算,低于阈值不再发射', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace(compactHistory()); // 短历史（约 7 tokens）,估算远低于阈值
+      });
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        toolTurnDeps(provider, events.emitAppEvent, {
+          config: { traceId: false, maxHistoryTokens: 1000 },
+        }),
+      );
+
+      // 胖输入（3000 字符约 1500 tokens > 1000）→ 轮1超限;替换后轮2低于阈值
+      await agent.run('r'.repeat(3000), { agent: 'researcher', model: 'gpt-4o' });
+
+      // 仅轮1发射；轮2历史已被替换为短历史,不再超限
+      expect(events.emitted.filter((e) => e.name === 'agent:history-over-budget')).toHaveLength(1);
+    });
+
+    it('replace 后仍超限：当轮不重入,下轮再发射（每轮至多一次）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        // 替换产物本身超长（估算必超阈值）
+        e.replace([
+          { role: 'system', content: 'base' },
+          { role: 'user', content: 'r'.repeat(3000) },
+        ]);
+      });
+      const { provider } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        toolTurnDeps(provider, events.emitAppEvent, {
+          config: { traceId: false, maxHistoryTokens: 1 },
+        }),
+      );
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 两轮各发射一次（当轮替换后不重入）
+      expect(events.emitted.filter((e) => e.name === 'agent:history-over-budget')).toHaveLength(2);
+    });
+
+    it('未接线（编程式裸 Agent）：超限不发射、原样发送', async () => {
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          config: { traceId: false, maxHistoryTokens: 1 },
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(result.content).toBe('ok');
+      expect(completeCalls.mock.calls[0][0].messages).toEqual([
+        { role: 'system', content: 'base' },
+        { role: 'user', content: 'go' },
+      ]);
+    });
+
+    it('未超限：不发射、不影响发送', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace(compactHistory());
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        overBudgetDeps(provider, events.emitAppEvent, { maxHistoryTokens: 1_000_000 }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(events.emitted.filter((e) => e.name.startsWith('agent:history-over-budget'))).toEqual(
+        [],
+      );
+      expect(completeCalls.mock.calls[0][0].messages.at(-1)).toEqual({
+        role: 'user',
+        content: 'go',
+      });
+      expect(result.content).toBe('ok');
+    });
+
+    it('流式同款：replace 进 stream 请求并落账进 done.messages', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:history-over-budget', (e: AgentHistoryOverBudgetEvent) => {
+        e.replace(compactHistory());
+      });
+      const { provider, streamCalls } = createMockStreamProvider([
+        [{ deltaContent: 'ok', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(overBudgetDeps(provider, events.emitAppEvent));
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      const request = streamCalls.mock.calls[0][0];
+      expect(request.messages).toEqual(compactHistory());
+      const done = chunks.at(-1)!.done!;
+      expect(done.messages.slice(0, 2)).toEqual(compactHistory());
     });
   });
 

@@ -28,13 +28,13 @@ import type {
 import type { AgentRunOptions } from './agentHandle';
 import { AgentError, AgentRecursionError, AgentToolTimeoutError } from './agentErrors';
 import { runWithAgentScope } from './agentScope';
-import type { HistoryCompactor } from './historyCompaction';
 import { renderPromptTemplate } from './promptTemplate';
 import { createProvider } from './provider';
 import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
   reactLoop,
   reactLoopStream,
+  validateLoopHistory,
   type ReactLoopConfig,
   type ReactLoopResult,
   type ReactLoopStreamChunk,
@@ -93,9 +93,6 @@ export function extractSubAgentUserInput(args: Record<string, unknown>): string 
   }
   return JSON.stringify(args);
 }
-
-/** 合法消息 role（与 LLMMessage 的 role 联合一致，运行时校验反序列化历史用） */
-const VALID_MESSAGE_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 
 /**
  * 判断是否为 LLMProvider 实例（有 `complete` / `stream` 方法）
@@ -243,24 +240,8 @@ export function resolveModelKey(
  * @throws {AgentError} 历史结构非法（消息含索引与 toolCallId，可定位损坏点）
  */
 function validateResumeHistory(messages: LLMMessage[]): void {
-  messages.forEach((message, index) => {
-    if (!VALID_MESSAGE_ROLES.has(message.role)) {
-      throw new AgentError(
-        `Invalid resume history at messages[${index}]: unknown role "${String(message.role)}"`,
-      );
-    }
-    if (message.role === 'assistant' && message.tool_calls?.length) {
-      const missing = new Set(message.tool_calls.map((call) => call.id));
-      for (let j = index + 1; j < messages.length && messages[j]!.role === 'tool'; j++) {
-        missing.delete(messages[j]!.tool_call_id ?? '');
-      }
-      if (missing.size > 0) {
-        throw new AgentError(
-          `Invalid resume history at messages[${index}]: assistant tool call(s) [${Array.from(missing).join(', ')}] have no matching tool result (history truncated mid-turn — persist the full turn group from AgentAbortError.messages / ReactLoopError.messages)`,
-        );
-      }
-    }
-  });
+  // 校验逻辑单一来源在 reactLoop.validateLoopHistory（超限事件 replace 产物同款约束）
+  validateLoopHistory(messages, 'resume history');
 }
 
 /**
@@ -274,14 +255,11 @@ export interface AgentRuntimeConfig {
   maxTurns?: number;
   /** agent 调用 agent 的最大递归深度（默认 3） */
   maxAgentDepth?: number;
-  /** 发送给 LLM 的历史 token 预算（近似估算,未设置 = 不裁剪）——透传 reactLoop,见 reactLoop.md 历史裁剪章节 */
-  maxHistoryTokens?: number;
   /**
-   * 历史超预算时的压缩策略（缺省 = 现行截断,逐字节现状）——透传 reactLoop,
-   * 仅在发送副本上调用、仅超预算且有轮组时调用;输出不变量由框架强制守卫。
-   * 详见 [historyCompaction.md](./historyCompaction.md)。
+   * 历史超限事件触发阈值（近似估算,未设置 = 不估算不发射）——透传 reactLoop,
+   * 见 reactLoop.md「agent:history-over-budget 历史超限事件」章节
    */
-  historyCompactor?: HistoryCompactor;
+  maxHistoryTokens?: number;
   /**
    * 单次 tool 执行的超时毫秒数（未设置 = 不限时）。超时抛 `AgentToolTimeoutError`,
    * 被 reactLoop 按既有 tool 错误路径回传 LLM（LLM 可决定重试或换路）——挂死的
@@ -803,7 +781,6 @@ export class Agent {
         maxTokens: options?.maxTokens,
         maxTurns: meta.maxTurns ?? this.deps.config?.maxTurns,
         maxHistoryTokens: this.deps.config?.maxHistoryTokens,
-        historyCompactor: this.deps.config?.historyCompactor,
         tools,
         signal: options?.signal,
         messages: options?.messages,

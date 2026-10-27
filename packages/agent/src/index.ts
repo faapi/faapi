@@ -82,9 +82,6 @@ export {
   type SubAgentToolResult,
 } from './reactLoop';
 
-// 历史压缩：策略位（historyCompactor）+ 输出不变量守卫（详见 historyCompaction.md）
-export type { HistoryCompactor, HistoryCompactorInput } from './historyCompaction';
-
 // Tracing 类型（结构化调用明细,Phase 3.x）——单次 agent.run() 的明细 + sub-agent 嵌套 trace
 export {
   isTracingToolResult,

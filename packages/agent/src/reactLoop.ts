@@ -1,5 +1,5 @@
 import { AgentAbortError } from './provider';
-import { APP_EVENT, agentInputEventName } from '@faapi/faapi';
+import { APP_EVENT, agentHistoryOverBudgetEventName, agentInputEventName } from '@faapi/faapi';
 import type { AgentToolContext, AppEventEmitter } from '@faapi/faapi';
 import { AgentError } from './agentErrors';
 import type {
@@ -11,7 +11,6 @@ import type {
   LLMToolDefinition,
   LLMUsage,
 } from './provider';
-import { assertCompactedHistory, type HistoryCompactor } from './historyCompaction';
 import {
   isTracingToolResult,
   type AgentTrace,
@@ -138,21 +137,14 @@ export interface ReactLoopConfig {
    */
   signal?: AbortSignal;
   /**
-   * 发送给 LLM 的历史 token 预算（近似估算：字符数 / 2；未设置 = 不裁剪，向后兼容）
+   * 历史超限事件触发阈值（近似估算：字符数 / 2；未设置 = 不估算不发射）
    *
-   * 超预算时从最旧的「轮组」（assistant + 其后全部 tool 结果）开始裁剪，
-   * system 与初始 user 永不裁剪，至少保留最近一轮。裁剪只作用于发给 LLM 的
-   * 消息副本，本地 `messages` 与 trace 不受影响。详见 reactLoop.md 的历史裁剪章节。
+   * 框架不内置任何裁剪/压缩——每轮估算超过阈值时发射 `agent:history-over-budget`
+   * 事件（见 reactLoop.md 同名章节），长度控制完全由订阅端承接（`replace` 整体
+   * 替换循环历史）；未订阅事件时超限历史原样发送（provider 可能 400——显式能力
+   * 边界，非降级）。
    */
   maxHistoryTokens?: number;
-  /**
-   * 历史超预算时的压缩策略（缺省 = 现行截断,逐字节现状,见 [historyCompaction.md](./historyCompaction.md)）
-   *
-   * 接在现行「按轮组从最旧裁起」的同一位置:仅当超预算且存在轮组时调用,
-   * 仅作用于发送副本（`result.messages` 与续跑源不受影响）。输出不变量
-   * （头部保留 / tool 配对 / 至少一轮组）由框架强制守卫,违反抛 `AgentError`。
-   */
-  historyCompactor?: HistoryCompactor;
   /**
    * 初始对话历史（续跑 / 多轮对话）
    *
@@ -175,9 +167,11 @@ export interface ReactLoopConfig {
    * app 事件上下文（可选——`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传；
    * 未接线时不携带,每轮发送前事件不发射、循环零开销）
    *
-   * 已接线时每轮 provider 调用前发射 [appEventBus](../../faapi/src/events/appEventBus.md)
-   * 的 `agent:input` / `agent:input:<agentName>`——handler 原地改写发送副本
-   * （不落历史,扇出后校验非空数组）。见 reactLoop.md「agent:input 每轮发送前事件」。
+   * 已接线时每轮 provider 调用前（历史裁剪/压缩之前）发射
+   * [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:input` /
+   * `agent:input:<agentName>`——载荷为历史只读快照 + `addInput` 补充输入（片段
+   * 落账进历史,append-only 不可变）。见 reactLoop.md「agent:input 每轮发送前
+   * 事件（历史编辑窗口）」。
    */
   appEvent?: {
     emit: AppEventEmitter;
@@ -403,102 +397,196 @@ function estimateMessageTokens(message: LLMMessage): number {
   return estimateTokens(chars);
 }
 
+/** 合法消息角色（循环历史结构校验用） */
+const VALID_MESSAGE_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
+
 /**
- * 按预算裁剪发给 LLM 的历史（见 reactLoop.md 历史裁剪章节）
+ * 循环历史结构校验：消息角色合法 + `assistant.tool_calls` 与 tool 结果按
+ * `tool_call_id` 配对完整
  *
- * - 头部保留段（system + 初始 user，直到第一个 assistant）永不裁剪
- * - 轮组（assistant + 其后全部 tool 结果）为原子单位，从最旧开始丢
- * - 至少保留最近一轮（即使其自身超预算，也不发送空历史）
+ * 两个消费方同一约束——Agent 层续跑入参校验（label `'resume history'`）与
+ * 超限事件 `replace` 产物校验（label `'replaced history'`）：断裂结构每次
+ * 发送都会被 provider 400,在入口显式失败（fail fast,不静默放行）。
  */
-export function trimHistory(messages: LLMMessage[], maxTokens: number): LLMMessage[] {
-  // 头部：system + 初始 user（第一个 assistant 之前的连续前缀）
-  let headEnd = 0;
-  while (headEnd < messages.length && messages[headEnd]!.role !== 'assistant') {
-    headEnd++;
-  }
-  const head = messages.slice(0, headEnd);
-
-  // 轮组划分：rest 中每个 assistant 开启一个新轮组，其后 tool 消息归属之
-  const turns: LLMMessage[][] = [];
-  for (const message of messages.slice(headEnd)) {
-    if (message.role === 'assistant' || turns.length === 0) {
-      turns.push([message]);
-    } else {
-      turns[turns.length - 1]!.push(message);
+export function validateLoopHistory(messages: LLMMessage[], label: string): void {
+  messages.forEach((message, index) => {
+    if (!VALID_MESSAGE_ROLES.has(message.role)) {
+      throw new AgentError(
+        `Invalid ${label} at messages[${index}]: unknown role "${String(message.role)}"`,
+      );
     }
-  }
-  if (turns.length === 0) return messages;
-
-  // 从最新往旧收集，预算内尽量多保留；最近一轮无条件保留
-  const kept: LLMMessage[][] = [];
-  let total = head.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
-  for (let i = turns.length - 1; i >= 0; i--) {
-    const turnTokens = turns[i]!.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
-    if (kept.length > 0 && total + turnTokens > maxTokens) break;
-    kept.unshift(turns[i]!);
-    total += turnTokens;
-  }
-
-  return [...head, ...kept.flat()];
+    if (message.role === 'assistant' && message.tool_calls?.length) {
+      const missing = new Set(message.tool_calls.map((call) => call.id));
+      for (let j = index + 1; j < messages.length && messages[j]!.role === 'tool'; j++) {
+        missing.delete(messages[j]!.tool_call_id ?? '');
+      }
+      if (missing.size > 0) {
+        throw new AgentError(
+          `Invalid ${label} at messages[${index}]: assistant tool call(s) [${Array.from(missing).join(', ')}] have no matching tool result (history truncated mid-turn — persist the full turn group from AgentAbortError.messages / ReactLoopError.messages)`,
+        );
+      }
+    }
+    if (message.role === 'tool') {
+      // 孤立 tool 结果:前溯连续 tool 段之外的最近消息必须是其 tool_call_id 的属主 assistant
+      let start = index;
+      while (start > 0 && messages[start - 1]!.role === 'tool') start--;
+      const owner = start > 0 ? messages[start - 1] : undefined;
+      const owned =
+        owner?.role === 'assistant' &&
+        owner.tool_calls?.some((call) => call.id === (message.tool_call_id ?? ''));
+      if (!owned) {
+        throw new AgentError(
+          `Invalid ${label} at messages[${index}]: orphan tool result (tool_call_id "${String(
+            message.tool_call_id ?? '',
+          )}") has no preceding assistant tool_calls owning it`,
+        );
+      }
+    }
+  });
 }
 
 /**
- * 每轮发给 LLM 的消息解析（历史裁剪 / 历史压缩策略位的统一接缝）
+ * agent:history-over-budget 历史超限事件（见主包 events/appEventBus.md 与
+ * reactLoop.md 同名章节）
  *
- * - 未设置 maxHistoryTokens：原样
- * - 声明 historyCompactor 且超预算且有轮组：调用策略 + 不变量守卫
- *   （仅发送副本——本地 messages 不受影响）
- * - 其余（未超预算 / 无轮组 / 未声明策略）：现行 trimHistory 截断（缺省=现状）
+ * 每轮估算（字符数/2）超过 `maxHistoryTokens` 阈值时发射（agent:input 落账之后）,
+ * 通用名 + 专属名同一载荷对象先通用后专属。载荷 `messages` 为历史只读快照;
+ * 订阅端经 `replace(history)` 用压缩产物整体替换循环历史——扇出结束后校验
+ * （非空 + 结构完整）后落账,后续轮次 / result.messages / 断点续跑链全可见;
+ * 多 handler 后调覆盖先调,不调 = 历史原样发送。当轮至多发射一次（替换后不重入）,
+ * 后续轮次重新估算、仍超限再发。未设置阈值 / 未超限 / appEvent 未接线时不发射
+ * （能力边界,非降级——未订阅时超限历史原样发送,长度控制是业务知识）。
+ * handler 抛错走 run/stream 既有错误链,替换未发生,历史零污染（事务性）。
  */
-async function resolveOutgoingMessages(
+async function emitHistoryOverBudgetEvent(
   messages: LLMMessage[],
   config: ReactLoopConfig,
-): Promise<LLMMessage[]> {
+): Promise<void> {
   const budget = config.maxHistoryTokens;
-  if (!budget) return messages;
+  const appEvent = config.appEvent;
+  if (!budget || !appEvent) return;
   const estimatedTokens = messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
-  if (
-    config.historyCompactor &&
-    estimatedTokens > budget &&
-    messages.some((m) => m.role === 'assistant')
-  ) {
-    const compacted = await config.historyCompactor({ messages, estimatedTokens, budget });
-    return assertCompactedHistory(messages, compacted);
+  if (estimatedTokens <= budget) return;
+  let replaced: LLMMessage[] | undefined;
+  let readView: readonly LLMMessage[] | undefined;
+  const payload = {
+    depth: appEvent.depth,
+    estimatedTokens,
+    budget,
+    ctx: appEvent.ctx,
+    get messages(): readonly LLMMessage[] {
+      return (readView ??= createReadView(messages));
+    },
+    replace: (history: LLMMessage[]): void => {
+      replaced = history;
+    },
+  };
+  await appEvent.emit(APP_EVENT.agentHistoryOverBudget, payload);
+  await appEvent.emit(agentHistoryOverBudgetEventName(appEvent.agentName), payload);
+  // —— 扇出结束,此刻落账（多 handler 后调覆盖先调;不调 = 原样发送）——
+  if (!replaced) return;
+  if (!Array.isArray(replaced) || replaced.length === 0) {
+    throw new AgentError(
+      'agent:history-over-budget replace() requires a non-empty message array (the compacted replacement history)',
+    );
   }
-  return trimHistory(messages, budget);
+  validateLoopHistory(replaced, 'replaced history');
+  messages.length = 0;
+  messages.push(...replaced);
+}
+
+/** 补充输入片段缺省排序序号（中位锚点：显式小号插前、大号插后） */
+const DEFAULT_INPUT_INDEX = 100;
+
+/** 补充输入片段暂存形态（seq 为调用序——同 index 的稳定 tiebreak 键） */
+interface StagedInput {
+  /** 排序序号（缺省 DEFAULT_INPUT_INDEX） */
+  index: number;
+  /** 片段文本（框架不包裹不转义，标签包裹是订阅端自己的事） */
+  text: string;
+  /** 调用序（同 index 保持调用序——双键比较器显式写进排序，不依赖引擎稳定排序） */
+  seq: number;
 }
 
 /**
- * agent:input 每轮发送前事件（见主包 events/appEventBus.md 与 reactLoop.md 同名章节）
+ * 历史只读快照：深拷贝 + 逐层深冻结
  *
- * appEvent 已接线时发射通用名 + 专属名（同一载荷对象,先通用后专属）,handler 原地
- * 改写 messages——改写仅作用本轮发送副本（本地 messages / result.messages / 续跑源
- * 不受影响,与历史裁剪同一口径;trace 的 inputSnapshot 记录改写后实际发送内容）。
- * 扇出后校验 messages 为非空数组,否则抛 AgentError（fail fast,不发 LLM 请求）;
- * handler 抛错原样上抛走 run/stream 既有错误链;appEvent 未接线时原样返回
- * （能力边界,非降级——不发射零开销）
+ * 读取与真历史内容完全一致，而任何写操作（数组结构变更 / 消息对象字段赋值）
+ * 都抛 TypeError——历史本体从不出境，写穿面在结构上不存在。
+ */
+function createReadView(messages: LLMMessage[]): readonly LLMMessage[] {
+  const clone = structuredClone(messages) as LLMMessage[];
+  const freezeDeep = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) freezeDeep(item);
+      Object.freeze(value);
+      return;
+    }
+    if (value !== null && typeof value === 'object') {
+      for (const item of Object.values(value)) freezeDeep(item);
+      Object.freeze(value);
+    }
+  };
+  freezeDeep(clone);
+  return clone;
+}
+
+/**
+ * agent:input 每轮发送前事件——历史编辑窗口（见主包 events/appEventBus.md 与
+ * reactLoop.md 同名章节）
+ *
+ * appEvent 已接线时每轮发射（历史裁剪/压缩**之前**——片段落账后才投影发送），
+ * 通用名 + 专属名同一载荷对象先通用后专属。载荷 `messages` 为历史只读快照
+ * （深冻结克隆，首次访问才构造——订阅端不读则零拷贝开销；整体替换赋值抛迁移
+ * 错误），`addInput(text, index=100)` 暂存补充输入片段。
+ *
+ * 扇出结束后落账：片段按 (index, seq) 升序排序（同 index 保持调用序）→ 过滤
+ * 空白片段 → `'\n\n'` 拼接 → 前置进当轮输入消息（`turnInputIndex >= 0`，原内容
+ * 逐字节不动）；当轮无新输入（工具轮/纯续跑轮，-1）为新增 user 消息追加。
+ * 落账即进对话历史——后续轮次 / result.messages / 断点续跑链全部可见，不可变。
+ *
+ * handler 抛错 → emit 冒泡走 run/stream 既有错误链，尚未落账，历史零污染
+ * （事务性 all-or-nothing）。appEvent 未接线时整体跳过（能力边界，非降级）。
  */
 async function emitAgentInputEvent(
   messages: LLMMessage[],
   config: ReactLoopConfig,
-): Promise<LLMMessage[]> {
+  turnInputIndex: number,
+): Promise<void> {
   const appEvent = config.appEvent;
-  if (!appEvent) return messages;
+  if (!appEvent) return;
+  const staged: StagedInput[] = [];
+  let readView: readonly LLMMessage[] | undefined;
   const payload = {
     depth: appEvent.depth,
-    messages,
     ctx: appEvent.ctx,
+    get messages(): readonly LLMMessage[] {
+      return (readView ??= createReadView(messages));
+    },
+    set messages(_value: readonly LLMMessage[]) {
+      throw new AgentError(
+        'agent:input payload.messages is a read-only snapshot — message rewriting was removed; use addInput(text, index?) to commit input fragments into history',
+      );
+    },
+    addInput: (text: string, index = DEFAULT_INPUT_INDEX): void => {
+      staged.push({ index, text, seq: staged.length });
+    },
   };
   await appEvent.emit(APP_EVENT.agentInput, payload);
   await appEvent.emit(agentInputEventName(appEvent.agentName), payload);
-  if (!Array.isArray(payload.messages) || payload.messages.length === 0) {
-    throw new AgentError(
-      `agent:input event for agent "${appEvent.agentName}" must leave messages a non-empty array (the outgoing messages for this turn), got ${
-        Array.isArray(payload.messages) ? 'empty array' : typeof payload.messages
-      }`,
-    );
+  // —— 扇出结束，此刻起落账（此后任何路径都不会留下「半次编辑」）——
+  const joined = staged
+    .sort((a, b) => a.index - b.index || a.seq - b.seq)
+    .map((s) => s.text)
+    .filter((t) => t.trim() !== '')
+    .join('\n\n');
+  if (joined === '') return;
+  if (turnInputIndex >= 0) {
+    const current = messages[turnInputIndex]!;
+    messages[turnInputIndex] = { ...current, content: `${joined}\n\n${current.content}` };
+  } else {
+    messages.push({ role: 'user', content: joined });
   }
-  return payload.messages;
 }
 
 function buildRequestExtras(config: ReactLoopConfig) {
@@ -550,6 +638,9 @@ export async function reactLoop(
 ): Promise<ReactLoopResult> {
   const enableTracing = config.enableTracing ?? false;
   const messages = initLoopMessages(input, config);
+  // 当轮输入消息下标（仅首轮有意义）：非空 input 时 initLoopMessages 把新输入
+  // 追加为末条 user 消息；纯续跑（无 input）无「当轮输入」→ -1,片段走新增 user 消息
+  const turnInputIndex = input ? messages.length - 1 : -1;
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
@@ -572,12 +663,12 @@ export async function reactLoop(
     loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
-    // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变；
-    // 随后 agent:input 每轮发送前事件（handler 可再改写本轮发送副本,同副本口径）
-    const outgoingMessages = await emitAgentInputEvent(
-      await resolveOutgoingMessages(messages, config),
-      config,
-    );
+    // agent:input 每轮发送前事件（先于超限事件）：历史只读快照 + addInput 补充输入,
+    // 扇出结束落账进历史本体;随后历史超限事件（超 maxHistoryTokens 阈值时发射,
+    // 订阅端 replace 整体替换循环历史——框架零内置裁剪）;发送 = 历史本体
+    await emitAgentInputEvent(messages, config, loopTurns === 1 ? turnInputIndex : -1);
+    await emitHistoryOverBudgetEvent(messages, config);
+    const outgoingMessages = [...messages];
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
     const inputSnapshot = enableTracing ? [...outgoingMessages] : undefined;
     // 执行中取消由 provider 请求中断传播——附上断点历史重抛（不含未完成的 assistant 消息，
@@ -799,6 +890,9 @@ export async function* reactLoopStream(
 ): AsyncIterable<ReactLoopStreamChunk> {
   const enableTracing = config.enableTracing ?? false;
   const messages = initLoopMessages(input, config);
+  // 当轮输入消息下标（仅首轮有意义）：非空 input 时 initLoopMessages 把新输入
+  // 追加为末条 user 消息；纯续跑（无 input）无「当轮输入」→ -1,片段走新增 user 消息
+  const turnInputIndex = input ? messages.length - 1 : -1;
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
@@ -815,12 +909,12 @@ export async function* reactLoopStream(
     loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
-    // 历史裁剪 / 历史压缩策略位：只作用于发给 LLM 的消息副本，本地 messages 不变；
-    // 随后 agent:input 每轮发送前事件（handler 可再改写本轮发送副本,同副本口径）
-    const outgoingMessages = await emitAgentInputEvent(
-      await resolveOutgoingMessages(messages, config),
-      config,
-    );
+    // agent:input 每轮发送前事件（先于超限事件）：历史只读快照 + addInput 补充输入,
+    // 扇出结束落账进历史本体;随后历史超限事件（超 maxHistoryTokens 阈值时发射,
+    // 订阅端 replace 整体替换循环历史——框架零内置裁剪）;发送 = 历史本体
+    await emitAgentInputEvent(messages, config, loopTurns === 1 ? turnInputIndex : -1);
+    await emitHistoryOverBudgetEvent(messages, config);
+    const outgoingMessages = [...messages];
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
     const inputSnapshot = enableTracing ? [...outgoingMessages] : undefined;
     let turnContent = '';

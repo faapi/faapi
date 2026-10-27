@@ -45,8 +45,7 @@ interface CreateAgentDepsOptions {
    * 可整体透传 `ctx.config.agent` / `taskCtx.config.agent` 读回值。llms 逐项
    * `createProvider` 转换 providers Map（model key 解析用），旋钮经
    * `toAgentRuntimeConfig` 全量拆装（清单单一维护，含 enableTracing /
-   * toolTimeoutMs）。策略对象（`historyCompactor` 等类型不在声明面的旋钮）经
-   * `decorateDeps` 配方或 `overrides.config` 装配。缺省为空 Map + 无 config
+   * toolTimeoutMs / maxHistoryTokens 等声明面旋钮）。缺省为空 Map + 无 config
    * （外部 provider 模式——`agent.run(input, { provider })` 每次显式注入）
    */
   agentConfig?: AgentConfig;
@@ -67,7 +66,7 @@ function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps;
 - **空 apiKey 照常注册 provider**：部分网关/本地模型场景无需 key；「key 未配置」的启动期显性提示由插件 setup 负责（工厂可能在任务内调用，不在此处刷警告）——上游 401 的错误文案来自上游，可按 provider 名定位
 - **overrides 浅合并**：`{ ...decorated, ...overrides }`——覆盖单个访问器不影响其余装配；需要深度定制时用完整的编程式组装（`new Agent(deps)` 直拼）
 - **agentConfig 是唯一配置入口**（7.0 起删除了历史的 `llms` / `config` 分离参数）：`resolvedLlms = agentConfig?.llms ?? {}`、`resolvedConfig = agentConfig ? toAgentRuntimeConfig(agentConfig) : undefined`——配置数值归 `agentConfig`，进程级配方归 `decorateDeps`，编程级差异归 `overrides`
-- **decorateDeps 装配次序**：`base → agentConfig.decorateDeps → overrides`——config 声明的进程级 deps 配方（schema 富化包装 / providers 复用 / `historyCompactor` 策略注入等，真实签名 `(deps: AgentDeps) => AgentDeps`，主包按接受任意函数的手法声明、业务侧从本包导入 `AgentDeps` 强类型书写）在 base 之上叠加，调用方显式 `overrides` 同名字段优先；配方抛错原样冒泡（fail fast）。插件 setup 与业务自组装都走本工厂——配方一次声明两路到达，请求级差异（`ctx`）不归本钩子。`@faapi/agent` 插件经 `overrides.emitAppEvent` 注入 app 事件发射器（[appEventBus](../../faapi/src/events/appEventBus.md)，来源 `registries.appEvents.emit`）；输入改写类扩展已由 `agent:root-input` / `agent:input` 事件承载（原 `resolveRootInput` / `resolveSubAgentInput` 钩子已移除，见 [agent](./agent.md) 事件章节）
+- **decorateDeps 装配次序**：`base → agentConfig.decorateDeps → overrides`——config 声明的进程级 deps 配方（schema 富化包装 / providers 复用等，真实签名 `(deps: AgentDeps) => AgentDeps`，主包按接受任意函数的手法声明、业务侧从本包导入 `AgentDeps` 强类型书写）在 base 之上叠加，调用方显式 `overrides` 同名字段优先；配方抛错原样冒泡（fail fast）。插件 setup 与业务自组装都走本工厂——配方一次声明两路到达，请求级差异（`ctx`）不归本钩子。`@faapi/agent` 插件经 `overrides.emitAppEvent` 注入 app 事件发射器（[appEventBus](../../faapi/src/events/appEventBus.md)，来源 `registries.appEvents.emit`）；输入改写类扩展已由 `agent:root-input` / `agent:input` 事件承载（原 `resolveRootInput` / `resolveSubAgentInput` 钩子已移除，见 [agent](./agent.md) 事件章节）
 - **不产生 providers/llms 之外的隐式依赖**：`agentConfig` 未提供（或未配 llms）即外部 provider 模式，与插件「llms 可选」语义一致
 
 ## 示例
@@ -124,40 +123,22 @@ export function buildAppAgent(ctx: FaapiContext): Agent {
 }
 ```
 
-### 策略旋钮经 decorateDeps（historyCompactor 等类型不在声明面的旋钮）
+### 历史超限承接走事件订阅（原 historyCompactor 策略旋钮已移除）
 
-`historyCompactor` 的签名引用本包类型（LLMMessage），不进 faapi.config 的声明面——经 `decorateDeps` 配方装配（`deps.config` 已是拆装结果，spread 叠加即可）：
+框架不内置裁剪/压缩——`maxHistoryTokens` 只是超限阈值，超限时发射 `agent:history-over-budget` 事件，压缩产物经 `replace` 整体替换循环历史。承接面是 **app 事件订阅**（`src/bootstrap.ts`），不走 `decorateDeps`：
 
 ```ts
-// faapi.config.ts
-import type { AgentDeps, HistoryCompactor, LLMMessage } from '@faapi/agent';
+// src/bootstrap.ts
+import { getApp } from '@faapi/faapi';
 
-// 压缩策略业务自搓（如调 LLM 把被裁轮组折成摘要）；仅在超预算时被调用，
-// 输出经框架不变量守卫（头部保留 / tool 配对 / 至少一轮组）
-const historyCompactor: HistoryCompactor = (input: {
-  messages: LLMMessage[];
-  estimatedTokens: number;
-  budget: number;
-}) => {
-  return input.messages; // 示例骨架：原样返回满足不变量，真实实现在此折叠
-};
-
-// 真实签名 (deps: AgentDeps) => AgentDeps——业务侧显式标注即强类型
-const decorate = (deps: AgentDeps): AgentDeps => ({
-  ...deps,
-  config: { ...deps.config, historyCompactor },
+getApp().on('agent:history-over-budget', async (e) => {
+  // 业务自搓压缩（如调 LLM 把旧轮组折成摘要）,产物整体替换循环历史
+  const compacted = await compactHistory(e.messages, e.budget);
+  e.replace(compacted);
 });
-
-export default {
-  agent: {
-    llms: { /* ... */ },
-    maxHistoryTokens: 60000,
-    decorateDeps: decorate,
-  },
-} satisfies FaapiConfig;
 ```
 
-编程式组装场景（无 faapi.config）可用 `overrides.config` 整体替换：`createAgentDeps({ registries, overrides: { config: { maxTurns: 5, historyCompactor } } })`。
+`decorateDeps` 仍承载其他进程级配方（schema 富化包装 / providers 复用等，见上文装配次序）。
 
 ## 相关模块
 

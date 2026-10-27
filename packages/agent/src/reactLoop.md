@@ -112,34 +112,33 @@ export interface SubAgentToolResult {
 
 > **Breaking**：`usage` 语义由「本次 run 主循环用量」升级为「整树用量」，`turns` 同口径聚合。按主循环口径消费的业务方需自行调整落库口径（版本与迁移说明见 changeset / CHANGELOG）。
 
-### 历史裁剪（`maxHistoryTokens`）
+### `agent:history-over-budget` 历史超限事件（压缩的业务承接面）
 
-多轮 tool 循环中 `messages` 只增不减，大 tool 结果（如整个文件内容）会把对话历史撑爆模型上下文窗口——下一轮 LLM 直接 400，整个 run 失败。`ReactLoopConfig.maxHistoryTokens`（token 预算，未设置 = 不裁剪，向后兼容）按预算裁剪**发给 LLM 的**消息：
+历史长度控制**完全是业务知识**——框架不内置任何裁剪/压缩（无默认截断、无压缩策略位）。`ReactLoopConfig.maxHistoryTokens`（来自 `AgentRuntimeConfig`，子代理共享根 deps 全树生效）只是**超限阈值**（近似估算：字符数 / 2，不引入 tokenizer 依赖）：每轮 LLM 调用前（`agent:input` 落账之后）估算历史 tokens，超过阈值时经 `appEvent` 发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:history-over-budget` 与 `agent:history-over-budget:<agentName>`（先通用后专属，同一载荷对象）：
 
-- **裁剪单位是「轮组」**：一条 assistant 消息（可能带 tool_calls）+ 其后全部对应 tool 结果。以轮组为原子单位保证 OpenAI 的 tool 配对约束不被破坏（不裁半轮）
-- **永不裁剪**：system 消息 + 初始 user 输入（用户目标保留，丢的是中间过程）
-- **至少保留最近一轮**：即使最新轮组自己超预算也保留（不发送空历史）
-- **token 为近似估算**（`字符数 / 2`，中英混合保守值），不引入 tokenizer 依赖
-- **本地历史不丢**：裁剪只作用于每轮发给 LLM 的消息副本，`messages` 本体与 trace 的 `inputSnapshot` 完整性不受影响（`inputSnapshot` 记录的是实际发送的裁剪后消息）
-- 非流式与流式两条循环行为一致
+- **载荷**：`{ depth, estimatedTokens, budget, messages, ctx, replace }`——`messages` 为当前历史只读快照（同 `agent:input` 口径：深冻结克隆，写操作抛错）。
+- **`replace(history)`**：业务压缩产物**整体替换循环历史**——落账语义：后续轮次、`result.messages` / `done.messages`、断点/续跑链全部可见且不可变。压缩后如同开启一段新对话，但**不会触发 `agent:root-input` 重发射**（root-input 只在循环启动前对非空 input 发射，循环中途不重发）；当轮发送即用替换后历史，本次事件不重入（至多一次），后续轮次重新估算、仍超限再发射。
+- **多 handler**：后调 `replace` 覆盖先调（与 `agent:sub-agent-context` 同覆盖口径）；不调 = 历史原样发送。
+- **扇出后校验**：调用了 `replace` 时产物必须非空且结构完整（消息角色合法 + `assistant.tool_calls` 与 tool 结果按 `tool_call_id` 配对完整——与续跑历史同款约束，断裂结构每次发送都会被 provider 400），违反抛 `AgentError`（fail fast，替换不生效）。
+- **事务性**：订阅端抛错 → 替换未发生、历史零污染，错误走 run / stream 既有错误链。
+- **未超限 / 未设置 `maxHistoryTokens` / `appEvent` 未接线**：事件不发射、历史原样（能力边界，非降级）——**未订阅事件时超限历史原样发送**，provider 因超长返回 400 是显式边界（长度控制是业务知识）。
+- **trace 一致**：`inputSnapshot` 记录实际发送的消息（含替换后历史）。
 
-取舍：被裁掉的旧轮组默认不生成摘要——需要摘要式压缩的场景接 `historyCompactor` 策略位（见 [historyCompaction.md](./historyCompaction.md)）；会话级持久折叠（摘要存业务表、组装发送消息时注入）在业务侧自行实现。
+### `agent:input` 每轮发送前事件（历史编辑窗口）
 
-### 历史压缩策略位（`historyCompactor`）
+`ReactLoopConfig.appEvent` 已接线（`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传）时，每轮 provider 调用前、超限事件**之前**，经其发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:input` 与 `agent:input:<agentName>`（先通用后专属，同一载荷对象顺序串联）：
 
-`ReactLoopConfig.historyCompactor` / `AgentRuntimeConfig.historyCompactor`（子代理共享根 deps 全树生效）声明时，超预算且存在轮组的轮次改调业务策略（整体替换现行截断），仅作用于发送副本。输出不变量（头部保留 / tool 配对完整 / 至少一轮组）由框架强制守卫，违反抛 `AgentError`——策略自由度以不变量为界。缺省不声明时逐字节保持上述截断行为。完整契约见 [historyCompaction.md](./historyCompaction.md)。
-
-### `agent:input` 每轮发送前事件（发送副本改写面）
-
-`ReactLoopConfig.appEvent` 已接线（`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传）时，每轮 `resolveOutgoingMessages`（历史裁剪/压缩）之后、`provider.complete/stream` 之前，经其发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:input` 与 `agent:input:<agentName>`（先通用后专属，同一载荷对象顺序串联）：
-
-- **载荷**：`{ depth, messages, ctx }`——不含 agent 名（按 agent 路由订阅专属名 `agent:input:<agentName>`，名字在事件名里）；`messages` 为本轮发送副本（裁剪/压缩后），handler 可原地改写 `messages` 数组（增删改消息对象均生效）。
-- **副本口径**：改写仅作用**本轮发送**——本地 `messages` / `result.messages` / `done.messages` / 续跑源不受影响（与历史裁剪同一口径）。跨轮持久改写用 `agent:root-input`（进历史）。
+- **载荷**：`{ depth, messages, ctx, addInput }`——不含 agent 名（按 agent 路由订阅专属名 `agent:input:<agentName>`，名字在事件名里）。
+  - `messages`：**历史只读快照**（`structuredClone` 深拷贝 + 逐层深冻结）——读取口径，任何写操作（数组结构变更 / 消息对象字段赋值）抛 `TypeError`；对 `messages` 整体替换赋值抛迁移错误（消息改写面已移除，历史不开放改写）。
+  - `addInput(text, index = 100)`：**补充输入**（唯一写面）——暂存文本片段，扇出结束后落账。
+- **落账语义（append-only 不可变账本）**：片段按 index 升序稳定排序（同 index 保持调用序——比较器显式双键 `(index, seq)`，不依赖引擎稳定排序）→ 过滤空白片段 → `'\n\n'` 拼接 → 前置进**当轮输入消息** content 之前（原内容逐字节不动）。当轮无新输入（工具轮 / 纯续跑轮）时，拼接结果作为一条新增 user 消息追加（tool 结果之后，协议合法位置）。落账后即历史的一部分：后续轮次、`result.messages` / `done.messages`、断点/续跑链全部可见且不可变。
+- **合并边界 = 单次事件发射**：跨轮、跨 agent（depth 层级）、跨 run 各自独立暂存独立落账，永不跨边界合并。多监听（通用名 + 专属名 + 同名多订阅）的片段合并为**一条** user 消息，不是多条消息。
+- **顺序契约**：`[addInput 片段…] + [当轮输入（是否包裹 / 如何包裹由 root-input 订阅端决定）]`——`agent:root-input` 对每个非空 input 发射（每轮有新输入必发射：run 首轮、续跑带输入、子代理派发；纯续跑无输入、无此契约），两层通道拼出「块在前、输入收尾」形态；包裹格式不进框架（业务约定，如 `<system-reminder>` / `<user_input>`）。
 - **触发面**：首轮、工具轮、子代理各轮（`depth` > 1）、续跑轮全部触发——每轮 LLM 调用恰好一次。
-- **扇出后校验**：`messages` 必须为非空数组，否则抛 `AgentError`（fail fast，不发 LLM 请求）。
-- **错误传播**：handler 抛错走 run / stream 既有错误链（发起 LLM 请求前显式失败，非流式路径同 `provider.complete` 错误处理；不吞不降级）。
-- **未接线**：`appEvent` 缺席 → 事件不发射、消息原样（能力边界，非降级）。
-- **trace 一致**：`inputSnapshot` 记录实际发送的（事件改写后）消息，与「trace 如实反映发送内容」纪律一致。
+- **事务性**：任一订阅端抛错 → 暂存未落账、历史零污染，错误走 run / stream 既有错误链（发起 LLM 请求前显式失败，fail fast，不吞不降级）。
+- **与超限事件的次序**：片段落账后才估算 tokens（`agent:history-over-budget`）——落账内容参与超限判定；trace 的 `inputSnapshot` 记录实际发送的消息（含落账片段与替换后历史），与「trace 如实反映发送内容」纪律一致。
+- **读不到暂存**：`messages` 快照 = 发射时刻的历史，不含本轮已暂存片段（片段在扇出结束才落账，中途可见会引入读写竞争）。
+- **未接线**：`appEvent` 缺席 → 事件不发射、行为原样（能力边界，非降级）。
 
 ### `maxAgentDepth` 防护
 
@@ -239,7 +238,7 @@ thinking 模型（DeepSeek-R1 / Qwen-thinking / OpenAI o 系列等）在 `conten
 | `AgentAbortError` | 中断时刻的部分历史（截至最后一个**完整轮组**） | `agent.run(undefined, { messages: err.messages })` |
 | `ReactLoopError`（maxTurns 超限） | 已完成的全部历史（循环正常走完 N 轮） | 提高 maxTurns 后同上传入 |
 
-**轮组原子性**：中断只可能发生在 LLM 请求期间或轮次边界——assistant 消息在 provider 返回完整响应后才 push，tool 结果在其后紧随。因此错误携带的 `messages` 天然满足「assistant.toolCalls 与其后 tool 结果完整配对」，可直接回传 LLM。流式路径中断时当前轮已 yield 的 `deltaContent` 属于未完成轮组，不入历史（与历史裁剪的轮组原子语义一致）。
+**轮组原子性**：中断只可能发生在 LLM 请求期间或轮次边界——assistant 消息在 provider 返回完整响应后才 push，tool 结果在其后紧随。因此错误携带的 `messages` 天然满足「assistant.toolCalls 与其后 tool 结果完整配对」，可直接回传 LLM。流式路径中断时当前轮已 yield 的 `deltaContent` 属于未完成轮组，不入历史（轮组原子语义）。
 
 ### `config.messages` 续跑语义
 
