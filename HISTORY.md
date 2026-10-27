@@ -26,7 +26,7 @@
 | agent 域事件载荷上的实体名字段（`agentName` / `name` / `subName`） | 专属名订阅 `agent:<event>:<实体名>`（名字在事件名里） | 「载荷字段分流」与「专属名订阅」两条等价路径并存造成使用困惑 | 7.10.0 |
 | `config.task.onFailed` 钩子 | `task:failed` 事件 | 事件化 | 7.9.0 |
 | agent 自定义 `run` 导出（含 `loadAgentModule` / `AgentModule` / `hasConfig` / `hasRun` 公开 API） | 声明式 `config` + 默认 reactLoop；编排代码注册为 tool；多 agent 协作用 `config.agents`。`run` 导出不被读取 | 自定义 run 绕过 schema 校验 / trace / 事件守卫，不可观测 | 6.24.0 |
-| agent `config.model`、全局 `defaultAgent` / `defaultLlm` | `agent.run(input, { agent, model })` 调用侧显式指定（config.model 声明被忽略）；sub-agent 派发沿用父解析结果 | 模型档位是调用侧决策，不属于 agent 声明 | 7.2.0（config.model）；defaultAgent/defaultLlm 更早 |
+| agent `config.model`、全局 `defaultAgent` / `defaultLlm` | `agent.run(input, { agent, model })` 调用侧显式指定（config.model 声明撞「未知 config 字段」白名单通用报错）；sub-agent 派发沿用父解析结果 | 模型档位是调用侧决策，不属于 agent 声明 | 7.2.0（config.model）；defaultAgent/defaultLlm 更早 |
 | 构建期 TS AST 提取 agent `config` 字面量进 `faapi-agents.js` 数据清单 + `@agent` JSDoc 覆盖名 | 运行时启动期求值（`loadAgents`），清单仅做定位；agent 名由目录推导（残留标签静默忽略） | 字面量提取挡住动态需求（按 env/DB 切人设被迫绕道全局面） | 6.45.0（覆盖名）/ 7.6.0（运行时求值） |
 | `@tool` JSDoc 覆盖名 | tool 名 = 目录路径 + 函数名推导（嵌套段 `_` 连接）；残留标签静默忽略 | 覆盖名让注册名与目录结构脱钩 | 6.45.0 |
 | sub-agent 派发工具名 `agent.<name>` 点号前缀；tool 嵌套名 `.` 连接 | `agent-<name>`（`subAgentToolName`）；`_` 连接 | OpenAI 兼容协议硬约束 `^[a-zA-Z0-9_-]+$`，强校验上游（DeepSeek / OpenAI）整单 400 | 6.28.0 |
@@ -61,9 +61,11 @@
 | agent handler 导出 `run` | 启动期求值阶段抛错 | `run` 导出被忽略（声明式执行） |
 | 残留 `@tool` JSDoc 标签 | schema 提取抛 `SchemaExtractionError` | 标签静默忽略，名字仍由目录推导 |
 | `task.driver: 'memory'` | 专属迁移错误 | 落入未知驱动通用报错 |
-| agent config 声明 `model` | 启动期求值阶段抛错 | 声明被忽略（类型上无此字段） |
+| agent config 声明 `model` | 专属迁移报错（本无） | 撞「未知 config 字段」白名单通用报错（`loadAgents` 的 `KNOWN_CONFIG_FIELDS` 不含 `model`，功能性校验维持，无专属护栏；类型层 `AgentConfig` 的 index signature 允许该键） |
 
-构建期**功能校验**不属于残留检测，维持不变（如 `task.ts` 声明 `timeoutMs` / `graceMs` 的错位报错、`worker.ts` 缺 `timeoutMs` 必填报错、同目录两种任务文件并存的歧义报错——均为现行文件约定的一致性校验）。
+构建期**功能校验**不属于残留检测，维持不变（如 `task.ts` 声明 `timeoutMs` / `graceMs` 的错位报错、`worker.ts` 缺 `timeoutMs` 必填报错、同目录两种任务文件并存的歧义报错、**未知 config 字段白名单报错**——均为现行约定的一致性校验；agent config 的 `KNOWN_CONFIG_FIELDS` 白名单不含 `model`，声明 `model` 会撞通用报错，无专属护栏）。
+
+> 勘误（2026-10-28）：`@faapi/faapi` 7.14.0 CHANGELOG 中「agent config 声明 `model`：文档口径修正——运行时本无检测，声明被忽略」为**错误描述**——运行时存在未知字段白名单通用报错（`loadAgents.test.ts` 有断言），`config.model` 声明会被拒绝。本节表格为准确口径；CHANGELOG 由 changesets 生成不回改，以本台账为准。
 
 ### 1.2 有意保留的兼容面（不是残留）
 
