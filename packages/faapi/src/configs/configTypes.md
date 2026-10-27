@@ -64,7 +64,7 @@ export default {
 ## 关键设计
 
 - **统一响应格式**:框架内置 `config.response` 配置(`ok`/`fail` 可选),handler 直接 `return data` 时由 `invokeHandler.wrapResult` 自动用 `ok` 函数包裹(默认 `{ data }`),错误用 `ctx.fail({ status?, code?, message })` 返回(默认 `{ error: { message, ...code? } }`)。详见"统一响应格式"章节。
-- **错误处理**:handler 抛错 → 框架内置 `formatErrorResponse(err)` 兜底 → 仍失败则最简 500 JSON 响应 → 响应发出后发射 `request:error` 事件。业务方如需自定义错误响应,在全局中间件中 try/catch `next()` 即可。
+- **错误处理**:handler 抛错 → 框架内置 `formatErrorResponse(err)` 兜底 → 仍失败则最简 500 JSON 响应 → 响应发出后发射 `request:error` 事件（仅服务端故障 5xx——已处理 4xx 不发射,观察走请求日志 warn）。业务方如需自定义错误响应,在全局中间件中 try/catch `next()` 即可。
 - **流程扩展经 app 事件承载，配置上无钩子字段**——由 [appEventBus](../events/appEventBus.md) 事件承载:`app:boot`/`app:ready`/`app:close`/`request:error`/`task:failed` + agent 域七事件。订阅入口唯一 `getApp().on(name, handler)`——启动期事件（`app:boot`/`app:ready`/`app:close`）写 `src/bootstrap.ts` 约定启动文件（框架在 app 创建后、listen 前加载执行,见 [bootstrap](../cli/bootstrap.md)）。`app:boot` 订阅端 handler 抛错 → `listen()` reject、端口不暴露。`LifecycleContext` 是 `app:*` 事件载荷类型。
 - **LifecycleContext 携带 `config`**——faapi.config 全量配置的**活引用**,与请求 `ctx.config` / 进程内任务 `taskCtx.config` 同一对象。`app:boot`/`app:ready`/`app:close` 订阅端可直接读业务配置;`agent` 块复合形状经 `e.config.agent` 读回后可整体透传 `@faapi/agent` 的 `createAgentDeps({ agentConfig })`(详见 [agentDeps](../../../agent/src/agentDeps.md))——重启续跑等生命周期内组装 agent 的场景不再需要业务侧另立配置常量源。
 - `agent.decorateDeps`:进程级 deps 配方装饰钩子——真实签名 `(deps: AgentDeps) => AgentDeps`(类型在 `@faapi/agent`,主包不反向依赖故按接受任意函数的手法声明,业务侧导入 `AgentDeps` 标注即强类型)。在 `createAgentDeps` 的 base 装配之上、显式 overrides 之前应用,插件注入的 AgentHandle 与业务自组装两路同源;典型用途:schema 富化包装(`resolveToolSchema`/`resolveAgentInputSchema`)、providers 进程级复用。配方抛错原样冒泡(不静默降级);请求级差异(`ctx`)不走本钩子。

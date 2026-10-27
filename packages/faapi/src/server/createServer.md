@@ -12,7 +12,7 @@
 - 请求分发到对应 handler
 - 错误处理和响应发送
 - CORS 作为标准中间件走洋葱模型（preflight 拦截、非 preflight 附加头后放行）
-- onError 钩子：错误响应发出后触发，用于副作用（日志/告警），不修改已发出的响应（参考 Fastify onError 语义）
+- `request:error` 事件：服务端故障（5xx）错误响应发出后发射，用于副作用（日志/告警），不修改已发出的响应；已按预期处理的 4xx 不发射（见「request:error 发射边界」）
 - 错误兜底链：全局错误中间件 try/catch 未拦截 → 内置 formatErrorResponse 兜底 → 仍失败则最简 500 JSON
 - **dev 按需模式**：`handleRequest` 在 `validateInput` 之前调 `ensureSchemaGenerated` 按需生成 zod.js
 
@@ -70,6 +70,24 @@ dev 按需模式下，handler.js 由 `loadRouteModule` 先 `ensureCompiled` 编�
 - 校验失败统一抛 `ValidationError`（422/400 由 issue code 推导）
 - 请求体解析支持三种 Content-Type（POST/PUT/PATCH 与 DELETE 的 body 对称）：JSON（默认）、form-urlencoded（值均为 string）、multipart/form-data
 
+## request:error 发射边界（仅服务端故障）
+
+`request:error` 是错误响应发出后的观察面（日志/告警副作用，不修改已发出的响应），**仅对服务端故障发射**——已按预期处理的 4xx 客户端错误不发射：
+
+| 错误来源 | 响应状态 | 发射 |
+|---------|---------|------|
+| handler/middleware 抛非 `FaapiError` | 500 | ✅ |
+| `FaapiError` 子类 `statusCode ≥ 500`（InternalError / ModuleLoadError / 业务 5xx） | 5xx | ✅ |
+| `RouteNotFoundError` / `MethodNotAllowedError` | 404 / 405 | ❌ |
+| `ValidationError` | 400 / 422 | ❌ |
+| 业务抛 `FaapiError` 4xx（401/403/409 等） | 4xx | ❌ |
+| `PayloadTooLargeError` | 413 | ❌（请求准备阶段无 ctx 时本就不发射；有 ctx 时按 4xx 同样不发射） |
+| SSE 流开始后异常中断 | 200（流已开始，无错误状态码语义） | ✅（流中断本身即服务端异常，不按状态码门控） |
+
+为什么：4xx 是客户端侧的预期结果（扫描器探测 404、参数校验失败、鉴权拒绝），不是服务端故障——全部发射会迫使每个订阅端自行按状态码过滤，漏滤即产生误报告警噪音（bot 扫描 `/api/.env` 之类每个探测都变成订阅端一条 ERROR）。业界同口径：Fastify 默认 4xx 记 info、5xx 记 error；Koa 默认 onerror 跳过 404/expose；NestJS 默认不记 HttpException。4xx 的观察由请求日志承接（4xx → warn，fields 含 requestId/method/path/status/durationMs）。
+
+状态码推导与 `formatErrorResponse` 同一规则：`FaapiError` 用 `statusCode`，其余一律按 500——门控结论即实际响应状态。`ctx` 不存在（请求准备阶段错误）不发射。
+
 ## 客户端断连信号（ctx.request.signal）
 
 每个请求创建一个 `AbortController`，其 signal 传入 `toWebRequest` 构造的 Web Request——即 `ctx.request.signal` 是**已接线客户端断连**的标准 Web AbortSignal：
@@ -104,7 +122,7 @@ SSE Response 若等 handler 返回后才交给 `sendNodeResponse`，流式期间
 
 1. `ctx.sse()` 创建 writer 时把钩子接到**首次写入**（`send`/`sendRaw`/`sendError`）——首次写入触发 `mergeMeta(当前 meta)` 后 fire-and-forget 调 `sendNodeResponse` 接管 `res`，并置 early-sent 标记（不 await 完成，finish 在流关闭后）
 2. **正常返回路径**：early-sent 时跳过 `sendSuccessResponse`——响应已上线，handler 返回值及中间件 `await next()` 之后替换的响应被忽略（日志等副作用仍正常）
-3. **错误路径**：early-sent 时不再发错误响应（头已发出）——流由 writer 关闭自然收尾，仍触发 `onError` 副作用（流式中断的告警观测点）
+3. **错误路径**：early-sent 时不再发错误响应（头已发出）——流由 writer 关闭自然收尾，仍发射 `request:error`（流式中断的告警观测点，不按状态码门控）
 4. **无钩子场景**（`app.inject()`、测试直调 `invokeHandler`）：回落为 handler 返回后一次交出——`app.inject()` 等流结束整体返回，最终字节序列与真实请求一致
 
 meta（含 CORS 头，均在 handler 之前经 `ctx.setHeader` 写入）在首次写入时刻合并；首次写入之后的 `setStatus`/`setHeader` 不再生效。compression/etag 均按 Content-Type 跳过 `text/event-stream`，不会触碰已接入管道的 body 流。

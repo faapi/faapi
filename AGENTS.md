@@ -371,8 +371,9 @@ import type { FaapiConfig } from '@faapi/faapi';
 //     // 停机事件（任务 drain 之后）：清理资源、优雅关闭
 //   });
 //   app.on('request:error', ({ error, ctx }) => {
-//     // 请求错误已被处理为响应、响应发出后发射（参考 Fastify onError 语义,观察类留痕口径）
-//     // 订阅端抛错 console.error 留痕，不修改已发出的响应
+//     // 服务端故障（5xx）响应发出后发射——已按预期处理的 4xx（404/405/422/业务 4xx）
+//     // 不发射，观察走请求日志（4xx → warn）；订阅端抛错 console.error 留痕，
+//     // 不修改已发出的响应
 //   });
 // }
 

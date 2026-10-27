@@ -202,10 +202,10 @@ export interface SubAgentContextEvent {
 
 // ─── 应用与任务域载荷 ──────────────────────────────
 
-/** `request:error` 载荷——错误响应发出后的观察面 */
+/** `request:error` 载荷——服务端故障（5xx）错误响应发出后的观察面；已处理 4xx 不发射（观察走请求日志 warn） */
 export interface RequestErrorEvent {
   error: unknown;
-  /** 请求上下文（请求准备阶段错误无 ctx → 整个事件不发射） */
+  /** 请求上下文（仅 5xx 发射；请求准备阶段错误无 ctx → 整个事件不发射） */
   ctx: FaapiContext;
 }
 

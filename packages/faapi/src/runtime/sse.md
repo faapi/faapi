@@ -226,7 +226,7 @@ handler 可经 `ctx.setHeader('X-Accel-Buffering', 'yes')` 覆盖默认值（见
 ### 错误处理
 
 - **首次写入前**（未调用过 `send`/`sendRaw`/`sendError` 时抛错）：走错误兜底链（全局错误中间件 → formatErrorResponse → 500），客户端拿到错误响应而非 SSE 流
-- **首次写入后**（流已开始，响应头已发出）：无法再改发错误响应。handler 抛错时框架关闭 SSE 流终止连接（已 enqueue 的事件照常送达，`onError` 钩子仍触发供告警观测）；需在流内表达错误时用 `sse.sendError(...)`，客户端收到 `event: error` 后自行处理
+- **首次写入后**（流已开始，响应头已发出）：无法再改发错误响应。handler 抛错时框架关闭 SSE 流终止连接（已 enqueue 的事件照常送达，`request:error` 仍发射供告警观测——流中断路径不按状态码门控）；需在流内表达错误时用 `sse.sendError(...)`，客户端收到 `event: error` 后自行处理
 
 ### 客户端断开
 

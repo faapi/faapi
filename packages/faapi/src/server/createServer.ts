@@ -16,6 +16,7 @@ import { resolveInputFromUrl, resolveBodyForQueryMethod } from '../runtime/resol
 import { invokeHandler, compose, mergeMeta } from '../runtime/invokeHandler';
 import type { FaapiContext, FaapiContextConfig, ResponseMeta } from '../runtime/contextTypes';
 import { sendNodeResponse } from '../responses/sendNodeResponse';
+import { FaapiError } from '../errors/FaapiError';
 import {
   RouteNotFoundError,
   MethodNotAllowedError,
@@ -662,7 +663,7 @@ async function sendSuccessResponse(response: Response, res: ServerResponse): Pro
 }
 
 /**
- * 发送错误响应 + 发射 request:error 事件
+ * 发送错误响应 + 发射 request:error 事件（仅服务端故障 5xx）
  *
  * 错误处理兜底链(参考 Fastify 语义):
  *   1. 框架内置 formatErrorResponse 兜底(handler 抛错时)——读 ctx.config.response.fail
@@ -670,6 +671,11 @@ async function sendSuccessResponse(response: Response, res: ServerResponse): Pro
  *   2. 内置兜底仍抛错 → 最简 500 JSON 响应
  *   3. 响应发出后 → request:error 事件发射(不修改已发出的响应)
  *   注:业务方如需进一步自定义错误响应,在全局中间件中 try/catch next() 即可
+ *
+ * 发射边界:仅服务端故障(5xx)——已按预期处理的 4xx(404/405/422/业务 4xx)不发射,
+ * 观察走请求日志(4xx → warn)。4xx 是客户端侧预期结果(扫描器探测、校验失败、鉴权
+ * 拒绝),全部发射会迫使每个订阅端自行过滤,漏滤即把 bot 扫描噪音送进告警。
+ * 状态码推导与 formatErrorResponse 同一规则:FaapiError 用 statusCode,其余一律 500。
  *
  * `ctx` 可为 undefined——请求准备阶段抛错（如 content-length 超限）时尚未构造 ctx,
  * 此时错误格式用默认 fail 包装,request:error 不发射（与原"裸 500"路径一致）。
@@ -687,7 +693,8 @@ async function sendErrorResponse(
   // 订阅端抛错 console.error 留痕——不能影响已发出的响应（响应先于事件发出），但
   // 静默吞掉会让业务方误以为告警/链路管道健康。appEvents 缺席（裸 createServer
   // 的测试/嵌入场景）→ 不发射（能力边界，非降级）
-  if (appEvents && ctx) {
+  const status = err instanceof FaapiError ? err.statusCode : 500;
+  if (status >= 500 && appEvents && ctx) {
     try {
       await appEvents.emit(APP_EVENT.requestError, { error: err, ctx });
     } catch (hookErr) {
@@ -793,6 +800,7 @@ async function handleRequest(
     if (res.destroyed || res.writableEnded) return;
     // SSE 流已开始（响应头已发出）：无法再改发错误响应——流由 writer 关闭自然
     // 收尾（invokeHandler 的 autoClose 保证），仍发射 request:error 供告警观测
+    // （不按状态码门控——响应已按 200 开始，流中断本身即服务端异常）
     if (sseEarlySent) {
       if (registries?.appEvents && ctx) {
         try {

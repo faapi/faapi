@@ -13,7 +13,7 @@ describe('scanRoutes', () => {
     // auth/login(GET+POST) + user(GET+POST) + user/[id](GET) + novel/list(GET) + redirect(GET) + health(GET+HEAD)
     // + admin/dashboard(GET) + admin/profile(GET) + admin/broken(GET)
     // + cookie/read(GET) + cookie/set(GET) + cookie/delete(GET)
-    // + error/throw(GET) + error/validate(GET+POST)
+    // + error/throw(GET) + error/throw-faapi(GET——FaapiError 5xx request:error 边界 fixture) + error/validate(GET+POST)
     // + sse(GET) + inject(GET)
     // + item(DELETE——DELETE body 语义验证 fixture)
     // + item-form(DELETE——DELETE form-urlencoded 验证 fixture)
@@ -23,7 +23,7 @@ describe('scanRoutes', () => {
     // + raw(GET) + raw/[id](GET) + raw/echo(POST+PUT——raw 系字段验证 fixture)
     // + sse/stream(GET) + sse/mid-stream-error(GET——SSE 流式时机/流中抛错验证 fixture)
     // + resources-info(GET——ctx 无 resourcesDir 字段验证 fixture)
-    expect(routes).toHaveLength(33);
+    expect(routes).toHaveLength(34);
     // chat + room/[id] + ws-auth + ws-chain/inner + ws-typed/[id]（声明即校验验证）
     expect(wsRoutes).toHaveLength(5);
 
@@ -187,11 +187,11 @@ describe('scanRoutes', () => {
   it('WS 路由：扫描 fixtures 目录返回 WS 路由清单', async () => {
     const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
 
-    // HTTP 路由数量（33 条：含 DELETE body/form 语义验证、raw 系字段验证与
+    // HTTP 路由数量（34 条：含 DELETE body/form 语义验证、raw 系字段验证与
     // order/legacy/docs/search 输入类型声明验证 fixture——order 的 GET/POST/DELETE
     // 三条，legacy/docs/search 各一条，raw 系五条，item-form 一条，sse 流式验证
-    // 两条，resources-info 一条）
-    expect(routes).toHaveLength(33);
+    // 两条，resources-info 一条，error/throw-faapi 一条）
+    expect(routes).toHaveLength(34);
 
     // WS 路由：chat + room/[id] + ws-auth + ws-chain/inner + ws-typed/[id] = 5 条
     expect(wsRoutes).toHaveLength(5);

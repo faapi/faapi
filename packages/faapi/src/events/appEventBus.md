@@ -58,13 +58,13 @@ export interface SubAgentContextEvent {
 | `app:boot` | `LifecycleContext` | listen 内、server.listen 前——启动校验/迁移等「失败即不该暴露端口」的逻辑 |
 | `app:ready` | `LifecycleContext` | listen 回调内——资源初始化 |
 | `app:close` | `LifecycleContext`（server 有值） | close 内、任务 drain 之后——清理 |
-| `request:error` | `RequestErrorEvent` | 请求错误响应**发出后**——日志/告警副作用；`ctx` 不存在（请求准备阶段错误）不发射 |
+| `request:error` | `RequestErrorEvent` | 服务端故障（5xx）错误响应**发出后**——日志/告警副作用；已处理 4xx（404/405/422/业务 4xx）不发射，观察走请求日志（4xx → warn）；`ctx` 不存在（请求准备阶段错误）不发射 |
 | `task:failed` | `TaskFailedInfo`（复用任务类型：task/jobId/attempt/willRetry/cancelled/error） | 任务每次执行失败/取消后（含 willRetry 失败与 cancelled） |
 
 ```ts
 export interface RequestErrorEvent {
   error: unknown;
-  ctx: FaapiContext;          // 请求准备阶段错误无 ctx → 整个事件不发射
+  ctx: FaapiContext;          // 仅服务端故障（5xx）发射（已处理 4xx 不发射）；请求准备阶段错误无 ctx → 整个事件不发射
 }
 ```
 
@@ -118,7 +118,7 @@ export default async function bootstrap() {
 
 - 总线实例挂 `AppRegistries.appEvents`（app 实例级，`app.close()` 时 `clear()`）；`@faapi/agent` 插件 setup 时把 `registries.appEvents.emit` 经 `createAgentDeps` 的 `overrides.emitAppEvent` 注入 `AgentDeps`——HTTP 请求路径与隔离任务 RPC 路径（宿主执行）同一份 deps。
 - `createProdApp`/`createDevApp` 内部加载执行 `src/bootstrap.ts`（listen 前窗口）；`listen()` 发射 `app:boot`/`app:ready`、`close()` 发射 `app:close`（副作用流程：boot 失败仍停任务运行时、close 仍在 drain 后）。
-- `createServer` 的 `sendErrorResponse` 发射 `request:error`（响应发出后）；`taskQueue` 发射 `task:failed`（fire-and-forget）。
+- `createServer` 的 `sendErrorResponse` 发射 `request:error`（仅服务端故障 5xx，响应发出后；SSE 流中断路径不按状态码门控）；`taskQueue` 发射 `task:failed`（fire-and-forget）。
 
 ## 能力边界（显式声明，非降级）
 

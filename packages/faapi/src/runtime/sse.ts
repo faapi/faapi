@@ -213,7 +213,7 @@ export function createSseWriter(
     try {
       callback();
     } catch {
-      // 回调自身抛错不影响流收尾与其他回调（与 onError 钩子「自身抛错被忽略」同约定）
+      // 回调自身抛错不影响流收尾与其他回调（与 request:error 事件「自身抛错被忽略」同约定）
     }
   };
 

@@ -9,7 +9,7 @@ import { hasBufferedBody } from './bufferedBody';
  * 使用 stream pipe 处理背压，避免高并发下内存膨胀。
  *
  * 断连语义：客户端中断（res 'error' / 提前 'close'）时销毁源流并按正常完成收尾——
- * 网络中断不是服务端错误，不进入 500 兜底、不触发 onError；destroy 使底层
+ * 网络中断不是服务端错误，不进入 500 兜底、不触发 request:error；destroy 使底层
  * web ReadableStream 触发 cancel()，上游生产者（如 SseWriter）感知 aborted
  * 停止推送，避免数据堆积在无消费者的流 buffer 中（内存泄漏）。
  * 源流自身错误（handler 流式写失败）仍 reject，走正常错误响应路径。

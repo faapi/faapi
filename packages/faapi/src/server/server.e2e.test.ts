@@ -874,20 +874,18 @@ describe('HTTP Server E2E', () => {
     });
   });
 
-  // request:error 事件 E2E 测试
+  // request:error 事件 E2E 测试（发射边界：仅服务端故障 5xx，已处理 4xx 不发射）
   describe('request:error 事件', () => {
     let onErrorServer: Server;
     let onErrorBaseUrl: string;
-    let capturedError: unknown;
-    let capturedPath: string;
+    let capturedEvents: Array<{ error: unknown; path: string }>;
 
     beforeAll(async () => {
       const { routes } = await scanRoutes(FIXTURES_DIR, ['api/**/*.ts']);
       const sorted = sortRoutes(routes);
       const registries = createAppRegistries();
       registries.appEvents.on('request:error', ({ error, ctx }) => {
-        capturedError = error;
-        capturedPath = ctx.path;
+        capturedEvents.push({ error, path: ctx.path });
       });
       const { server: srv } = createServer({
         routes: sorted,
@@ -913,19 +911,55 @@ describe('HTTP Server E2E', () => {
       await closeServer(onErrorServer);
     });
 
-    it('请求出错时 request:error 发射,载荷接收 error 和 ctx', async () => {
-      capturedError = undefined;
-      const res = await fetch(`${onErrorBaseUrl}/nonexistent-route`);
-      expect(res.status).toBe(404);
-      expect(capturedError).toBeInstanceOf(Error);
-      expect(capturedPath).toBe('/nonexistent-route');
+    beforeEach(() => {
+      capturedEvents = [];
     });
 
-    it('onError 不影响响应格式(响应仍由内置 formatErrorResponse 决定)', async () => {
+    it('404 路由未找到不发射（已处理 4xx，观察走请求日志 warn）', async () => {
+      const res = await fetch(`${onErrorBaseUrl}/nonexistent-route`);
+      expect(res.status).toBe(404);
+      expect(capturedEvents).toEqual([]);
+    });
+
+    it('405 方法不允许不发射（已处理 4xx）', async () => {
+      const res = await fetch(`${onErrorBaseUrl}/api/error/throw`, { method: 'DELETE' });
+      expect(res.status).toBe(405);
+      expect(capturedEvents).toEqual([]);
+    });
+
+    it('400 请求体 JSON 解析失败（ValidationError）不发射（已处理 4xx）', async () => {
+      const res = await fetch(`${onErrorBaseUrl}/api/error/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{invalid json',
+      });
+      expect(res.status).toBe(400);
+      expect(capturedEvents).toEqual([]);
+    });
+
+    it('handler 抛非 FaapiError（500）发射,载荷接收 error 和 ctx', async () => {
+      const res = await fetch(`${onErrorBaseUrl}/api/error/throw`);
+      expect(res.status).toBe(500);
+      await res.text(); // 发射在响应写出后 await——消费完响应体再断言
+      expect(capturedEvents).toHaveLength(1);
+      expect(capturedEvents[0]!.path).toBe('/api/error/throw');
+      expect(capturedEvents[0]!.error).toBeInstanceOf(Error);
+    });
+
+    it('handler 抛 FaapiError 5xx 发射', async () => {
+      const res = await fetch(`${onErrorBaseUrl}/api/error/throw-faapi`);
+      expect(res.status).toBe(500);
+      await res.text();
+      expect(capturedEvents).toHaveLength(1);
+      expect((capturedEvents[0]!.error as Error).name).toBe('InternalError');
+    });
+
+    it('发射不影响响应格式(响应仍由内置 formatErrorResponse 决定)', async () => {
       const res = await fetch(`${onErrorBaseUrl}/nonexistent-route`);
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.error.code).toBe('ROUTE_NOT_FOUND');
+      expect(capturedEvents).toEqual([]);
     });
 
     it('全局中间件 try/catch 自定义错误响应', async () => {
