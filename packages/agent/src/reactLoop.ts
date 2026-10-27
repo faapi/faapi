@@ -88,7 +88,7 @@ export interface SubAgentToolResult {
   __subAgent: true;
   /** 子代理返回的业务结果（stringifyResult 后作为 tool 消息内容回传 LLM） */
   result: unknown;
-  /** 子循环整树 token 用量（自定义 run 的 sub-agent 无结构化用量,缺省 = 计 0） */
+  /** 子循环整树 token 用量（provider 未返回结构化用量时缺省 = 计 0） */
   usage?: LLMUsage;
   /** 子循环整树轮数（缺省 = 计 0） */
   turns?: number;
@@ -178,6 +178,12 @@ export interface ReactLoopConfig {
     agentName: string;
     depth: number;
     ctx: AgentToolContext;
+    /**
+     * `agent:root-input` 的暂存器（`buildLoopConfig` 对非空 input 发射事件后挂载）——
+     * loop 首轮 `agent:input` 直接复用同一暂存器，两路片段一起合并落账进首条 user
+     * 消息；仅首轮消费，后续轮不参与。纯续跑（无新输入）不挂载。
+     */
+    rootInputStaging?: InputStaging;
   };
 }
 
@@ -204,7 +210,7 @@ export interface ReactLoopResult {
   stopReason: LLMStopReason;
   /**
    * 累计 token 用量（整树口径：本次 run 全部 `llm_call` usage 之和,含全部层级的
-   * sub-agent 循环,自定义 run 的 sub-agent 计 0;provider 不返回时为 `undefined`）。
+   * sub-agent 循环;provider 不返回用量时为 `undefined`）。
    * 详见 reactLoop.md「usage 与 turns 的整树口径」。
    */
   usage?: LLMUsage;
@@ -367,7 +373,7 @@ function parseToolCallArguments(toolCall: LLMToolCall): Record<string, unknown> 
  */
 function initLoopMessages(input: string | undefined, config: ReactLoopConfig): LLMMessage[] {
   if (config.messages?.length) {
-    // 剥离业务方历史上的 reasoning_content（推理内容不进对话历史，见 stripReasoning）
+    // 剥离上游 reasoning_content（推理内容不进对话历史，见 stripReasoning）
     const messages = config.messages.map(stripReasoning);
     if (config.systemPrompt && !messages.some((m) => m.role === 'system')) {
       messages.unshift({ role: 'system', content: config.systemPrompt });
@@ -502,13 +508,37 @@ const RAW_INPUT_PLACEHOLDER = '{{rawInput}}';
 const DEFAULT_INPUT_INDEX = 100;
 
 /** 补充输入片段暂存形态（seq 为调用序——同 index 的稳定 tiebreak 键） */
-interface StagedInput {
+export interface StagedInput {
   /** 排序序号（缺省 DEFAULT_INPUT_INDEX） */
   index: number;
   /** 片段文本（框架不包裹不转义，标签包裹是订阅端自己的事） */
   text: string;
   /** 调用序（同 index 保持调用序——双键比较器显式写进排序，不依赖引擎稳定排序） */
   seq: number;
+}
+
+/**
+ * 补充输入暂存器——`agent:root-input`（循环启动前，`buildLoopConfig` 创建）与
+ * `agent:input`（每轮）共用的 `addInput` 写面实现。loop 首轮两事件共用同一个暂存器：
+ * root-input 片段先暂存（seq 更小），首轮 `agent:input` 片段续接同一数组，扇出结束
+ * 后一次排序 / 过滤 / 拼接 / 落账（同 index 下 root-input 片段在前）。
+ */
+export interface InputStaging {
+  /** 暂存片段（排序在落账时统一进行） */
+  readonly staged: StagedInput[];
+  /** 事件载荷直接挂载的 `addInput` 实现 */
+  addInput(text: string, index?: number): void;
+}
+
+/** 创建空暂存器（每次事件发射 / 每个 loop 首轮各自独立，永不跨边界复用） */
+export function createInputStaging(): InputStaging {
+  const staged: StagedInput[] = [];
+  return {
+    staged,
+    addInput: (text, index = DEFAULT_INPUT_INDEX) => {
+      staged.push({ index, text, seq: staged.length });
+    },
+  };
 }
 
 /**
@@ -543,6 +573,11 @@ function createReadView(messages: LLMMessage[]): readonly LLMMessage[] {
  * （深冻结克隆，首次访问才构造——订阅端不读则零拷贝开销；整体替换赋值抛迁移
  * 错误），`addInput(text, index=100)` 暂存补充输入片段。
  *
+ * 暂存器选择：当轮有新输入（`turnInputIndex >= 0`，即 loop 首轮）复用
+ * `appEvent.rootInputStaging`——`agent:root-input` 在循环启动前已把片段暂存在同一
+ * 数组里，本轮 addInput 续接其后（seq 连续），两路片段一起落账；其余轮次（工具轮 /
+ * 纯续跑轮）各自新建暂存器，root-input 片段不参与。
+ *
  * 扇出结束后落账：片段按 (index, seq) 升序排序（同 index 保持调用序）→ 过滤
  * 空白片段 → `'\n\n'` 拼接 → 前置进当轮输入消息（`turnInputIndex >= 0`，原内容
  * 逐字节不动）；当轮无新输入（工具轮/纯续跑轮，-1）为新增 user 消息追加。
@@ -558,7 +593,10 @@ async function emitAgentInputEvent(
 ): Promise<void> {
   const appEvent = config.appEvent;
   if (!appEvent) return;
-  const staged: StagedInput[] = [];
+  const staging =
+    turnInputIndex >= 0 && appEvent.rootInputStaging
+      ? appEvent.rootInputStaging
+      : createInputStaging();
   let readView: readonly LLMMessage[] | undefined;
   const payload = {
     depth: appEvent.depth,
@@ -571,14 +609,12 @@ async function emitAgentInputEvent(
         'agent:input payload.messages is a read-only snapshot — message rewriting was removed; use addInput(text, index?) to commit input fragments into history',
       );
     },
-    addInput: (text: string, index = DEFAULT_INPUT_INDEX): void => {
-      staged.push({ index, text, seq: staged.length });
-    },
+    addInput: staging.addInput,
   };
   await appEvent.emit(APP_EVENT.agentInput, payload);
   await appEvent.emit(agentInputEventName(appEvent.agentName), payload);
   // —— 扇出结束，此刻起落账（此后任何路径都不会留下「半次编辑」）——
-  const joined = staged
+  const joined = staging.staged
     .sort((a, b) => a.index - b.index || a.seq - b.seq)
     .map((s) => s.text)
     .filter((t) => t.trim() !== '')

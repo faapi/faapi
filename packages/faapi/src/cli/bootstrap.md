@@ -25,7 +25,7 @@ export default async function bootstrap() {
     await closeDb();
   });
   app.on('agent:root-input', (e) => {
-    e.input = `[tenant:x] ${e.input}`;
+    e.addInput('[tenant:x] {{rawInput}}');
   });
 }
 ```

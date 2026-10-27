@@ -38,7 +38,7 @@
    - 累积 `usage`（多轮 token 用量累加）
    - 把 assistant 消息 push 到 messages（`reasoning_content` 剥离后，见 thinking 章节）
    - 若 `stopReason !== 'tool_calls'` 或无 `tool_calls` → 返回最终结果
-   - 遍历 `tool_calls`，arguments JSON 字符串 parse 后逐个调 `executeTool(name, args)`（解析边界收拢在 reactLoop，tool 执行函数 / 鉴权钩子 / trace 拿到已 parse 对象）
+   - 遍历 `tool_calls`，arguments JSON 字符串 parse 后逐个调 `executeTool(name, args)`（解析边界收拢在 reactLoop，tool 执行函数 / 鉴权订阅端 / trace 拿到已 parse 对象）
    - tool 执行错误被 catch，错误消息作为 tool 结果回传 LLM（LLM 可自我恢复）
    - tool 结果为 `SubAgentToolResult` 时先上卷 `usage` / `turns`（整树口径，见下节）再剥壳回传
    - tool 结果 push 到 messages（role='tool' + tool_call_id）
@@ -129,11 +129,11 @@ export interface SubAgentToolResult {
 `ReactLoopConfig.appEvent` 已接线（`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传）时，每轮 provider 调用前、超限事件**之前**，经其发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:input` 与 `agent:input:<agentName>`（先通用后专属，同一载荷对象顺序串联）：
 
 - **载荷**：`{ depth, messages, ctx, addInput }`——不含 agent 名（按 agent 路由订阅专属名 `agent:input:<agentName>`，名字在事件名里）。
-  - `messages`：**历史只读快照**（`structuredClone` 深拷贝 + 逐层深冻结）——读取口径，任何写操作（数组结构变更 / 消息对象字段赋值）抛 `TypeError`；对 `messages` 整体替换赋值抛迁移错误（消息改写面已移除，历史不开放改写）。
+  - `messages`：**历史只读快照**（`structuredClone` 深拷贝 + 逐层深冻结）——读取口径，任何写操作（数组结构变更 / 消息对象字段赋值）抛 `TypeError`；对 `messages` 整体替换赋值抛迁移错误（历史快照不开放改写）。
   - `addInput(text, index = 100)`：**补充输入**（唯一写面）——暂存文本片段，扇出结束后落账。
 - **落账语义（append-only 不可变账本）**：片段按 index 升序稳定排序（同 index 保持调用序——比较器显式双键 `(index, seq)`，不依赖引擎稳定排序）→ 过滤空白片段 → `'\n\n'` 拼接 → 前置进**当轮输入消息** content 之前（原内容逐字节不动）。**`{{rawInput}}` 占位符**：拼接结果含该占位符时，占位符全部展开为当轮输入原内容——原输入嵌在订阅端指定的位置、不再缀尾（片段产物与原输入互斥，位置由占位符裁决，如 `'规则…\n\n<user_input>{{rawInput}}</user_input>'`）；不含占位符时维持前置 + 原内容缀尾。单次展开不递归（原内容含字面占位符不二次处理）；无当轮输入的轮（工具轮 / 纯续跑轮）占位符展开为空串（展开后全空白则不新增消息，同空片段过滤口径）。当轮无新输入（工具轮 / 纯续跑轮）时，拼接结果作为一条新增 user 消息追加（tool 结果之后，协议合法位置）。落账后即历史的一部分：后续轮次、`result.messages` / `done.messages`、断点/续跑链全部可见且不可变。
-- **合并边界 = 单次事件发射**：跨轮、跨 agent（depth 层级）、跨 run 各自独立暂存独立落账，永不跨边界合并。多监听（通用名 + 专属名 + 同名多订阅）的片段合并为**一条** user 消息，不是多条消息。
-- **顺序契约**：`[addInput 片段…] + [当轮输入（是否包裹 / 如何包裹由 root-input 订阅端决定）]`——`agent:root-input` 对每个非空 input 发射（每轮有新输入必发射：run 首轮、续跑带输入、子代理派发；纯续跑无输入、无此契约），两层通道拼出「块在前、输入收尾」形态；包裹格式不进框架（业务约定，如 `<system-reminder>` / `<user_input>`）。
+- **合并边界 = 单次事件发射**：跨轮、跨 agent（depth 层级）、跨 run 各自独立暂存独立落账，永不跨边界合并。多监听（通用名 + 专属名 + 同名多订阅）的片段合并为**一条** user 消息，不是多条消息。**唯一的跨事件合并是 loop 首轮**：`agent:root-input`（循环启动前由 `buildLoopConfig` 发射，片段暂存在 `ReactLoopConfig.rootInputStaged`）与首轮 `agent:input` 的片段进同一次落账——同一套排序 / 过滤 / 拼接 / `{{rawInput}}` 展开，合并为一条首条 user 消息；root-input 片段 seq 更早，同 index 下排在 `agent:input` 片段之前。root-input 暂存只在首轮消费，工具轮 / 后续轮不再参与。
+- **顺序契约**：`[root-input 片段…] + [agent:input 片段…] + [当轮输入]`（按 index 排序后拼接，缺省 index 100 下即此序；`{{rawInput}}` 在场时原输入改嵌占位符位置、不再缀尾）——首条 user 消息的包裹形态由两路 `addInput` 订阅端共同决定，包裹格式不进框架（业务约定，如 `<system-reminder>` / `<user_input>`）。
 - **触发面**：首轮、工具轮、子代理各轮（`depth` > 1）、续跑轮全部触发——每轮 LLM 调用恰好一次。
 - **事务性**：任一订阅端抛错 → 暂存未落账、历史零污染，错误走 run / stream 既有错误链（发起 LLM 请求前显式失败，fail fast，不吞不降级）。
 - **与超限事件的次序**：片段落账后才估算 tokens（`agent:history-over-budget`）——落账内容参与超限判定；trace 的 `inputSnapshot` 记录实际发送的消息（含落账片段与替换后历史），与「trace 如实反映发送内容」纪律一致。
@@ -203,8 +203,8 @@ interface ReactLoopStreamChunk {
 ```
 
 - **机制**：`await executeTool` 期间 async generator 挂起无法 yield——流式路径对每个 tool call 采用 fire-and-drain 泵：fire executeTool（携带 delta emitter）→ generator 循环 drain 队列逐个 yield `subagentDelta` → executeTool 完成后 flush 剩余。冒泡顺序即子代理实际输出顺序；流式路径同轮多 tool_call 串行执行,天然有序
-- **子循环升级**：父为流式时 `executeSubAgent` 让子循环也跑流式（`subAgent.stream()`）——此前固定跑非流式 `run()`,子循环根本没有 delta 可冒泡。done/trace 语义不变：父侧从子流 `done` chunk 拼装与 `run()` 等价的结果（content/usage/turns）,tracing 开启时从 `traceEvent` 收集拼装 `AgentTrace`（结构不变,`subagent_call` 嵌套 trace 不回归）
-- **非流式 `run()` 不受影响**：结果一次性返回,无冒泡需求;自定义 `run` 的 sub-agent 无结构化增量,不冒泡（与 usage 计 0 同口径）
+- **子循环升级**：父为流式时 `executeSubAgent` 让子循环也跑流式（`subAgent.stream()`）——非流式子循环没有 delta 可实时冒泡给父流,嵌套增量只能等子循环结束一次性返回。done/trace 语义不变：父侧从子流 `done` chunk 拼装与 `run()` 等价的结果（content/usage/turns）,tracing 开启时从 `traceEvent` 收集拼装 `AgentTrace`（结构不变,`subagent_call` 嵌套 trace 不回归）
+- **非流式路径不受影响**：父循环非流式时结果一次性返回,无冒泡需求
 - **语义不变式**：嵌套 `reasoning_content` 依旧**不进** messages 历史与续跑源（delta 仅透出给调用方,与 thinking 章节的剥离纪律一致）;`ReactLoopResult` / trace 结构不受影响;中断/`maxAgentDepth`/历史剥离全部不回归
 
 ### thinking（推理内容）

@@ -9,8 +9,8 @@
  * 覆盖（三条都是真实 worker 线程 + 真实 @faapi/agent 插件 runner，仅 LLM 端点 mock）：
  * 1. 工具与守卫在宿主执行（carry 身份传导）——beforeToolCall 守卫 / handler marker /
  *    afterToolCall 审计同轮触发；循环结果按 agent-run-result 回传 worker 收敛
- * 2. agent:root-input 事件（emitAppEvent 接线）在宿主生效——LLM 请求消息含订阅端改写
- *    组装的输入与任务合成 ctx 身份（carry 身份可读）
+ * 2. agent:root-input 事件（emitAppEvent 接线）在宿主生效——LLM 请求消息含订阅端 addInput
+ *    落账组装的输入与任务合成 ctx 身份（carry 身份可读）
  * 3. Input 校验失败以任务错误浮出——声明 Input 的 agent 派发形态对象入参校验不过，
  *    runAgent 抛 AgentError → RPC ok:false → worker 侧 reject → 任务失败（真实 zod.js
  *    产物加载 + safeParse，非 mock 校验）
@@ -244,7 +244,7 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
     mockLlm.server.close();
   }, 25000);
 
-  it('agent:root-input 事件（emitAppEvent 接线）在宿主发射且改写生效（总线不可克隆但循环在宿主）', async () => {
+  it('agent:root-input 事件（emitAppEvent 接线）在宿主发射且 addInput 落账生效（总线不可克隆但循环在宿主）', async () => {
     const mockLlm = await startMockLlm([
       { choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] },
     ]);
@@ -286,7 +286,9 @@ describe('隔离任务 agent 通道（真实 worker 线程 + 单次 agent-run RP
     ctx.registries.agent.hydrate([agentMeta]);
     ctx.registries.tool.hydrate([toolMeta]);
     ctx.registries.appEvents.on('agent:root-input', (e) => {
-      e.input = `${e.input}\n\n[宿主注入:${(e.ctx as { currentUserId?: number }).currentUserId}]`;
+      e.addInput(
+        `{{rawInput}}\n\n[宿主注入:${(e.ctx as { currentUserId?: number }).currentUserId}]`,
+      );
     });
     agentPlugin.setup(ctx);
     const runner = ctx.registries.agentRunner.get() as AgentRunner;

@@ -409,7 +409,7 @@ describe('Agent', () => {
 
     it('config.maxHistoryTokens 全局配置接线 reactLoop:超预算发射超限事件', async () => {
       // 回归:AgentRuntimeConfig.maxHistoryTokens 必须从 deps.config 透传进 ReactLoopConfig
-      // （此前 buildLoopConfig 从不读取该字段,全局配置静默失效）。
+      // （不透传则全局配置静默失效）。
       // 载荷形状/replace 契约全量见「agent:history-over-budget」describe
       const events = createEventCollector();
       const { provider, completeCalls } = createMockProvider([
@@ -1103,7 +1103,11 @@ describe('Agent', () => {
   });
 
   describe('agent:root-input 根调用接缝（depth 1）', () => {
-    /** 组装示例：动态块在前 + 真实输入收尾（业务收尾形态自定） */
+    /** 组装模板：动态块在前 + 真实输入收尾（`{{rawInput}}` 处嵌原输入,业务收尾形态自定） */
+    const ASSEMBLE_TEMPLATE =
+      '<memory>动态块</memory>\n\n<user_input>\n{{rawInput}}\n</user_input>';
+
+    /** 模板落账后的预期产物 */
     function composeAssembled(input: string): string {
       return `<memory>动态块</memory>\n\n<user_input>\n${input}\n</user_input>`;
     }
@@ -1116,13 +1120,13 @@ describe('Agent', () => {
       ];
     }
 
-    it('fresh run：事件收（原始 input, ctx；载荷不含 agent 名），改写产物为首条 user 消息并持久进 result.messages', async () => {
+    it('fresh run：事件收（原始 input, ctx；载荷不含 agent 名），addInput 片段落账为首条 user 消息并持久进 result.messages', async () => {
       const events = createEventCollector();
       const handler = vi.fn((e: AgentRootInputEvent) => {
         expect('agentName' in e).toBe(false); // 载荷不含 agent 名——按 agent 路由用专属名订阅
         expect(e.input).toBe('go');
         expect((e.ctx as CtxWithUser).currentUserId).toBe(42);
-        e.input = composeAssembled(e.input);
+        e.addInput(ASSEMBLE_TEMPLATE);
       });
       events.bus.on('agent:root-input', handler);
       const { provider, completeCalls } = createMockProvider([
@@ -1147,7 +1151,7 @@ describe('Agent', () => {
         'agent:root-input:researcher',
       ]);
       expect(rootEmitted[0].payload).toBe(rootEmitted[1].payload);
-      // LLM 请求的首条 user 消息 = 改写产物（system 原样在前）
+      // LLM 请求的首条 user 消息 = 落账产物（system 原样在前）
       const request = completeCalls.mock.calls[0][0];
       expect(request.messages[0]).toEqual({ role: 'system', content: 'base' });
       expect(request.messages[1]).toEqual({ role: 'user', content: composeAssembled('go') });
@@ -1156,10 +1160,10 @@ describe('Agent', () => {
       expect(lastUser!.content).toBe(composeAssembled('go'));
     });
 
-    it('续跑轮：历史 + 新 input，事件触发且改写产物为历史末尾追加的 user 消息', async () => {
+    it('续跑轮：历史 + 新 input，事件触发且片段落账为历史末尾追加的 user 消息', async () => {
       const events = createEventCollector();
       events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
-        e.input = composeAssembled(e.input);
+        e.addInput(ASSEMBLE_TEMPLATE);
       });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: '第二轮回复', stopReason: 'stop' }),
@@ -1182,9 +1186,9 @@ describe('Agent', () => {
       expect(rootEmitted).toHaveLength(1);
       const payload = rootEmitted[0].payload as AgentRootInputEvent;
       expect('agentName' in payload).toBe(false);
-      // 载荷为同一对象引用——收集器记到的是 handler 改写后的最终值
-      expect(payload.input).toBe(composeAssembled('第二轮输入'));
-      // LLM 请求:历史(无 system 时自动补齐) + 末尾改写后的新 user 消息
+      // input 只读——载荷上始终是原始输入,片段落账在消息层发生
+      expect(payload.input).toBe('第二轮输入');
+      // LLM 请求:历史(无 system 时自动补齐) + 末尾落账后的新 user 消息
       const request = completeCalls.mock.calls[0][0];
       expect(request.messages.at(-1)).toEqual({
         role: 'user',
@@ -1220,7 +1224,7 @@ describe('Agent', () => {
       expect(request.messages.filter((m: LLMMessage) => m.role === 'user')).toHaveLength(1);
     });
 
-    it('未改写：user 消息为原始 input（handler 不动载荷 = 原样放行）', async () => {
+    it('未补充：user 消息为原始 input（handler 不调 addInput = 原样放行）', async () => {
       const events = createEventCollector();
       const handler = vi.fn();
       events.bus.on('agent:root-input', handler);
@@ -1264,17 +1268,17 @@ describe('Agent', () => {
       expect(result.messages[1]).toEqual({ role: 'user', content: 'go' });
     });
 
-    it('改写结果整体替换 user 输入（不拼接、不被二次加工）；专属名后发射、可覆盖通用名改写', async () => {
+    it('通用名先、专属名后发射（同一载荷对象）；两路片段按 index 排序合并为一条首条 user 消息', async () => {
       const events = createEventCollector();
       const order: string[] = [];
       events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
         order.push('generic');
-        e.input = `${e.input}+generic`;
+        e.addInput('[generic]'); // 缺省 index 100
       });
       events.bus.on('agent:root-input:researcher', (e: AgentRootInputEvent) => {
         order.push('specific');
-        expect(e.input).toBe('go+generic'); // 同一载荷对象：专属看到通用改写
-        e.input = `<user_input>\n${e.input.split('+generic')[0]}\n</user_input>`; // 覆盖
+        expect(e.input).toBe('go'); // input 只读——专属看到的仍是原始输入
+        e.addInput('<user_input>{{rawInput}}</user_input>', 200); // 大号靠后,占位符处嵌原输入
       });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'ok', stopReason: 'stop' }),
@@ -1290,17 +1294,125 @@ describe('Agent', () => {
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
       expect(order).toEqual(['generic', 'specific']);
+      // 占位符在场 → 原输入嵌在占位符位置、不再缀尾；两路片段合并为一条消息
       const request = completeCalls.mock.calls[0][0];
       expect(request.messages[1]).toEqual({
         role: 'user',
-        content: '<user_input>\ngo\n</user_input>',
+        content: '[generic]\n\n<user_input>go</user_input>',
       });
     });
 
-    it('派发路径同样触发：专属名订阅改写子对话首条 user 消息（载荷不含 agent 名）', async () => {
+    it('input 只读：handler 赋值抛迁移错误（写面收敛为 addInput），且不发 LLM 请求', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        (e as { input: string }).input = 'rewritten';
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
+        /addInput/,
+      );
+      // 在循环启动前 fail fast——LLM 请求未发出
+      expect(completeCalls).not.toHaveBeenCalled();
+    });
+
+    it('空白片段过滤：全空白不落账,原输入原样（原输入不可丢弃——能力边界）', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        e.addInput('   \n\t ');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({ role: 'user', content: 'go' });
+      expect(result.messages[1]).toEqual({ role: 'user', content: 'go' });
+    });
+
+    it('首轮与 agent:input 共用暂存、一起合并：同 index 下 root 片段在前,小号 index 可插到 root 之前', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        e.addInput('[root]');
+      });
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        e.addInput('[turn]'); // 同 index 100——root 先暂存,排在前
+        e.addInput('[turn-first]', 10); // 小号插前
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 两路片段一次落账为一条首条 user 消息（无占位符 → 前置 + 原输入缀尾）
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages[1]).toEqual({
+        role: 'user',
+        content: '[turn-first]\n\n[root]\n\n[turn]\n\ngo',
+      });
+      expect(request.messages.filter((m: LLMMessage) => m.role === 'user')).toHaveLength(1);
+      expect(result.messages[1]!.content).toBe('[turn-first]\n\n[root]\n\n[turn]\n\ngo');
+    });
+
+    it('root 暂存只在首轮消费：工具轮的 agent:input 落账不含 root-input 片段', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
+        e.addInput('[root]');
+      });
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        e.addInput('[turn]');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({
+          toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
+          stopReason: 'tool_calls',
+        }),
+        llmResponse({ content: 'done', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      expect(completeCalls).toHaveBeenCalledTimes(2);
+      // 首轮：root + turn 合并进输入消息
+      const firstRequest = completeCalls.mock.calls[0][0];
+      expect(firstRequest.messages[1]).toEqual({ role: 'user', content: '[root]\n\n[turn]\n\ngo' });
+      // 工具轮：仅 agent:input 片段作为新增 user 消息追加（tool 结果之后）,root 片段不泄漏
+      const secondRequest = completeCalls.mock.calls[1][0];
+      expect(secondRequest.messages.at(-1)).toEqual({ role: 'user', content: '[turn]' });
+      expect(secondRequest.messages.at(-2)!.role).toBe('tool');
+    });
+
+    it('派发路径同样触发：专属名订阅 addInput 塑形子对话首条 user 消息（载荷不含 agent 名）', async () => {
       const events = createEventCollector();
       events.bus.on('agent:root-input:writer', (e: AgentRootInputEvent) => {
-        e.input = `${e.input}+material`;
+        e.addInput('{{rawInput}}+material');
       });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({
@@ -1336,45 +1448,15 @@ describe('Agent', () => {
       const dispatchPayload = events.emitted.filter((e) => e.name === 'agent:root-input')[1]
         .payload as AgentRootInputEvent;
       expect('agentName' in dispatchPayload).toBe(false);
-      // 载荷为同一对象引用——收集到的是专属 handler 改写后的最终值
-      expect(dispatchPayload.input).toBe('查+material');
+      // 载荷 input = 派发入参提取后的 user 输入原文（只读）
+      expect(dispatchPayload.input).toBe('查');
       expect((dispatchPayload.ctx as CtxWithUser).currentUserId).toBe(42);
-      // 子代理首条 user 消息 = 改写产物
+      // 子代理首条 user 消息 = 落账产物（占位符处嵌原输入）
       const childRequest = completeCalls.mock.calls[1][0];
       const childUser = childRequest.messages.find((m: LLMMessage) => m.role === 'user');
       expect(childUser!.content).toBe('查+material');
       // system 不被触碰
       expect(childRequest.messages[0]).toEqual({ role: 'system', content: 'sub-base' });
-    });
-
-    it.each([
-      ['null', null],
-      ['数字', 42],
-      ['对象', { block: 'x' }],
-      ['数组', ['a']],
-      ['空串', ''],
-      ['空白串', '   \n\t '],
-    ])('形状守卫：handler 把 input 改成 %s 抛 AgentError，且不发 LLM 请求', async (_label, bad) => {
-      const events = createEventCollector();
-      events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
-        (e as { input: unknown }).input = bad;
-      });
-      const { provider, completeCalls } = createMockProvider([
-        llmResponse({ content: 'ok', stopReason: 'stop' }),
-      ]);
-      const agent = new Agent(
-        createDeps({
-          provider,
-          agent: agentMeta({ systemPrompt: 'base' }),
-          emitAppEvent: events.emitAppEvent,
-        }),
-      );
-
-      await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
-        AgentError,
-      );
-      // 校验在循环启动前 fail fast——LLM 请求未发出
-      expect(completeCalls).not.toHaveBeenCalled();
     });
 
     it('handler 抛错：原样上抛走 run 既有错误链（发起 LLM 请求前显式失败）', async () => {
@@ -1399,10 +1481,10 @@ describe('Agent', () => {
       expect(completeCalls).not.toHaveBeenCalled();
     });
 
-    it('流式一致：改写产物进 stream 请求首条 user 消息并随 done.messages 导出', async () => {
+    it('流式一致：片段落账进 stream 请求首条 user 消息并随 done.messages 导出', async () => {
       const events = createEventCollector();
       events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
-        e.input = composeAssembled(e.input);
+        e.addInput(ASSEMBLE_TEMPLATE);
       });
       const { provider, streamCalls } = createMockStreamProvider([
         [{ deltaContent: 'ok', finishReason: 'stop' }],
@@ -2450,8 +2532,8 @@ describe('Agent', () => {
 
   describe('provider 坏 JSON arguments 自愈路径', () => {
     it('tool_calls.arguments 为半截 JSON:provider 不 fail-fast,解析错误回传 LLM 修正', async () => {
-      // 场景:maxTokens 截断产生半截 JSON。此前 provider 边界 JSON.parse 校验失败
-      // 抛 LLMProviderError,整个 run 死亡,reactLoop 宣称的自愈路径不可达
+      // 场景:maxTokens 截断产生半截 JSON。provider 边界不做 JSON.parse fail-fast
+      // （那会让整个 run 死亡,reactLoop 宣称的自愈路径不可达）,解析边界收拢在 reactLoop
       const raw = '{"city": "北';
       const completeCalls = vi.fn();
       let call = 0;
@@ -4444,7 +4526,7 @@ describe('Agent', () => {
 
       expect(result.content).toBe('parent-done');
       // turn 2 是 sub-agent 的调用——provider 与 model 都继承父调用解析结果
-      // （config.model 已移除,sub 无自身 model 可声明）
+      // （sub 不声明模型,沿用父解析结果）
       const subRequest = parentCalls.mock.calls[1][0];
       expect(subRequest.model).toBe('gpt-4o');
     });
@@ -4552,7 +4634,7 @@ describe('Agent', () => {
     expect(request.signal).toBe(controller.signal);
   });
 
-  describe('agent tool 链事件（原 authHooks 三钩子）', () => {
+  describe('agent tool 链事件', () => {
     // 合规 ctx（createStandaloneToolContext 构造，业务增强字段走交叉标注）——
     // 框架三路径合成之外的第四种合法来源（测试/编程式）
     const ctx = createStandaloneToolContext({

@@ -32,9 +32,11 @@ import { renderPromptTemplate } from './promptTemplate';
 import { createProvider } from './provider';
 import type { LLMMessage, LLMProvider, LLMToolDefinition } from './provider';
 import {
+  createInputStaging,
   reactLoop,
   reactLoopStream,
   validateLoopHistory,
+  type InputStaging,
   type ReactLoopConfig,
   type ReactLoopResult,
   type ReactLoopStreamChunk,
@@ -58,7 +60,6 @@ export type { ToolSchemaResolution } from '@faapi/faapi';
  *   - sub-agent 派发名（`agent-<name>`，构建期建立的「派发名 → agent 名」映射命中）
  *     → 递归构造 sub-agent 调用（含 `maxAgentDepth` 防护）——不按名字前缀猜测路由
  * - **递归防护**——`maxAgentDepth` 限制 agent 调用 agent 的深度
- * - **自定义 run**——agent handler 导出 `run` 函数时，sub-agent 走自定义逻辑
  *
  * 详见 [agent.md](./agent.md)。
  */
@@ -262,8 +263,8 @@ export interface AgentRuntimeConfig {
   maxHistoryTokens?: number;
   /**
    * 单次 tool 执行的超时毫秒数（未设置 = 不限时）。超时抛 `AgentToolTimeoutError`,
-   * 被 reactLoop 按既有 tool 错误路径回传 LLM（LLM 可决定重试或换路）——挂死的
-   * tool handler（如无超时的内部 fetch）此前会让整个 run 永久挂起,且 run 的
+   * 被 reactLoop 按既有 tool 错误路径回传 LLM（LLM 可决定重试或换路）——不限时的
+   * 挂死 tool handler（如无超时的内部 fetch）会让整个 run 永久挂起,且 run 的
    * abort signal 对 tool 执行无效
    */
   toolTimeoutMs?: number;
@@ -295,8 +296,7 @@ export interface AgentRuntimeConfig {
    */
   traceIdTemplate?: string;
   /**
-   * 执行守卫/审计/可见性过滤（原 authHooks 三钩子 beforeToolCall/afterToolCall/
-   * filterTools）已全量事件化（7.x）——由 [appEventBus](../../faapi/src/events/appEventBus.md)
+   * 执行守卫/审计/可见性过滤经 [appEventBus](../../faapi/src/events/appEventBus.md)
    * 的 `agent:before-tool-call` / `agent:after-tool-call` / `agent:filter-tools`
    * 事件承载（经 `AgentDeps.emitAppEvent` 发射,订阅入口 `getApp().on`——启动期写 `src/bootstrap.ts`）。
    */
@@ -313,8 +313,7 @@ export interface AgentRuntimeConfig {
  *
  * - `agentName`——本次调用的有效 agent 名（执行白名单按它的声明集合校验）
  * - `enableTracing`——sub-agent 调用是否在 SubAgentToolResult 上附带 trace
- * - `provider` / `model`——解析出的 LLM 入口,sub-agent 递归继承（sub 元数据
- *   声明 `model` 时优先用自身的）
+ * - `provider` / `model`——解析出的 LLM 入口,sub-agent 递归继承（沿用父调用解析结果）
  */
 interface AgentCallContext {
   agentName: string;
@@ -406,14 +405,13 @@ export interface AgentDeps {
    * 注入 `registries.appEvents.emit`，业务自组装可不注）
    *
    * 七个接缝经此发射 [appEventBus](../../faapi/src/events/appEventBus.md) 框架事件
-   * （流程钩子的统一出口,替代已移除的 resolveRootInput / resolveSubAgentInput /
-   * resolveSystemPrompt / resolveSubAgentContext / authHooks 三钩子）：
+   * （agent 域流程扩展事件的统一出口）：
    * - `agent:root-input` / `agent:input` / `agent:system-prompt` /
    *   `agent:sub-agent-context` / `agent:before-tool-call` / `agent:after-tool-call`
    *   （观察类留痕口径）/ `agent:filter-tools`——均含 `:<agentName>`（tool 事件为
    *   `:<toolName>`）专属名,先通用后专属同一载荷对象顺序发射
    *
-   * 未注入 → 事件不发射、输入原样（能力边界,非降级——与被移除钩子的可选语义一致）。
+   * 未注入 → 事件不发射、输入原样（能力边界,非降级）。
    * 发射器无 app 边界校验：载荷形状由调用点保证,handler 错误原样上抛走 run / stream
    * 既有错误链。
    */
@@ -448,11 +446,12 @@ export class Agent {
   /**
    * 派发上下文块（父侧 `executeSubAgent` 注入,仅本次派发的子循环生效）
    *
-   * `executeSubAgent` 调用 `deps.resolveSubAgentContext` 后把产出赋到**本实例**——
-   * `buildLoopConfig` 在 `resolveSystemPrompt` 结果之后以 `\n\n` 追加为最终 system
-   * 消息。实例级字段:每次派发构造独立子 Agent 实例,同轮并行派发各自注入无交叉;
+   * `executeSubAgent` 发射 `agent:sub-agent-context` 事件后把 handler 产出
+   * （payload.context）赋到**本实例**——`buildLoopConfig` 在 systemPrompt 装饰
+   * 结果之后以 `\n\n` 追加为最终 system 消息。实例级字段:每次派发构造独立子
+   * Agent 实例,同轮并行派发各自注入无交叉;
    * 根 Agent（编程式 `run`/`stream` 直调）恒为 `undefined`,逐字节现状。
-   * 详见 [agent.md](./agent.md)「resolveSubAgentContext 派发上下文钩子」。
+   * 详见 [agent.md](./agent.md)「agent:sub-agent-context 派发上下文事件」。
    */
   private subAgentContextBlock: string | undefined;
 
@@ -656,7 +655,7 @@ export class Agent {
     options?: AgentRunOptions,
   ): Promise<{
     agentName: string;
-    /** 根调用输入组装钩子应用后的最终 user 输入（undefined = 纯续跑） */
+    /** 本次 user 输入原文（undefined = 纯续跑）——root-input 塑形经 addInput 在 loop 首轮落账,不改写此值 */
     input: string | undefined;
     config: ReactLoopConfig;
     traceId: string | undefined;
@@ -685,33 +684,35 @@ export class Agent {
 
     // 对话首条 user 消息事件（agent:root-input,见主包 events/appEventBus.md 与
     // agent.md 同名章节）：传入非空 input 时触发（任意 depth——depth 1 为根调用输入,
-    // depth ≥ 2 为子代理派发的首条 user 消息;纯续跑无新输入不触发）。handler 原地
-    // 改写 payload.input,通用名与专属名（agent:root-input:<agentName>）同一载荷对象
-    // 先通用后专属顺序发射;载荷不含 agent 名（按 agent 路由统一走专属名订阅,
-    // agent 名在事件名里——避免「载荷 agentName 分流」与「专属名订阅」两条等价
-    // 路径并存的使用困惑）;扇出后校验 input 必须为非空字符串,否则抛 AgentError
-    // （fail fast,空白串按空处理避免续跑轮输入被静默丢弃）。改写产物整体替换本次
-    // user 输入——作为本次对话的首条 user 消息进循环历史并随 result.messages /
-    // done.messages 导出;handler 抛错原样上抛走 run/stream 既有错误链;emitAppEvent
+    // depth ≥ 2 为子代理派发的首条 user 消息;纯续跑无新输入不触发）。写面只有
+    // addInput——暂存器与 loop 首轮 agent:input 共用（挂在 appEvent.rootInputStaging,
+    // reactLoop 首轮直接复用同一数组续接片段,两路一起排序 / 拼接 / {{rawInput}} 展开,
+    // 落账为一条首条 user 消息）;input 只读（赋值抛迁移错误）,原输入恒在消息中。
+    // 通用名与专属名（agent:root-input:<agentName>）同一载荷对象先通用后专属顺序发射;
+    // 载荷不含 agent 名（按 agent 路由统一走专属名订阅,agent 名在事件名里——避免
+    // 「载荷 agentName 分流」与「专属名订阅」两条等价路径并存的使用困惑）。handler
+    // 抛错原样上抛走 run/stream 既有错误链（尚未落账,历史零污染）;emitAppEvent
     // 未接线（未加载 @faapi/agent 插件 / 编程式裸 Agent）时事件不发射、输入原样
-    // （能力边界,非降级——替代已移除的 resolveRootInput / resolveSubAgentInput 双钩子）
-    let effectiveInput = input;
+    // （能力边界,非降级）
+    let rootInputStaging: InputStaging | undefined;
     if (this.deps.emitAppEvent && input) {
-      const payload = { input, ctx: this.deps.ctx };
+      const rootInput = input;
+      const staging = createInputStaging();
+      const payload = {
+        get input(): string {
+          return rootInput;
+        },
+        set input(_value: string) {
+          throw new AgentError(
+            `agent:root-input payload.input is read-only — input rewriting was removed; use addInput(text, index?) (with the {{rawInput}} placeholder to position the original input) to shape the first user message of agent "${agentName}"`,
+          );
+        },
+        addInput: staging.addInput,
+        ctx: this.deps.ctx,
+      };
       await this.deps.emitAppEvent(APP_EVENT.agentRootInput, payload);
       await this.deps.emitAppEvent(agentRootInputEventName(agentName), payload);
-      if (typeof payload.input !== 'string' || payload.input.trim() === '') {
-        throw new AgentError(
-          `agent:root-input event for agent "${agentName}" must leave input a non-empty string (the conversation-start user input), got ${
-            payload.input === null
-              ? 'null'
-              : typeof payload.input === 'string'
-                ? 'whitespace-only string'
-                : typeof payload.input
-          }`,
-        );
-      }
-      effectiveInput = payload.input;
+      rootInputStaging = staging;
     }
 
     // 声明集合先于 tool 列表构建——派发名冲突 / agent 名非法在发起 LLM 请求前显式失败
@@ -752,9 +753,9 @@ export class Agent {
     // readResource（读取根在 app 启动时绑定、隔离 worker 播种），越界/缺失显式抛
     // AgentError,不静默降级为空提示词。agent config 声明 vars 时 base 在
     // resolveSystemPrompt 内做模板渲染（{{key}} 占位符,见 promptTemplate.md）。
-    // 派发上下文块（resolveSubAgentContext 产出,父侧 executeSubAgent 注入本实例）
-    // 在其后以 \n\n 追加——undefined/空串跳过,详见 agent.md「resolveSubAgentContext
-    // 派发上下文钩子」
+    // 派发上下文块（agent:sub-agent-context 事件产出,父侧 executeSubAgent 注入本
+    // 实例）在其后以 \n\n 追加——undefined/空串跳过,详见 agent.md
+    // 「agent:sub-agent-context 派发上下文事件」
     const systemPrompt = await this.resolveSystemPrompt(agentName, meta);
     const withContextBlock = this.subAgentContextBlock
       ? [systemPrompt, this.subAgentContextBlock].filter(Boolean).join('\n\n')
@@ -772,7 +773,7 @@ export class Agent {
     return {
       agentName,
       traceId,
-      input: effectiveInput,
+      input,
       config: {
         provider,
         systemPrompt: finalSystemPrompt,
@@ -786,13 +787,15 @@ export class Agent {
         messages: options?.messages,
         enableTracing,
         // agent:input 每轮发送前事件（见 reactLoop.md 同名章节）——emitAppEvent
-        // 未接线时不携带,循环零开销
+        // 未接线时不携带,循环零开销;rootInputStaging 为 agent:root-input 的暂存器,
+        // loop 首轮 agent:input 复用同一数组,两路片段一起落账
         appEvent: this.deps.emitAppEvent
           ? {
               emit: this.deps.emitAppEvent,
               agentName,
               depth: this.depth,
               ctx: this.deps.ctx,
+              rootInputStaging,
             }
           : undefined,
         executeTool: async (name, args, deltaEmitter) =>
@@ -809,14 +812,16 @@ export class Agent {
    * utils/readResource.md）。启动期已保证 systemPrompt 与 systemPromptFile 二选一
    * ——读取失败（未绑定 / 文件缺失 / 越界）抛 `AgentError`，不静默降级。
    *
-   * agent config 声明 `vars` 时（提示词模板注入,见 promptTemplate.md）base 在装饰
-   * 钩子之前做模板渲染——`{{key}}` 占位符按 meta.vars 填充（静态字面量,构建期提取）,
+   * agent config 声明 `vars` 时（提示词模板注入,见 promptTemplate.md）base 在
+   * `agent:system-prompt` 装饰事件之前做模板渲染——`{{key}}` 占位符按 meta.vars 填充
+   * （静态字面量,构建期提取),
    * 缺失/非法占位符抛错包装为 `AgentError`（带 agent 名）,不发起 LLM 请求;未声明时
    * 完全不渲染（逐字节现状）。
    *
-   * `deps.resolveSystemPrompt` 已接线时在 base 之上调用装饰钩子（钩子收到的是 vars
-   * 渲染后的内容）,返回值即最终 system 消息——每次 run / 派发新鲜调用,子代理经同一
-   * deps 全树生效;未接线时原样返回 base（逐字节现状）。reactLoop 对 systemPrompt 按
+   * `agent:system-prompt` 事件已接线（emitAppEvent 注入）时在 base 之上发射装饰事件
+   * （handler 收到的是 vars 渲染后的内容）,返回值即最终 system 消息——每次 run /
+   * 派发新鲜调用,子代理经同一 deps 全树生效;未接线时原样返回 base（逐字节现状）。
+   * reactLoop 对 systemPrompt 按
    * truthy 处理,内联缺省 `''` 与缺省 undefined 行为一致（不插 system 消息）。
    */
   private async resolveSystemPrompt(agentName: string, meta: AgentCore): Promise<string> {
@@ -860,7 +865,7 @@ export class Agent {
         throw new AgentError(`Agent "${agentName}" systemPrompt vars render failed — ${reason}`);
       }
     }
-    // agent:system-prompt 事件（原 resolveSystemPrompt 钩子——7.x 事件化）：handler
+    // agent:system-prompt 装饰事件：handler
     // 改写 payload.prompt 即最终 system 消息;载荷不含 agent 名（专属名按 agent 路由,
     // 名字在事件名里）;handler 抛错原样上抛走 run/stream 既有错误链（传播口径）;
     // 未接线时原样返回 base（逐字节现状）
@@ -971,10 +976,11 @@ export class Agent {
       });
     }
 
-    // 可见性过滤（authHooks）：无权 tool 不进 LLM 的 tools 清单（每次 run/stream 生效）。
-    // await 兼容：隔离任务路径的钩子经 RPC 垫片转发宿主执行（异步）
+    // 可见性过滤（agent:filter-tools 事件）：无权 tool 不进 LLM 的 tools 清单
+    // （每次 run/stream 生效）。await 兼容：隔离任务路径的订阅端经 RPC 垫片转发
+    // 宿主执行（异步）
     const defs = Array.from(definitions.values());
-    // agent:filter-tools 事件（原 filterTools 钩子——7.x 事件化）：LLM 可见清单
+    // agent:filter-tools 事件：LLM 可见清单
     // 组装末尾发射,handler 原地 filter/splice（载荷不含 agent 名,专属名按 agent
     // 路由——名字在事件名里）。只影响可见性不拦执行;handler 抛错原样上抛（传播口径）;
     // 未接线时清单原样
@@ -1069,7 +1075,7 @@ export class Agent {
       }
     }
 
-    // 执行守卫事件（agent:before-tool-call,原 beforeToolCall 钩子——7.x 事件化）：
+    // 执行守卫事件（agent:before-tool-call）：
     // 在 ctx 声明即校验之后、sub-agent 分流之前——一个事件同时覆盖常规 tool 与
     // sub-agent 递归。handler 原地改写 args / 设置 error（载荷不含 tool 名,专属名
     // agent:before-tool-call:<toolName> 承载按 tool 路由——名字在事件名里）;扇出后
@@ -1119,15 +1125,12 @@ export class Agent {
    *    `{ error }` 回灌主控 LLM 重试（与常规 tool 校验失败同语义,不进入子循环——
    *    省掉一次注定失败的子 agent 轮次）;通过后以 coerce 后的 value 继续传导。
    *    声明了但解析为 `undefined`（zod.js 缺失/损坏）抛 `AgentError` 显式失败;
-   *    resolver 未接线或未声明 `Input` 时跳过校验,行为与历史版本一致
-   *    输入改写经 `agent:root-input` / `agent:root-input:<subName>` 事件在子循环
-   *    buildLoopConfig 承接（原 resolveSubAgentInput 钩子已移除,见 agent.md
-   *    事件章节——args 本身不再被改写,改写对象为提取后的 user 输入字符串）
-   * 3. sub-agent handler 导出 `run` 时调自定义 `mod.run(args)`（无 trace、无结构化
-   *    usage 可卷——直接返回业务结果,其 token 不进入父 run 台账）
-   * 4. 无 `run` 时调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`
-   *    走默认 reactLoop——继承父调用的 provider,sub 元数据声明 `model` 时优先用自身的,
-   *    未声明时沿用父 model
+   *    resolver 未接线或未声明 `Input` 时跳过校验
+   *    输入塑形经 `agent:root-input` / `agent:root-input:<subName>` 事件在子循环
+   *    buildLoopConfig 承接（args 本身不被改写,订阅端经 addInput 围绕提取后的
+   *    user 输入字符串塑形,见 agent.md 事件章节）
+   * 3. 调 `subAgent.run(stringify(args), { agent, provider, model, enableTracing })`
+   *    走默认 reactLoop——provider/model 沿用父调用解析结果
    *
    * **返回值统一包装为 [SubAgentToolResult](./reactLoop.md)**（无论 tracing 开关——
    * 用量上卷不依赖 tracing）：`usage` / `turns` 是子循环整树口径（sub-sub 已在子循环
@@ -1136,7 +1139,7 @@ export class Agent {
    * reactLoop 据此发出 `subagent_call` 事件,嵌入 sub-trace（递归结构,业务方可还原
    * 完整调用树）。详见 reactLoop.md「usage 与 turns 的整树口径」。
    *
-   * sub-agent 统一走默认 reactLoop（自定义 run 已移除,agent 声明式执行）。
+   * sub-agent 统一走默认 reactLoop（agent 为声明式执行）。
    * user 消息：args 恰为单字段 `{ input: <string> }`（与显式入参 schema 形状一致）
    * 时直传字符串,其余形状 stringify 兜底（见 `extractSubAgentUserInput`）。
    */
@@ -1188,14 +1191,9 @@ export class Agent {
     // 构造子 agent（复用父 deps——providers/llms/访问器共享,无 per-agent 名绑定）
     const subAgent = new Agent(this.deps, newDepth);
 
-    // 继承父调用的 provider；sub 元数据声明 model 时优先用自身的,
-    // 未声明时沿用父 model。单字段 { input } 直传字符串（与显式入参 schema 形状一致),
+    // 继承父调用的 provider 与 model（sub-agent 不声明模型,恒沿用父调用解析
+    // 结果）。单字段 { input } 直传字符串（与显式入参 schema 形状一致),
     // 其余形状 stringify 兜底;传递 enableTracing 让 sub-agent 采集 trace。
-    // traceId 链式续拼（见 traceId.md）：子 ID = 父完整 ID + '.' + 新段;父调用
-    // traceId 关闭（undefined）时子调用同样无——关闭语义整树一致
-    // 继承父调用的 provider 与 model（config.model 已移除——sub-agent 模型恒
-    // 沿用父调用解析结果）。单字段 { input } 直传字符串（与显式入参 schema 形状
-    // 一致),其余形状 stringify 兜底;传递 enableTracing 让 sub-agent 采集 trace。
     // traceId 链式续拼（见 traceId.md）：子 ID = 父完整 ID + '.' + 新段;父调用
     // traceId 关闭（undefined）时子调用同样无——关闭语义整树一致
     const subOptions: AgentRunOptions = {
@@ -1209,22 +1207,18 @@ export class Agent {
           : undefined,
     };
 
-    // 派发入参改写已收敛为 agent:root-input 事件（原 resolveSubAgentInput 钩子移除）：
-    // 子循环 buildLoopConfig 对非空 input 发射,handler 改写提取后的 user 输入字符串
-    // （见 buildLoopConfig 内 agent:root-input 接缝）——派发改写诉求由
-    // `agent:root-input:<subName>` 专属订阅承接
+    // 派发入参塑形经 agent:root-input 事件：子循环 buildLoopConfig 对非空 input
+    // 发射,handler 经 addInput 围绕提取后的 user 输入字符串塑形（见 buildLoopConfig
+    // 内 agent:root-input 接缝）——派发塑形诉求由 `agent:root-input:<subName>` 专属
+    // 订阅承接
 
-    // 派发上下文钩子（resolveSubAgentContext,见 agent.md 同名章节）：args 已过校验
-    // （可信;校验后的派发入参原样传导——输入改写发生在子循环事件接缝,不改 args）,
-    // 此处异步供数并把产出注入
-    // **本子 Agent 实例**——子循环 buildLoopConfig 在 resolveSystemPrompt 结果之后以
-    // \n\n 追加为最终 system 消息。undefined/空串跳过（buildLoopConfig 侧判）;抛错
-    // 原样上抛,被 reactLoop per-tool catch 回传主控 LLM。调用先于流式/非流式分支
-    // 分流——两分支同一接线。每次派发独立子 Agent 实例,同轮并行派发各自注入无交叉
-    // agent:sub-agent-context 事件（原 resolveSubAgentContext 钩子——7.x 事件化）：
-    // 派发入参校验通过后发射,handler 设置 payload.context 追加进子代理 system
+    // agent:sub-agent-context 事件（见 agent.md 同名章节）：派发入参校验通过后发射
+    // （args 已过校验,原样传导——输入改写发生在子循环事件接缝,不改 args）,handler
+    // 设置 payload.context 追加进子代理 system——产出注入**本子 Agent 实例**,子循环
+    // buildLoopConfig 在 systemPrompt 装饰结果之后以 \n\n 追加为最终 system 消息
     // （不设/空串跳过,多 handler 后设覆盖）;handler 抛错原样上抛被 per-tool catch
-    // 回传主控 LLM（传播口径）;未接线时不发射
+    // 回传主控 LLM（传播口径）;未接线时不发射。调用先于流式/非流式分支分流——两分支
+    // 同一接线。每次派发独立子 Agent 实例,同轮并行派发各自注入无交叉
     if (this.deps.emitAppEvent) {
       const payload: SubAgentContextEvent = {
         args,
@@ -1364,8 +1358,8 @@ export async function validateToolCtx(
  *   钩子、handler 与全部资源（db 连接池等）都留在宿主，worker 只跑 LLM 编排循环
  *
  * 校验失败返回 `{ error }` 对象（不抛错，回传 LLM 重试）；tool 未找到 / handler
- * 抛错原样上抛（reactLoop per-tool catch 回传 LLM）。afterToolCall 钩子自身抛错
- * 只留痕（审计故障不劫持执行语义）。
+ * 抛错原样上抛（reactLoop per-tool catch 回传 LLM）。agent:after-tool-call 订阅端
+ * 自身抛错只留痕（审计故障不劫持执行语义）。
  */
 export async function executeToolCall(
   deps: AgentDeps,
@@ -1429,7 +1423,7 @@ export async function executeToolCall(
 }
 
 /**
- * agent:after-tool-call 事件（原 afterToolCall 钩子——7.x 事件化,观察类留痕口径）
+ * agent:after-tool-call 事件（观察类留痕口径）
  *
  * tool / sub-agent 成功返回后发射（异常路径不发射）;载荷不含 tool 名（专属名
  * agent:after-tool-call:<toolName> 承载按 tool 路由——名字在事件名里）。载荷 result

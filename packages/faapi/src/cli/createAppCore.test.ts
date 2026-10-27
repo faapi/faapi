@@ -95,7 +95,7 @@ describe('createAppBase', () => {
     await app.close();
   });
 
-  it('app.dist 指向产物目录，AppBase 无 resourcesDir 字段（已删除，读取统一 readResource）', async () => {
+  it('app.dist 指向产物目录，AppBase 无 resourcesDir 字段（读取统一 readResource）', async () => {
     writeHandler();
     await compileArtifacts('dist');
     const { app } = await createAppBase(options());
@@ -109,18 +109,18 @@ describe('createAppBase', () => {
     await compileArtifacts('dist');
     const { app } = await createAppBase(options());
     const received: string[] = [];
-    const off = app.on('agent:root-input', (e) => {
-      received.push(e.input);
-      e.input = 'rewritten';
+    const off = app.on('agent:system-prompt', (e) => {
+      received.push(e.prompt);
+      e.prompt = 'rewritten';
     });
     // app.emit 未公开——发射走 registries.appEvents（插件/框架内部接线位）
-    const payload = { input: 'go', ctx: toolCtx };
-    const returned = await app.registries.appEvents.emit('agent:root-input', payload);
+    const payload = { prompt: 'go', ctx: toolCtx };
+    const returned = await app.registries.appEvents.emit('agent:system-prompt', payload);
     expect(received).toEqual(['go']);
-    expect(returned.input).toBe('rewritten');
+    expect(returned.prompt).toBe('rewritten');
     off();
-    await app.registries.appEvents.emit('agent:root-input', {
-      input: 'go',
+    await app.registries.appEvents.emit('agent:system-prompt', {
+      prompt: 'go',
       ctx: toolCtx,
     });
     expect(received).toEqual(['go']); // 退订后不再收到第二次发射
@@ -132,10 +132,10 @@ describe('createAppBase', () => {
     await compileArtifacts('dist');
     const { app } = await createAppBase(options());
     const handler = vi.fn();
-    app.on('agent:root-input', handler);
+    app.on('agent:system-prompt', handler);
     await app.close();
-    await app.registries.appEvents.emit('agent:root-input', {
-      input: 'go',
+    await app.registries.appEvents.emit('agent:system-prompt', {
+      prompt: 'go',
       ctx: toolCtx,
     });
     expect(handler).not.toHaveBeenCalled();
@@ -885,10 +885,10 @@ export function POST(body: CreateUserBody) {
 });
 
 /**
- * lifecycle.onBoot：listen 前生命周期钩子
+ * app:boot：listen 前发射的启动期事件
  *
- * 背景：onReady 在 listen 回调内执行，启动校验失败时端口已开，
- * 存在"接受连接但不服务"的窗口。onBoot 在 server.listen 调用之前执行，
+ * app:ready 在 listen 回调内发射，启动校验放那里失败时端口已开，
+ * 存在"接受连接但不服务"的窗口。app:boot 在 server.listen 调用之前发射，
  * 适合环境变量校验、下游依赖检查等"失败即不该暴露端口"的逻辑。
  */
 describe('app:boot / app:ready / app:close 事件（app.on 直订，createAppBase 后 listen 前的内部窗口）', () => {

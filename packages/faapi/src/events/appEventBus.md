@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-框架在关键流程点（对话输入组装、每轮 LLM 调用、tool 调用边界、应用启动/关闭、请求错误、任务失败……）需要业务可监听、可改写的统一出口。此前的扩展以散落的钩子承接——agent 的 `resolveRootInput`/`resolveSubAgentInput`/`resolveSystemPrompt`/`resolveSubAgentContext`/authHooks 三钩子、`lifecycle.onBoot/onReady/onClose/onError`、`task.onFailed`——共十二个口子，各自有声明面、传递链与错误约定，业务方要逐个学习。7.x 起**全部收敛为事件**：一个目录、一种订阅模型（订阅/退订/专属名/载荷改写）、两类错误口径。改写消息语义上是同步转换，事件 handler 原地改写载荷承接；事件目录封闭强类型（目录外编译报错，无 `unknown` 逃逸口）。
+框架在关键流程点（对话输入组装、每轮 LLM 调用、tool 调用边界、应用启动/关闭、请求错误、任务失败……）需要业务可监听、可改写的扩展点。这类接缝若各自为政——每个点一套声明面、传递链与错误约定——业务方要逐个学习，框架也要逐点维护。事件总线把全部流程扩展收敛为**一种模型**：一个目录、一种订阅模型（订阅/退订/专属名/载荷改写）、两类错误口径。改写消息语义上是同步转换，事件 handler 原地改写载荷承接；事件目录封闭强类型（目录外编译报错，无 `unknown` 逃逸口）。
 
 ## 事件目录（封闭，随框架版本演进）
 
@@ -12,16 +12,16 @@
 
 > **载荷统一口径**：agent 域载荷不含实体名（agent 名 / tool 名）——专属名订阅承载实体路由（名字在事件名里），通用订阅是实体无关的横切处理，避免「载荷字段分流」与「专属名订阅」两条等价路径并存的使用困惑。
 
-| 事件名 | 载荷 | 触发时机（替代的旧钩子） |
+| 事件名 | 载荷 | 触发时机 |
 | --- | --- | --- |
-| `agent:root-input` | `AgentRootInputEvent`（`{ input, ctx }`） | 所有 agent 对话首次 user 消息发送前——根调用（depth=1）与子代理派发（depth≥2）；纯续跑不触发（原 `resolveRootInput` + `resolveSubAgentInput`） |
-| `agent:input` | `AgentInputEvent`（`{ depth, messages, ctx, addInput }`） | 每轮 LLM 调用前、历史超限事件之前（含首轮、工具轮、子代理各轮、续跑轮）；`messages` 为历史只读快照，`addInput` 片段落账进历史（无旧钩子对应，7.x 新增） |
-| `agent:history-over-budget` | `AgentHistoryOverBudgetEvent`（`{ depth, estimatedTokens, budget, messages, ctx, replace }`） | 每轮估算历史 tokens 超过 `maxHistoryTokens` 阈值时（`agent:input` 落账之后）；业务经 `replace` 整体替换循环历史——框架零内置裁剪，压缩完全由订阅端承接（无旧钩子对应，7.x 新增） |
-| `agent:before-tool-call` | `BeforeToolCallEvent` | tool/sub-agent 执行前——ctx 声明即校验之后、白名单与分流之前；handler 原地改写 `args`、设 `error` 拒绝（原 `config.agent.beforeToolCall`） |
-| `agent:after-tool-call` | `AfterToolCallEvent` | tool/sub-agent 成功执行后（异常路径不触发）；name 为 tool 名（sub-agent 为派发名 `agent-<name>`）（原 `config.agent.afterToolCall`） |
-| `agent:filter-tools` | `FilterToolsEvent` | 每次 run/stream 组装 LLM 可见 tool 清单末尾；handler 原地增删 `tools` 数组（原 `config.agent.filterTools`） |
-| `agent:system-prompt` | `SystemPromptEvent` | 框架解析好 base systemPrompt（内联/`systemPromptFile`/vars 渲染）之后；handler 改写 `prompt` 即最终 system（原 deps `resolveSystemPrompt`） |
-| `agent:sub-agent-context` | `SubAgentContextEvent` | 子代理派发入参校验通过后；handler 设 `context` 为追加进子代理 system 的上下文块（多 handler 后设覆盖）（原 deps `resolveSubAgentContext`） |
+| `agent:root-input` | `AgentRootInputEvent`（`{ input, ctx, addInput }`） | 所有 agent 对话首次 user 消息发送前——根调用（depth=1）与子代理派发（depth≥2）；纯续跑不触发。`input` 为首条 user 输入原文（只读），写面是 `addInput`——与 `agent:input` 同一条落账管道（片段在 loop 首轮与 `agent:input` 片段合并落账进首条 user 消息，`{{rawInput}}` 占位符展开为原输入） |
+| `agent:input` | `AgentInputEvent`（`{ depth, messages, ctx, addInput }`） | 每轮 LLM 调用前、历史超限事件之前（含首轮、工具轮、子代理各轮、续跑轮）；`messages` 为历史只读快照，`addInput` 片段落账进历史 |
+| `agent:history-over-budget` | `AgentHistoryOverBudgetEvent`（`{ depth, estimatedTokens, budget, messages, ctx, replace }`） | 每轮估算历史 tokens 超过 `maxHistoryTokens` 阈值时（`agent:input` 落账之后）；业务经 `replace` 整体替换循环历史——框架零内置裁剪，压缩完全由订阅端承接 |
+| `agent:before-tool-call` | `BeforeToolCallEvent` | tool/sub-agent 执行前——ctx 声明即校验之后、白名单与分流之前；handler 原地改写 `args`、设 `error` 拒绝 |
+| `agent:after-tool-call` | `AfterToolCallEvent` | tool/sub-agent 成功执行后（异常路径不触发）；name 为 tool 名（sub-agent 为派发名 `agent-<name>`） |
+| `agent:filter-tools` | `FilterToolsEvent` | 每次 run/stream 组装 LLM 可见 tool 清单末尾；handler 原地增删 `tools` 数组 |
+| `agent:system-prompt` | `SystemPromptEvent` | 框架解析好 base systemPrompt（内联/`systemPromptFile`/vars 渲染）之后；handler 改写 `prompt` 即最终 system |
+| `agent:sub-agent-context` | `SubAgentContextEvent` | 子代理派发入参校验通过后；handler 设 `context` 为追加进子代理 system 的上下文块（多 handler 后设覆盖） |
 
 ```ts
 // agent 域载荷统一不含路由键（agent 名 / tool 名）——专属名订阅承载实体路由
@@ -53,22 +53,22 @@ export interface SubAgentContextEvent {
 
 ### 应用与任务域（全局事件，无专属变体）
 
-| 事件名 | 载荷 | 触发时机（替代的旧钩子） |
+| 事件名 | 载荷 | 触发时机 |
 | --- | --- | --- |
-| `app:boot` | `LifecycleContext` | listen 内、server.listen 前（原 `lifecycle.onBoot`——启动校验/迁移等「失败即不该暴露端口」的逻辑） |
-| `app:ready` | `LifecycleContext` | listen 回调内（原 `lifecycle.onReady`——资源初始化） |
-| `app:close` | `LifecycleContext`（server 有值） | close 内、任务 drain 之后（原 `lifecycle.onClose`——清理） |
-| `request:error` | `RequestErrorEvent` | 请求错误响应**发出后**（原 `lifecycle.onError`——日志/告警副作用）；`ctx` 不存在（请求准备阶段错误）不发射 |
-| `task:failed` | `TaskFailedInfo`（复用任务类型：task/jobId/attempt/willRetry/cancelled/error） | 任务每次执行失败/取消后（原 `config.task.onFailed`，含 willRetry 失败与 cancelled） |
+| `app:boot` | `LifecycleContext` | listen 内、server.listen 前——启动校验/迁移等「失败即不该暴露端口」的逻辑 |
+| `app:ready` | `LifecycleContext` | listen 回调内——资源初始化 |
+| `app:close` | `LifecycleContext`（server 有值） | close 内、任务 drain 之后——清理 |
+| `request:error` | `RequestErrorEvent` | 请求错误响应**发出后**——日志/告警副作用；`ctx` 不存在（请求准备阶段错误）不发射 |
+| `task:failed` | `TaskFailedInfo`（复用任务类型：task/jobId/attempt/willRetry/cancelled/error） | 任务每次执行失败/取消后（含 willRetry 失败与 cancelled） |
 
 ```ts
 export interface RequestErrorEvent {
   error: unknown;
-  ctx: FaapiContext;          // 请求准备阶段错误无 ctx → 整个事件不发射（对齐原钩子语义）
+  ctx: FaapiContext;          // 请求准备阶段错误无 ctx → 整个事件不发射
 }
 ```
 
-`LifecycleContext` 即原生命周期钩子 ctx 类型（rootDir/routes/server/registries/tasks/config 活引用），转为 `app:*` 事件载荷。
+`LifecycleContext`（rootDir/routes/server/registries/tasks/config 活引用）是 `app:*` 事件的载荷类型。
 
 ## 订阅（唯一入口 `getApp().on`，启动期写 src/bootstrap.ts）
 
@@ -93,7 +93,7 @@ export default async function bootstrap() {
 
   // agent 域 / 观察类事件也可在这里统一订阅，或写在各自模块顶层（app 运行中随时可订）
   app.on('agent:root-input', (e) => {
-    e.input = `[tenant:${currentTenant()}] ${e.input}`;   // 原地改写，改写结果进对话历史
+    e.addInput(`[tenant:${currentTenant()}] {{rawInput}}`);     // 占位符处嵌原输入，产物落账进对话历史
   });
 }
 ```
@@ -101,7 +101,7 @@ export default async function bootstrap() {
 - handler 同步或返回 `Promise`；`emit` 按注册顺序 `await` 依次执行。
 - **改写语义**：handler 原地修改载荷（或对标记可赋值的字段整体赋值，如 `payload.args` / `payload.context`）；多 handler 顺序串联（后者看到前者改写结果）。
 - **通用名与专属名的顺序**：每个接缝先发射通用名、后发射专属名（`agent:input:<agentName>` 等），**同一载荷对象**顺序串联——专属 handler 看得到通用 handler 的改写并可覆盖。
-- **`agent:input` 的写面（历史编辑窗口）**：`addInput(text, index = 100)` 补充输入——多监听片段按 index 升序稳定排序（同 index 保持调用序）后 `'\n\n'` 拼接，前置进**当轮输入消息**（当轮无新输入的工具轮/纯续跑轮为新增 user 消息），**落账进对话历史、落账即不可变**；拼接结果含 `{{rawInput}}` 占位符时占位符展开为原输入（原输入嵌在订阅端指定位置、不再缀尾，无输入轮展开为空串）。`messages` 为历史只读快照（深冻结克隆，整体替换赋值抛迁移错误）。完整契约见 `@faapi/agent` [reactLoop](../../../agent/src/reactLoop.md) 同名章节。
+- **输入事件的写面（`agent:root-input` 与 `agent:input` 同一条落账管道）**：两事件的唯一写面都是 `addInput(text, index = 100)`——片段按 index 升序稳定排序（同 index 保持调用序）后 `'\n\n'` 拼接，前置进**当轮输入消息**（当轮无新输入的工具轮/纯续跑轮为新增 user 消息），**落账进对话历史、落账即不可变**；拼接结果含 `{{rawInput}}` 占位符时占位符展开为原输入（原输入嵌在订阅端指定位置、不再缀尾，无输入轮展开为空串）。`agent:root-input` 在 loop 首轮之前暂存，与首轮 `agent:input` 的片段**合并为一条**首条 user 消息（同 index 下 root-input 片段在前）；`input` 只读（赋值抛迁移错误），原输入恒在消息中——可包裹/重排、不可丢弃或改写原文（显式声明的能力边界）。`agent:input` 的 `messages` 为历史只读快照（深冻结克隆，整体替换赋值抛迁移错误）。完整契约见 `@faapi/agent` [reactLoop](../../../agent/src/reactLoop.md) 同名章节。
 - **通用名与专属名的分工（agent 域统一口径）**：专属名（`agent:root-input:<agentName>`、`agent:before-tool-call:<toolName>` 等）是按实体（agent/tool）路由的入口——名字在事件名里；**通用名载荷不含实体名**（agent 名 / tool 名一概不在载荷上）——通用订阅做实体无关的横切处理（租户改写、审计打标、全量守卫等），需要按实体分流时订阅对应专属名。
 - 订阅返回退订函数（幂等）；无订阅者 emit 为 no-op；订阅集合随 `app.close()` 清空。
 
@@ -109,20 +109,20 @@ export default async function bootstrap() {
 
 | 口径 | 事件 | 行为 |
 | --- | --- | --- |
-| **流程/改写类——传播** | `app:boot`（失败端口不暴露）、`app:ready`、`app:close`、`agent:root-input`、`agent:input`、`agent:before-tool-call`（per-tool catch 回灌主控 LLM）、`agent:filter-tools`、`agent:system-prompt`、`agent:sub-agent-context`（同回灌） | handler 抛错立即向 `emit` 调用方传播（剩余 handler 跳过）——fail fast，不吞不降级 |
+| **流程/改写类——传播** | `app:boot`（失败端口不暴露）、`app:ready`、`app:close`、`agent:root-input`、`agent:input`、`agent:history-over-budget`、`agent:before-tool-call`（per-tool catch 回灌主控 LLM）、`agent:filter-tools`、`agent:system-prompt`、`agent:sub-agent-context`（同回灌） | handler 抛错立即向 `emit` 调用方传播（剩余 handler 跳过）——fail fast，不吞不降级 |
 | **观察类——留痕** | `request:error`（不干扰已发出的响应）、`task:failed`（不影响驱动重试决策）、`agent:after-tool-call`（不改变成功结果） | 发射点捕获 handler 抛错，`console.error` 留痕后继续 |
 
-**改写后校验（框架强制，仅改写类 agent 事件）**：`agent:root-input` 扇出后 `input` 必须为非空字符串——违反抛 `AgentError`。`agent:input` 的写面是 `addInput` 文本片段（空白片段过滤、无结构约束），无需扇出后校验。
+**改写后校验（框架强制，仅改写类 agent 事件）**：`agent:history-over-budget` 的 `replace` 产物须非空且结构完整，违反抛 `AgentError`。`agent:root-input` / `agent:input` 的写面是 `addInput` 文本片段（空白片段过滤、无结构约束；原输入恒在消息中），无需扇出后校验——输入非空由 `agent.run/stream` 入口守卫（无 input 且无续跑历史抛 `AgentError`）承担。
 
 ## 发射侧（框架内部接线）
 
 - 总线实例挂 `AppRegistries.appEvents`（app 实例级，`app.close()` 时 `clear()`）；`@faapi/agent` 插件 setup 时把 `registries.appEvents.emit` 经 `createAgentDeps` 的 `overrides.emitAppEvent` 注入 `AgentDeps`——HTTP 请求路径与隔离任务 RPC 路径（宿主执行）同一份 deps。
-- `createProdApp`/`createDevApp` 内部加载执行 `src/bootstrap.ts`（listen 前窗口）；`listen()` 发射 `app:boot`/`app:ready`、`close()` 发射 `app:close`（原三钩子调用点，副作用流程不变：boot 失败仍停任务运行时、close 仍在 drain 后）。
+- `createProdApp`/`createDevApp` 内部加载执行 `src/bootstrap.ts`（listen 前窗口）；`listen()` 发射 `app:boot`/`app:ready`、`close()` 发射 `app:close`（副作用流程：boot 失败仍停任务运行时、close 仍在 drain 后）。
 - `createServer` 的 `sendErrorResponse` 发射 `request:error`（响应发出后）；`taskQueue` 发射 `task:failed`（fire-and-forget）。
 
 ## 能力边界（显式声明，非降级）
 
-- 未加载 `@faapi/agent` 插件、或编程式裸 `new Agent(deps)`（deps 无 `emitAppEvent`）→ agent 域事件不发射、输入原样——与被移除钩子的可选语义一致。`app:*`/`request:error`/`task:failed` 由主包发射，不依赖插件。
+- 未加载 `@faapi/agent` 插件、或编程式裸 `new Agent(deps)`（deps 无 `emitAppEvent`）→ agent 域事件不发射、输入原样（能力不存在非降级）。`app:*`/`request:error`/`task:failed` 由主包发射，不依赖插件。
 - 业务自定义事件名不支持——目录封闭是「`on` 无 unknown」的前提；新框架事件随版本进 `FaapiAppEventMap`。
 - 启动期事件（`app:boot`/`app:ready`/`app:close`）的订阅必须写 `src/bootstrap.ts`（框架在 listen 前加载执行，见 [cli/bootstrap](../cli/bootstrap.md)）——handler 模块按需编译在首次请求才加载，届时 app:boot/app:ready 已发射。
 - 订阅时机在发射之后不影响已开始的发射；发射开始时的订阅快照生效（扇出中途退订不影响在途分发）。

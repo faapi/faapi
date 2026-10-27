@@ -18,15 +18,29 @@ import type { TaskFailedInfo } from '../tasks/taskTypes';
 // ─── 事件载荷 ────────────────────────────────────────
 
 /**
- * `agent:root-input` 载荷——本次对话的首条 user 消息（handler 可原地改写 input）
+ * `agent:root-input` 载荷——本次对话的首条 user 消息（loop 首个用户输入的塑形出口）
  *
  * **不含 agent 名**：`agent:root-input` 与 `agent:root-input:<agentName>` 双订阅
  * 并存时，载荷里的 agent 名与专属事件名冗余（两条等价分流路径并存造成使用困惑）——
  * 按 agent 路由统一走专属名订阅（agent 名在事件名里），通用订阅是 agent 无关的横切处理。
+ *
+ * 写面只有 `addInput`，与 `agent:input` 共用同一条落账管道：root-input 在循环启动前
+ * 暂存，片段与 loop 首轮 `agent:input` 的片段**一起**排序 / 过滤 / `'\n\n'` 拼接 /
+ * `{{rawInput}}` 展开，合并落账为一条首条 user 消息（同 index 下 root-input 片段在前）。
+ * `input` 只读——原输入恒在消息中（可包裹 / 重排，不可丢弃或改写原文），赋值抛迁移错误。
  */
 export interface AgentRootInputEvent {
-  /** 本次对话首条 user 输入（根调用为 run/stream 入参;子代理为派发入参提取产物） */
-  input: string;
+  /** 本次对话首条 user 输入原文（根调用为 run/stream 入参;子代理为派发入参提取产物）——只读 */
+  readonly input: string;
+  /**
+   * 补充输入片段（循环启动前暂存，loop 首轮与 `agent:input` 片段一起落账进首条 user 消息）
+   *
+   * @param text 片段文本（框架不包裹不转义）。含 `{{rawInput}}` 占位符时占位符全部展开为
+   *   `input` 原文（原输入嵌在订阅端指定位置、不再缀尾，如
+   *   `'规则…\n\n<user_input>{{rawInput}}</user_input>'`）；不含占位符 → 片段前置 + 原输入缀尾
+   * @param index 排序序号（与 `agent:input` 片段同一序列升序稳定排序；缺省 100）
+   */
+  addInput(text: string, index?: number): void;
   /** 请求上下文（HTTP 路径为请求收窄 ctx;任务路径为任务合成 ctx） */
   ctx: AgentToolContext;
 }
@@ -40,8 +54,9 @@ export interface AgentRootInputEvent {
  * 写面只有 `addInput`：补充的文本片段在扇出结束后按 index 升序稳定排序（同 index
  * 保持调用序）、`'\n\n'` 拼接，前置进当轮输入消息（当轮无新输入的工具轮/纯续跑轮
  * 为新增 user 消息）——**落账进对话历史，后续轮次 / result.messages / 断点续跑链
- * 全部可见，落账即不可变**。`messages` 是深冻结只读快照，整体替换赋值抛迁移错误
- * （消息改写面已移除，历史不开放改写）。
+ * 全部可见，落账即不可变**。loop 首轮与 `agent:root-input` 共用暂存、一起合并落账
+ * （root-input 片段暂存更早，同 index 下在前）。`messages` 是深冻结只读快照，整体
+ * 替换赋值抛迁移错误（历史不开放改写）。
  */
 export interface AgentInputEvent {
   /** 递归深度（根循环 = 1） */
@@ -138,14 +153,14 @@ export type AppEventEmitter = <K extends FaapiAppEventName>(
   payload: FaapiAppEventMap[K],
 ) => Promise<FaapiAppEventMap[K]>;
 
-// ─── agent 工具链 / systemPrompt / 派发上下文载荷（原 authHooks 等钩子迁移）──
+// ─── agent 工具链 / systemPrompt / 派发上下文载荷 ────
 //
 // agent 域载荷统一不含路由键（agent 名 / tool 名）——`:<agentName>` / `:<toolName>`
 // 专属名订阅承载实体路由（名字在事件名里），通用名订阅是实体无关的横切处理；
 // 载荷再带实体名与专属事件名冗余，两条等价分流路径并存造成使用困惑（口径见
 // appEventBus.md「通用名与专属名的分工」）。
 
-/** `agent:before-tool-call` 载荷——tool/sub-agent 执行前守卫（原 beforeToolCall 钩子） */
+/** `agent:before-tool-call` 载荷——tool/sub-agent 执行前守卫 */
 export interface BeforeToolCallEvent {
   /** LLM 传入的入参——handler 可整体替换（`payload.args = {...}`） */
   args: Record<string, unknown>;
@@ -154,7 +169,7 @@ export interface BeforeToolCallEvent {
   error?: string;
 }
 
-/** `agent:after-tool-call` 载荷——成功执行后审计（原 afterToolCall 钩子,观察面） */
+/** `agent:after-tool-call` 载荷——成功执行后审计（观察面） */
 export interface AfterToolCallEvent {
   args: Record<string, unknown>;
   /** 成功结果（改写不回写执行链路——观察类事件） */
@@ -162,21 +177,21 @@ export interface AfterToolCallEvent {
   ctx: AgentToolContext;
 }
 
-/** `agent:filter-tools` 载荷——LLM 可见 tools 清单过滤（原 filterTools 钩子） */
+/** `agent:filter-tools` 载荷——LLM 可见 tools 清单过滤 */
 export interface FilterToolsEvent {
   /** handler 原地 filter/splice（含 agent-as-tool 派发项） */
   tools: LLMToolDefinition[];
   ctx: AgentToolContext;
 }
 
-/** `agent:system-prompt` 载荷——systemPrompt 装饰（原 resolveSystemPrompt 钩子） */
+/** `agent:system-prompt` 载荷——systemPrompt 装饰 */
 export interface SystemPromptEvent {
   /** vars 渲染后的 base——handler 改写即最终 system 消息 */
   prompt: string;
   ctx: AgentToolContext;
 }
 
-/** `agent:sub-agent-context` 载荷——派发边界供数（原 resolveSubAgentContext 钩子） */
+/** `agent:sub-agent-context` 载荷——派发边界供数 */
 export interface SubAgentContextEvent {
   /** 校验后的派发入参 */
   args: Record<string, unknown>;
@@ -187,15 +202,15 @@ export interface SubAgentContextEvent {
 
 // ─── 应用与任务域载荷 ──────────────────────────────
 
-/** `request:error` 载荷——错误响应发出后的观察面（原 lifecycle.onError 钩子） */
+/** `request:error` 载荷——错误响应发出后的观察面 */
 export interface RequestErrorEvent {
   error: unknown;
-  /** 请求上下文（请求准备阶段错误无 ctx → 整个事件不发射,对齐原钩子语义） */
+  /** 请求上下文（请求准备阶段错误无 ctx → 整个事件不发射） */
   ctx: FaapiContext;
 }
 
 // `app:boot` / `app:ready` / `app:close` 载荷复用 `LifecycleContext`
-// （原 lifecycle 钩子 ctx 类型,rootDir/routes/server/registries/tasks/config 活引用）；
+// （rootDir/routes/server/registries/tasks/config 活引用）；
 // `task:failed` 载荷复用 `TaskFailedInfo`。
 
 // ─── 事件名常量与 helper ──────────────────────────────

@@ -7,6 +7,7 @@ import {
   agentRootInputEventName,
   type AgentInputEvent,
   type AgentRootInputEvent,
+  type SystemPromptEvent,
 } from './appEventBus';
 
 /** 最小合规 AgentToolContext 桩（契约字段 tasks/log/signal——总线单测不消费其内容） */
@@ -21,16 +22,18 @@ function inputPayload(): AgentInputEvent {
   return { depth: 1, messages: [], addInput: () => {}, ctx: toolCtx };
 }
 
+/** 最小合规 agent:root-input 载荷（input 只读、写面 addInput——总线单测不消费） */
+function rootPayload(input = 'x'): AgentRootInputEvent {
+  return { input, addInput: () => {}, ctx: toolCtx };
+}
+
 describe('createAppEventBus', () => {
   it('on + emit：handler 收到载荷，emit 返回同一载荷', async () => {
     const bus = createAppEventBus();
     const handler = vi.fn();
     bus.on('agent:root-input', handler);
 
-    const payload: AgentRootInputEvent = {
-      input: 'go',
-      ctx: toolCtx,
-    };
+    const payload = rootPayload('go');
     const returned = await bus.emit('agent:root-input', payload);
 
     expect(handler).toHaveBeenCalledTimes(1);
@@ -57,19 +60,19 @@ describe('createAppEventBus', () => {
   it('改写串联：handler 原地修改载荷，后续 handler 与 emit 返回值可见', async () => {
     const bus = createAppEventBus();
     const seen: string[] = [];
-    bus.on('agent:root-input', (e) => {
-      e.input = `[a] ${e.input}`;
+    bus.on('agent:system-prompt', (e) => {
+      e.prompt = `[a] ${e.prompt}`;
     });
-    bus.on('agent:root-input', (e) => {
-      seen.push(e.input);
-      e.input = `${e.input} [b]`;
+    bus.on('agent:system-prompt', (e) => {
+      seen.push(e.prompt);
+      e.prompt = `${e.prompt} [b]`;
     });
 
-    const payload: AgentRootInputEvent = { input: 'go', ctx: toolCtx };
-    const returned = await bus.emit('agent:root-input', payload);
+    const payload: SystemPromptEvent = { prompt: 'go', ctx: toolCtx };
+    const returned = await bus.emit('agent:system-prompt', payload);
 
     expect(seen).toEqual(['[a] go']);
-    expect(returned.input).toBe('[a] go [b]');
+    expect(returned.prompt).toBe('[a] go [b]');
   });
 
   it('无订阅者 emit 为 no-op，原样返回载荷', async () => {
@@ -89,7 +92,7 @@ describe('createAppEventBus', () => {
     off();
     off(); // 幂等
 
-    await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
+    await bus.emit('agent:root-input', rootPayload());
     expect(handler).not.toHaveBeenCalled();
   });
 
@@ -108,12 +111,12 @@ describe('createAppEventBus', () => {
       order.push('c');
     });
 
-    await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
+    await bus.emit('agent:root-input', rootPayload());
     // 快照语义：本次 emit 内已注册的 handler 均执行
     expect(order).toEqual(['a', 'b', 'c']);
 
     order.length = 0;
-    await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
+    await bus.emit('agent:root-input', rootPayload());
     // 下一次发射起 b 不再被调用
     expect(order).toEqual(['a', 'c']);
   });
@@ -137,7 +140,7 @@ describe('createAppEventBus', () => {
     bus.on('agent:input', handler);
 
     bus.clear();
-    await bus.emit('agent:root-input', { input: 'x', ctx: toolCtx });
+    await bus.emit('agent:root-input', rootPayload());
     await bus.emit('agent:input', inputPayload());
 
     expect(handler).not.toHaveBeenCalled();
@@ -159,9 +162,9 @@ describe('createAppEventBus', () => {
     await bus.emit(agentInputEventName('writer'), payload);
     expect(specific).toHaveBeenCalledWith(payload);
 
-    const rootPayload = { agentName: 'writer', input: 'x', ctx: toolCtx };
-    await bus.emit(agentRootInputEventName('writer'), rootPayload);
-    expect(specific).toHaveBeenLastCalledWith(rootPayload);
+    const rootSpecificPayload = { ...rootPayload(), agentName: 'writer' };
+    await bus.emit(agentRootInputEventName('writer'), rootSpecificPayload);
+    expect(specific).toHaveBeenLastCalledWith(rootSpecificPayload);
     expect(APP_EVENT.agentInput).toBe('agent:input');
     expect(APP_EVENT.agentRootInput).toBe('agent:root-input');
   });
