@@ -1302,7 +1302,7 @@ describe('Agent', () => {
       });
     });
 
-    it('input 只读：handler 赋值抛迁移错误（写面收敛为 addInput），且不发 LLM 请求', async () => {
+    it('input 只读：handler 赋值抛 TypeError（getter-only，无定制报错），且不发 LLM 请求', async () => {
       const events = createEventCollector();
       events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
         (e as { input: string }).input = 'rewritten';
@@ -1319,7 +1319,7 @@ describe('Agent', () => {
       );
 
       await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
-        /addInput/,
+        TypeError,
       );
       // 在循环启动前 fail fast——LLM 请求未发出
       expect(completeCalls).not.toHaveBeenCalled();
@@ -1617,7 +1617,7 @@ describe('Agent', () => {
       expect(errors).toHaveLength(2);
     });
 
-    it('messages 整体替换赋值抛迁移错误（写面收敛为 addInput）', async () => {
+    it('messages 整体替换赋值抛 TypeError（getter-only，无定制报错）', async () => {
       const events = createEventCollector();
       events.bus.on('agent:input', (e: AgentInputEvent) => {
         (e as { messages: unknown }).messages = [];
@@ -1634,7 +1634,7 @@ describe('Agent', () => {
       );
 
       await expect(agent.run('go', { agent: 'researcher', model: 'gpt-4o' })).rejects.toThrowError(
-        /addInput/,
+        TypeError,
       );
       expect(completeCalls).not.toHaveBeenCalled();
     });

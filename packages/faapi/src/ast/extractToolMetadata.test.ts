@@ -87,53 +87,27 @@ describe('extractToolMetadata', () => {
     });
   });
 
-  describe('残留 @tool 覆盖名标签 → 抛错', () => {
-    it('@tool 标签有值 → 抛迁移错误（tool 名由目录路径 + 函数名推导）', () => {
+  describe('残留 @tool 覆盖名标签 → 静默忽略', () => {
+    it('@tool 标签有值 → 不报错，name 仍由目录路径 + 函数名推导', () => {
       writeFileSync(
         tempFile,
         `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
-      expect(() => extractToolMetadata(program, tempFile, 'getWeather', sharedMeta)).toThrow(
-        /已移除/,
-      );
+      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.name).toBe('weather_getWeather');
     });
 
-    it('描述 + @tool 标签共存同样抛迁移错误（与描述提取无关）', () => {
+    it('描述 + @tool 标签共存 → 描述照常提取（标签不参与提取）', () => {
       writeFileSync(
         tempFile,
         `/**\n * 获取当前天气\n * @tool weather_current\n */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
       );
       const program = createProgram(tempFile);
-      expect(() => extractToolMetadata(program, tempFile, 'getWeather', sharedMeta)).toThrow(
-        /已移除/,
-      );
-    });
-
-    it('花括号包裹的 @tool 标签值同样抛迁移错误', () => {
-      writeFileSync(
-        tempFile,
-        `/** @tool {weather_current} */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
-      );
-      const program = createProgram(tempFile);
-      expect(() => extractToolMetadata(program, tempFile, 'getWeather', sharedMeta)).toThrow(
-        /已移除/,
-      );
-    });
-
-    it('迁移错误含改名目录或函数指引', () => {
-      writeFileSync(
-        tempFile,
-        `/** @tool weather_current */\nexport function getWeather(input: WeatherInput) { return "sunny"; }\n`,
-      );
-      const program = createProgram(tempFile);
-      try {
-        extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
-        expect.unreachable();
-      } catch (err) {
-        expect((err as Error).message).toContain('删除 @tool JSDoc 标签');
-        expect((err as Error).message).toContain('改名目录或函数');
-      }
+      const result = extractToolMetadata(program, tempFile, 'getWeather', sharedMeta);
+      expect(result).not.toBeNull();
+      expect(result!.description).toBe('获取当前天气');
     });
 
     it('无 @tool 标签时 name 使用 pathMeta.name', () => {

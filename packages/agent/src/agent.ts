@@ -687,7 +687,7 @@ export class Agent {
     // depth ≥ 2 为子代理派发的首条 user 消息;纯续跑无新输入不触发）。写面只有
     // addInput——暂存器与 loop 首轮 agent:input 共用（挂在 appEvent.rootInputStaging,
     // reactLoop 首轮直接复用同一数组续接片段,两路一起排序 / 拼接 / {{rawInput}} 展开,
-    // 落账为一条首条 user 消息）;input 只读（赋值抛迁移错误）,原输入恒在消息中。
+    // 落账为一条首条 user 消息）;input 只读（getter-only）,原输入恒在消息中。
     // 通用名与专属名（agent:root-input:<agentName>）同一载荷对象先通用后专属顺序发射;
     // 载荷不含 agent 名（按 agent 路由统一走专属名订阅,agent 名在事件名里——避免
     // 「载荷 agentName 分流」与「专属名订阅」两条等价路径并存的使用困惑）。handler
@@ -701,11 +701,6 @@ export class Agent {
       const payload = {
         get input(): string {
           return rootInput;
-        },
-        set input(_value: string) {
-          throw new AgentError(
-            `agent:root-input payload.input is read-only — input rewriting was removed; use addInput(text, index?) (with the {{rawInput}} placeholder to position the original input) to shape the first user message of agent "${agentName}"`,
-          );
         },
         addInput: staging.addInput,
         ctx: this.deps.ctx,

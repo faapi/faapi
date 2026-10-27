@@ -6,7 +6,7 @@ import type { TaskDriver } from './driverTypes';
  * - `'pgboss'` → 动态加载子包 `@faapi/task-pgboss` 的 `createPgBossDriver(options)`
  * - `'bullmq'` → 动态加载子包 `@faapi/task-bullmq` 的 `createBullMQDriver(options)`
  * - TaskDriver 对象 → 直接使用（编程式自定义驱动）
- * - `undefined` / `'memory'` / 其他值 → 显式抛错，不静默降级
+ * - `undefined` / 其他值 → 显式抛错，不静默降级
  *
  * 任务队列由持久化/外部驱动承载，无内置内存驱动；未配置 driver 时
  * createAppBase 仅在存在任务清单时报错（无任务项目用 idleTaskDriver，不调用本函数）。
@@ -22,11 +22,6 @@ export async function loadTaskDriver(
   if (driver === undefined) {
     throw new Error(
       "[faapi] config.task.driver is required when tasks are defined. Install @faapi/task-pgboss or @faapi/task-bullmq and set `task.driver` to 'pgboss' or 'bullmq' (or pass a TaskDriver instance).",
-    );
-  }
-  if (driver === 'memory') {
-    throw new Error(
-      "[faapi] The built-in memory task driver has been removed. Migrate to a persistent driver: install @faapi/task-pgboss or @faapi/task-bullmq and set `task.driver` to 'pgboss' or 'bullmq'.",
     );
   }
   if (typeof driver === 'object') {

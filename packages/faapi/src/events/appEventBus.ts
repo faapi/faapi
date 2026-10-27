@@ -27,7 +27,7 @@ import type { TaskFailedInfo } from '../tasks/taskTypes';
  * 写面只有 `addInput`，与 `agent:input` 共用同一条落账管道：root-input 在循环启动前
  * 暂存，片段与 loop 首轮 `agent:input` 的片段**一起**排序 / 过滤 / `'\n\n'` 拼接 /
  * `{{rawInput}}` 展开，合并落账为一条首条 user 消息（同 index 下 root-input 片段在前）。
- * `input` 只读——原输入恒在消息中（可包裹 / 重排，不可丢弃或改写原文），赋值抛迁移错误。
+ * `input` 只读——原输入恒在消息中（可包裹 / 重排，不可丢弃或改写原文），赋值抛 `TypeError`（getter-only）。
  */
 export interface AgentRootInputEvent {
   /** 本次对话首条 user 输入原文（根调用为 run/stream 入参;子代理为派发入参提取产物）——只读 */
@@ -56,12 +56,12 @@ export interface AgentRootInputEvent {
  * 为新增 user 消息）——**落账进对话历史，后续轮次 / result.messages / 断点续跑链
  * 全部可见，落账即不可变**。loop 首轮与 `agent:root-input` 共用暂存、一起合并落账
  * （root-input 片段暂存更早，同 index 下在前）。`messages` 是深冻结只读快照，整体
- * 替换赋值抛迁移错误（历史不开放改写）。
+ * 替换赋值抛 `TypeError`（历史不开放改写）。
  */
 export interface AgentInputEvent {
   /** 递归深度（根循环 = 1） */
   depth: number;
-  /** 历史只读快照（深冻结克隆，读取口径；任何写操作抛 TypeError，整体替换赋值抛迁移错误） */
+  /** 历史只读快照（深冻结克隆，读取口径；任何写操作抛 TypeError） */
   readonly messages: readonly LLMMessage[];
   /**
    * 补充输入片段（本轮暂存，扇出结束后落账进历史）

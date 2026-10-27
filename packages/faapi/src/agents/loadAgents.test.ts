@@ -53,10 +53,12 @@ describe('loadAgents', () => {
       });
     });
 
-    it('检测到 run 导出抛迁移错误', () => {
-      expect(() =>
-        evaluateAgentDeclaration({ config: { systemPrompt: 'x' }, run: async () => {} }, locator),
-      ).toThrow(/run 导出.*声明式执行.*注册 tool/s);
+    it('run 导出被忽略（不做残留检测，声明式执行）', () => {
+      const meta = evaluateAgentDeclaration(
+        { config: { systemPrompt: 'x' }, run: async () => {} },
+        locator,
+      );
+      expect(meta.systemPrompt).toBe('x');
     });
 
     it('缺少 config 导出抛错', () => {

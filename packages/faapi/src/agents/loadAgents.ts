@@ -38,7 +38,7 @@ interface AgentHandlerModule {
  *
  * - `config` 为对象字面量 → 直接采用；为函数 → 调用求值（返回对象）——业务可
  *   用闭包/env 组装声明
- * - 检测到 `run` 导出抛错（agent 为声明式执行，编排场景注册 tool）
+ * - `run` 导出不被读取（agent 为声明式执行，编排场景注册 tool）
  * - 逐字段类型校验（白名单 / 互斥必填 / 元素类型 / 数值范围），全部 fail-fast
  *   抛错，错误信息带 `agent "<name>" (<filePath>)` 定位
  *
@@ -52,12 +52,6 @@ export function evaluateAgentDeclaration(
 ): AgentMetadata {
   const where = `agent "${locator.name}" (${locator.filePath})`;
 
-  if (mod.run !== undefined) {
-    throw new Error(
-      `[faapi] ${where}: 检测到 run 导出——agent 统一为声明式执行（config + 默认 reactLoop），` +
-        '自定义 run 机制已移除；编排场景请注册 tool',
-    );
-  }
   if (mod.config === undefined) {
     throw new Error(
       `[faapi] ${where}: 缺少 config 导出——请在 handler.ts 声明 export const config = { ... }`,

@@ -570,8 +570,8 @@ function createReadView(messages: LLMMessage[]): readonly LLMMessage[] {
  *
  * appEvent 已接线时每轮发射（历史裁剪/压缩**之前**——片段落账后才投影发送），
  * 通用名 + 专属名同一载荷对象先通用后专属。载荷 `messages` 为历史只读快照
- * （深冻结克隆，首次访问才构造——订阅端不读则零拷贝开销；整体替换赋值抛迁移
- * 错误），`addInput(text, index=100)` 暂存补充输入片段。
+ * （深冻结克隆，首次访问才构造——订阅端不读则零拷贝开销），`addInput(text,
+ * index=100)` 暂存补充输入片段。
  *
  * 暂存器选择：当轮有新输入（`turnInputIndex >= 0`，即 loop 首轮）复用
  * `appEvent.rootInputStaging`——`agent:root-input` 在循环启动前已把片段暂存在同一
@@ -603,11 +603,6 @@ async function emitAgentInputEvent(
     ctx: appEvent.ctx,
     get messages(): readonly LLMMessage[] {
       return (readView ??= createReadView(messages));
-    },
-    set messages(_value: readonly LLMMessage[]) {
-      throw new AgentError(
-        'agent:input payload.messages is a read-only snapshot — message rewriting was removed; use addInput(text, index?) to commit input fragments into history',
-      );
     },
     addInput: staging.addInput,
   };

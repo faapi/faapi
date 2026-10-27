@@ -1,10 +1,5 @@
 import ts from 'typescript';
-import {
-  extractDescription,
-  extractJSDocTagValue,
-  getJSDocFromNode,
-  hasExportModifier,
-} from './jsDocMetadata';
+import { extractDescription, getJSDocFromNode, hasExportModifier } from './jsDocMetadata';
 import { SchemaExtractionError, findTopLevelDecl } from './resolveTypeNode';
 
 /**
@@ -14,7 +9,7 @@ import { SchemaExtractionError, findTopLevelDecl } from './resolveTypeNode';
  * `name` / `description` / input schema),**不含**代码本体加载细节
  * (`filePath` / `functionName` / `inputTypeName`)。
  *
- * 与 [AgentCore](./extractAgentMetadata.md) 对称——LLM-facing 字段与代码加载
+ * 与 [AgentCore](../agents/agentTypes.md) 对称——LLM-facing 字段与代码加载
  * 细节分离,便于未来扩展(如 DB-driven tool 只实现 `ToolCore` 即可)。
  *
  * `toolRegistry` 查询入口 / `@faapi/agent` 子包的 `buildToolDefinitions`
@@ -116,19 +111,6 @@ export function extractToolMetadata(
   const { fn, jsDocOwner } = found;
   const jsDoc = getJSDocFromNode(jsDocOwner);
   const description = extractDescription(jsDoc);
-  const toolNameOverride = extractJSDocTagValue(jsDoc, 'tool');
-  // 残留 @tool 覆盖名标签抛错（不静默忽略：覆盖语义不存在，标签变成无人消费的
-  // 死注解，与声明意图不符）。无值的裸标签（tag.comment 为 false）
-  // extractJSDocTagValue 返回 undefined，不构成残留，维持回退语义不报错
-  if (toolNameOverride !== undefined) {
-    throw SchemaExtractionError.at(
-      jsDocOwner,
-      '@tool',
-      '@tool 覆盖名功能已移除——tool 名由目录路径 + 函数名推导（嵌套段用 _ 连接）。' +
-        '删除 @tool JSDoc 标签；需要不同名字时改名目录或函数',
-      sourceFile,
-    );
-  }
   const inputTypeName = getFirstParamTypeName(fn, sourceFile);
   const ctxTypeName = getCtxSchemaTypeName(fn, sourceFile, program, functionName);
 

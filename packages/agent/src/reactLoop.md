@@ -129,7 +129,7 @@ export interface SubAgentToolResult {
 `ReactLoopConfig.appEvent` 已接线（`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传）时，每轮 provider 调用前、超限事件**之前**，经其发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:input` 与 `agent:input:<agentName>`（先通用后专属，同一载荷对象顺序串联）：
 
 - **载荷**：`{ depth, messages, ctx, addInput }`——不含 agent 名（按 agent 路由订阅专属名 `agent:input:<agentName>`，名字在事件名里）。
-  - `messages`：**历史只读快照**（`structuredClone` 深拷贝 + 逐层深冻结）——读取口径，任何写操作（数组结构变更 / 消息对象字段赋值）抛 `TypeError`；对 `messages` 整体替换赋值抛迁移错误（历史快照不开放改写）。
+  - `messages`：**历史只读快照**（`structuredClone` 深拷贝 + 逐层深冻结）——读取口径，任何写操作（数组结构变更 / 消息对象字段赋值）抛 `TypeError`；对 `messages` 整体替换赋值抛 `TypeError`（getter-only）（历史快照不开放改写）。
   - `addInput(text, index = 100)`：**补充输入**（唯一写面）——暂存文本片段，扇出结束后落账。
 - **落账语义（append-only 不可变账本）**：片段按 index 升序稳定排序（同 index 保持调用序——比较器显式双键 `(index, seq)`，不依赖引擎稳定排序）→ 过滤空白片段 → `'\n\n'` 拼接 → 前置进**当轮输入消息** content 之前（原内容逐字节不动）。**`{{rawInput}}` 占位符**：拼接结果含该占位符时，占位符全部展开为当轮输入原内容——原输入嵌在订阅端指定的位置、不再缀尾（片段产物与原输入互斥，位置由占位符裁决，如 `'规则…\n\n<user_input>{{rawInput}}</user_input>'`）；不含占位符时维持前置 + 原内容缀尾。单次展开不递归（原内容含字面占位符不二次处理）；无当轮输入的轮（工具轮 / 纯续跑轮）占位符展开为空串（展开后全空白则不新增消息，同空片段过滤口径）。当轮无新输入（工具轮 / 纯续跑轮）时，拼接结果作为一条新增 user 消息追加（tool 结果之后，协议合法位置）。落账后即历史的一部分：后续轮次、`result.messages` / `done.messages`、断点/续跑链全部可见且不可变。
 - **合并边界 = 单次事件发射**：跨轮、跨 agent（depth 层级）、跨 run 各自独立暂存独立落账，永不跨边界合并。多监听（通用名 + 专属名 + 同名多订阅）的片段合并为**一条** user 消息，不是多条消息。**唯一的跨事件合并是 loop 首轮**：`agent:root-input`（循环启动前由 `buildLoopConfig` 发射，片段暂存在 `ReactLoopConfig.rootInputStaged`）与首轮 `agent:input` 的片段进同一次落账——同一套排序 / 过滤 / 拼接 / `{{rawInput}}` 展开，合并为一条首条 user 消息；root-input 片段 seq 更早，同 index 下排在 `agent:input` 片段之前。root-input 暂存只在首轮消费，工具轮 / 后续轮不再参与。

@@ -57,9 +57,8 @@ function extractAgentNameFromPath(filePath: string): string {
 /**
  * 扫描 agents 目录，生成 agent 清单
  *
- * Vite 风格：启动时只读源码文件列表，不 import agent.js。config 块字段的精确提取
- * （含 JSDoc description）由 [extractAgentMetadata](../ast/extractAgentMetadata.md)
- * 在 AST 阶段完成——检测到 `run` 导出也在该阶段抛错。
+ * Vite 风格：启动时只读源码文件列表，不 import agent.js——本模块只产出定位清单
+ * （`AgentManifestList`），config 声明的求值与校验在启动期运行时进行（见 loadAgents）。
  *
  * agent 文件格式：`src/agents/<agentName>/handler.ts`，导出 `config` 块。一个目录
  * 一份 handler.ts = 一个 agent。

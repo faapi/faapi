@@ -8,8 +8,8 @@
  * agent 名来自目录路径推导（如 `src/agents/researcher/handler.ts` → `researcher`，
  * 嵌套段用 `_` 连接）。
  *
- * agent 为声明式执行（config + 默认 reactLoop）；handler 导出 `run` 在启动期
- * 求值阶段抛错（编排场景注册 tool）。
+ * agent 为声明式执行（config + 默认 reactLoop）；handler 的 `run` 导出不被读取
+ * （编排场景注册 tool）。
  */
 export interface AgentManifest {
   /** agent 名（目录路径推导，如 `researcher`） */

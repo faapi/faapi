@@ -39,27 +39,3 @@ export function extractDescription(jsDoc: ts.JSDoc | undefined): string | undefi
   const trimmed = jsDoc.comment.trim();
   return trimmed || undefined;
 }
-
-/**
- * 提取 `@<tagName>` 标签值
- *
- * 用于检测残留的 `@tool` 覆盖名标签（残留有值标签即抛错）。
- * - 花括号包裹（`@tool {name}`）去括号
- * - 无指定标签 / 标签无 comment 文本（无值裸标签）→ `undefined`（不构成残留，调用方不报错）
- */
-export function extractJSDocTagValue(
-  jsDoc: ts.JSDoc | undefined,
-  tagName: string,
-): string | undefined {
-  if (!jsDoc || !jsDoc.tags) return undefined;
-  for (const tag of jsDoc.tags) {
-    if (tag.tagName.text !== tagName) continue;
-    // tag.comment 类型为 string | false | undefined；false 表示该 tag 无 comment 文本
-    if (typeof tag.comment !== 'string') return undefined;
-    const text = tag.comment.trim();
-    if (!text) return undefined;
-    const cleaned = text.replace(/^\{|\}$/g, '').trim();
-    return cleaned || undefined;
-  }
-  return undefined;
-}

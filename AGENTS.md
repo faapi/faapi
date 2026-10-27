@@ -431,7 +431,7 @@ export default {
   // agent 自身 config.maxTurns 优先于全局配置
   // 无 defaultAgent / defaultLlm——agent.run(input, { agent, model }) 每次调用
   // 显式指定 agent 名与 model/provider（模型档位是调用侧决策，agent config 不声明
-  // model——声明即启动期求值阶段抛错；sub-agent 派发未声明 model 时沿用父调用解析结果）
+  // model——声明被忽略（类型上无此字段）；sub-agent 派发未声明 model 时沿用父调用解析结果）
   // llms 同源服务两条通道：agent 循环（agent.run）+ 轻量一次性补全（handler `llm`
   // 注入参数 / taskCtx.llm，详见 @faapi/agent 的 lightComplete.md）——项目零新增配置
   agent: {
@@ -650,9 +650,9 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 
 **框架不提供 DB-driven 的动态 agent / skill 注册表**——技能天然是用户 / 租户维度，「全局共享、名键唯一」的注册表模型不成立。需要运行时动态 agent 元数据的业务方自行实现「实时查库 + LLM 可见花名册 + tool 按需读取」模式（不进框架注册表）。
 
-**agent 统一为声明式执行**：agent = config 声明（systemPrompt / systemPromptFile / tools / agents / maxTurns）+ 默认 reactLoop，handler 不导出 `run`（检测到即启动期求值阶段抛错，求值与校验见 `packages/faapi/src/agents/loadAgents.md`）。编排需求由两种能力承接——**LLM 可调用的编排代码注册 tool**（有 schema 校验、trace 采集、事件守卫覆盖，全链路可观测），**多 agent 协作用 config.agents 声明 sub-agent**（继承 provider、delta 冒泡、usage 整树上卷）。
+**agent 统一为声明式执行**：agent = config 声明（systemPrompt / systemPromptFile / tools / agents / maxTurns）+ 默认 reactLoop，handler 的 `run` 导出不被读取（求值与校验见 `packages/faapi/src/agents/loadAgents.md`）。编排需求由两种能力承接——**LLM 可调用的编排代码注册 tool**（有 schema 校验、trace 采集、事件守卫覆盖，全链路可观测），**多 agent 协作用 config.agents 声明 sub-agent**（继承 provider、delta 冒泡、usage 整树上卷）。
 
-**模型档位是调用侧决策**：`agent.run/stream` 显式传 `options.model`（或 `options.provider` 外部 provider 自决），agent config 不声明 `model`（声明即启动期求值阶段抛错）；sub-agent 派发未声明 model 时沿用父调用解析结果。校验规则见 `packages/faapi/src/agents/loadAgents.md`。
+**模型档位是调用侧决策**：`agent.run/stream` 显式传 `options.model`（或 `options.provider` 外部 provider 自决），agent config 不声明 `model`（声明被忽略，类型上无此字段）；sub-agent 派发未声明 model 时沿用父调用解析结果。校验规则见 `packages/faapi/src/agents/loadAgents.md`。
 
 **派发入参 schema 声明（per-agent 富 schema）**：agent handler.ts 顶层声明 `interface Input` / `type Input` 时，该 agent 被派发（`agent-<name>` 工具）的入参不再是单字段 `{ input: string }` 交接单，而是结构性 JSON Schema（构建期生成 `agents/<name>/zod.js` 导出 `InputSchema`，字段 JSDoc 即主控 LLM 可见参数描述），`executeSubAgent` 执行前校验，失败按工具同语义回灌 `{ error }`。未声明的 agent 保持单字段 `input` + `inputDescription` 行为，完全向后兼容；`inputDescription` 与 `Input` 互斥生效（声明了 `Input` 即以 schema 为准）。详见 `packages/agent/src/agent.md` 的「派发入参 schema 声明」。
 

@@ -26,7 +26,7 @@ export type AgentManifestList = AgentManifest[];
 
 由 [scanAgents](./scanAgents.md) 扫描文件系统生成，与 [ToolManifest](../tools/toolTypes.md) 对称——一个目录一个 agent，handler.ts 导出 `config` 块。agent 声明运行时化后清单降级为**定位清单**：只携带扫描期可定的静态事实，声明数据由启动期求值获得（`SerializedAgentRecord` 额外携带 `inputTypeName`——类型编译期擦除，只能由构建期检测提供，见 [generateAgentArtifacts](../cli/generateAgentArtifacts.md)）。
 
-agent 为声明式执行（config + 默认 reactLoop）；handler 不导出 run（检测到即启动期求值阶段抛错；编排场景注册 tool）。
+agent 为声明式执行（config + 默认 reactLoop）；handler 的 run 导出不被读取（编排场景注册 tool）。
 
 ## AgentCore（LLM 可见核心字段）
 

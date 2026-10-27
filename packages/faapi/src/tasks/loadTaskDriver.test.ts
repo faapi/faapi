@@ -7,8 +7,8 @@ describe('loadTaskDriver', () => {
     await expect(loadTaskDriver(undefined, undefined)).rejects.toThrow(/config\.task\.driver/);
   });
 
-  it("'memory' 显式抛错——无内置内存驱动，提示迁移", async () => {
-    await expect(loadTaskDriver('memory', undefined)).rejects.toThrow(/removed/);
+  it("'memory' 无内置实现——落入未知驱动通用报错（不做残留特判）", async () => {
+    await expect(loadTaskDriver('memory', undefined)).rejects.toThrow(/Unknown task driver/);
   });
 
   it('未知 driver 名抛错并列出支持的取值', async () => {

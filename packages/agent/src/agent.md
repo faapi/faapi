@@ -255,8 +255,8 @@ root-input 是「loop 首个用户输入那一轮」的 input：事件单独保�
 `buildLoopConfig` 在 `agentName` 解析与注册校验之后、循环启动之前，对**非空 `input`**（任意 depth）经 `deps.emitAppEvent` 发射 [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:root-input` 与 `agent:root-input:<agentName>`（先通用后专属，同一载荷对象）：
 
 - **触发语义**：「本次对话的首条 user 消息」——depth=1 是根调用输入；depth≥2 是子代理派发（`executeSubAgent` → `subAgent.run/stream(extractSubAgentUserInput(args))`，载荷 `input` 为派发入参 schema 校验、提取后的 user 输入字符串——即子代理 LLM 实际看到的首条 user 消息）；纯续跑（`options.messages` + 无 `input`）不触发。
-- **载荷形制**：`{ input, ctx, addInput }`——不含 `agentName`。按 agent 路由订阅专属名 `agent:root-input:<agentName>`（agent 名在事件名里），通用订阅 `agent:root-input` 是 agent 无关的横切处理。`input` 只读（赋值抛迁移 `AgentError`），写面只有 `addInput(text, index = 100)`。
-- **落账实现（与 `agent:input` 同管道）**：root-input 片段在循环启动前暂存（`ReactLoopConfig.rootInputStaged`），loop 首轮 `agent:input` 发射后与该轮片段**合并为一条**首条 user 消息——同 index 下 root-input 片段在前（暂存更早）；排序、空白过滤、`'\n\n'` 拼接、`{{rawInput}}` 占位符展开（原输入嵌在片段指定位置、不再缀尾）全部复用 reactLoop 的落账逻辑，见 [reactLoop](./reactLoop.md)「agent:input 每轮发送前事件」。
+- **载荷形制**：`{ input, ctx, addInput }`——不含 `agentName`。按 agent 路由订阅专属名 `agent:root-input:<agentName>`（agent 名在事件名里），通用订阅 `agent:root-input` 是 agent 无关的横切处理。`input` 只读（getter-only，赋值抛 `TypeError`），写面只有 `addInput(text, index = 100)`。
+- **落账实现（与 `agent:input` 同管道）**：root-input 片段在循环启动前暂存（`ReactLoopConfig.appEvent.rootInputStaging`），loop 首轮 `agent:input` 发射后与该轮片段**合并为一条**首条 user 消息——同 index 下 root-input 片段在前（暂存更早）；排序、空白过滤、`'\n\n'` 拼接、`{{rawInput}}` 占位符展开（原输入嵌在片段指定位置、不再缀尾）全部复用 reactLoop 的落账逻辑，见 [reactLoop](./reactLoop.md)「agent:input 每轮发送前事件」。
 - **能力边界**：原输入恒在首条 user 消息中——可包裹、重排（`{{rawInput}}`），**不可丢弃或改写原文**（输入非空由 `buildLoopConfig` 入口守卫承担）。
 - **产物去向**：落账进循环历史并随 `result.messages`（非流式）/ `done.messages`（流式）导出——业务落库、续跑链继承、前端按标记渲染全链可见；trace 的 `inputSnapshot` 如实反映落账后的 LLM 输入。
 - **错误传播**：handler 抛错在循环启动前上抛——depth=1 走 run / stream 既有错误链（发起 LLM 请求前显式失败）；depth≥2 被 reactLoop per-tool catch 回传主控 LLM（主控可调整派发参数重试）。

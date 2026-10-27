@@ -1,11 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import ts from 'typescript';
-import {
-  hasExportModifier,
-  getJSDocFromNode,
-  extractDescription,
-  extractJSDocTagValue,
-} from './jsDocMetadata';
+import { hasExportModifier, getJSDocFromNode, extractDescription } from './jsDocMetadata';
 
 /** 解析源码并返回第一个匹配名称的顶层节点 */
 function firstDecl(source: string): ts.Node {
@@ -62,36 +57,5 @@ describe('extractDescription', () => {
   it('多行描述保留换行', () => {
     const node = firstDecl('/** 第一行\n * 第二行 */\nexport function GET() {}\n');
     expect(extractDescription(getJSDocFromNode(node))).toBe('第一行\n第二行');
-  });
-});
-
-describe('extractJSDocTagValue', () => {
-  it('@tool 标签值提取', () => {
-    const node = firstDecl('/** 描述\n * @tool weather.current\n */\nexport function GET() {}\n');
-    expect(extractJSDocTagValue(getJSDocFromNode(node), 'tool')).toBe('weather.current');
-  });
-
-  it('@agent 标签值提取', () => {
-    const node = firstDecl('/** @agent researcher */\nexport function GET() {}\n');
-    expect(extractJSDocTagValue(getJSDocFromNode(node), 'agent')).toBe('researcher');
-  });
-
-  it('花括号包裹去花括号', () => {
-    const node = firstDecl('/** @tool {custom} */\nexport function GET() {}\n');
-    expect(extractJSDocTagValue(getJSDocFromNode(node), 'tool')).toBe('custom');
-  });
-
-  it('无指定标签返回 undefined', () => {
-    const node = firstDecl('/** 描述\n * @other x\n */\nexport function GET() {}\n');
-    expect(extractJSDocTagValue(getJSDocFromNode(node), 'tool')).toBeUndefined();
-  });
-
-  it('标签无 comment 文本返回 undefined', () => {
-    const node = firstDecl('/** @tool */\nexport function GET() {}\n');
-    expect(extractJSDocTagValue(getJSDocFromNode(node), 'tool')).toBeUndefined();
-  });
-
-  it('undefined 输入返回 undefined', () => {
-    expect(extractJSDocTagValue(undefined, 'tool')).toBeUndefined();
   });
 });

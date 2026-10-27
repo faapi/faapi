@@ -44,7 +44,7 @@ export const config = {
 ```
 
 - `config` 为对象字面量 → 直接采用；为函数 → 调用求值（须返回对象）——业务可用闭包/env 组装声明
-- 检测到 `run` 导出 → 抛错（agent 为声明式执行，编排场景注册 tool）
+- `run` 导出不被读取（agent 为声明式执行，编排场景注册 tool）
 
 ## 校验规则（fail-fast，错误带定位）
 
@@ -52,7 +52,7 @@ export const config = {
 
 | 场景 | 行为 |
 |------|------|
-| 检测到 `run` 导出 | 抛错（编排场景注册 tool） |
+| `run` 导出 | 不被读取（编排场景注册 tool） |
 | 无 `config` 导出 | 抛错（含修复指引） |
 | config 非 object / 数组 / 函数返回非对象 | 抛错（`got <describeValue>`） |
 | 未知 config 字段 | 抛错（白名单：description / systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars）——静默忽略会掩盖拼写错误 |

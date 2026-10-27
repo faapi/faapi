@@ -14,7 +14,7 @@
 ## 行为约定
 
 - `undefined` → 抛错（提示配置 `config.task.driver` 与安装子包）
-- `'memory'` → 抛错（无内置内存驱动，错误含迁移指引）
+- `'memory'` / 其他未知值 → 通用未知驱动报错
 - TaskDriver 对象 → 原样返回
 - `'pgboss'` / `'bullmq'` → `import('@faapi/task-<name>')`，调用对应工厂并透传 `config.task.<name>` 选项
 - 子包未安装 / 工厂导出缺失 / 未知 driver 名 → 抛错（含安装指引）

@@ -41,7 +41,7 @@ export function clearAgentRegistry(): void {
 /**
  * 按名查找单个 agent 的 LLM 可见元数据（默认实例）
  *
- * 返回 [AgentCore](../ast/extractAgentMetadata.md)（不含 filePath）。
+ * 返回 [AgentCore](../agents/agentTypes.md)（不含 filePath）。
  * 加载 handler.js 执行 `run` 函数请用 [getAgentEntry](#getAgentEntry)。
  *
  * @param name agent 名（如 `researcher`，目录路径推导）

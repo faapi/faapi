@@ -25,14 +25,14 @@
 | `trimHistory` 自动截断 + `agentConfig.historyCompactor` 策略位（`HistoryCompactor` / `HistoryCompactorInput` 导出、`historyCompaction` 模块） | `agent:history-over-budget` 事件 `replace(history)`；`maxHistoryTokens` 语义收敛为超限阈值 | 框架零内置裁剪——长度控制是业务知识 | 7.11.0 |
 | agent 域事件载荷上的实体名字段（`agentName` / `name` / `subName`） | 专属名订阅 `agent:<event>:<实体名>`（名字在事件名里） | 「载荷字段分流」与「专属名订阅」两条等价路径并存造成使用困惑 | 7.10.0 |
 | `config.task.onFailed` 钩子 | `task:failed` 事件 | 事件化 | 7.9.0 |
-| agent 自定义 `run` 导出（含 `loadAgentModule` / `AgentModule` / `hasConfig` / `hasRun` 公开 API） | 声明式 `config` + 默认 reactLoop；编排代码注册为 tool；多 agent 协作用 `config.agents`。启动期检测 `run` 导出抛错 | 自定义 run 绕过 schema 校验 / trace / 事件守卫，不可观测 | 6.24.0 |
-| agent `config.model`、全局 `defaultAgent` / `defaultLlm` | `agent.run(input, { agent, model })` 调用侧显式指定；sub-agent 派发沿用父解析结果 | 模型档位是调用侧决策，不属于 agent 声明 | 7.2.0（config.model）；defaultAgent/defaultLlm 更早 |
-| 构建期 TS AST 提取 agent `config` 字面量进 `faapi-agents.js` 数据清单 + `@agent` JSDoc 覆盖名 | 运行时启动期求值（`loadAgents`），清单仅做定位；agent 名由目录推导 | 字面量提取挡住动态需求（按 env/DB 切人设被迫绕道全局面） | 6.45.0（覆盖名）/ 7.6.0（运行时求值） |
-| `@tool` JSDoc 覆盖名 | tool 名 = 目录路径 + 函数名推导（嵌套段 `_` 连接）；残留标签抛迁移错误 | 覆盖名让注册名与目录结构脱钩 | 6.45.0 |
+| agent 自定义 `run` 导出（含 `loadAgentModule` / `AgentModule` / `hasConfig` / `hasRun` 公开 API） | 声明式 `config` + 默认 reactLoop；编排代码注册为 tool；多 agent 协作用 `config.agents`。`run` 导出不被读取 | 自定义 run 绕过 schema 校验 / trace / 事件守卫，不可观测 | 6.24.0 |
+| agent `config.model`、全局 `defaultAgent` / `defaultLlm` | `agent.run(input, { agent, model })` 调用侧显式指定（config.model 声明被忽略）；sub-agent 派发沿用父解析结果 | 模型档位是调用侧决策，不属于 agent 声明 | 7.2.0（config.model）；defaultAgent/defaultLlm 更早 |
+| 构建期 TS AST 提取 agent `config` 字面量进 `faapi-agents.js` 数据清单 + `@agent` JSDoc 覆盖名 | 运行时启动期求值（`loadAgents`），清单仅做定位；agent 名由目录推导（残留标签静默忽略） | 字面量提取挡住动态需求（按 env/DB 切人设被迫绕道全局面） | 6.45.0（覆盖名）/ 7.6.0（运行时求值） |
+| `@tool` JSDoc 覆盖名 | tool 名 = 目录路径 + 函数名推导（嵌套段 `_` 连接）；残留标签静默忽略 | 覆盖名让注册名与目录结构脱钩 | 6.45.0 |
 | sub-agent 派发工具名 `agent.<name>` 点号前缀；tool 嵌套名 `.` 连接 | `agent-<name>`（`subAgentToolName`）；`_` 连接 | OpenAI 兼容协议硬约束 `^[a-zA-Z0-9_-]+$`，强校验上游（DeepSeek / OpenAI）整单 400 | 6.28.0 |
 | `skillRegistry`（DB-driven skill 注册表：`hydrateSkillRegistry` / `upsertSkill` / `removeSkill` / `getSkill` / `listSkills`） | 不进框架注册表——业务自建「实时查库 + LLM 可见花名册 + tool 按需读取」 | 「全局共享、名键唯一」的 skill 模型不成立（技能天然是用户 / 租户维度） | 6.47.0 |
 | `AgentRuntimeConfig.defaultTools` 全局共享 tool 合并 | `buildToolDefinitions` 只合并 agent 自身 tools + sub-agent | 全局面与 per-agent 声明重叠 | 3.1.0 |
-| 内置 `memory` 任务驱动 | `@faapi/task-pgboss` / `@faapi/task-bullmq`；`driver: 'memory'` 显式抛错含迁移指引 | 框架不提供「可丢任务」的进程内实现 | 6.4.0 |
+| 内置 `memory` 任务驱动 | `@faapi/task-pgboss` / `@faapi/task-bullmq`（`'memory'` 按未知驱动报错） | 框架不提供「可丢任务」的进程内实现 | 6.4.0 |
 | 隔离任务 6 种 per-behavior RPC 垫片（`beforeToolCall` / `toolCall` / `filterTools` / `resolveSubAgentInput` / `resolveSubAgentContext`……「IO 在 worker、CPU 在宿主」） | 单次 `agent-run` RPC 收敛宿主执行完整循环（`taskCtx.agent` 为 run-only 句柄） | 业务函数面不跨线程，db 等资源单实例 | 7.6.0 |
 | 隔离任务 config 的 `safeConfig` JSON 快照 | 先改为隔离任务不传 config（6.33.0），后以 `collectConfigSnapshot` 纯数据投影承接（函数值不进快照，不可克隆值显式报错） | JSON 快照把 Date 变字符串、静默丢字段 | 6.33.0 → 6.44.0 |
 | 进程内任务用 `timeoutMs` 字段隐式判定「隔离执行」 | 文件名判据：`task.ts` 进程内 / `worker.ts` 隔离；`task.ts` 声明超时字段构建期报错附改名指引 | 运行时语义不该由可选字段有无隐式决定 | 6.44.0 |
@@ -50,18 +50,20 @@
 | `scanRoutes` / `scanTools` 运行时 `import` handler / tool 模块提取方法名 | 零 import：正则 / AST 扫描源码 | 运行时 import 让 dev 启动慢、按需编译无法实现 | 6.x |
 | `extractAllTypes` 提前解析文件全部顶层类型 | 按需提取（`collectRouteSchemaSources`） | 任何无关类型坏掉都让提取整体失败 | — |
 
-### 1.1 现行迁移错误（保留的升级护栏，不是残留）
+### 1.1 已移除的迁移护栏（2026-10-28 维护者决策）
 
-以下运行时错误文案刻意保留并有测试断言，升级用户沿用旧写法时得到可行动的指引：
+曾经为升级用户保留过一批"检测到残留写法即抛错（附迁移指引）"的护栏；维护者随后决策**不做残留检测报错**并追溯移除全部既有护栏——残留写法改为静默无效或语言层 `TypeError`，类型层拒绝是唯一防线：
 
-| 位置 | 触发 | 指向 |
+| 位置 | 触发（旧：抛错附迁移指引） | 现状 |
 | --- | --- | --- |
-| `packages/agent/src/agent.ts`（`agent:root-input` 载荷 `input` setter） | `e.input = …` | `addInput(text, index?)` + `{{rawInput}}` |
-| `packages/agent/src/reactLoop.ts`（`agent:input` 载荷 `messages` setter） | `e.messages = […]` | `addInput` |
-| `packages/faapi/src/agents/loadAgents.ts` | agent handler 导出 `run` | 声明式 config；编排注册 tool |
-| `packages/faapi/src/ast/extractToolMetadata.ts` | 残留 `@tool` JSDoc 标签 | 删标签；改目录 / 函数名 |
-| `packages/faapi/src/tasks/loadTaskDriver.ts` | `task.driver: 'memory'` | 安装 pgboss / bullmq 驱动子包 |
-| `packages/faapi/src/tasks/scanTasks.ts` | `task.ts` 声明 `timeoutMs` / `graceMs` / `maxOldGenerationSizeMb` | 改名 `worker.ts` 或删字段 |
+| `agent:root-input` 载荷 `input` | `e.input = …` | getter-only，赋值抛 `TypeError` |
+| `agent:input` 载荷 `messages` | `e.messages = […]` | getter-only，赋值抛 `TypeError` |
+| agent handler 导出 `run` | 启动期求值阶段抛错 | `run` 导出被忽略（声明式执行） |
+| 残留 `@tool` JSDoc 标签 | schema 提取抛 `SchemaExtractionError` | 标签静默忽略，名字仍由目录推导 |
+| `task.driver: 'memory'` | 专属迁移错误 | 落入未知驱动通用报错 |
+| agent config 声明 `model` | 启动期求值阶段抛错 | 声明被忽略（类型上无此字段） |
+
+构建期**功能校验**不属于残留检测，维持不变（如 `task.ts` 声明 `timeoutMs` / `graceMs` 的错位报错、`worker.ts` 缺 `timeoutMs` 必填报错、同目录两种任务文件并存的歧义报错——均为现行文件约定的一致性校验）。
 
 ### 1.2 有意保留的兼容面（不是残留）
 
@@ -99,7 +101,7 @@
 
 ## 3. 存疑 / 待决
 
-> 已了结（2026-10-28 维护者决策）：**不为已移除概念的残留痕迹做检测报错**——残留 JSDoc 标签（如 `@agent`）、残留配置键等旧写法痕迹保持静默无效 / 归入业务自定义配置即终态，类型层拒绝是唯一防线；不再新增任何"检测到残留即抛错"式守卫（此决策不追溯既有护栏，1.1 节所列迁移错误维持现状）。
+> 已了结（2026-10-28 维护者决策）：**不为已移除概念的残留痕迹做检测报错**——残留 JSDoc 标签（如 `@agent`）、残留配置键等旧写法痕迹保持静默无效 / 归入业务自定义配置即终态，类型层拒绝是唯一防线；不再新增任何"检测到残留即抛错"式守卫。该决策**追溯适用于既有护栏**——1.1 节所列迁移报错已全部移除（含 `@tool` 标签、`run` 导出、memory 驱动特判、root-input/input 载荷 setter 抛错；`config.model` 运行时本无检测，文档口径一并修正）。
 
 | 事项 | 现状 | 待决点 |
 | --- | --- | --- |
