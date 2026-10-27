@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-产物路径转换逻辑此前有 4 份逐字相同的 `toProdFilePath` 实现（generateRoutes / scanRoutes / generateToolArtifacts / generateAgentArtifacts）、2 份 `toRealPath` / `isInsideDir` / `toProdExtension`（compileConfig / aliasPlugin）。多份拷贝在路径规则调整（如打平前缀变化）时必须同步改多处，漏改即产生 dev/prod 产物路径不一致的隐性 bug。
+产物路径转换逻辑被多个构建管线共用（generateRoutes / scanRoutes / generateToolArtifacts / generateAgentArtifacts 的 `toProdFilePath`、compileConfig / aliasPlugin 的 `toRealPath` / `isInsideDir` / `toProdExtension`）。路径规则必须全管线一致——收敛为单一实现后，规则调整（如打平前缀变化）只改一处，不会出现 dev/prod 产物路径不一致的隐性 bug。
 
 ## 使用场景
 
@@ -22,5 +22,5 @@
 
 ## 相关模块
 
-- `../routers/scanRoutes.ts` / `../cli/generateRoutes.ts` / `../cli/generateToolArtifacts.ts` / `../cli/generateAgentArtifacts.ts` - `toProdFilePath` 消费方（原 4 份实现合并至此）
-- `../cli/compileConfig.ts` / `../cli/aliasPlugin.ts` - `toRealPath` / `isInsideDir` / `toProdExtension` 消费方（原 2 份实现合并至此）
+- `../routers/scanRoutes.ts` / `../cli/generateRoutes.ts` / `../cli/generateToolArtifacts.ts` / `../cli/generateAgentArtifacts.ts` - `toProdFilePath` 消费方
+- `../cli/compileConfig.ts` / `../cli/aliasPlugin.ts` - `toRealPath` / `isInsideDir` / `toProdExtension` 消费方

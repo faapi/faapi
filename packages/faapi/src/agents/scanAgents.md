@@ -58,8 +58,6 @@ Invalid agent directory segment "easy-writing.wizard" in "src/agents/easy-writin
 agent directory names allow a-z A-Z 0-9 '-' only ('_' is reserved as the nesting separator) — rename the directory
 ```
 
-> 迁移提示：旧版 `/` 规范化为 `.` 且允许段内任意字符（含平铺点号目录 `easy-writing.wizard/`）。新版下嵌套调用名 `easy-writing.wizard` 改为 `easy-writing_wizard`（`agents` 声明、`agent.run({ agent })`、authHooks 前缀判断同步改），平铺点号目录需改名为连字符（`easy-writing-wizard/`）。
-
 ## 重名检测
 
 同 agent 名出现在多个文件 → `scanAgents` 抛错：
@@ -87,7 +85,7 @@ export async function scanAgents(
 ## 相关模块
 
 - [agentTypes](./agentTypes.md) - `AgentManifest` / `AgentManifestList` 类型定义
-- [loadAgents](./loadAgents.md) - 启动期求值 `config` 导出（含 `run` 导出迁移错误检测）
+- [loadAgents](./loadAgents.md) - 启动期求值 `config` 导出（含 `run` 导出检测）
 - [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 生成 `faapi-agents.js` 定位清单 + Input zod.js
 - [scanTools](../tools/scanTools.md) - tool 扫描（同构，扫描 `src/tools/**`）
 - [scanRoutes](../routers/scanRoutes.md) - 路由扫描（同构设计参考）

@@ -41,18 +41,16 @@
 
 多行描述保留换行(TypeScript 已自动剥离每行前缀 ` * `),不做截断。
 
-### `@tool` 覆盖名（已移除，迁移错误）
+### 残留 `@tool` 覆盖名标签（抛错）
 
-JSDoc `@tool <name>` 覆盖名功能已移除——tool 名统一由目录路径 + 函数名推导（嵌套段用 `_` 连接），保证「目录路径 + 函数名 → 注册名」映射单射。函数 JSDoc 中出现**有值的 `@tool` 标签**时，AST 提取阶段抛 `SchemaExtractionError` 迁移错误：
+tool 名统一由目录路径 + 函数名推导（嵌套段用 `_` 连接），保证「目录路径 + 函数名 → 注册名」映射单射，`@tool` 覆盖语义不存在。函数 JSDoc 中出现**有值的 `@tool` 标签**时，AST 提取阶段抛 `SchemaExtractionError`：
 
 ```
-@tool 覆盖名功能已移除——tool 名由目录路径 + 函数名推导（嵌套段用 _ 连接）。
+tool 名由目录路径 + 函数名推导（嵌套段用 _ 连接），JSDoc 不提供名字覆盖——检测到残留 `@tool` 标签抛错。
 删除 @tool JSDoc 标签；需要不同名字时改名目录或函数
 ```
 
 无值的裸标签（`/** @tool */`）不构成残留，维持回退语义不报错。
-
-> 历史：旧版 `@tool` 标签允许覆盖路径推导名（覆盖值须匹配 `^[a-zA-Z0-9_-]+$`），`functionName` 不受影响。标签覆盖会让注册名与目录结构脱钩，与 agent 侧 `@agent` 覆盖名一并移除（统一命名口径）。
 
 ### 第一个参数的 interface 名
 
@@ -138,7 +136,7 @@ function extractToolMetadata(
 
 ## 相关模块
 
-- [jsDocMetadata.ts](./jsDocMetadata.md) - JSDoc 工具函数（hasExportModifier / getJSDocFromNode / extractDescription / @tag 标签值提取——现用于 @tool 残留标签迁移检测，统一来源）
+- [jsDocMetadata.ts](./jsDocMetadata.md) - JSDoc 工具函数（hasExportModifier / getJSDocFromNode / extractDescription / @tag 标签值提取——现用于 @tool 残留标签检测，统一来源）
 
 - [scanTools](../tools/scanTools.md) - 产出 `ToolManifest`(含 `functionName`),供本模块的 `pathMeta` 来源
 - [toolTypes](../tools/toolTypes.md) - `ToolManifest` 类型定义

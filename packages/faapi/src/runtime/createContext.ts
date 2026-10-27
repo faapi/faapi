@@ -303,7 +303,7 @@ export function createTestContext(options: CreateTestContextOptions): FaapiConte
   // 绑定全局 readResource 读取根（免传参 readResource 依赖进程级绑定）：测试
   // handler 调 readResource('x.md') 时按此绑定解析。测试内多次构造后调覆盖先调；
   // 真实 app 的绑定/解绑由 createAppBase / app.close() 接线。仅绑定——ctx 上
-  // 无 resourcesDir 数据字段（已删除，读取统一走 readResource）
+  // 无 resourcesDir 数据字段，读取统一走 readResource
   if (resourcesDir) {
     setActiveResourcesDir(resourcesDir);
   }
@@ -321,7 +321,8 @@ export interface CreateTestContextOptions {
    * 运行时资源根目录（可选）
    *
    * 传入时同时做两件事：绑定全局 readResource 读取根（handler 直调
-   * `readResource('x.md')` 依赖）；ctx 上无 resourcesDir 数据字段（已删除）
+   * `readResource('x.md')` 依赖）；ctx 上无 resourcesDir 数据字段，读取统一走
+   * readResource
    */
   resourcesDir?: string;
   /** 请求方法，默认 'GET' */

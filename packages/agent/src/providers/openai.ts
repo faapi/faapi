@@ -249,7 +249,7 @@ export function createOpenAIProvider(config: LlmConfig): LLMProvider {
   }
 
   /**
-   * abort 类错误分类（authHooks 之外的请求生命周期共用）
+   * abort 类错误分类（tool 链事件之外的请求生命周期共用）
    *
    * - 外部 signal 已 aborted → AgentAbortError（用户取消）
    * - TimeoutError（undici 对 AbortSignal.timeout() 的真实拒因）/

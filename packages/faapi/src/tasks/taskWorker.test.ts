@@ -71,7 +71,7 @@ describe('runTaskInWorker', () => {
     });
   });
 
-  it('resourcesDir 数据字段不进 worker 内的业务 taskCtx（已删除；读取根播种走独立链路）', async () => {
+  it('resourcesDir 数据字段不进 worker 内的业务 taskCtx（读取根播种走独立链路）', async () => {
     const modulePath = writeTaskModule(
       'res',
       `export function run(payload, taskCtx) {

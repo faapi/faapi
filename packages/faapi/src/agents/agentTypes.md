@@ -26,7 +26,7 @@ export type AgentManifestList = AgentManifest[];
 
 由 [scanAgents](./scanAgents.md) 扫描文件系统生成，与 [ToolManifest](../tools/toolTypes.md) 对称——一个目录一个 agent，handler.ts 导出 `config` 块。agent 声明运行时化后清单降级为**定位清单**：只携带扫描期可定的静态事实，声明数据由启动期求值获得（`SerializedAgentRecord` 额外携带 `inputTypeName`——类型编译期擦除，只能由构建期检测提供，见 [generateAgentArtifacts](../cli/generateAgentArtifacts.md)）。
 
-agent 统一为声明式执行（config + 默认 reactLoop）——自定义 `run` 导出已移除，检测到在启动期求值阶段抛迁移错误（编排场景注册 tool）。
+agent 为声明式执行（config + 默认 reactLoop）；handler 不导出 run（检测到即启动期求值阶段抛错；编排场景注册 tool）。
 
 ## AgentCore（LLM 可见核心字段）
 
@@ -37,7 +37,7 @@ export type SystemPromptFactory = () => string | Promise<string>;
 
 export interface AgentCore {
   name: string;
-  description?: string;                            // config.description 声明（JSDoc 提取已消亡）
+  description?: string;                            // config.description 声明
   systemPrompt?: string | SystemPromptFactory;     // 与 systemPromptFile 互斥（二选一必填）
   systemPromptFile?: string;                       // 相对产物 resources 目录
   tools?: string[];                                // 注册时静态求值（拓扑数据）
@@ -48,12 +48,12 @@ export interface AgentCore {
 }
 ```
 
-**字段求值时机**（启动期运行时求值语义，替代旧 AST 字面量提取）：
+**字段求值时机**（启动期运行时求值语义）：
 
 - `systemPrompt` 工厂函数——**每次 run** 求值，与 `systemPromptFile`「每次 run 读文件」语义对齐：按 env/DB 等运行时状态切换人设。工厂返回非 string 在 run 期抛 `AgentError`（启动期无法验证返回类型）
 - `tools` / `agents` / `vars` / `maxTurns` / `description` / `inputDescription`——**启动期注册时一次求值**，仅接受静态值（注册表拓扑数据 + 隔离快照可克隆）
 
-systemPrompt 三来源统一管线：内联串 / 文件 / 函数 → vars 渲染 → `agent:system-prompt` 事件（原 `resolveSystemPrompt` 钩子，7.x 事件化——见 `@faapi/agent` 的 [agent.md](../../../agent/src/agent.md)）。
+systemPrompt 三来源统一管线：内联串 / 文件 / 函数 → vars 渲染 → `agent:system-prompt` 事件（见 `@faapi/agent` 的 [agent.md](../../../agent/src/agent.md)）。
 
 ## AgentMetadata（文件型 agent 完整元数据）
 
@@ -85,6 +85,6 @@ export const config = {
 ## 相关模块
 
 - [scanAgents](./scanAgents.md) - 生成 `AgentManifest[]`（定位清单）
-- [loadAgents](./loadAgents.md) - 求值 `config` 导出产出 `AgentMetadata[]`（含 `run` 迁移错误检测）
+- [loadAgents](./loadAgents.md) - 求值 `config` 导出产出 `AgentMetadata[]`（含 `run` 导出检测）
 - [generateAgentArtifacts](../cli/generateAgentArtifacts.md) - 定位清单 `faapi-agents.js` + Input 检测/zod.js
 - [agentRegistry](../injection/agentRegistry.md) - 运行时 agent 注册表（Core/Entry 双查询）

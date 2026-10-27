@@ -1,11 +1,11 @@
 /**
  * TaskContext.agent / IsolatedTaskContext.agent 类型增强（declare module 声明合并）
  *
- * 任务子系统的 `taskCtx.agent` 惰性通道（faapi 7.1 起）：进程内任务首次访问时
+ * 任务子系统的 `taskCtx.agent` 惰性通道：进程内任务首次访问时
  * 经 agentHandle 工厂以 `taskCtx.carry`（enqueue 时 `opts.carry` 声明的执行
  * 上下文快照）为执行 ctx 构造——与 HTTP 请求链的 `agent` 参数注入同一份
- * baseDeps（插件 setup 闭包），authHooks/tool handler 第二参数读到 carry 内的
- * 身份与标记字段（如 `currentUserId`）。
+ * baseDeps（插件 setup 闭包），tool 链事件订阅端与 tool handler 第二参数读到
+ * carry 内的身份与标记字段（如 `currentUserId`）。
  *
  * 主包 `TaskContext` 不声明该字段（主包不反向依赖本包的类型）：运行时由语义层
  * 以 getter 挂载，类型由本声明合并提供——业务 import `@faapi/agent` 即得强

@@ -12,7 +12,7 @@
 - `extractCtxTypeInfo`：tool ctx 校验类型的剥离解析（见下节）
 - `extractInlineParamTypeInfo`：HTTP 路由形参内联标注（`query: { page: number }`）的直接解析（见下节）
 - `extractAllTypes`：提取文件内所有命名类型（保留为独立 AST 能力；schema 生成主链路已改用 `createLazyTypeResolver` 惰性解析）
-- `createLazyTypeResolver`：按名称惰性解析 + 缓存（`resolve(name)` 幂等返回同一实例，未声明返回 null）。与 `extractAllTypes` 的差异：无关类型零开销——文件中未被引用的类型含不支持语法不再拖垮整个提取
+- `createLazyTypeResolver`：按名称惰性解析 + 缓存（`resolve(name)` 幂等返回同一实例，未声明返回 null）。与 `extractAllTypes` 的差异：无关类型零开销——文件中未被引用的类型含不支持语法不会拖垮整个提取
 
 ## extractCtxTypeInfo（tool ctx 剥离解析）
 

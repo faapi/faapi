@@ -117,7 +117,7 @@ afterAll(async () => {
 });
 
 describe('HTTP Server E2E', () => {
-  it('ctx 上无 resourcesDir 字段（已删除，读取统一走 readResource）', async () => {
+  it('ctx 上无 resourcesDir 字段（读取统一走 readResource）', async () => {
     const res = await fetchFromServer('/api/resources-info');
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -719,8 +719,6 @@ describe('HTTP Server E2E', () => {
     });
   });
 
-  // 静态文件服务已移除（生产环境应使用 CDN/Nginx 等专用静态文件服务）
-
   // 错误处理 E2E 测试
   describe('Error handling', () => {
     it('无效 JSON body → 400 校验错误', async () => {
@@ -876,8 +874,8 @@ describe('HTTP Server E2E', () => {
     });
   });
 
-  // onError 生命周期钩子 E2E 测试
-  describe('request:error 事件（原 onError 钩子——7.x 事件化）', () => {
+  // request:error 事件 E2E 测试
+  describe('request:error 事件', () => {
     let onErrorServer: Server;
     let onErrorBaseUrl: string;
     let capturedError: unknown;

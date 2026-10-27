@@ -23,8 +23,8 @@ function serializeFieldValue(value: unknown): unknown {
  * fields 序列化走框架统一出口 stringifyJson：Date → 毫秒时间戳、BigInt → 字符串、
  * Map/Set → 数组、NaN/±Infinity → 字符串、RegExp → 字符串——原生 JSON.stringify
  * 会抛错（BigInt）或静默丢数据（Map/Set/RegExp/NaN）的类型在此全部正确输出。
- * 循环引用等结构错误抛 TypeError 冒泡，不降级——「日志调用永不抛错」契约已废除，
- * 坏 fields 属业务数据缺陷，与全框架 JSON 序列化契约同口径显式失败。
+ * 循环引用等结构错误抛 TypeError 冒泡，不降级——坏 fields 属业务数据缺陷，
+ * 与全框架 JSON 序列化契约同口径显式失败。
  */
 export function formatEntry(entry: LogEntry): string {
   let line = `[${entry.time}] ${entry.level.toUpperCase()} `;

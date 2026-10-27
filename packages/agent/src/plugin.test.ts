@@ -113,7 +113,7 @@ function makeCtx(agentConfig?: AgentConfig): PluginContext {
  * setup 插件并捕获注册到 agentHandle store 的工厂函数
  *
  * 方案 A：插件经 ctx.registries.agentHandle.register 注册到 app 实例，
- * 测试用 spy 捕获（替代旧全局 registerAgentHandleFactory mock）
+ * 测试用 spy 捕获
  */
 function setupAndCaptureFactory(ctx: PluginContext): ((reqCtx: unknown) => unknown) | undefined {
   const spy = vi.spyOn(ctx.registries.agentHandle, 'register');
@@ -249,7 +249,7 @@ describe('@faapi/agent plugin', () => {
     });
 
     it('config.agent.enableTracing:true 经复合块到达运行时——run 返回 result.trace', async () => {
-      // 历史缺口复现：插件手写清单曾漏拼 enableTracing（配置静默失效回落 false）
+      // 复合块拆装单一清单：enableTracing 必须经 toAgentRuntimeConfig 到达运行时（漏拼即配置静默失效回落 false）
       completeRequests.length = 0;
       const factory = setupAndCaptureFactory(makeCtx({ ...fullAgentConfig, enableTracing: true }));
       const agent = factory!(makeReqCtx()) as Agent;

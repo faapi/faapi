@@ -35,8 +35,8 @@ export interface PluginLoadResult {
  * 就该可用：任一失败 → createAppBase 启动失败、listen 不执行，业务方修复声明或
  * 显式 `enable: false` 移除。
  *
- * `path` 声明相对项目根目录解析（`pathToFileURL(path.resolve(rootDir, path))`），
- * 此前直接 import 会相对 faapi 包自身产物解析，几乎必然失败且报错指向
+ * `path` 声明相对项目根目录解析（`pathToFileURL(path.resolve(rootDir, path))`）——
+ * 直接 import 只会相对 faapi 包自身产物解析，几乎必然失败且报错指向
  * node_modules 深处。
  *
  * 本地 TS 插件（`{ path: './plugins/xxx' }`，`.ts` 源码）的加载路径：
@@ -244,7 +244,7 @@ async function importPluginModule(
     return import(pathToFileURL(sourcePath).href);
   }
 
-  // 找不到可加载目标：给明确修复指引（此前仅报 Cannot find module，无法定位原因）
+  // 找不到可加载目标：给明确修复指引（附候选文件清单，报错可定位）
   const candidates = [
     `${specifier}.ts`,
     `${specifier}/index.ts`,

@@ -225,7 +225,7 @@ describe('createTaskQueue', () => {
     ];
     expect(payload).toEqual({ a: 1 });
     expect(taskCtx.config).toEqual({ db: 1 });
-    // resourcesDir 数据字段已删除——读取统一走免传参 readResource（读取根由 app 绑定）
+    // resourcesDir 数据字段不在 ctx 上——读取统一走免传参 readResource（读取根由 app 绑定）
     expect('resourcesDir' in taskCtx).toBe(false);
     expect(taskCtx.signal).toBeInstanceOf(AbortSignal);
     expect(taskCtx.job).toEqual({ id: 'd-1', name: 'hello', attempt: 1 });

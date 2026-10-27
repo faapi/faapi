@@ -66,7 +66,7 @@ reactLoop 把 `AgentToolDescriptor` 与 `ToolMetadata` 合并为统一 tool 列�
 
 - **agent 显式声明的 `tools`**：`agent.tools` 列表中的 tool 名（config 声明，启动期求值的拓扑数据），按名从 tool 注册表查找
 
-不再合并全局共享 tool（已移除 `defaultTools`）——sub-agent 的合并由 `@faapi/agent` 的 `Agent.buildToolDefinitions` 在更上层完成（按 `name` 去重）。`resolveAgentTools` 只关心 agent 自身显式声明的部分，职责单一。
+只合并 agent 显式声明的 tool——sub-agent 的合并由 `@faapi/agent` 的 `Agent.buildToolDefinitions` 在更上层完成（按 `name` 去重）。`resolveAgentTools` 只关心 agent 自身显式声明的部分，职责单一。
 
 `tools` 中未在 toolRegistry 找到的 tool 名静默跳过（tool 可选可用，不强制存在；plugin 可运行时注册额外 tool，故不做存在性强校验）。
 

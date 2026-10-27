@@ -56,7 +56,6 @@ const ROUTES_FILE = 'faapi-routes.js';
 /** FaapiConfig 的内置 key 集合（排除自定义业务配置） */
 const FAAPI_CONFIG_KEYS = new Set([
   'cors',
-  'lifecycle',
   'middlewares',
   'injectors',
   'extendContext',
@@ -89,7 +88,7 @@ export interface CreateAppOptions {
 export interface AppBase {
   /** Node.js Server 实例（listen 后可用，close 后置 null） */
   server: Server | null;
-  /** app 级注册表（tool/agent/skill/agentHandle 实例，close 时清理） */
+  /** app 级注册表（tool/agent/task/agentHandle 实例，close 时清理） */
   registries: AppRegistries;
   /** 排序后的路由清单 */
   routes: RouteManifest;
@@ -106,9 +105,9 @@ export interface AppBase {
   dist: string;
   /** 任务队列客户端（入队/查询；app 实例级，close 时随队列停机） */
   tasks: TaskClient;
-  /** 启动 HTTP server，打印路由表，执行 onReady 钩子 */
+  /** 启动 HTTP server，打印路由表，发射 app:ready 事件 */
   listen(port?: number): Promise<Server>;
-  /** 关闭 server，执行 onClose 钩子 */
+  /** 关闭 server，发射 app:close 事件 */
   close(): Promise<void>;
   /**
    * 无服务器测试注入
@@ -139,7 +138,7 @@ export interface AppBase {
 export interface AppContext {
   /** 项目根目录 */
   rootDir: string;
-  /** app 级注册表（tool/agent/skill/agentHandle 实例，随 app 生命周期） */
+  /** app 级注册表（tool/agent/task/agentHandle 实例，随 app 生命周期） */
   registries: AppRegistries;
   /** 产物目录 */
   dist: string;
@@ -239,8 +238,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   const dist = options?.dist ?? process.env.FAAPI_DIST ?? DEFAULT_DIST;
   const resourcesDir = resolveResourcesDir(rootDir, dist);
 
-  // 绑定全局 readResource 读取根（免传参 readResource 依赖）：插件 setup、lifecycle
-  // 钩子、任务、handler 全部经此绑定解析资源路径。启动中途失败时绑定残留无害——
+  // 绑定全局 readResource 读取根（免传参 readResource 依赖）：插件 setup、`app:*`
+  // 事件订阅端、任务、handler 全部经此绑定解析资源路径。启动中途失败时绑定残留无害——
   // 重试 createAppBase 会重新绑定
   setActiveResourcesDir(resourcesDir);
 
@@ -268,8 +267,8 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   // 检测路由冲突（与 buildCommand 共用单一实现）
   reportRouteConflicts(sorted);
 
-  // app 级注册表（方案 A 实例化）：每个 app 持有独立实例，随 app 创建/销毁，
-  // 多 app 同进程互不串台。框架链路（请求注入 / 插件 / lifecycle）只读写此实例
+  // app 级注册表（app 实例化）：每个 app 持有独立实例，随 app 创建/销毁，
+  // 多 app 同进程互不串台。框架链路（请求注入 / 插件 / `app:*` 事件）只读写此实例
   const registries = createAppRegistries();
 
   // 水合 tool / agent / task 清单（可选产物——缺失时对应注册表保持空）
@@ -282,7 +281,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
   // 队列启动 await 完成（enabled 时）才继续后续启动步骤——listen 时 worker 注册/
   // 队列创建已就绪，冷启动首次 enqueue 不会早于 worker 注册投递（pg-boss v10 空库
   // 队列不存在时 send 静默返回 null）；驱动启动失败（队列库不可达等）向外抛，
-  // createAppBase reject、端口不暴露（fail fast），onBoot 校验失败的 listen 路径
+  // createAppBase reject、端口不暴露（fail fast），app:boot 校验失败的 listen 路径
   // 负责停掉已启动的任务运行时
   const taskDriver = taskMetas.length
     ? await loadTaskDriver(config?.task?.driver, getTaskDriverOptions(config))
@@ -303,7 +302,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     // agent-run RPC 回传宿主跑完整循环；插件未注册执行器时 worker 内 taskCtx.agent 不挂载）
     agentRunner: registries.agentRunner,
     driver: taskDriver,
-    // task:failed 事件发射源（原 onFailed 钩子——7.x 事件化,总线在 app 实例注册表）
+    // task:failed 事件发射源（总线在 app 实例注册表）
     appEvents: registries.appEvents,
   });
   const cronScheduler: CronScheduler = createCronScheduler(registries.task, (name, opts) =>
@@ -382,7 +381,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       const envPort = process.env.PORT ? Number(process.env.PORT) : undefined;
       const actualPort = listenPort ?? options?.port ?? envPort ?? DEFAULT_PORT;
 
-      // app:boot 生命周期事件（listen 前，原 lifecycle.onBoot 钩子——7.x 事件化）：
+      // app:boot 生命周期事件（listen 前）：
       // 启动校验 / DB 迁移等"失败即不该暴露端口"的逻辑。此时 server 已创建但未监听、
       // 路由/tool/agent 清单已水合、插件已加载。订阅端抛错 → listen() 以原始错误
       // reject（传播口径），server.listen 不会被调用，端口不暴露。
@@ -430,7 +429,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
           // 注册默认优雅关闭信号（进程级仅注册一次，faapi 单进程单 app 设计）
           registerDefaultShutdownHandlers();
 
-          // app:ready 生命周期事件（listen 回调内，原 lifecycle.onReady 钩子——7.x 事件化）
+          // app:ready 生命周期事件（listen 回调内）
           await registries.appEvents.emit(APP_EVENT.appReady, {
             rootDir,
             routes: sorted,
@@ -461,14 +460,15 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       };
 
       // 停止接受新连接 + 断开空闲 keep-alive 连接；在途请求继续执行直至完成（drain）。
-      // 此前 closeAllConnections 在等待之前调用，会直接掐断在途请求（硬关，非优雅停机）
+      // closeAllConnections 若在等待之前调用会直接掐断在途请求（硬关，非优雅停机），
+      // 因此仅在 drain 超时后使用
       s.closeIdleConnections?.();
 
       // 任务队列 drain：停止出队 + 停 cron，等在跑任务结束（超时 abort），再执行
       // onClose——保证业务方清理资源（DB 等）时没有任务还在执行
       await stopTaskRuntime();
 
-      // app:close 生命周期事件（drain 之后，原 lifecycle.onClose 钩子——7.x 事件化；
+      // app:close 生命周期事件（drain 之后；
       // 载荷 server 仍为实例——app.server 置 null 在其后）
       await registries.appEvents.emit(APP_EVENT.appClose, {
         rootDir,
@@ -479,7 +479,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
         config: config as LifecycleContext['config'],
       });
 
-      // 注册表（方案 A 实例化）：清理的是 app 自己的实例，随 app 生命周期销毁；
+      // 注册表清理：清理的是 app 自己的实例，随 app 生命周期销毁；
       // 全局默认实例不被 app 生命周期触碰
       registries.tool.clear();
       registries.agent.clear();
@@ -488,7 +488,7 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
       registries.taskHandle.clear();
       registries.llm.clear();
       registries.appEvents.clear();
-      // 解绑全局 readResource 读取根（onClose 已执行完，业务清理阶段仍可读资源）
+      // 解绑全局 readResource 读取根（app:close 已执行完，业务清理阶段仍可读资源）
       setActiveResourcesDir(null);
 
       // server 未 listen 时直接清理状态（避免 ERR_SERVER_NOT_RUNNING 错误）

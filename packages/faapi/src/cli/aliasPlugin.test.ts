@@ -2,12 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import {
-  toProdExtension,
-  createAliasPlugin,
-  buildAliasPlugins,
-  resolveRelativeSpecifier,
-} from './aliasPlugin';
+import { toProdExtension } from '../utils/prodPaths';
+import { createAliasPlugin, buildAliasPlugins, resolveRelativeSpecifier } from './aliasPlugin';
 import type { TsconfigPathsConfig } from '../utils/readTsconfig';
 
 describe('toProdExtension', () => {

@@ -27,10 +27,9 @@ import { defaultRegistries } from './registries';
 /**
  * agent handle 工厂全局访问器（默认实例便捷入口）
  *
- * 框架路径已改为 app 实例：`@faapi/agent` 插件在 setup 时经
+ * 框架路径走 app 实例：`@faapi/agent` 插件在 setup 时经
  * `ctx.registries.agentHandle.register(factory)` 注册到**当前 app 的实例**，
  * 请求注入经 `ctx.registries.agentHandle.get(ctx)` 读取——多 app 同进程互不覆盖。
- * 此前模块级单值会让第二个 app 的插件注册覆盖第一个。
  *
  * 本模块的同名函数保留为默认实例便捷访问器（向后兼容）。
  *

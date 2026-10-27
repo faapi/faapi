@@ -6,7 +6,6 @@ import type { SerializedAgentRecord } from '../cli/generateAgentArtifacts';
 /**
  * agent 声明启动期求值与校验（agent 声明运行时化的装载管线）
  *
- * 替代旧「构建期 AST 字面量提取 → faapi-agents.js 数据清单 → hydrate」链路：
  * 定位清单（[SerializedAgentRecord](../cli/generateAgentArtifacts.md)——仅 name /
  * filePath / inputTypeName 静态事实）→ 逐个动态 import handler 产物模块 → 求值
  * `config` 导出（对象或返回对象的函数）→ 逐字段启动期校验（fail-fast，错误带
@@ -39,7 +38,7 @@ interface AgentHandlerModule {
  *
  * - `config` 为对象字面量 → 直接采用；为函数 → 调用求值（返回对象）——业务可
  *   用闭包/env 组装声明
- * - 检测到 `run` 导出抛迁移错误（agent 统一为声明式执行，编排场景注册 tool）
+ * - 检测到 `run` 导出抛错（agent 为声明式执行，编排场景注册 tool）
  * - 逐字段类型校验（白名单 / 互斥必填 / 元素类型 / 数值范围），全部 fail-fast
  *   抛错，错误信息带 `agent "<name>" (<filePath>)` 定位
  *

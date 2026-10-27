@@ -1,12 +1,10 @@
-# authHooks → agent tool 链事件
+# toolChainEvents（agent tool 链事件）
 
-一句话概括：agent / tools 调用链的鉴权与横切支持——请求上下文（ctx）全链路传递 + `agent:before-tool-call` / `agent:after-tool-call` / `agent:filter-tools` 三个 app 事件（7.x 起，原 `beforeToolCall` / `afterToolCall` / `filterTools` 三钩子已移除、由事件承载），覆盖"agent → tool"与"agent → sub-agent"全部调用。
-
-> 历史注记：三钩子原在 `faapi.config.ts` 的 `agent` 块声明（`AgentConfig`），7.x 起统一迁移为 [appEventBus](../../faapi/src/events/appEventBus.md) 事件——业务方经 `getApp().on(...)` 订阅（启动期写 `src/bootstrap.ts` 约定文件——框架在 listen 前加载执行），不再需要配置声明面。
+一句话概括：agent / tools 调用链的鉴权与横切支持——请求上下文（ctx）全链路传递 + `agent:before-tool-call` / `agent:after-tool-call` / `agent:filter-tools` 三个 app 事件（业务方经 `getApp().on(...)` 订阅，启动期写 `src/bootstrap.ts` 约定文件——框架在 listen 前加载执行），覆盖"agent → tool"与"agent → sub-agent"全部调用。本文档是跨 `agent.ts` / `plugin.ts` / 主包 `agentHandle.ts` 的设计概述，事件目录与总线契约见 [appEventBus](../../faapi/src/events/appEventBus.md)。
 
 ## 为什么需要
 
-HTTP 路由有成熟的中间件鉴权（洋葱模型），但 agent 链是另一条调用路径：handler 注入 `agent` 后，LLM 在循环里自主决定调哪些 tools、递归哪些 sub-agent——这条链此前没有任何可插拔的拦截点，且 tool handler 只收到 `args`、拿不到请求上下文，连"自查身份"都做不到。多租户/工作区场景下，任何能触达 agent 的请求，LLM 都可以无差别调用它可见的全部 tools。
+HTTP 路由有成熟的中间件鉴权（洋葱模型），但 agent 链是另一条调用路径：handler 注入 `agent` 后，LLM 在循环里自主决定调哪些 tools、递归哪些 sub-agent——这条链需要可插拔的拦截点，且 tool handler 必须拿到请求上下文才能"自查身份"。多租户/工作区场景下，任何能触达 agent 的请求，LLM 都可以无差别调用它可见的全部 tools。
 
 ## 设计：三层模型（与 handler 鉴权的关系）
 
@@ -57,11 +55,11 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
 | `payload.error = '...'` | 拒绝——不执行 handler，`{ error }` 回传 LLM（复用 schema 校验失败的既有模式，LLM 可据此调整策略） |
 | `payload.args = {...}` | 改写后放行——多租户刚需：不信 LLM 传的 `workspaceId`（prompt 注入可诱导越权），服务端强制注入可信值 |
 
-扇出完成后统一判定：`error` 非空 → 拒绝；否则以（可能被改写的）`payload.args` 继续。错误口径为**传播**——handler 抛错被 per-tool catch 回传主控 LLM（与原钩子同路径）。
+扇出完成后统一判定：`error` 非空 → 拒绝；否则以（可能被改写的）`payload.args` 继续。错误口径为**传播**——handler 抛错被 per-tool catch 回传主控 LLM。
 
 ### `agent:after-tool-call`（审计）
 
-tool / sub-agent **成功返回后**发射（异常路径不发射）——审计/日志/计量。载荷 `{ args, result, ctx }`（不含 tool 名——按 tool/派发名路由订阅专属名 `agent:after-tool-call:<name>`），观察面：改写 `result` 不回写执行链路。错误口径为**留痕**（handler 抛错 `console.error`，不改变成功结果——与原钩子留痕约定一致）。
+tool / sub-agent **成功返回后**发射（异常路径不发射）——审计/日志/计量。载荷 `{ args, result, ctx }`（不含 tool 名——按 tool/派发名路由订阅专属名 `agent:after-tool-call:<name>`），观察面：改写 `result` 不回写执行链路。错误口径为**留痕**（handler 抛错 `console.error`，不改变成功结果）。
 
 ### `agent:filter-tools`（可见性过滤）
 

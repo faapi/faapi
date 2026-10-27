@@ -19,7 +19,7 @@ describe('subAgentToolName', () => {
     }
   });
 
-  it('agent 名含点（旧版嵌套分隔符）→ 抛错并含原名与改名指引', () => {
+  it('agent 名含点（违反工具名字符集）→ 抛错并含原名与改名指引', () => {
     expect(() => subAgentToolName('easy-writing.wizard')).toThrow(/easy-writing\.wizard/);
     expect(() => subAgentToolName('easy-writing.wizard')).toThrow(/a-z A-Z 0-9/);
   });
@@ -29,7 +29,7 @@ describe('subAgentToolName', () => {
     expect(() => subAgentToolName('a b')).toThrow(/LLM tool name/);
   });
 
-  it('SUB_AGENT_TOOL_PREFIX 为 agent-（旧版 agent. 已废弃——点号违反工具名字符集）', () => {
+  it('SUB_AGENT_TOOL_PREFIX 为 agent-（点号违反工具名字符集，前缀用连字符）', () => {
     expect(SUB_AGENT_TOOL_PREFIX).toBe('agent-');
   });
 });

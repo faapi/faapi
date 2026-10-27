@@ -39,7 +39,8 @@ export interface CreateAgentDepsOptions {
   registries: AgentDepsRegistries;
   /**
    * 执行上下文（必填，[AgentToolContext](../../faapi/src/runtime/agentToolContext.md)
-   * 契约）——authHooks 与 tool handler 第二参数读取。框架三路径由框架合成
+   * 契约）——agent:before-tool-call 等事件订阅端与 tool handler 第二参数读取。
+   * 框架三路径由框架合成
    * （HTTP 经 `toAgentToolContext` 收窄、任务路径 carry + 任务级能力合成）；
    * 测试/编程式无 app 场景用 `createStandaloneToolContext` 构造
    */
@@ -66,8 +67,8 @@ export interface CreateAgentDepsOptions {
  * `AgentConfig`（faapi.config 的 agent 块复合形状）拆装为 `AgentRuntimeConfig`
  *
  * 复合块拆装的字段清单单一来源——框架新增 `AgentConfig` 旋钮时只改本函数一处，
- * 插件 setup 与业务自组装两路自动到达（历史缺口：清单散落两端手抄，某侧漏拼
- * 即静默缺失，enableTracing 曾中招）。
+ * 插件 setup 与业务自组装两路自动到达（清单若散落两端手抄，某侧漏拼即静默缺失，
+ * 单一来源消除该风险）。
  */
 function toAgentRuntimeConfig(agentConfig: AgentConfig): AgentRuntimeConfig {
   return {

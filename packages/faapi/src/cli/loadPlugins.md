@@ -41,7 +41,7 @@ plugins: [
      d. `.ts` 源码 + 非按需模式（prod / 编程式）且产物 stale → 报错指引 `faapi build`，
         不静默使用旧产物（与 handler 的 prod 语义一致）
      e. `.js` 源码：Node 可直接加载，import 源文件
-     f. 找不到任何文件 → 报错带候选文件清单与修复指引（此前仅 `Cannot find module`，无法定位原因）
+     f. 找不到任何文件 → 报错带候选文件清单与修复指引
 5. 取 mod.default ?? mod 作为插件对象
 6. 注入 wrapHandler / wrapUpgradeHandler 收集器到 ctx
 7. 调用 plugin.setup(ctx)

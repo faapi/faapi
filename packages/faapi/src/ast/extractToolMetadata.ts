@@ -117,8 +117,8 @@ export function extractToolMetadata(
   const jsDoc = getJSDocFromNode(jsDocOwner);
   const description = extractDescription(jsDoc);
   const toolNameOverride = extractJSDocTagValue(jsDoc, 'tool');
-  // @tool 覆盖名已移除——检测到残留标签抛迁移错误（不静默忽略：覆盖语义已不存在，
-  // 标签变成无人消费的死注解，与声明意图不符）。无值的裸标签（tag.comment 为 false）
+  // 残留 @tool 覆盖名标签抛错（不静默忽略：覆盖语义不存在，标签变成无人消费的
+  // 死注解，与声明意图不符）。无值的裸标签（tag.comment 为 false）
   // extractJSDocTagValue 返回 undefined，不构成残留，维持回退语义不报错
   if (toolNameOverride !== undefined) {
     throw SchemaExtractionError.at(

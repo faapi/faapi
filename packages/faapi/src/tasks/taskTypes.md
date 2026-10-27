@@ -13,7 +13,7 @@ scanTasks（构建期）、taskRegistry（运行时）、taskQueue（执行）�
 
 ## TaskContext.registries（任务侧注册表只读视图）
 
-`TaskContext.registries: TaskRegistriesView` 为任务执行侧提供 app 已水合注册表的**只读访问**（agent/tool 元数据查询），任务内组装 agent（如跑 LLM 循环）不再依赖 `getApp()`。两条执行路径都注入：
+`TaskContext.registries: TaskRegistriesView` 为任务执行侧提供 app 已水合注册表的**只读访问**（agent/tool 元数据查询），任务内组装 agent（如跑 LLM 循环）不依赖 `getApp()`。两条执行路径都注入：
 
 - **进程内路径**：注入 `createTaskRegistriesView(appRegistries)` 活引用（createAppBase 创建队列时传入）
 - **隔离路径**（`worker.ts`）：语义层从视图生成 `TaskRegistriesSnapshot` 纯数据快照，postMessage 传入 worker 线程内重建视图（注册表含函数闭包不可跨线程，元数据本身是纯数据可克隆）；**快照语义**——视图反映派发时刻的注册表，执行中途的 reload 不影响当次执行
@@ -59,7 +59,7 @@ export interface AgentSnapshotRecord
 - `src/tasks/<dir>/task.ts` → **进程内任务**（`mode: 'inline'`）：`FaapiTaskMeta = { concurrency?, retries?, cron? }`——**不收 `timeoutMs` / `graceMs`**（声明即构建期报错，迁移指引：改名 `worker.ts`；超时上限保护不是隔离的理由，进程内需要 deadline 自行 `Promise.race`）
 - `src/tasks/<dir>/worker.ts` → **隔离任务**（`mode: 'isolated'`）：`FaapiWorkerTaskMeta = { timeoutMs, graceMs?, maxOldGenerationSizeMb?, concurrency?, retries?, cron? }`——**`timeoutMs` 必填**（隔离语义即"需要真取消的长任务"，执行预算显式声明；上下限校验见 taskWorker.md）；`maxOldGenerationSizeMb` 为可选 worker 堆上限（MB，数字字面量，下限 16——透传 Node `resourceLimits`，超限 V8 杀 worker 任务显式失败；扫描期收窄与校验见 scanTasks.md）
 
-`cron` 两种声明通用（cron 到点按任务名入队，与执行路径无关）。清单记录携带 `mode`（TaskManifest / TaskMetadata / SerializedTaskRecord 必填字段），运行时判据即 `mode`（taskQueue.runJob），不再从 timeoutMs 有无推断。声明文件的完整扫描契约见 [scanTasks.md](./scanTasks.md)。
+`cron` 两种声明通用（cron 到点按任务名入队，与执行路径无关）。清单记录携带 `mode`（TaskManifest / TaskMetadata / SerializedTaskRecord 必填字段），运行时判据即 `mode`（taskQueue.runJob），不由 timeoutMs 有无推断。声明文件的完整扫描契约见 [scanTasks.md](./scanTasks.md)。
 
 ## TaskContext / IsolatedTaskContext（两条执行路径显式分开）
 
@@ -67,7 +67,7 @@ export interface AgentSnapshotRecord
 
 | 维度 | `TaskContext`（进程内，默认） | `IsolatedTaskContext`（隔离） |
 |------|------------------------------|------------------------------|
-| `config` | `FaapiContextConfig` **必有**——活引用全量配置，与 handler `ctx.config` 同一对象，增强类型字段全可读、函数字段可调用（同进程） | **必有**——派发时刻**纯数据快照**（`collectConfigSnapshot`，见 configSnapshot.md）：函数值（lifecycle 钩子 / `task:failed` 事件订阅端（原 onFailed 钩子） / log sink / middlewares 等宿主行为面）不进快照（与 registries 快照同款边界），其余值结构化克隆保真（Date/Map/Set 原样）；含非函数不可克隆值时**派发显式报错**（列路径），不剔除不降级 |
+| `config` | `FaapiContextConfig` **必有**——活引用全量配置，与 handler `ctx.config` 同一对象，增强类型字段全可读、函数字段可调用（同进程） | **必有**——派发时刻**纯数据快照**（`collectConfigSnapshot`，见 configSnapshot.md）：函数值（`app:*` / `task:failed` 事件订阅端、log sink、middlewares 等宿主行为面）不进快照（与 registries 快照同款边界），其余值结构化克隆保真（Date/Map/Set 原样）；含非函数不可克隆值时**派发显式报错**（列路径），不剔除不降级 |
 | `registries` | 活引用视图，反映实时状态 | 派发时刻**快照**在 worker 内重建，中途 reload 不影响当次执行 |
 | `llm` | `registries.llm` 活引用（共享 providers 单例） | **纯转发代理**——complete 经单次 llm-complete RPC 回宿主，宿主从 `AppRegistries.llm` 取派发时刻注册的通道执行（LLM IO 全在宿主，worker 不加载 `@faapi/agent`）；`options.onFailure` 钩子不可跨线程（显式拒绝）；`options.signal` 剥离后转发，业务级取消经 llm-abort 回传宿主 abort 对应请求；任务取消（宿主发起）同样中断宿主侧 in-flight 请求 |
 | `log` | 直写 `config.log` 管道 | postMessage 回传宿主输出——**fields 须可结构化克隆**（不可克隆按执行错误处理） |
@@ -109,7 +109,7 @@ await tasks.enqueue('distill', payload, { carry: { currentUserId: ctx.currentUse
 export async function run(payload, taskCtx) {
   const agent = taskCtx.agent; // @faapi/agent 增强的 AgentHandle | undefined
   if (!agent) throw new Error('agent unavailable');
-  return agent.stream(...); // authHooks 读到 carry.currentUserId——门禁放行
+  return agent.stream(...); // agent:before-tool-call 订阅端读到 carry.currentUserId——门禁放行
 }
 ```
 
@@ -122,31 +122,18 @@ export async function run(payload, taskCtx) {
 
 ## TaskContext.tasks（任务侧任务客户端）
 
-`TaskContext.tasks: TaskClient` 为**必有字段**（两条执行路径均注入）：任务内入队/组投递/查询不再绕 `getApp()`（隔离 worker 内 `getApp()` 本就不可用，全局访问器读的是 app 启动从不水合的默认实例）。与 handler `ctx.tasks` / `app.tasks` / lifecycle `{ tasks }` 指向同一 app 实例队列：
+`TaskContext.tasks: TaskClient` 为**必有字段**（两条执行路径均注入）：任务内入队/组投递/查询不绕 `getApp()`（隔离 worker 内 `getApp()` 本就不可用，全局访问器读的是 app 启动从不水合的默认实例）。与 handler `ctx.tasks` / `app.tasks` / `app:*` 事件载荷的 `{ tasks }` 指向同一 app 实例队列：
 
 - **进程内路径**：活引用——直接调队列本体
 - **隔离路径**：worker 内代理对象——全方法经 `{ type: 'tasks-call' }` 消息回传宿主执行（宿主走完整 enqueue 通道：存在性检查 + payload 校验 + 驱动入队 + 本地记录），结果/错误按 seq 匹配回传；**参数与返回值须可结构化克隆**（不可克隆按执行错误处理，与 progress/log 同口径）；挂起的调用随任务超时两段式取消一并终止，无独立超时
 
 组投递 / fan-in / 记账语义见 [taskGroups.md](./taskGroups.md)。
 
-## TaskContext.resourcesDir（已删除）
-
-`TaskContext.resourcesDir` 数据字段已删除——任务读静态文件统一走主包免传参 `readResource`（相对路径 + 只能读 resources 内文件，详见 [readResource.md](../utils/readResource.md)）：
-
-```ts
-// src/tasks/report/task.ts
-import { readResource } from '@faapi/faapi';
-
-export async function run() {
-  return readResource('prompts/report.md', 'utf-8');
-}
-```
-
-隔离路径为纯字符串随快照 postMessage 传入（可结构化克隆）：进程内经 app 启动时的全局绑定即可读；隔离 worker 中 wrapper 在 run 派发前把快照值播种到全局读取根——所以 worker 内 `readResource` 与 agent `systemPromptFile` 都自动可用，无需手工传目录。`TaskQueueDeps.resourcesDir` 保留为内部字段——仅作隔离 worker 读取根播种的数据源（不进业务可见的 TaskContext）。
+任务读 `src/resources/` 静态文件统一走主包免传参 `readResource`（相对路径 + 只能读 resources 内文件，详见 [readResource.md](../utils/readResource.md)）：进程内经 app 启动时的全局绑定即可读；隔离 worker 中读取根随快照播种到全局读取根，`readResource` 与 agent `systemPromptFile` 自动可用，无需手工传目录（`TaskQueueDeps.resourcesDir` 为内部字段，仅作隔离 worker 读取根播种的数据源，不进业务可见的 TaskContext）。
 
 ### 任务内组装 Agent（官方装配工厂）
 
-任务内 new `Agent` 跑 LLM 循环时，deps 装配走 `@faapi/agent` 公开的 `createAgentDeps` 工厂（与插件 setup 单一实现）——`agentConfig` 直收 `taskCtx.config.agent` 读回的复合配置块，不再手拼访问器/schema 解析器（`resolveToolSchema` 由工厂内置 `createToolSchemaResolver` 接线——不要直连 `loadToolSchema`，它返回原始 zod 模块，不满足 `AgentDeps.resolveToolSchema` 契约的 `{ jsonSchema, validate }`）：
+任务内 new `Agent` 跑 LLM 循环时，deps 装配走 `@faapi/agent` 公开的 `createAgentDeps` 工厂（与插件 setup 单一实现）——`agentConfig` 直收 `taskCtx.config.agent` 读回的复合配置块，无需手拼访问器/schema 解析器（`resolveToolSchema` 由工厂内置 `createToolSchemaResolver` 接线——不要直连 `loadToolSchema`，它返回原始 zod 模块，不满足 `AgentDeps.resolveToolSchema` 契约的 `{ jsonSchema, validate }`）：
 
 ```ts
 // src/tasks/log-analysis/task.ts

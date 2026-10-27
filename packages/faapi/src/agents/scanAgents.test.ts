@@ -180,7 +180,7 @@ describe('scanAgents', () => {
     }
   });
 
-  it('目录段含点（旧版平铺点号目录）→ 抛错并提示改名', async () => {
+  it('目录段含点 → 抛错并提示改名', async () => {
     const { dir, write, cleanup } = setupTmp();
     write('src/agents/easy-writing.wizard/handler.ts', 'export const config = {};\n');
     try {

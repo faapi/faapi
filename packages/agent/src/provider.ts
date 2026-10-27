@@ -11,7 +11,7 @@ import { createOpenAIProvider } from './providers/openai';
  * 详见 [provider.md](./provider.md)。
  */
 
-// `LLMMessage` / `LLMToolCall` / `LLMToolDefinition` 规范类型自 7.x 起由主包持有
+// `LLMMessage` / `LLMToolCall` / `LLMToolDefinition` 规范类型由主包持有
 // （appEventBus 事件载荷引用,主包不能反向依赖本包——见主包
 // src/events/llmMessageTypes.md）。此处 re-export 保持所有既有导入路径不变。
 export type { LLMMessage, LLMToolCall, LLMToolDefinition } from '@faapi/faapi';

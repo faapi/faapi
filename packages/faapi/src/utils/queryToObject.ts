@@ -5,9 +5,8 @@
  * - `?page=1` → `{ page: '1' }`
  * - `?tag=a&tag=b` → `{ tag: ['a', 'b'] }`
  *
- * 此前 last-wins 静默丢弃前面的值（`?ids=1&ids=2` 得 `'2'`），且 query schema
- * 的 coerce 管线对 array 元素同样生成 preprocess——声明 `ids: number[]` 的字段
- * 此前永远校验失败（解析端从未产出数组），属于校验管线输入端漏洞。
+ * 数组聚合让声明 `ids: number[]` 的字段有合法的解析输入——query schema
+ * 的 coerce 管线对 array 元素同样生成 preprocess。
  */
 /**
  * 同一 URLSearchParams 实例的解析结果缓存

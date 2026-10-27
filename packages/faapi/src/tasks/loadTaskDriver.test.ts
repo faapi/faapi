@@ -7,7 +7,7 @@ describe('loadTaskDriver', () => {
     await expect(loadTaskDriver(undefined, undefined)).rejects.toThrow(/config\.task\.driver/);
   });
 
-  it("'memory' 显式抛错——内置内存驱动已移除，提示迁移", async () => {
+  it("'memory' 显式抛错——无内置内存驱动，提示迁移", async () => {
     await expect(loadTaskDriver('memory', undefined)).rejects.toThrow(/removed/);
   });
 

@@ -66,7 +66,6 @@ const TOOLS_FILE = 'faapi-tools.js';
  *
  * 与路由 schema 的路径规则完全一致（strip src/ 前缀 + dist + 固定 zod.js 文件名，
  * 见 generateSchemaFiles.ts 的实现），此处别名 re-export 保持 tool 侧语义命名。
- * 此前两份逐字同构实现已合并。
  */
 export {
   getSchemaOutputPath as getToolSchemaOutputPath,

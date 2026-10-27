@@ -8,13 +8,6 @@ import type { EtagOptions } from '../middlewares/etag';
 import type { Http2Options } from '../server/createServer';
 
 /**
- * 生命周期钩子已全量事件化（7.x）——原 onBoot/onReady/onClose/onError 四钩子移除,
- * 由 [appEventBus](../events/appEventBus.md) 的 `app:boot` / `app:ready` / `app:close` /
- * `request:error` 事件承载（订阅写 `src/bootstrap.ts`，经 `getApp().on`）。
- * `LifecycleContext` 保留,作为 `app:*` 事件载荷类型。
- */
-
-/**
  * pg-boss 驱动选项（透传给 @faapi/task-pgboss）
  *
  * 主包不依赖 pg-boss，这里只声明常用连接字段的透传形状；完整项见 pg-boss 文档
@@ -46,7 +39,7 @@ export interface TaskBullMqOptions {
 /**
  * 任务子系统配置
  *
- * 任务队列由持久化驱动承载（内置 memory 驱动已移除）：存在任务清单
+ * 任务队列由持久化驱动承载：存在任务清单
  * （`src/tasks/` 下的 task.ts）时必须显式配置 `driver`，否则启动报错；
  * 无任务清单的项目不加载驱动（零任务项目无需安装驱动子包）。
  */
@@ -82,22 +75,23 @@ export interface TaskConfig {
 }
 
 /**
- * 生命周期上下文
+ * 生命周期上下文——`app:boot` / `app:ready` / `app:close` 事件的载荷类型
+ * （见 [appEventBus](../events/appEventBus.md)，订阅写 `src/bootstrap.ts`，经 `getApp().on`）
  */
 export interface LifecycleContext {
   /** 项目根目录 */
   rootDir: string;
   /** 当前路由清单 */
   routes: import('../routers/routeTypes.js').RouteManifest;
-  /** 服务器实例（onBoot 钩子触发时已创建但未监听，`listening === false`） */
+  /** 服务器实例（`app:boot` 事件发射时已创建但未监听，`listening === false`） */
   server: import('node:http').Server;
   /** app 级注册表（tool/agent/task 等，随 app 生命周期创建与销毁） */
   registries: import('../injection/registries.js').AppRegistries;
-  /** 任务客户端——onBoot/onReady 中投递异步任务（`tasks.enqueue(name, payload)`） */
+  /** 任务客户端——`app:boot`/`app:ready` 订阅端中投递异步任务（`tasks.enqueue(name, payload)`） */
   tasks: import('../tasks/taskTypes.js').TaskClient;
   /**
    * faapi.config 全量配置（活引用）——与请求 `ctx.config` / 进程内任务
-   * `taskCtx.config` 同一对象。钩子内读业务配置（含 `agent` 块复合形状经
+   * `taskCtx.config` 同一对象。订阅端读业务配置（含 `agent` 块复合形状经
    * `ctx.config.agent` 读回，可整体透传 `@faapi/agent` 的 createAgentDeps）
    */
   config: import('../runtime/contextTypes.js').FaapiContextConfig;
@@ -248,9 +242,9 @@ export interface LlmConfig {
  *
  * 提供 agent 子系统的全局配置，所有字段均可选。
  * 无全局默认 agent / 默认 provider——`agent.run/stream` 每次调用必须显式传
- * `options.agent`（agent 名）和 `options.model` / `options.provider`（LLM 定位）；
- * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置，其中 `config.model`
- * 在调用未传 `options.model` 时作为缺省 key 参与 llms 解析。
+ * `options.agent`（agent 名）和 `options.model` / `options.provider`（LLM 定位，
+ * model 仅来自调用侧 `options`；sub-agent 派发未声明 model 时沿用父调用解析结果）；
+ * agent 自身 `config.maxTurns` 优先于全局配置。
  *
  * ```ts
  * import type { FaapiConfig } from '@faapi/faapi';
@@ -299,8 +293,8 @@ export interface AgentConfig {
    * 单次 tool 执行的超时毫秒数（未设置 = 不限时）
    *
    * 超时抛 `AgentToolTimeoutError`，被 reactLoop 按既有 tool 错误路径回传 LLM
-   * （LLM 可决定重试或换路）——挂死的 tool handler（如无超时的内部 fetch）
-   * 此前会让整个 run 永久挂起，且 run 的 abort signal 对 tool 执行无效。
+   * （LLM 可决定重试或换路）——否则挂死的 tool handler（如无超时的内部 fetch）
+   * 会让整个 run 永久挂起，且 run 的 abort signal 对 tool 执行无效。
    */
   toolTimeoutMs?: number;
   /**
@@ -359,12 +353,10 @@ export interface AgentConfig {
    */
   maxHistoryTokens?: number;
   /**
-   * 执行守卫/审计/可见性过滤（原 authHooks 三钩子 beforeToolCall/afterToolCall/
-   * filterTools）与输入改写（原 resolveRootInput/resolveSubAgentInput）、提示词
-   * 装饰（原 resolveSystemPrompt/resolveSubAgentContext）已全量事件化（7.x）——
-   * 由 [appEventBus](../events/appEventBus.md) 的 `agent:before-tool-call` /
+   * 执行守卫 / 审计 / 可见性过滤、输入塑形、提示词装饰均经 app 事件承载
+   * （见 [appEventBus](../events/appEventBus.md) 的 `agent:before-tool-call` /
    * `agent:after-tool-call` / `agent:filter-tools` / `agent:system-prompt` /
-   * `agent:sub-agent-context` / `agent:root-input` 等事件承载，订阅入口
+   * `agent:sub-agent-context` / `agent:root-input` 等事件），订阅入口
    * `getApp().on`（`src/bootstrap.ts`）。
    */
   /**
@@ -435,7 +427,7 @@ export interface FaapiConfig {
   bodyLimit?: number;
   /**
    * 日志全局配置——唯一日志配置入口，业务日志与请求日志同管道（egg 模型，
-   * 详见 logger/logger.md；`config.logger` 独立配置已废除）
+   * 详见 logger/logger.md）
    *
    * - `false`：全部静默（含 error 与请求日志，测试降噪）
    * - `true` / 缺省：console 输出（consoleLevel 默认 'info'），管道不过滤
@@ -569,8 +561,8 @@ export interface FaapiConfig {
    *
    * 无全局默认 agent / 默认 provider——`agent.run/stream` 每次调用显式传
    * `options.agent` + `options.model` / `options.provider`。
-   * agent 自身 `config.maxTurns` / `config.model` 优先于全局配置。
-   * tool 引用列表只在每个 agent 自身的 `config.tools` 里声明（无全局共享 defaultTools）。
+   * agent 自身 `config.maxTurns` 优先于全局配置。
+   * tool 引用列表只在每个 agent 自身的 `config.tools` 里声明。
    *
    * ```ts
    * import type { FaapiConfig } from '@faapi/faapi';

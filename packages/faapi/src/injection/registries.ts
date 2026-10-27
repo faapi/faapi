@@ -9,18 +9,16 @@ import { subAgentToolName } from './subAgentToolName';
 import { createAppEventBus, type AppEventBus } from '../events/appEventBus';
 
 /**
- * app 级注册表（方案 A：注册表实例化）
+ * app 级注册表（注册表实例化）
  *
  * 每个应用实例（`createAppBase`）持有一套独立的注册表，随 app 创建、随
- * `app.close()` 销毁——多 app 同进程（测试 / 嵌入 / 多租户）互不串台。
- * 此前注册表是模块级全局单例 + hydrate 整体替换语义，后创建的 app 会覆盖
- * 先创建的 app 的清单，任一 app close 会清空全部（详见各模块 .md）。
+ * `app.close()` 销毁——注册表是 app 实例级状态，框架链路全部读写 app 自己的
+ * 实例，多 app 同进程（测试 / 嵌入 / 多租户）互不串台（详见各模块 .md）。
  *
- * 原三个模块（toolRegistry / agentRegistry / agentHandle）
- * 保留同名全局函数作为**默认实例的便捷访问器**（供编程式直调 / 单元测试 /
- * 无 app 上下文的场景），内部全部路由到本模块的 `defaultRegistries`。
- * 框架自身链路（hydrate / 请求注入 / `@faapi/agent` 插件 / lifecycle 钩子）
- * 一律走 app 实例，不再读写全局默认实例。
+ * 各注册表模块保留同名全局函数作为**默认实例的便捷访问器**（供编程式直调 /
+ * 单元测试 / 无 app 上下文的场景），内部全部路由到本模块的 `defaultRegistries`。
+ * 框架自身链路（hydrate / 请求注入 / `@faapi/agent` 插件 / `app:*` 事件订阅端）
+ * 一律走 app 实例，不读写全局默认实例。
  */
 
 // ─── Tool 注册表 ─────────────────────────────────────────────────────
@@ -262,7 +260,7 @@ export function createTaskHandleStore(): TaskHandleStore {
  * 侧代理显式报错指引）。主包不反向依赖 agent 包类型，此处按结构声明。
  */
 export interface AgentRunRequest {
-  /** 目标 agent 名（原 AgentHandle.run options.agent——调用侧决策） */
+  /** 目标 agent 名（调用侧决策） */
   agentName: string;
   /**
    * 用户输入（可选——续跑场景不传新输入）。字符串为 user 消息直传；结构化对象
@@ -279,9 +277,7 @@ export interface AgentRunRequest {
  *
  * 隔离 worker 调 agent 收敛为**一次 agent-run RPC**：编排循环（LLM IO + tool
  * 调度 + sub-agent 递归）整体在宿主执行，worker 只负责转发请求
- * 与回传结果——此前「IO 在 worker、CPU 在宿主」的 6 种 per-behavior RPC 垫片
- * 整体下线（beforeToolCall/toolCall/filterTools/resolveSubAgentInput/
- * resolveSubAgentContext）。
+ * 与回传结果——db 等资源单实例、业务函数零跨线程。
  *
  * 执行器以任务合成契约 ctx（carry + scoped TaskClient + 任务级 logger +
  * job.signal，与进程内 `taskCtx.agent` 同配方，见 taskToolContext.md）构造
@@ -410,9 +406,9 @@ export function createAppRegistries(): AppRegistries {
 }
 
 /**
- * 默认实例：原全局函数的退路（编程式直调 / 单元测试 / 无 app 上下文场景）。
+ * 默认实例：全局函数的退路（编程式直调 / 单元测试 / 无 app 上下文场景）。
  *
  * 框架自身链路不读写此实例——app 创建自己的 AppRegistries 并在请求链路 /
- * 插件 / lifecycle 钩子中传递。多 app 场景下默认实例无隔离语义（等同旧全局行为）。
+ * 插件 / `app:*` 事件订阅端中传递。多 app 场景下默认实例无隔离语义。
  */
 export const defaultRegistries: AppRegistries = createAppRegistries();

@@ -95,7 +95,7 @@ const baseDeps = createAgentDeps({
 });
 
 registerAgentHandleFactory((ctx) => {
-  // 请求回调只叠加每请求差异项（契约 ctx：authHooks 与 tool handler 第二参数）
+  // 请求回调只叠加每请求差异项（契约 ctx：tool 链事件订阅端与 tool handler 第二参数）
   return new Agent({ ...baseDeps, ctx });
 });
 ```

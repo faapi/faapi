@@ -9,8 +9,8 @@ import { defaultRegistries } from './registries';
  * 持有独立实例，随 app 创建/销毁，多 app 同进程互不串台。
  *
  * 本模块的同名函数保留为**默认实例**的便捷访问器，供编程式直调 / 单元测试 /
- * 无 app 上下文的场景使用；多 app 场景下默认实例无隔离语义（等同旧全局行为），
- * 框架路径不再读写它。
+ * 无 app 上下文的场景使用；多 app 场景下默认实例无隔离语义，
+ * 框架路径不读写它。
  *
  * 详见 [toolRegistry.md](./toolRegistry.md)。
  */

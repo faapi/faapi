@@ -82,7 +82,7 @@ interface AgentSchemaSource {
 /**
  * 主入口：从 AgentManifest[] 生成定位清单 faapi-agents.js + 声明 `Input` 的 agent zod.js
  *
- * agent 声明运行时化后的瘦身管线（config 块字段提取已下线——运行时启动期
+ * agent 声明运行时化后的瘦身管线（清单仅做定位，config 块在运行时启动期
  * 动态 import handler 模块求值，见 [loadAgents](../agents/loadAgents.md)）。内部流程：
  *
  * 1. 正则检测每个 handler.ts 是否声明顶层 `Input` 类型导出（零 AST 预过滤）
@@ -92,9 +92,8 @@ interface AgentSchemaSource {
  * 3. 序列化定位记录（filePath 转产物形式）+ 写入 `<dist>/faapi-agents.js`
  *
  * **zod.js 生成与 tool/task 复用同一共享管线**（[generateZodArtifacts](./generateZodArtifacts.md)）。
- * Input 检测属于类型→zod 通用 schema 域（与 tool 第一参类型提取同构），不在
- * 「config 块 AST 提取下线」范围内——`inputTypeName` 是 `@faapi/agent` 富 schema
- * 派发的运行时判据，删除即静默降级为自由文本交接单。
+ * Input 检测属于类型→zod 通用 schema 域（与 tool 第一参类型提取同构）——`inputTypeName`
+ * 是 `@faapi/agent` 富 schema 派发的运行时判据，删除即静默降级为自由文本交接单。
  *
  * **dev/prod 同路径全量生成**，不引入 tool 式按需生成：agent 数量级小
  * （十位数）且 Program 仅对命中 Input 的文件创建，全量生成的边际成本可忽略；

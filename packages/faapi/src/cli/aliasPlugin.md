@@ -61,7 +61,6 @@
 
 | 函数 | 说明 |
 |------|------|
-| `toProdExtension(filePath)` | 源文件后缀转产物后缀：`.ts`/`.tsx`/`.jsx` → `.js`，其余原样（实现位于 [utils/prodPaths.ts](../utils/prodPaths.md)，本模块兼容 re-export） |
 | `createAliasPlugin(config)` | 构造 esbuild `Plugin`，重写相对 specifier + 别名 specifier，不可解析相对导入报错 |
 | `buildAliasPlugins(rootDir)` | 读 tsconfig 并构造插件数组（始终返回含本插件，相对路径重写不依赖 tsconfig） |
 | `resolveRelativeSpecifier(importer, specifier)` | 解析相对 specifier 到实际源文件绝对路径（含 `.js` 说明符 → `.ts` 源回退），未解析到返回 `null`（[collectImports.ts](./collectImports.md) 复用其探测逻辑） |

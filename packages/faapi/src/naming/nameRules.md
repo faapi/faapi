@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-三个 scanner（[scanAgents](../agents/scanAgents.md) / [scanTools](../tools/scanTools.md) / [scanTasks](../tasks/scanTasks.md)）此前各自定义一份相同的目录段白名单常量（`AGENT_DIR_SEGMENT_PATTERN` / `TOOL_DIR_SEGMENT_PATTERN` / `TASK_DIR_SEGMENT_PATTERN`），规则调整必须三处同步，漏改即三域命名口径分裂（如 task 允许了 tool 拒绝的字符，「目录路径 → 注册名」的单射保证在跨域层面失效）。
+三个 scanner（[scanAgents](../agents/scanAgents.md) / [scanTools](../tools/scanTools.md) / [scanTasks](../tasks/scanTasks.md)）的目录段白名单必须同规则——三域各自持有一份常量的话，规则调整要三处同步，漏改即命名口径分裂（如 task 允许了 tool 拒绝的字符，「目录路径 → 注册名」的单射保证在跨域层面失效）。本模块把白名单收敛为唯一定义处。
 
 两条 pattern 的语义分工：
 

@@ -158,7 +158,7 @@ describe('createAgentDeps', () => {
     ).toThrow(/createStandaloneToolContext/);
   });
 
-  it('agentConfig 直收：复合块全量拆装——llms 转 providers，config 含 enableTracing/toolTimeoutMs 全字段到达（authHooks 三钩子已移除,由 app 事件承载）', () => {
+  it('agentConfig 直收：复合块全量拆装——llms 转 providers，config 含 enableTracing/toolTimeoutMs 全字段到达', () => {
     const agentConfig: AgentConfig = {
       llms: LLMS,
       maxTurns: 12,

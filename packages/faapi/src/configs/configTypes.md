@@ -10,7 +10,7 @@ CLI 和 server 启动时需要统一的配置结构，包含根目录、app 目�
 
 - CLI 参数解析后生成 FaapiConfig
 - server 启动时读取 FaapiConfig
-- 扩展点：lifecycle（onBoot/onReady/onClose/onError）、extendContext（扩展 ctx 方法）、cors（跨域配置）、helmet（安全头）、compression（响应压缩，gzip/deflate/br 协商，默认关闭）、etag（ETag/304 条件请求协商，默认关闭）、bodyLimit（请求体限制）、logger（结构化日志）、http2（HTTP/2 支持）、trustedProxy（是否信任反向代理的 X-Forwarded-For，默认 false）、middlewares（全局中间件）、injectors（全局注入器）、plugins（应用级插件）、agent（Phase 2.4，agent 子系统全局配置）
+- 扩展点：`app:*` 流程事件（boot/ready/close 等，见 [appEventBus](../events/appEventBus.md)，配置上无钩子字段）、extendContext（扩展 ctx 方法）、cors（跨域配置）、helmet（安全头）、compression（响应压缩，gzip/deflate/br 协商，默认关闭）、etag（ETag/304 条件请求协商，默认关闭）、bodyLimit（请求体限制）、logger（结构化日志）、http2（HTTP/2 支持）、trustedProxy（是否信任反向代理的 X-Forwarded-For，默认 false）、middlewares（全局中间件）、injectors（全局注入器）、plugins（应用级插件）、agent（agent 子系统全局配置）
 
 ## agent 配置块（Phase 2.4）
 
@@ -55,7 +55,7 @@ export default {
 
 **嵌套级联结构**：provider 在外层，model 在 `models` 下挂多个。provider 级字段（`apiKey` / `baseURL`）共享给所有 model；model 级字段在 `models[modelName]` 里覆盖。handler 通过 `agent.run(input, { agent: 'name', model: 'gpt-4o' })` 切换 model（详见 [agentHandle](../../../agent/src/agentHandle.md) 的 Run-level 覆盖优先级表）。
 
-**优先级**：`agent.run` 的 `options.model` / `options.provider` > agent 自身 `config.maxTurns` / `config.model`（未传 `options.model` 时 `config.model` 作为缺省 key 参与 llms 解析）> 全局 `agent.maxTurns`。tool 引用列表只在每个 agent 自身的 `config.tools` 里显式声明（无全局共享 defaultTools，显式优于隐式）。
+**优先级**：model 仅来自调用侧 `options.model` / `options.provider`（sub-agent 派发未声明 model 时沿用父调用解析结果）；`maxTurns` 取 agent 自身 `config.maxTurns`，未配置时用全局 `agent.maxTurns`。tool 引用列表只在每个 agent 自身的 `config.tools` 里显式声明。
 
 **与 injectParams 的集成**：`@faapi/agent` 插件注册 agent handle 工厂，`agent` 参数注入 `AgentHandle`（含可调用 `run`）。调用时必须显式传 `options.agent` 指定 agent 名，不传抛 `AgentError`。
 
@@ -65,9 +65,9 @@ export default {
 
 - **统一响应格式**:框架内置 `config.response` 配置(`ok`/`fail` 可选),handler 直接 `return data` 时由 `invokeHandler.wrapResult` 自动用 `ok` 函数包裹(默认 `{ data }`),错误用 `ctx.fail({ status?, code?, message })` 返回(默认 `{ error: { message, ...code? } }`)。详见"统一响应格式"章节。
 - **错误处理**:handler 抛错 → 框架内置 `formatErrorResponse(err)` 兜底 → 仍失败则最简 500 JSON 响应 → 响应发出后发射 `request:error` 事件。业务方如需自定义错误响应,在全局中间件中 try/catch `next()` 即可。
-- **流程钩子已全量事件化（7.x）**——原 `lifecycle.onBoot/onReady/onClose/onError`、`agent.beforeToolCall/afterToolCall/filterTools`、`task.onFailed` 配置钩子全部移除,统一由 [appEventBus](../events/appEventBus.md) 事件承载:`app:boot`/`app:ready`/`app:close`/`request:error`/`task:failed` + agent 域七事件。订阅入口唯一 `getApp().on(name, handler)`——启动期事件（`app:boot`/`app:ready`/`app:close`）写 `src/bootstrap.ts` 约定启动文件（框架在 app 创建后、listen 前加载执行,见 [bootstrap](../cli/bootstrap.md)）。`app:boot` 语义不变:订阅端 handler 抛错 → `listen()` reject、端口不暴露。`LifecycleContext` 类型保留,作为 `app:*` 事件载荷。
+- **流程扩展经 app 事件承载，配置上无钩子字段**——由 [appEventBus](../events/appEventBus.md) 事件承载:`app:boot`/`app:ready`/`app:close`/`request:error`/`task:failed` + agent 域七事件。订阅入口唯一 `getApp().on(name, handler)`——启动期事件（`app:boot`/`app:ready`/`app:close`）写 `src/bootstrap.ts` 约定启动文件（框架在 app 创建后、listen 前加载执行,见 [bootstrap](../cli/bootstrap.md)）。`app:boot` 订阅端 handler 抛错 → `listen()` reject、端口不暴露。`LifecycleContext` 是 `app:*` 事件载荷类型。
 - **LifecycleContext 携带 `config`**——faapi.config 全量配置的**活引用**,与请求 `ctx.config` / 进程内任务 `taskCtx.config` 同一对象。`app:boot`/`app:ready`/`app:close` 订阅端可直接读业务配置;`agent` 块复合形状经 `e.config.agent` 读回后可整体透传 `@faapi/agent` 的 `createAgentDeps({ agentConfig })`(详见 [agentDeps](../../../agent/src/agentDeps.md))——重启续跑等生命周期内组装 agent 的场景不再需要业务侧另立配置常量源。
-- `agent.decorateDeps`:进程级 deps 配方装饰钩子——真实签名 `(deps: AgentDeps) => AgentDeps`(类型在 `@faapi/agent`,主包不反向依赖故按接受任意函数的手法声明,业务侧导入 `AgentDeps` 标注即强类型)。在 `createAgentDeps` 的 base 装配之上、显式 overrides 之前应用,插件注入的 AgentHandle 与业务自组装两路同源;典型用途:schema 富化包装(`resolveToolSchema`/`resolveAgentInputSchema`)、providers 进程级复用。配方抛错原样冒泡(不静默降级);请求级差异(`ctx`)不走本钩子。流程类扩展（原 authHooks 三钩子 / `resolveSystemPrompt` / `resolveSubAgentContext` / 输入改写双钩子）已全量移除,由 app 事件承载（见 [appEventBus](../events/appEventBus.md)）。
+- `agent.decorateDeps`:进程级 deps 配方装饰钩子——真实签名 `(deps: AgentDeps) => AgentDeps`(类型在 `@faapi/agent`,主包不反向依赖故按接受任意函数的手法声明,业务侧导入 `AgentDeps` 标注即强类型)。在 `createAgentDeps` 的 base 装配之上、显式 overrides 之前应用,插件注入的 AgentHandle 与业务自组装两路同源;典型用途:schema 富化包装(`resolveToolSchema`/`resolveAgentInputSchema`)、providers 进程级复用。配方抛错原样冒泡(不静默降级);请求级差异(`ctx`)不走本钩子。
 - `extendContext(ctx)`:创建上下文后调用,用户可挂载自定义方法/属性到 ctx;配合 `declare module '@faapi/faapi'` 增强 FaapiContext 类型。（构造期装配,非流程监听——不事件化）
 - `FaapiContextConfig`:空 interface,用户可通过声明合并增强 `ctx.config` 的类型。
 

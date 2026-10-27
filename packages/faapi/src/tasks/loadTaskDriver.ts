@@ -8,7 +8,7 @@ import type { TaskDriver } from './driverTypes';
  * - TaskDriver 对象 → 直接使用（编程式自定义驱动）
  * - `undefined` / `'memory'` / 其他值 → 显式抛错，不静默降级
  *
- * 内置 memory 驱动已移除——任务队列由持久化/外部驱动承载；未配置 driver 时
+ * 任务队列由持久化/外部驱动承载，无内置内存驱动；未配置 driver 时
  * createAppBase 仅在存在任务清单时报错（无任务项目用 idleTaskDriver，不调用本函数）。
  *
  * 子包 specifier 用变量拼接（`'@faapi/task-' + name`）而非字面量——主包不依赖

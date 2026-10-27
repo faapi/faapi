@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-`compileDevRoutes` 与 `compileBuildRoutes` 此前约 90% 代码逐字重复（文件收集、目录创建、alias 插件、esbuild 选项），差异仅三点：build 多 `define` + `minifySyntax`、dev 多原子写、glob ignore 列表逐字重复。重复导致编译行为调整必须双处同步，漏改即 dev/prod 产物不一致。
+`compileDevRoutes` 与 `compileBuildRoutes` 的编译行为几乎完全一致（文件收集、目录创建、alias 插件、esbuild 选项），差异仅三点：build 多 `define` + `minifySyntax`、dev 多原子写。把主体收敛为单一实现、差异收敛为选项矩阵，编译行为调整只改一处，dev/prod 产物不会漂移。
 
 ## 使用场景
 

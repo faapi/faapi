@@ -124,7 +124,7 @@ export function startWatcher(options: WatchOptions): void {
       // 目录不忽略（chokidar 需要递归进入子目录）
       if (stats.isDirectory()) return false;
       // src/resources 下的文件放行任意扩展名（运行时静态文件，事件走增量复制，
-      // 见 handleFileEvent 的 resources 分流；非 .ts 资源文件此前会被这里误忽略）
+      // 见 handleFileEvent 的 resources 分流）
       if (isResourceSourcePath(rootDir, path.resolve(rootDir, filePath))) return false;
       // 只监听 .ts/.js 文件（.js 用于 faapi.config.js）
       return !filePath.endsWith('.ts') && !filePath.endsWith('.js');

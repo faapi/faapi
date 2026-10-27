@@ -13,8 +13,8 @@ import { getSchemaOutputPath, getHelpersImportPath } from './generateSchemaFiles
  * zod.js 产物生成的共享管线
  *
  * routes / tools / tasks 三条产物管线的「分组 → 算 helpers import 路径 → 生成
- * 源码 → 按需生成 faapi-helpers.js → 并行原子写」流程完全同构，此前三处复制粘贴
- * （新增字段或 coerce 语义变化需同步改三处）。本模块把差异项（每个 source 的
+ * 源码 → 按需生成 faapi-helpers.js → 并行原子写」流程完全同构（各自维护一份则
+ * 新增字段或 coerce 语义变化需同步改三处）。本模块把差异项（每个 source 的
  * 文件路径、按文件生成源码的回调）抽为参数，流程只此一份。
  *
  * 产物布局约定（与 getSchemaOutputPath 一致）：源文件剥 src/ 前缀后同级目录写

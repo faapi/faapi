@@ -4,9 +4,9 @@
 
 ## 为什么需要
 
-隔离任务与进程内任务对齐 config 能力：进程配置大部分是纯数据（端口、驱动选项、llms、业务自定义段），worker 内读不到只能靠 payload 手工搬运。但 config 整体不可结构化克隆——lifecycle 钩子、`task:failed` 事件订阅端（原 onFailed 钩子）、agent 工具钩子、log sink、middlewares、`extendContext` 等都是函数，函数闭包不可跨线程（与 registries 快照同款物理约束）。本模块把 config 投影为纯数据：**函数值不进快照（能力边界，非降级），其余值必须可克隆否则派发显式报错（fail fast，不静默剔除）**。
+隔离任务与进程内任务对齐 config 能力：进程配置大部分是纯数据（端口、驱动选项、llms、业务自定义段），worker 内读不到只能靠 payload 手工搬运。但 config 整体不可结构化克隆——`app:*` / `task:failed` 事件订阅端、agent 工具钩子、log sink、middlewares、`extendContext` 等都是函数，函数闭包不可跨线程（与 registries 快照同款物理约束）。本模块把 config 投影为纯数据：**函数值不进快照（能力边界，非降级），其余值必须可克隆否则派发显式报错（fail fast，不静默剔除）**。
 
-与历史方案的差异：早期"JSON 快照"会把 Date 变字符串、静默丢字段（已废弃，见 AGENTS.md 5.6.4 历史处置记录）；本投影用 `structuredClone` 保真——Date/Map/Set 原样保留，数据字段与宿主所见逐值一致。
+投影用 `structuredClone` 而非 JSON 序列化——JSON 会把 Date 变字符串、静默丢不可序列化字段；结构化克隆保真，Date/Map/Set 原样保留，数据字段与宿主所见逐值一致。
 
 ## 使用场景
 

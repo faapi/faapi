@@ -45,9 +45,9 @@ describe('createCronScheduler', () => {
   });
 
   it('dedupId 是秒级对齐的计划槽位（毫秒为 0），不随触发抖动漂移', async () => {
-    // 回归：键曾取 croner currentRun()（实际触发时刻，保留毫秒）——多实例 setTimeout
-    // 毫秒级抖动导致键几乎必然不同，多实例防重失效。改为 nextRun() 计划槽位后，
-    // 键秒级对齐（toISOString 恒以 .000Z 结尾）且不晚于投递时刻
+    // 键取 croner nextRun() 计划槽位而非 currentRun()（实际触发时刻，保留毫秒）
+    // ——后者随多实例 setTimeout 毫秒级抖动，键几乎必然不同，多实例防重失效；
+    // nextRun() 键秒级对齐（toISOString 恒以 .000Z 结尾）且不晚于投递时刻
     const registry = createTaskRegistry();
     registry.hydrate([{ name: 'tick', filePath: 'd.js', mode: 'inline', cron: '*/1 * * * * *' }]);
     const keys: string[] = [];

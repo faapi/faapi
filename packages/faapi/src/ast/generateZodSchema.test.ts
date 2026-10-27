@@ -1123,7 +1123,7 @@ describe('generateZodSchema', () => {
 
   it('tuple 可选前缀 + rest：可选性保留（zod v4 原生支持）', () => {
     const schema = makeZodSchemaObject(`export interface Q { t: [string?, ...number[]] }`, 'Q');
-    // 空数组（TS 中合法）通过——此前 rest 分支丢弃可选性导致空数组被拒
+    // 空数组（TS 中合法）通过——rest 分支丢弃可选性会导致空数组被拒
     expect(schema.safeParse({ t: [] }).success).toBe(true);
     expect(schema.safeParse({ t: ['a'] }).success).toBe(true);
     expect(schema.safeParse({ t: ['a', 1, 2] }).success).toBe(true);

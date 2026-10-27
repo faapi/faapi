@@ -8,10 +8,8 @@
  * agent 名来自目录路径推导（如 `src/agents/researcher/handler.ts` → `researcher`，
  * 嵌套段用 `_` 连接）。
  *
- * agent 统一为声明式执行（config + 默认 reactLoop）——自定义 `run` 导出已移除，
- * 检测到 `run` 导出在启动期求值阶段抛迁移错误（编排场景注册 tool）。
- *
- * > `hasConfig` / `hasRun` 字段已移除——自定义 run 机制已整体移除。
+ * agent 为声明式执行（config + 默认 reactLoop）；handler 导出 `run` 在启动期
+ * 求值阶段抛错（编排场景注册 tool）。
  */
 export interface AgentManifest {
   /** agent 名（目录路径推导，如 `researcher`） */
@@ -45,7 +43,7 @@ export type SystemPromptFactory = () => string | Promise<string>;
  * `@faapi/agent` 子包的 `Agent` 类、`agentRegistry` 查询入口、`asTool` 包装
  * 都消费 `AgentCore`,实现"agent 与 skill 走同一运行时链路"。
  *
- * 字段求值时机（启动期运行时求值语义,替代旧 AST 字面量提取）：
+ * 字段求值时机（启动期运行时求值语义）：
  * - `systemPrompt` 工厂函数——每次 run 求值
  * - `tools` / `agents` / `vars` / `maxTurns` / `description` / `inputDescription`
  *   ——启动期注册时一次求值,仅接受静态值（注册表拓扑数据 + 快照可克隆）
@@ -104,9 +102,6 @@ export interface AgentCore {
  * 继承 [AgentCore](./agentTypes.md) 的声明字段,额外扩展声明文件定位:
  * - `filePath` — 声明文件定位(启动日志 / 清单可观测性用)
  *
- * agent 统一为声明式执行(config + 默认 reactLoop)——自定义 `run` 导出已移除,
- * 检测到 run 导出在启动期求值阶段抛迁移错误(编排场景注册 tool)。
- *
  * DB-driven skill 不实现此接口(无源文件),只实现 `AgentCore`。
  *
  * 由启动期求值管线([loadAgents](./loadAgents.md))从定位清单
@@ -136,7 +131,7 @@ export interface AgentMetadata extends AgentCore {
  * [AgentCore](./agentTypes.md) 字段一致(仅少 `name`——由目录路径推导)。
  */
 export interface AgentDeclaration {
-  /** agent 描述(对 LLM 可见)——替代旧 JSDoc 提取 */
+  /** agent 描述(对 LLM 可见) */
   description?: string;
   /** 系统提示词(静态串或每次 run 求值的工厂函数) */
   systemPrompt?: string | SystemPromptFactory;

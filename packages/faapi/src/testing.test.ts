@@ -44,7 +44,7 @@ describe('业务方测试支持', () => {
       expect(ctx.ip).toBe('1.2.3.4');
     });
 
-    it('resourcesDir 选项仅绑定读取根，ctx 上无 resourcesDir 字段（已删除）', () => {
+    it('resourcesDir 选项仅绑定读取根，ctx 上无 resourcesDir 字段（读取统一走 readResource）', () => {
       const ctx = createTestContext({ path: '/', resourcesDir: '/proj/dist/resources' });
       expect('resourcesDir' in ctx).toBe(false);
     });

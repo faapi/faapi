@@ -43,13 +43,13 @@ function extractExportsFromSource(source: string): Set<string> {
  * 从路由文件所在目录向上逐级查找 middlewares.ts（源码），
  * 返回从根到路由目录的中间件文件**绝对路径列表**（不加载模块）。
  *
- * 设计意图：scanRoutes 不再启动时全量 import middlewares.js，仅收集路径；
+ * 设计意图：scanRoutes 不启动时全量 import middlewares.js，仅收集路径；
  * 实际的中间件加载延后到 hydrateRoutes / 请求阶段（与 prod 的 hydrateRoutes 一致）。
  * 这样 dev 启动时 zero import，启动速度接近 Vite。
  *
  * 路径选择规则（与 generateRoutes.extractMiddlewarePaths 一致）：
  * - dist 传入：返回**产物** middlewares.js 绝对路径（打平 src/ 前缀，存在性检查源码 .ts）
- * - dist 不传：返回**源码** middlewares.ts/.js 绝对路径（兼容无 dist 的旧调用方，如 testServer）
+ * - dist 不传：返回**源码** middlewares.ts/.js 绝对路径（无 dist 的调用方，如 testServer）
  *
  * @param routeFilePath 源码相对路径（如 src/api/hello/handler.ts）
  * @param rootDir 项目根目录
@@ -133,12 +133,11 @@ function collectMiddlewarePaths(routeFilePath: string, rootDir: string, dist?: s
  * - dev/prod（dist 传入）：scanRoutes 仅收集 middlewarePaths，不加载模块；
  *   由 hydrateRoutes（prod）或 dev 启动流程加载
  * - 无 dist 模式（testServer / 单元测试）：scanRoutes 直接加载中间件并塞入 route.middlewares
- *   （保持向后兼容，避免破坏现有测试）
  *
  * @param rootDir 项目根目录
  * @param patterns glob patterns（源码 .ts 路径，如 src/api 下所有 .ts）
  * @param dist 产物目录（dist 或 .faapi）。传入时 scanRoutes 不 import 任何模块；
- *                不传时 import 源码 .ts（旧模式，需要 tsx，仅 testServer/单测使用）。
+ *                不传时 import 源码 .ts（需要 tsx，testServer/单测直接 import 源码的路径）。
  */
 export async function scanRoutes(
   rootDir: string,

@@ -31,7 +31,7 @@ describe('configTypes', () => {
     expect(config.cors).toBeUndefined();
   });
 
-  it('lifecycle 钩子面已移除（全量事件化）——FaapiConfig 不再有 lifecycle 钩子类型', () => {
+  it('FaapiConfig 无 lifecycle 钩子类型——流程扩展经 app 事件承载', () => {
     // FaapiConfig 继承业务自定义 index signature（lifecycle 退化为普通业务 key）,
     // 钩子类型的删除以 LifecycleHooks 导入移除为编译期锚——此处锚运行时缺省
     const config: FaapiConfig = {};
@@ -65,7 +65,7 @@ describe('configTypes', () => {
     expect(ctx.config.answer).toBe(42);
   });
 
-  it('app:boot / app:ready / app:close 事件载荷为 LifecycleContext（原钩子 ctx 全量字段）', () => {
+  it('app:boot / app:ready / app:close 事件载荷为 LifecycleContext（ctx 全量字段）', () => {
     type BootHandler = Parameters<import('../events/appEventBus').AppEventHandler<'app:boot'>>;
     expectTypeOf<BootHandler[0]>().toEqualTypeOf<LifecycleContext>();
     expectTypeOf<LifecycleContext['rootDir']>().toBeString();
@@ -215,18 +215,18 @@ describe('configTypes', () => {
       expectTypeOf<AgentConfig>()
         .toHaveProperty('maxAgentDepth')
         .toEqualTypeOf<number | undefined>();
-      // 显式断言：已移除的字段（默认 agent / 默认 provider 均在调用时显式指定）
+      // 显式断言：字段不存在（默认 agent / 默认 provider 均在调用时显式指定）
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultTools');
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultAgent');
       expectTypeOf<AgentConfig>().not.toHaveProperty('defaultLlm');
-      // 鉴权钩子字段已移除（7.x 事件化）——AgentConfig 继承 index signature,
+      // AgentConfig 继承 index signature,
       // 编译期锚是 AgentRuntimeConfig 三钩子字段删除（agent 包 toAgentRuntimeConfig 拆装清单）
       expect('beforeToolCall' in ({} as AgentConfig)).toBe(false);
       expect('afterToolCall' in ({} as AgentConfig)).toBe(false);
       expect('filterTools' in ({} as AgentConfig)).toBe(false);
     });
 
-    it('AgentConfig 鉴权钩子已移除（全量事件化）——目录外字段不存在，事件载荷 ctx 为 AgentToolContext', () => {
+    it('AgentConfig 无鉴权钩子字段——目录外字段不存在，事件载荷 ctx 为 AgentToolContext', () => {
       expectTypeOf<AgentConfig>().not.toHaveProperty('beforeToolCall');
       expectTypeOf<AgentConfig>().not.toHaveProperty('afterToolCall');
       expectTypeOf<AgentConfig>().not.toHaveProperty('filterTools');

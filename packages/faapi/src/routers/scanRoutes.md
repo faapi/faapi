@@ -6,7 +6,7 @@
 
 faapi 的核心理念是"文件系统即路由"，需要将目录结构转换为路由清单。用户通过 CLI 指定 pattern，系统扫描匹配的文件，生成可用于路由匹配的数据结构。
 
-旧版 `scanRoutes` 启动时全量 import handler.js + middlewares.js 拿方法名和中间件，dev 启动慢、按需编译无法实现。新版改为：
+scanRoutes 采用 Vite 风格的**零 import 扫描**——若启动时全量 import handler.js + middlewares.js 拿方法名和中间件，dev 启动会随项目体积线性变慢，按需编译也无法实现：
 
 - **方法名提取**：正则匹配源码 `export function GET/POST/...` / `export const GET = ...`，不 import 模块
 - **中间件路径收集**：从路由目录向上查找 `middlewares.ts`，仅收集路径不加载（由 `hydrateRoutes` / dev 启动流程按需加载）

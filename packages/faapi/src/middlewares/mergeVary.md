@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-CORS（`Vary: Origin`）与 compression（`Vary: Accept-Encoding`）都要声明"响应内容随某请求头变化"。此前 CORS 读的是**请求头**（`ctx.headers.get('vary')`）——既看不到其他中间件已设置的响应 Vary（会被覆盖），还会把客户端伪造的 Vary 请求头带进响应（缓存污染面）。收敛为单一实现后：读权威来源 meta.headers、大小写不敏感去重、多值逗号合并。
+CORS（`Vary: Origin`）与 compression（`Vary: Accept-Encoding`）都要声明"响应内容随某请求头变化"。Vary 必须读**响应侧**的权威来源（meta.headers）而非请求头——读请求头既看不到其他中间件已设置的响应 Vary（会被覆盖），还会把客户端伪造的 Vary 请求头带进响应（缓存污染面）。收敛为单一实现：读 meta.headers、大小写不敏感去重、多值逗号合并。
 
 ## 使用场景
 

@@ -60,7 +60,7 @@ readonly 是 TypeScript 的编译期约束，运行时不产生校验语义，AS
 | `Date` | `date` | 允许 Date 实例或 ISO 8601 字符串 |
 | `Record<K, V>` | `record` | |
 | 命名空间类型（`NS.Type`） | 递归解析 | QualifiedName 引用经 checker 定位到真实声明；**仅首次引用内联**——同一命名空间类型的二次引用标 `ref` 后无法按短名定位顶层声明，会抛 SchemaExtractionError |
-| 索引签名与属性共存 | `object` + catchall | `{ a: string; [k: string]: unknown }` 属性保留，索引签名生成 `.catchall(...)`——此前索引签名会丢弃全部属性 |
+| 索引签名与属性共存 | `object` + catchall | `{ a: string; [k: string]: unknown }` 属性保留，索引签名生成 `.catchall(...)` |
 | 交叉类型（全部成员为 object） | `object` | 合并属性（同名字段类型一致去重、带约束者优先；类型/可选性冲突即 TS 的 never，显式抛 SchemaExtractionError）；含非 object 成员（branded 类型如 `string & {...}`）显式抛 SchemaExtractionError，不静默放宽校验 |
 | `Partial<T>` | `object` | 所有字段变 optional |
 | `Required<T>` | `object` | 所有字段恢复必填（与 Partial 对称） |

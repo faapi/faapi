@@ -4,11 +4,7 @@
 
 ## 为什么需要
 
-替代原 `generateSchema.ts` 的统一 manifest 方案：
-- **原方案**：所有 handler 的 schema 打包到 `dist/faapi-schema.js`，运行时加载到 schemaRegistry
-- **新方案**：每个 handler 一个 `zod.js`，与 `handler.js` 同级，运行时按需 import
-
-好处：
+每个 handler 一个 `zod.js`，与 `handler.js` 同级，运行时按需 import：
 - 产物结构与 handler 对齐，路径更直观
 - 无需 schemaRegistry 中间层
 - 每个 zod.js 自包含（AST 提取时已内联跨文件类型）

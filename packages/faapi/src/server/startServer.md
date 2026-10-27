@@ -15,7 +15,7 @@
 
 - 只替换 server 上**第一个** request / upgrade listener（框架自身只挂一个）
 - upgrade 包装器收到原始 upgrade handler（无 WS 路由时框架同样挂载了 404 兜底，通常有值），返回 `undefined` 表示移除 upgrade 处理
-- 文件名保留 `startServer.ts` 为历史路径——旧版曾有 `startServer()` 启动函数，已被 `createAppCore` 的统一编排取代并删除（与 createServer 的功能子集漂移：无 helmet/compression/etag/http2/trustedProxy，listen 无 reject 与 error 监听）；该函数从未在包 index 导出，删除不影响公开 API
+- 本文件只承载 `applyPluginWrappers` 等 listen 相关工具函数；应用启动编排统一在 `createAppCore`
 
 ## 相关模块
 

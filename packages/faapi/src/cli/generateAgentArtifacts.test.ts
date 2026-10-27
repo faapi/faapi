@@ -12,8 +12,8 @@ import type { AgentManifest } from '../agents/agentTypes';
 import { invalidateProgramCache } from '../ast/createProgram';
 
 /**
- * generateAgentArtifacts 测试：定位清单 faapi-agents.js + Input zod.js（agent 声明
- * 运行时化后的瘦身管线——config 块字段提取已下线，运行时启动期求值）
+ * generateAgentArtifacts 测试：定位清单 faapi-agents.js + Input zod.js（清单仅做定位，
+ * config 块在运行时启动期求值）
  *
  * 覆盖：
  * - Input 导出正则检测 → inputTypeName 标记 + zod.js 生成（共享管线，coerce=false）

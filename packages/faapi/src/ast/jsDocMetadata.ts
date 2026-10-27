@@ -43,7 +43,7 @@ export function extractDescription(jsDoc: ts.JSDoc | undefined): string | undefi
 /**
  * 提取 `@<tagName>` 标签值
  *
- * 现用于检测已移除的 `@agent` / `@tool` 覆盖名标签（残留有值标签即迁移错误）。
+ * 用于检测残留的 `@tool` 覆盖名标签（残留有值标签即抛错）。
  * - 花括号包裹（`@tool {name}`）去括号
  * - 无指定标签 / 标签无 comment 文本（无值裸标签）→ `undefined`（不构成残留，调用方不报错）
  */

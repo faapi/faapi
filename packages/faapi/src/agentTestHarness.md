@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-agent 的进程内流程测试此前没有官方设施。真注册表只能由 dev/prod app 启动时装载（构建期产物），测试进程想不起 app 就得手搓「扫描器等价物」：逐个 import agent config / tool handler、手打最终工具名映射表、查表替代 loadToolModule、schema 放行桩。每个 faapi 项目做同类测试都要重抄这份机械，且桩接口不全会被组装层掩盖（如漏实现 `resolveSubAgents` 在某些路径静默走默认）。
+真注册表只能由 dev/prod app 启动时装载（构建期产物），测试进程想不起 app 就得手搓「扫描器等价物」：逐个 import agent config / tool handler、手打最终工具名映射表、查表替代 loadToolModule、schema 放行桩——每个 faapi 项目做同类测试都要重抄这份机械，且桩接口不全会被组装层掩盖（如漏实现 `resolveSubAgents` 在某些路径静默走默认）。本模块把这份机械产品化为官方设施。
 
 `createTestServer` 已证明 faapi 愿意在测试进程里跑同构管线（scanRoutes + 现场生成 zod.js + 起 server），本模块把同款取舍发给 agent 层：扫描、定位清单生成 + 启动期求值、注册表水合、loader 桥接全部复用 dev/build 管线现成件，测试只留配方（假 LLM 脚本编排、场景断言）。
 
@@ -144,7 +144,7 @@ const llm = createScriptLLM([
 
 | 局限 | 说明 |
 |------|------|
-| 不读 `faapi.config.ts` | agent 运行时配置（`maxTurns` / authHooks / llms）由测试组装 deps / `Agent` 构造参数显式给——配方不是机械 |
+| 不读 `faapi.config.ts` | agent 运行时配置（`maxTurns` / llms）由测试组装 deps / `Agent` 构造参数显式给——配方不是机械 |
 | 不加载插件 | `@faapi/agent` 插件的 handle 工厂不注册；测试直接 `new Agent(deps)`（deps 即 harness 返回的部分） |
 | src 外依赖不编译 | 与 dev 按需编译同边界（outbase=src 语义限制）：tool handler import rootDir 下 src 外的本地文件会失败；node_modules 正常解析 |
 | watch 不支持 | harness 是一次性快照（创建时扫描），测试中改源码不触发重新扫描——重建 harness 实例即可 |

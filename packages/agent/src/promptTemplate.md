@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-提示词文件（`systemPromptFile`）是静态字面量。「同一套提示词模板被多个 agent 复用、各自注入不同的静态特化内容」（同一审稿模板,情节审稿 agent 与文笔审稿 agent 填不同的审稿角色与关注点;同一协议模板按产品名/租户名特化）此前只能整份复制提示词文件——模板更新要改 N 处,复制件漂移无告警。
+提示词文件（`systemPromptFile`）是静态字面量。「同一套提示词模板被多个 agent 复用、各自注入不同的静态特化内容」（同一审稿模板,情节审稿 agent 与文笔审稿 agent 填不同的审稿角色与关注点;同一协议模板按产品名/租户名特化）没有模板机制时只能整份复制提示词文件——模板更新要改 N 处,复制件漂移无告警。
 
 `{{key}}` 式双花括号占位符是提示词工程的事实语法（NovelForge 等提示词集）。vars 在 agent config 里静态声明（启动期求值进 `AgentCore.vars`,见主包 [loadAgents.md](../../faapi/src/agents/loadAgents.md)）,渲染在 base 解析之后、`agent:system-prompt` 事件之前——提示词组装三层各司其职:**模板渲染**（占位符 → config 声明值,本模块）→ **装饰**（应用叠加协议块,`agent:system-prompt` 事件改写）→ **traceId 块**（框架元数据,最后追加）。
 

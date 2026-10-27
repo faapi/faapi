@@ -12,7 +12,7 @@ import type { Logger } from '../loggers/loggerTypes';
  * 进程内任务元信息（业务方在 `src/tasks/<name>/task.ts` 中 `export const task = {...}` 声明）。
  *
  * 不收 `timeoutMs` / `graceMs`：执行路径由声明文件种类决定（task.ts 进程内 / worker.ts 隔离），
- * 不再由超时字段隐式判定——进程内任务声明超时字段构建期报错（scanTasks 校验，附迁移指引）。
+ * 不由超时字段隐式判定——进程内任务声明超时字段构建期报错（scanTasks 校验，附迁移指引）。
  * 进程内 deadline 由业务自行 `Promise.race`。未声明字段时由运行时使用默认值
  * （concurrency=1、retries=0、无 cron）。
  */
@@ -354,8 +354,8 @@ export interface TaskContext {
  *
  * 与进程内 {@link TaskContext} 显式分开，差异由隔离语义决定：
  * - config 为派发时刻的**纯数据快照**（collectConfigSnapshot 投影——函数值不进
- *   快照（lifecycle 钩子/`task.onFailed`/log sink/middlewares 等宿主行为面不跨
- *   线程，与 registries 快照同款边界），其余值 structuredClone 保真；含非函数
+ *   快照（`app:*` / `task:failed` 事件订阅端、log sink、middlewares 等宿主行为
+ *   面不跨线程，与 registries 快照同款边界），其余值 structuredClone 保真；含非函数
  *   不可克隆值时派发显式报错列路径。见 configSnapshot.md）
  * - registries 为派发时刻的**快照**重建视图（执行中途 reload 不影响当次执行）
  * - llm 为纯转发代理（complete 经 RPC 回宿主执行——LLM IO 全在宿主，worker 不加载 `@faapi/agent`）
@@ -381,8 +381,8 @@ export interface IsolatedTaskContext {
   job: { id: string; name: string; attempt: number };
   /**
    * 进程配置的**纯数据快照**（必有；框架随 run 消息下发）——派发时刻由
-   * `collectConfigSnapshot` 投影：函数值（lifecycle 钩子/`task.onFailed`/log
-   * sink/middlewares 等宿主行为面）与 symbol 值不进快照（与 registries 快照
+   * `collectConfigSnapshot` 投影：函数值（`app:*` / `task:failed` 事件订阅端、
+   * log sink、middlewares 等宿主行为面）与 symbol 值不进快照（与 registries 快照
    * 同款能力边界），其余值 structuredClone 保真（Date/Map/Set 原样）；含非函数
    * 不可克隆值时任务派发即显式失败（错误列出路径）。读数据字段（端口/驱动选项/
    * llms/业务自定义段）无需 payload 手工搬运。见 configSnapshot.md。
@@ -624,7 +624,7 @@ export interface TaskQueueDeps {
   registry: TaskRegistry;
   rootDir: string;
   /**
-   * app 事件总线（`task:failed` 事件发射源，原 onFailed 钩子——7.x 事件化）。
+   * app 事件总线（`task:failed` 事件发射源）。
    * 缺省（裸 createTaskQueue 的测试/嵌入场景）不发射——能力边界，非降级
    */
   appEvents?: import('../events/appEventBus.js').AppEventBus;
@@ -650,7 +650,7 @@ export interface TaskQueueDeps {
   /**
    * 隔离执行路径的补全通道走 RPC 纯转发（worker 内 taskCtx.llm.complete 经
    * llm-complete 消息回传宿主，从 `llm` store 取派发时刻注册的通道执行）——
-   * llms 快照与 worker 内 @faapi/agent 加载均已删除（worker 纯转发原则）
+   * worker 纯转发：不携带 llms 快照、不在 worker 内加载 @faapi/agent
    */
   /**
    * agent handle 工厂 store（AppRegistries.agentHandle）——进程内执行路径
@@ -686,7 +686,7 @@ export interface TaskQueueDeps {
 }
 
 /**
- * 任务失败信息（`task:failed` 事件载荷，原 onFailed 钩子参数——7.x 事件化）
+ * 任务失败信息（`task:failed` 事件载荷）
  *
  * willRetry 按任务 meta.retries 推算（attempt <= retries 时驱动会重试）；
  * cancelled = 执行被框架终止（超时终止/停机取消），与 run 自身失败区分。

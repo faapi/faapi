@@ -17,8 +17,8 @@ import { createFileLogSink, type FileLogSinkHandle } from './fileSink';
  *   分流由文件布局或下游 sink 决定）
  * - console 出口：`consoleLevel` 阈值，不配 `'info'`（`false` 关闭 console）
  *
- * 请求日志（middleware/logger.ts）无条件并入管道（`accessLog: false` 关闭），
- * `config.logger` 独立配置已废除——单一 `config.log` 入口管全部输出。
+ * 请求日志（middleware/logger.ts）无条件并入管道（`accessLog: false` 关闭）——
+ * 单一 `config.log` 入口管全部输出。
  *
  * 全局配置为进程级资源（stdout/文件本就进程唯一），由 `configureLogging` 设置
  * （createAppBase 启动时读 config.log 调用），多 app 同进程后启动覆盖先启动；
@@ -222,7 +222,7 @@ export function writeLogEntry(entry: LogEntry): void {
 /**
  * 刷盘文件日志缓冲（不结束流，flush 后可继续写）
  *
- * 优雅停机场景在 `app:close` 事件订阅端调用（原 lifecycle.onClose 钩子——7.x 事件化），确保缓冲中的条目落盘后再退出进程；
+ * 优雅停机场景在 `app:close` 事件订阅端调用，确保缓冲中的条目落盘后再退出进程；
  * 测试场景断言文件内容前调用。无文件管道（未配置 `config.log.dir`）时为 no-op。
  */
 export function flushLogging(): Promise<void> {

@@ -15,7 +15,7 @@
 ## 使用场景
 
 ```ts
-// 1. 组投递（handler / 任务内 / lifecycle 均可——tasks 为 TaskClient）
+// 1. 组投递（handler / 任务内 / app:* 事件订阅端均可——tasks 为 TaskClient）
 export function POST(body: { importId: number }, tasks: TaskClient) {
   return tasks.enqueueGroup(
     'book-import-chunks',              // 成员任务名（同构子任务——一组一个任务名）
@@ -39,7 +39,7 @@ export function run(payload: Payload) {
   // payload.done / payload.failed / payload.cancelled / payload.total —— 到齐后干什么
 }
 
-// 3. 任务内扇出不再绕 getApp()：两条执行路径的 taskCtx.tasks 均为 TaskClient
+// 3. 任务内扇出不绕 getApp()：两条执行路径的 taskCtx.tasks 均为 TaskClient
 export async function run(payload: Payload, taskCtx: TaskContext) {
   await taskCtx.tasks.enqueueGroup('chunks', payloads, { groupId: `job:${payload.taskId}` });
 }
@@ -97,7 +97,7 @@ const group = await tasks.getGroup('import:42');
 
 ## TaskContext.tasks（两条执行路径注入任务客户端）
 
-`TaskContext.tasks: TaskClient` / `IsolatedTaskContext.tasks: TaskClient`——任务内扇出/查询不再绕 `getApp()`（隔离 worker 内 `getApp()` 本就不可用，全局访问器读的是从未水合的默认实例）：
+`TaskContext.tasks: TaskClient` / `IsolatedTaskContext.tasks: TaskClient`——任务内扇出/查询不绕 `getApp()`（隔离 worker 内 `getApp()` 本就不可用，全局访问器读的是从未水合的默认实例）：
 
 - **进程内路径**：活引用（与 `ctx.tasks` / `app.tasks` 同一 app 实例队列）。
 - **隔离路径**：worker 内代理对象——`taskCtx.tasks.*` 全方法经 `{ type: 'tasks-call' }` 消息回传宿主执行（宿主走完整 enqueue 通道：存在性检查 + payload 校验 + 驱动入队 + 本地记录），结果/错误按 seq 回传；参数与返回值须可结构化克隆（与 progress/log 同口径，不可克隆按执行错误处理）。挂起的调用随任务超时两段式取消一并终止，无独立超时。

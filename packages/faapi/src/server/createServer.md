@@ -36,8 +36,8 @@ dev 按需模式下，handler.js 由 `loadRouteModule` 先 `ensureCompiled` 编�
 
 路由匹配在 `handleRequest` 中、进入外层中间件链**之前**完成（`matchRoute` 纯函数无副作用，提前匹配不改变响应路径）：
 
-- 命中：`ctx.params` 与 `ctx.rawParams` 在 createContext 后立即挂载为匹配的原始段——全局中间件 `await next()` 之前即可读取原始路径参数（此前为空对象）
-- 未命中：`match` 为 null 传入 routePipeline，pipeline 内抛 `RouteNotFoundError` / `MethodNotAllowedError`——404/405 响应仍经过完整外层中间件链（CORS 头不丢，行为与既往一致）
+- 命中：`ctx.params` 与 `ctx.rawParams` 在 createContext 后立即挂载为匹配的原始段——全局中间件 `await next()` 之前即可读取原始路径参数
+- 未命中：`match` 为 null 传入 routePipeline，pipeline 内抛 `RouteNotFoundError` / `MethodNotAllowedError`——404/405 响应仍经过完整外层中间件链（CORS 头不丢）
 
 ## 输入字段口径（转换后 vs 原始）
 

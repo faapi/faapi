@@ -2,7 +2,7 @@
 
 一句话概括：dev 模式应用启动 API——委托 `createAppBase` 并附加 `reloadRoutes`/`reloadTools`/`reloadAgents`/`reloadTasks` 热替换能力（重新扫描 + 重生成清单产物 + 更新注册表/路由引用）。
 
-> **框架内部模块（7.x 起不公开导出）**——仅供生成的 `dist/main.js`（`$start`）与 CLI 编排使用，业务不应直接调用。启动逻辑写 `src/bootstrap.ts`（见 [bootstrap](./bootstrap.md)）。
+> **框架内部模块，不公开导出**——仅供生成的 `dist/main.js`（`$start`）与 CLI 编排使用，业务不应直接调用。启动逻辑写 `src/bootstrap.ts`（见 [bootstrap](./bootstrap.md)）。
 
 ## 为什么需要
 
@@ -52,7 +52,7 @@ watcher 一轮重建串行调 `reloadAll`：开头 `invalidateProgramCache()` �
 6. **按需模式分支**（`isDevOnDemandEnabled()` 为 true）：
    - `deleteSchemaFiles(sorted, rootDir, dist)` — 删除 stale zod.js（类型引用变化等）
    - `clearGeneratedSchemas()` — 清按需生成内存缓存
-   - **后台预生成全量 zod.js**（不阻塞 reload 与请求）：此前只删不生成，每次保存后所有路由的首个请求都要在请求路径上同步付全项目 Program 创建 + schema 生成的代价（p99 尖刺）。后台任务失败仅 `console.error`，请求路径的 `ensureSchemaGenerated` 兜底；与请求按需生成靠 mtime 缓存 + in-flight mutex + 原子写自然协同
+   - **后台预生成全量 zod.js**（不阻塞 reload 与请求）：reload 后异步预生成，避免每次保存后所有路由的首个请求在请求路径上同步付全项目 Program 创建 + schema 生成的代价。后台任务失败仅 `console.error`，请求路径的 `ensureSchemaGenerated` 兜底；与请求按需生成靠 mtime 缓存 + in-flight mutex + 原子写自然协同
 7. **非按需模式分支**（兼容旧路径）：`generateSchemaFiles(sorted, rootDir, dist)` 全量重新生成 zod.js
 8. `ctx.updateRoutes` — 更新 `app.routes`/`app.wsRoutes` 和 `routesRef.current`/`routesRef.wsCurrent`（server 使用最新路由）
 

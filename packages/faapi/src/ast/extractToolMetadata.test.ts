@@ -87,7 +87,7 @@ describe('extractToolMetadata', () => {
     });
   });
 
-  describe('@tool 覆盖名已移除 → 迁移错误', () => {
+  describe('残留 @tool 覆盖名标签 → 抛错', () => {
     it('@tool 标签有值 → 抛迁移错误（tool 名由目录路径 + 函数名推导）', () => {
       writeFileSync(
         tempFile,

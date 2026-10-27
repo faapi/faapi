@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-faapi + Next.js 架构下，`/api/*` 由 faapi 处理（错误响应恒为 JSON 信封），但请求链路上的其他层会返回 HTML：反代/网关超时或重启时的错误页（502/504）、Next.js 的 404 页（URL 未命中 `/api` 前缀）、SSO 登录守卫的 302 重定向（fetch 默认跟随重定向，拿到登录页 HTML）。业务项目若直接 `res.json()`，HTML 会让解析器抛裸 `Unexpected token '<'` SyntaxError 直上 toast——用户看到无从下手的原文（TODO-faapi-gaps 记录的真实事故：单页 4 个请求 3 个裸 SyntaxError）。
+faapi + Next.js 架构下，`/api/*` 由 faapi 处理（错误响应恒为 JSON 信封），但请求链路上的其他层会返回 HTML：反代/网关超时或重启时的错误页（502/504）、Next.js 的 404 页（URL 未命中 `/api` 前缀）、SSO 登录守卫的 302 重定向（fetch 默认跟随重定向，拿到登录页 HTML）。业务项目若直接 `res.json()`，HTML 会让解析器抛裸 `Unexpected token '<'` SyntaxError 直上 toast——用户看到无从下手的原文。
 
 apiCall 的职责是把这些「faapi 之外的世界」的异常响应**检测并转译**为可行动的结构化错误，同时保留排障现场。`谁期待 JSON，谁来守卫`——server 侧看不到这些字节，守卫只能在客户端做。
 

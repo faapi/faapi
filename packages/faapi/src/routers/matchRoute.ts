@@ -3,12 +3,12 @@ import type { RouteManifest, RouteMatch, WsRouteManifest, WsRouteMatch } from '.
 /**
  * 路由匹配索引——把 O(n) 线性扫描降为静态路由 O(1) 命中
  *
- * 每个请求都要做路由匹配,原实现逐条遍历清单（静态路由字符串比较、动态路由
- * split('/') 比对）,大清单下是热路径开销。索引把清单分为两部分：
+ * 每个请求都要做路由匹配,逐条遍历清单（静态路由字符串比较、动态路由
+ * split('/') 比对）在大清单下是热路径开销。索引把清单分为两部分：
  * - **静态路由**：`method|urlPath` → route 的 Map,一次查找命中
  * - **动态路由**：保持清单顺序的数组（`sortRoutes` 保证静态恒在动态之前,
- *   且同一 `(method, path)` 至多一条静态路由,静态优先查与原 first-match
- *   语义完全等价）
+ *   且同一 `(method, path)` 至多一条静态路由,静态优先查与 first-match
+ *   语义等价）
  *
  * 索引按**清单数组身份**缓存（WeakMap）：`reloadRoutes` / `hydrateRoutes`
  * 整体替换清单数组（`routesRef.current = newRoutes`）,旧数组被替换后索引

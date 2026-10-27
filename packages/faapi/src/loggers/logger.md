@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-框架此前只有请求日志中间件（`middleware/logger.ts`，记录 method/path/status/duration）：业务代码（handler、中间件、任务、lifecycle 钩子）要输出自己的日志只能裸用 `console.log`——无级别过滤（生产想关 debug 只能改代码删语句）、无分类（海量日志分不清来自哪个模块）、无结构化字段（接日志采集系统要自己拼 JSON）、无法统一替换输出目标（写文件/接 pino 要各处手写）。参考 NestJS（内置 Logger 的级别过滤与 context 分类、`useLogger` 替换实现）与 Fastify（`request.log` 请求级 child logger 自动绑定 requestId）补齐这一层：**零依赖内核 + 可插拔 sink**——默认输出到 console（开箱即用），业务可整体接管（接 pino/winston/文件），不引入任何日志库依赖。
+仅有请求日志中间件（`middleware/logger.ts`，记录 method/path/status/duration）不够覆盖业务日志：业务代码（handler、中间件、任务、事件订阅端）要输出自己的日志只能裸用 `console.log`——无级别过滤（生产想关 debug 只能改代码删语句）、无分类（海量日志分不清来自哪个模块）、无结构化字段（接日志采集系统要自己拼 JSON）、无法统一替换输出目标（写文件/接 pino 要各处手写）。参考 NestJS（内置 Logger 的级别过滤与 context 分类、`useLogger` 替换实现）与 Fastify（`request.log` 请求级 child logger 自动绑定 requestId）补齐这一层：**零依赖内核 + 可插拔 sink**——默认输出到 console（开箱即用），业务可整体接管（接 pino/winston/文件），不引入任何日志库依赖。
 
 ## 使用场景
 
@@ -109,14 +109,17 @@ export default {
       );
     },
   },
-
-  lifecycle: {
-    // pino 默认 sync:false 异步缓冲，优雅停机时 flush（faapi 收到 SIGTERM 自动走 onClose）
-    onClose() {
-      pinoLogger.flush();
-    },
-  },
 } satisfies FaapiConfig;
+
+// src/bootstrap.ts —— 优雅停机 flush（pino 默认 sync:false 异步缓冲，faapi 收到
+// SIGTERM 自动优雅关闭，app:close 订阅端在退出前刷盘）：
+//
+// import { getApp } from '@faapi/faapi';
+// export default async function bootstrap() {
+//   getApp().on('app:close', async () => {
+//     pinoLogger.flush();
+//   });
+// }
 ```
 
 注意点：
@@ -164,7 +167,7 @@ services:
 
 ### 与请求日志中间件的关系
 
-**egg 模型：请求日志无条件并入统一管道**（`config.logger` 独立配置已废除，`config.log` 是唯一日志配置入口）：
+**egg 模型：请求日志无条件并入统一管道**（`config.log` 是唯一日志配置入口）：
 
 | 配置 | 请求日志行为 |
 |------|------|
@@ -182,7 +185,7 @@ scope `access` 与业务日志的 `http` 区分，`requestId` 关联两者；文
 - **出口解析**：logger 实例级 `options.sink` 优先（显式接管，不受全局 `log: false` / 出口阈值影响）→ 全局 sink（受 `level`）→ 文件管道（`dir`，受 `level`；`stdout` 非 false 时 console 双写，受 `consoleLevel`）→ 纯 console（受 `consoleLevel`）。`sink` 与 `dir` 互斥，同时配置抛错
 - **`child(scope)`**：scope 以 `:` 合并（`createLogger('http').child('user')` → `http:user`，可多层嵌套），fields 浅合并（child 覆盖同名键）；返回新 Logger，父子互不影响
 - **`configureLogging(undefined)`** 重置为默认（管道不过滤、consoleLevel 默认 info、无文件/自定义 sink）——编程式多 app 切换全局配置用
-- fields 序列化走框架统一出口 `stringifyJson`（Date → 毫秒时间戳、BigInt → 字符串、Map/Set → 数组、NaN/±Infinity → 字符串、RegExp → 字符串——原生 `JSON.stringify` 会抛错或静默丢数据的类型全部正确输出）；**循环引用等结构错误抛 `TypeError` 冒泡，不降级**——「日志调用永不抛错」契约已废除，坏 fields 属业务数据缺陷，与全框架 JSON 序列化契约同口径显式失败（序列化转换表见 `src/utils/stringifyJson.md`）
+- fields 序列化走框架统一出口 `stringifyJson`（Date → 毫秒时间戳、BigInt → 字符串、Map/Set → 数组、NaN/±Infinity → 字符串、RegExp → 字符串——原生 `JSON.stringify` 会抛错或静默丢数据的类型全部正确输出）；**循环引用等结构错误抛 `TypeError` 冒泡，不降级**——坏 fields 属业务数据缺陷，与全框架 JSON 序列化契约同口径显式失败（序列化转换表见 `src/utils/stringifyJson.md`）
 
 ## 相关模块
 

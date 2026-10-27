@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-生产环境排查问题需要请求日志。框架默认启用 logger,请求条目转 `LogEntry`（scope `access`）经 `writeLogEntry` 走统一管道——与业务日志同文件/同 sink/console,一份 `config.log` 管全部输出,无需第二份日志配置。`config.logger` 独立配置已废除（major: 单一入口简化）。
+生产环境排查问题需要请求日志。框架默认启用 logger,请求条目转 `LogEntry`（scope `access`）经 `writeLogEntry` 走统一管道——与业务日志同文件/同 sink/console,一份 `config.log` 管全部输出,无需第二份日志配置。
 
 ## 使用场景
 

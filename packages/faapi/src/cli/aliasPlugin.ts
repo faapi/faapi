@@ -6,9 +6,6 @@ import { resolveAlias } from '../utils/resolveAlias';
 import { APP_DIR, isInsideDir, toProdExtension, toRealPath } from '../utils/prodPaths';
 import { readTsconfig, type TsconfigPathsConfig } from '../utils/readTsconfig';
 
-// 兼容 re-export：toProdExtension 此前由本模块导出
-export { toProdExtension };
-
 /**
  * 把候选源文件路径转为产物 import 路径（相对 importer，POSIX 风格，带 .js 后缀）
  */

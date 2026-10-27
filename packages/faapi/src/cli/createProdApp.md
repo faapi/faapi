@@ -2,7 +2,7 @@
 
 一句话概括：prod 模式应用启动（**框架内部模块，不公开导出**）——委托 `createAppBase` + 加载执行 `src/bootstrap.ts` 并返回 `AppBase`（不含 dev 的 reload*/缓存失效能力）。
 
-> **框架内部模块（7.x 起不公开导出）**——仅供生成的 `dist/main.js`（`$start`）与 CLI 编排使用，业务不应直接调用。启动逻辑写 `src/bootstrap.ts`（见 [bootstrap](./bootstrap.md)）。
+> **框架内部模块，不公开导出**——仅供生成的 `dist/main.js`（`$start`）与 CLI 编排使用，业务不应直接调用。启动逻辑写 `src/bootstrap.ts`（见 [bootstrap](./bootstrap.md)）。
 
 ## 为什么需要
 

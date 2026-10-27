@@ -4,10 +4,10 @@
 
 ## 为什么需要
 
-注册表此前是模块级全局单例 + hydrate 整体替换语义，生命周期与 app 实例脱钩：
+注册表的生命周期必须与 app 实例一致：
 
-- 同进程两个 app（测试 / 嵌入 / 多租户），后创建的 app 水合时**覆盖**先创建的 app 的清单——先创建的 app 请求拿到的是别人的 tool/agent，且无任何报错
-- 任一 app close 会清空全部注册表（已先前的所有权守卫缓解，但覆盖端无解）
+- 同进程可能有两个 app（测试 / 嵌入 / 多租户），注册表若游离在 app 之外，清单无法区分归属
+- app `close()` 时注册表必须随之清理，不残留
 
 实例化后注册表挂在 app 上：多 app 天然隔离，`app.close()` 清自己的实例，互不影响。
 
@@ -21,11 +21,11 @@
 
 ## AgentRunner（agent 循环执行器）
 
-隔离任务调 agent 的通道：worker 侧 `taskCtx.agent.run` 经**单次 `agent-run` RPC** 转发请求，宿主经本执行器跑**完整编排循环**（LLM IO + tool 调度 + agent:before-tool-call/after-tool-call 等事件发射 + sub-agent 递归）——worker 只负责转发与回传，业务函数面与资源零跨线程。此前「IO 在 worker、CPU 在宿主」的 6 种 per-behavior RPC 垫片整体下线。
+隔离任务调 agent 的通道：worker 侧 `taskCtx.agent.run` 经**单次 `agent-run` RPC** 转发请求，宿主经本执行器跑**完整编排循环**（LLM IO + tool 调度 + agent:before-tool-call/after-tool-call 等事件发射 + sub-agent 递归）——worker 只负责转发与回传，业务函数面与资源零跨线程。
 
 ```ts
 export interface AgentRunRequest {
-  /** 目标 agent 名（原 AgentHandle.run options.agent——调用侧决策） */
+  /** 目标 agent 名（调用侧决策） */
   agentName: string;
   /**
    * 用户输入（可选——续跑场景不传新输入）。字符串为 user 消息直传；结构化对象

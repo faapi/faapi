@@ -32,7 +32,7 @@ faapi 服务端错误响应是统一信封 `{ error: { code, message, issues? } 
 
 本模块属于浏览器端代码（`@faapi/next/client` 子路径），**禁止 import `@faapi/faapi` 及任何 Node 模块**：
 
-主包含 `node:fs` / `node:child_process` / `next/headers` 等服务端依赖，客户端组件若传递性引入，会把服务端代码拉进浏览器 bundle，导致 Next.js 客户端打包失败。业务项目曾因从 `@faapi/faapi` import 类型而踩坑（llm 项目 api-types.ts 注释记录了该教训），因此本目录所有类型独立声明，结构镜像而非引用。若主包 `ValidationIssue` 结构变更，此处需手动同步。
+主包含 `node:fs` / `node:child_process` / `next/headers` 等服务端依赖，客户端组件若传递性引入，会把服务端代码拉进浏览器 bundle，导致 Next.js 客户端打包失败——即使只 import 类型，也会引入对主包的模块解析依赖。因此本目录所有类型独立声明，结构镜像而非引用。若主包 `ValidationIssue` 结构变更，此处需手动同步。
 
 ## 相关模块
 

@@ -190,7 +190,7 @@ describe('scanTools', () => {
     }
   });
 
-  it('目录段含点（旧版命名空间分隔符）→ 抛错并提示改名', async () => {
+  it('目录段含点 → 抛错并提示改名', async () => {
     const { dir, write, cleanup } = setupTmp();
     write('src/tools/weather.v2/handler.ts', 'export function parse() { return 1; }');
     try {

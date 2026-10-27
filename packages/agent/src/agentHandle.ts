@@ -42,8 +42,9 @@ import type { ReactLoopResult, ReactLoopStreamChunk } from './reactLoop';
  * - `provider/model` 一体化（如 `'openai/gpt-4o'`）
  * - 纯 model 名（如 `'gpt-4o'`）—— 在所有 provider 的 `models` 里查找,唯一时切到对应 provider
  *
- * `model` 未传且无 `options.provider` 时抛 `AgentError`——模型档位是调用侧决策，
- * agent 不声明 config.model。优先级（高 → 低）：`options` > agent 元数据（`config.maxTurns`）>
+ * `model` 未传且无 `options.provider` 时抛 `AgentError`——model 是调用侧决策
+ * （`options.model` / `options.provider`）,agent 声明不含模型。优先级（高 → 低）：
+ * `options` > agent 元数据（`config.maxTurns`）>
  * 全局 `AgentRuntimeConfig`。详见 [agentHandle.md](./agentHandle.md) 的 Run-level 覆盖优先级表。
  *
  * @example
@@ -67,7 +68,7 @@ export interface AgentRunOptions {
    */
   signal?: AbortSignal;
   /**
-   * 本次调用的 agent 名（必须显式传——config.agent 无 defaultAgent 默认值）
+   * 本次调用的 agent 名（必须显式传——agent 为声明式执行,无隐式默认 agent）
    *
    * 从 agentRegistry 查找对应元数据 / tools / sub-agents。
    * 不传抛 `AgentError`。
@@ -76,7 +77,7 @@ export interface AgentRunOptions {
   /**
    * 切换 provider + model 的字符串 key（支持 llms key / `provider/model` / 纯 model 名）
    *
-   * 未传且无 `provider` 时抛 `AgentError`（无 config.model fallback——model 是调用侧决策）。
+   * 未传且无 `provider` 时抛 `AgentError`——model 是调用侧决策,agent 声明不含模型。
    * `provider` 字段存在时本字段变为「原始 model 名」原样透传给外部 provider
    * （不做 llms key 解析,支持带 / 的 model id），详见 {@link AgentRunOptions.provider}。
    */
@@ -97,8 +98,8 @@ export interface AgentRunOptions {
    * 两者皆无抛 `AgentError`；LLMProvider 实例形式下可为 `undefined`（自定义 provider 自决）。
    *
    * 仅影响本次调用——不进 providers Map、不修改 agent 状态。
-   * **sub-agent 递归继承父调用解析出的 provider 与 model**（config.model 已移除，
-   * sub 无自身 model 可声明）,不继承 options 对象本身。
+   * **sub-agent 递归继承父调用解析出的 provider 与 model**（sub 不声明模型,恒沿用
+   * 父调用解析结果）,不继承 options 对象本身。
    */
   provider?: LlmConfig | LLMProvider;
   /** 采样温度（透传给 LLM API,覆盖 provider/model 级 temperature） */

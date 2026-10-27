@@ -713,7 +713,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       record.error = err instanceof Error ? err.message : String(err);
       evictFinishedRecords();
       await settleGroup(record, outcome, willRetry);
-      // task:failed 事件（原 config.task.onFailed 钩子——7.x 事件化,观察类留痕口径）：
+      // task:failed 事件（观察类留痕口径）：
       // 告警/死信上报等副作用,订阅端抛错 console.error 留痕——不影响驱动重试决策,但不静默吞掉。
       // deps.appEvents 缺席（裸 createTaskQueue,无 app 编排）→ 不发射（能力边界,非降级）
       if (deps.appEvents) {

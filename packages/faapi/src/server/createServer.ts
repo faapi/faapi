@@ -662,7 +662,7 @@ async function sendSuccessResponse(response: Response, res: ServerResponse): Pro
 }
 
 /**
- * 发送错误响应 + 发射 request:error 事件（原 lifecycle.onError 钩子——7.x 事件化）
+ * 发送错误响应 + 发射 request:error 事件
  *
  * 错误处理兜底链(参考 Fastify 语义):
  *   1. 框架内置 formatErrorResponse 兜底(handler 抛错时)——读 ctx.config.response.fail

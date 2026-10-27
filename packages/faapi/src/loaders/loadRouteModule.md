@@ -36,13 +36,7 @@ loadRouteModule(filePath, method, rootDir)
 
 ## 为什么先编译再 import（而非 import 失败后重试）
 
-旧版采用"import 失败 → 编译 → 重试 import"模式，在 CI（Linux）的 vitest 环境下复现失败：
-
-- `vi.importActual` 首次 import 不存在的文件后，Vite SSR 内部状态被污染
-- 编译创建文件后重试 import 仍命中失败缓存 → 500
-- 加 cache-busting query 在 CI 上无效
-
-改为"先编译再 import"彻底避免 import 不存在的文件，dev/prod 行为一致（先有产物再 import），仅在 dev 模式增加一次 `ensureCompiled` 调用（命中缓存时仅一次 `Set.has` 检查，零开销）。
+规则：**先 `ensureCompiled` 编译、再 import**——彻底避免 import 不存在的文件。import 失败后补偿（编译 → 重试 import）会把「产物缺失」暴露为一次失败的模块加载，失败缓存与加载器内部状态让重试路径不可靠；先有产物再 import 则 dev/prod 行为一致，仅在 dev 模式增加一次 `ensureCompiled` 调用（命中缓存时仅一次 `Set.has` 检查，零开销）。
 
 ## 相关模块
 

@@ -8,7 +8,7 @@ import { DIR_SEGMENT_PATTERN } from '../naming/nameRules';
  * 与 tool 扫描（[TOOL_PATTERNS](../tools/scanTools.md)）对称——
  * agent 定义文件约定放在 `src/agents` 下的任意层级 `handler.ts`，支持多级嵌套目录
  * （`src/agents/` + `<name>/handler.ts` 平铺与 `<group>/<name>/handler.ts` 分组嵌套）。
- * `**` 匹配零级或多级目录，平铺场景行为与旧版单段通配 pattern 完全一致。
+ * `**` 匹配零级或多级目录。
  *
  * 由 devCommand / buildCommand / createDevApp.reloadAgents（Phase 1.9）共享，
  * 避免多处重复定义。
@@ -28,8 +28,7 @@ export const DEFAULT_AGENT_PATTERNS = ['src/agents/**/handler.ts'];
  * - `backup/agents/researcher/handler.ts` → `researcher`（任意前缀，只要匹配 agents/.../handler.ts）
  *
  * 目录段含 `_` / `.` 等工具名字符集之外的字符时抛错（含路径与改名指引），不静默净化
- * ——静默净化会掩盖配置错误，且旧版平铺点号目录（`easy-writing.wizard/`）的调用名
- * 在强校验上游本就不可用。
+ * ——静默净化会掩盖配置错误，且非法名字发给强校验上游（DeepSeek / OpenAI 等）整单 400。
  *
  * @throws 路径不匹配 agent 模式时抛错（不应发生——glob pattern 已限制）
  * @throws 目录段含非法字符时抛错（`_` 保留为嵌套分隔符；`.` / 中文等违反派发工具名字符集）
@@ -60,7 +59,7 @@ function extractAgentNameFromPath(filePath: string): string {
  *
  * Vite 风格：启动时只读源码文件列表，不 import agent.js。config 块字段的精确提取
  * （含 JSDoc description）由 [extractAgentMetadata](../ast/extractAgentMetadata.md)
- * 在 AST 阶段完成——检测到 `run` 导出（自定义执行已移除）也在该阶段抛迁移错误。
+ * 在 AST 阶段完成——检测到 `run` 导出也在该阶段抛错。
  *
  * agent 文件格式：`src/agents/<agentName>/handler.ts`，导出 `config` 块。一个目录
  * 一份 handler.ts = 一个 agent。

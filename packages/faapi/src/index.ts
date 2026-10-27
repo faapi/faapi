@@ -45,9 +45,6 @@ export { collectRouteSchemaSources, type RouteSchemaSource } from './cli/collect
 // agent 运行时集成面（供 @faapi/agent 等扩展包消费）
 // 类型导出——描述返回结构,运行时擦除
 // 运行时访问器——@faapi/agent 插件 setup 时导入,构造 AgentDeps 注入到 Agent 类
-// AgentPathMeta 已删除（与 AgentManifest 同构）；AgentCore/AgentMetadata 已迁移至
-// agents/agentTypes.ts 并放宽（systemPrompt 工厂），新增 AgentDeclaration（handler.ts
-// config 导出契约）与 SystemPromptFactory
 export type {
   AgentCore,
   AgentMetadata,
@@ -56,7 +53,7 @@ export type {
 } from './agents/agentTypes';
 export type { ToolCore, ToolMetadata, ToolPathMeta } from './ast/extractToolMetadata';
 export type { AgentToolDescriptor } from './injection/registries';
-// app 级注册表（方案 A：实例化——每个 app 持有独立实例，全局函数为默认实例便捷访问器）
+// app 级注册表（实例化——每个 app 持有独立实例，全局函数为默认实例便捷访问器）
 export type {
   AppRegistries,
   ToolRegistry,

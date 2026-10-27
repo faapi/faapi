@@ -2,9 +2,9 @@
  * 命名白名单共用模块（agent / tool / task 三域同规则）
  *
  * agent（[scanAgents](../agents/scanAgents.md)）、tool（[scanTools](../tools/scanTools.md)）、
- * task（[scanTasks](../tasks/scanTasks.md)）的目录段白名单与 LLM 工具名字符集此前在
- * 各 scanner 内各自定义为模块内常量，规则调整必须三处同步，漏改即三域命名口径分裂。
- * 本模块是唯一定义处——「目录路径 → 注册名」映射的合法性口径收敛到一处。
+ * task（[scanTasks](../tasks/scanTasks.md)）的目录段白名单与 LLM 工具名字符集必须
+ * 三域一致——本模块是唯一定义处，规则调整只改一处，「目录路径 → 注册名」映射的
+ * 合法性口径不会分裂。
  */
 
 /**

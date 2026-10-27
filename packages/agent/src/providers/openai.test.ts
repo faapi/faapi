@@ -448,9 +448,9 @@ describe('createOpenAIProvider', () => {
     });
 
     it('tool_calls.arguments 非法 JSON 透传不抛（解析边界在 reactLoop 的 tool 错误路径）', async () => {
-      // 行为变化：此前 provider 边界 fail-fast 抛 LLMProviderError 让整个 run 死亡；
-      // maxTokens 截断产生的半截 JSON 现在原样透传，由 reactLoop per-tool catch
-      // 把解析失败回传 LLM（LLM 可修正参数重试,自愈路径可达）
+      // provider 边界不做 JSON parse fail-fast——maxTokens 截断产生的半截 JSON
+      // 原样透传，由 reactLoop per-tool catch 把解析失败回传 LLM
+      // （LLM 可修正参数重试,自愈路径可达）
       fetchMock.mockResolvedValue(
         jsonResponse(
           openaiResponse({

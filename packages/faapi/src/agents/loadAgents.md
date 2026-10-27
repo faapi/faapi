@@ -1,12 +1,10 @@
 # loadAgents
 
-一句话概括：agent 声明的启动期求值与校验——从定位清单（`faapi-agents.js`）逐个动态 import handler 产物模块、求值 `config` 导出、逐字段校验后水合到 agentRegistry。替代旧「构建期 AST 字面量提取 → 数据清单 → hydrate」链路。
+一句话概括：agent 声明的启动期求值与校验——从定位清单（`faapi-agents.js`）逐个动态 import handler 产物模块、求值 `config` 导出、逐字段校验后水合到 agentRegistry。
 
 ## 为什么需要
 
-agent 声明此前由构建期 TS AST 提取（该机制已整体下线）从源码字面量搬运进清单——单 agent config 只能是静态字面量：systemPrompt 仅静态串、description 仅 JSDoc 注释，业务动态需求（按 env/DB 切人设）被迫绕道全局面。
-
-声明运行时化后，handler 模块在启动期被真实 import 执行——**单 agent 声明获得与全局声明面完全等价的动态能力**：`systemPrompt` 支持工厂函数（每次 run 求值）、`config` 可以是返回对象的函数（闭包/env 组装声明）。清单（[generateAgentArtifacts](../cli/generateAgentArtifacts.md)）因此降级为**定位清单**——只携带扫描期可定的静态事实（name / filePath / inputTypeName），声明数据不再进清单。
+agent 声明采用启动期运行时求值（handler 模块被真实 import 执行）而非从源码字面量搬运进清单——**单 agent 声明获得与全局声明面完全等价的动态能力**：`systemPrompt` 支持工厂函数（每次 run 求值，按 env/DB 等运行时状态切人设）、`config` 可以是返回对象的函数（闭包/env 组装声明）。清单（[generateAgentArtifacts](../cli/generateAgentArtifacts.md)）因此只作**定位清单**——只携带扫描期可定的静态事实（name / filePath / inputTypeName），声明数据不进清单。
 
 ## 使用场景
 
@@ -46,7 +44,7 @@ export const config = {
 ```
 
 - `config` 为对象字面量 → 直接采用；为函数 → 调用求值（须返回对象）——业务可用闭包/env 组装声明
-- 检测到 `run` 导出 → 抛迁移错误（agent 统一为声明式执行，编排场景注册 tool——自定义 run 机制已整体移除）
+- 检测到 `run` 导出 → 抛错（agent 为声明式执行，编排场景注册 tool）
 
 ## 校验规则（fail-fast，错误带定位）
 
@@ -54,7 +52,7 @@ export const config = {
 
 | 场景 | 行为 |
 |------|------|
-| 检测到 `run` 导出 | 抛迁移错误（编排场景注册 tool） |
+| 检测到 `run` 导出 | 抛错（编排场景注册 tool） |
 | 无 `config` 导出 | 抛错（含修复指引） |
 | config 非 object / 数组 / 函数返回非对象 | 抛错（`got <describeValue>`） |
 | 未知 config 字段 | 抛错（白名单：description / systemPrompt / systemPromptFile / tools / agents / maxTurns / inputDescription / vars）——静默忽略会掩盖拼写错误 |

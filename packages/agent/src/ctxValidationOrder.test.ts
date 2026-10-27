@@ -5,7 +5,7 @@
  * 面对合成正确的 ctx 做业务鉴权。顺序：ctx 校验门禁 → before-tool-call 事件 →
  * 白名单 → 执行半段（executeToolCall 的 input 校验 + ctx 二次校验为防御纵深）。
  *
- * 详见 authHooks.md 与 runtime/agentToolContext.md「声明即校验强制点」。
+ * 详见 toolChainEvents.md 与 runtime/agentToolContext.md「声明即校验强制点」。
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';

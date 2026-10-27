@@ -74,5 +74,4 @@
 - [agent](./agent.md) — `buildLoopConfig` 解析 traceId 与注入;`executeSubAgent` 链式拼接并传递
 - [agentHandle](./agentHandle.md) — `AgentRunOptions.traceId` 显式指定
 - [reactLoop](./reactLoop.md) — `ReactLoopResult.traceId` / `done.traceId` 字段(Agent 层填充,reactLoop 不感知)
-- [authHooks](./authHooks.md) — 同为 `AgentRuntimeConfig` 配置面,`traceId` / `traceIdTemplate` 与之平级
 - AGENTS.md「agent 子系统全局配置」— `config.agent.traceId` / `traceIdTemplate` 配置入口

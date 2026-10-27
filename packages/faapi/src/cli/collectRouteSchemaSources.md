@@ -11,7 +11,7 @@
 - 用 `analyzeInjectionInSourceFile` 分析 handler 函数签名（复用 program 已解析的 SourceFile，逐方法零重复 parse），找 input 类型对应的参数
 - 用惰性解析器 `createLazyTypeResolver` 解析参数的 interface 类型信息：入口类型立即解析（必须严格校验），ref（同文件循环引用）在生成 zod.js 阶段按需解析并缓存
 
-**惰性语义**：与路由无关的类型（未被任何入口类型引用）不会被解析——文件里存在一个含不支持语法的无关类型不再拖垮整个 build/reload。此前 `extractAllTypes` 提前解析文件全部顶层类型，任何无关类型坏掉都会让提取整体失败。
+**惰性语义**：与路由无关的类型（未被任何入口类型引用）不会被解析——无关类型不参与校验，其语法质量不影响提取；入口类型自身解析失败仍显式抛 `SchemaExtractionError`。
 
 schema key 使用 `urlPath`（如 `/api/hello`）而非 `filePath`，因为 `urlPath` 在 dev/prod 完全一致，无需路径桥接。
 
@@ -25,11 +25,11 @@ schema key 使用 `urlPath`（如 `/api/hello`）而非 `filePath`，因为 `url
 
 方法主输入之外、handler 显式声明的其余输入同样收集（与 params 同理——声明即校验）：
 
-- **body 方法（POST/PUT/PATCH）声明 `query` 形参**：收集 `<METHOD>Query` 源（如 `POSTQuery`），`Query` 后缀自动 coerce（URL query 来源均为 string）。运行时 createServer 校验 query 并把转换值挂载为 `__validatedQuery`，handler 的 query 注入优先取用（此前 body 方法上的 query 声明无 schema，注入恒为原始字符串）。
-- **query 主输入方法中 `hasBody` 为 true 的方法（即 DELETE）声明 `body` / `form` 形参**：收集 `<METHOD>Body` 源（如 `DELETEBody`）；声明 `form` 时与主输入 form 同规——schema 名仍为 `<METHOD>Body`、`coerce=true` 显式覆盖。运行时 createServer 校验请求体后注入（Date 字段转换与 POST body 一致；空请求体 undefined 跳过校验）。此前 DELETE body 无校验、Date 字段保持字符串。
-- **GET/HEAD 声明 `body`**：不收集（`hasBody` 为 false，运行时 body 注入恒为 undefined，该声明属无效标注，保持既往行为）。
+- **body 方法（POST/PUT/PATCH）声明 `query` 形参**：收集 `<METHOD>Query` 源（如 `POSTQuery`），`Query` 后缀自动 coerce（URL query 来源均为 string）。运行时 createServer 校验 query 并把转换值挂载为 `__validatedQuery`，handler 的 query 注入优先取用。
+- **query 主输入方法中 `hasBody` 为 true 的方法（即 DELETE）声明 `body` / `form` 形参**：收集 `<METHOD>Body` 源（如 `DELETEBody`）；声明 `form` 时与主输入 form 同规——schema 名仍为 `<METHOD>Body`、`coerce=true` 显式覆盖。运行时 createServer 校验请求体后注入（Date 字段转换与 POST body 一致；空请求体 undefined 跳过校验）。
+- **GET/HEAD 声明 `body`**：不收集（`hasBody` 为 false，运行时 body 注入恒为 undefined，该声明属无效标注）。
 
-未声明次输入形参则不收集对应 schema：body 方法的 query 注入回退 `queryToObject` 裸字符串、DELETE body 注入原始解析值——与 6.19.x 及之前行为一致。
+未声明次输入形参则不收集对应 schema：body 方法的 query 注入回退 `queryToObject` 裸字符串、DELETE body 注入原始解析值。
 
 ## 内联形参标注的收集（`{ a: 1 }` 写法）
 
@@ -41,7 +41,7 @@ input 形参标注除具名引用（`query: Query`）外，支持**内联类型�
 
 约束：
 
-- **仅支持纯 TypeLiteral**：交叉（`{ a } & B`）、联合、关键词等其余标注形态不收集（静默无校验，与既往行为一致）；具名引用仍走 `resolver.resolve`
+- **仅支持纯 TypeLiteral**：交叉（`{ a } & B`）、联合、关键词等其余标注形态不收集（静默无校验）；具名引用仍走 `resolver.resolve`
 - **合成名与文件内已有顶层类型声明同名 → 构建期抛 `SchemaExtractionError`**（如 `GET(query: { a: 1 })` 且同文件声明 `interface GETQuery`）——同名意味着校验源歧义，zod.js 会出现双重声明；要求改用具名标注或重命名声明
 - WS 路由不适用（Query/Params 是文件级约定声明，无形参标注可内联）
 

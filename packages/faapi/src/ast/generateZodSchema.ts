@@ -410,7 +410,7 @@ function generateTupleExpression(elements: TupleElement[], ctx: CodeGenContext):
 
   // 含 rest 元素：z.tuple([fixed...]).rest(restType)。
   // 可选前缀保留（zod v4 原生支持 z.tuple([X.optional()]).rest(...)）——
-  // 此前丢弃 fixedOptional 导致 [string?, ...number[]] 的空数组被误拒
+  // fixedOptional 丢弃会让 [string?, ...number[]] 的空数组被误拒
   if (restExpression) {
     const fixedWithOptional = fixedExprs.map((expr, i) =>
       fixedOptional[i] ? `${expr}.optional()` : expr,
@@ -453,7 +453,7 @@ function generateTupleExpression(elements: TupleElement[], ctx: CodeGenContext):
  *
  * 可选字段用 .optional()，约束链在 .optional() 之前生成。
  * 带索引签名的对象（catchall）生成 z.object({...}).catchall(valueSchema)——
- * 索引签名与属性共存时属性保留（resolveTypeNode 不再丢弃）。
+ * 索引签名与属性共存时属性保留。
  */
 function generateObjectExpression(
   type: Extract<RuntimeType, { kind: 'object' }>,

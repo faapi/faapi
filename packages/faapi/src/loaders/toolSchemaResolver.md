@@ -8,7 +8,7 @@
 
 resolver 参数取最小结构 `{ filePath, inputTypeName? }`（zod.js 定位的全部所需）——tool 元数据（`ToolMetadata`）与 agent 完整元数据（`AgentMetadata`，派发入参 schema 声明场景）均满足，一个工厂两个注入点。
 
-实现位于主包 loader 域（原 `@faapi/agent/src/toolSchemaResolver.ts`）：resolver 运行时 import zod，zod 是主包 peerDependency——下沉后解析器与生成的 zod.js 产物共享同一 zod 实例（留在 agent 包则两个包各持一份 zod 副本，`z.toJSONSchema` 处理另一实例创建的 schema 存在实例分裂风险）；同时测试设施 [agentTestHarness](../agentTestHarness.md)（主包）直接复用同一实现，无需跨包反向依赖。
+实现位于主包 loader 域：resolver 运行时 import zod，zod 是主包 peerDependency——解析器与生成的 zod.js 产物共享同一 zod 实例（留在 agent 包则两个包各持一份 zod 副本，`z.toJSONSchema` 处理另一实例创建的 schema 存在实例分裂风险）；同时测试设施 [agentTestHarness](../agentTestHarness.md)（主包）直接复用同一实现，无需跨包反向依赖。
 
 ## 使用场景
 

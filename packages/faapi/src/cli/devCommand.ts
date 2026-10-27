@@ -57,9 +57,8 @@ export interface DevCommandOptions {
  * 5. 调用 createDevApp() + listen() 启动 dev 应用（含 reloadRoutes 热替换能力）
  * 6. 启动 watcher（增量编译 + 重生成 config + 调 app.reloadRoutes 热替换）
  *
- * **与旧版（启动全量编译）的差异**：
- * - 旧版：步骤 4 之前调 `compileDevRoutes` + `generateSchemaFiles` 全量编译所有 .ts 和生成 zod.js → 启动慢
- * - 新版：跳过全量编译和 schema 生成，handler.js / zod.js 按需生成 → 启动快，首请求有单文件编译延迟（~50ms）
+ * **按需编译（Vite 风格）**：跳过启动全量编译和 schema 生成，handler.js / zod.js
+ * 按需生成 → 启动快，首请求有单文件编译延迟（~50ms）
  */
 export async function devCommand(options?: DevCommandOptions): Promise<void> {
   const rootDir = process.cwd();

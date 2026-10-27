@@ -5,7 +5,7 @@
 ## 为什么需要
 
 生产模式不应重新扫描文件系统（生产环境无需 glob）。
-build 时把路由元数据序列化为 `dist/faapi-routes.js`，生产 `createApp` 时 import 读取并水合：
+build 时把路由元数据序列化为 `dist/faapi-routes.js`，生产 `createProdApp`（内部模块）时 import 读取并水合：
 把 `middlewarePaths` 存到 `RouteRecord` 上，中间件加载延后到首次请求阶段（Vite 风格按需加载）。
 
 ## 使用场景

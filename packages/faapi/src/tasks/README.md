@@ -4,7 +4,7 @@
 
 ## 为什么需要
 
-框架此前没有任何定时/异步任务能力，业务方只能自己在 `lifecycle.onReady` 里裸写 `setInterval` 并在 `onClose` 手动清理，无重试、无并发控制、无 payload 校验。本子系统把"投递 → 队列 → worker 执行 → 重试/失败记录 → 优雅停机"整条链路产品化，并复用框架既有范式（文件约定、产物清单、app 级 registry、统一产物驱动）。
+裸写 `setInterval` + 手动清理只能覆盖最简单的定时场景——无重试、无并发控制、无 payload 校验，重启即丢任务，也没有任务记录与失败上报等可观测面。本子系统把"投递 → 队列 → worker 执行 → 重试/失败记录 → 优雅停机"整条链路产品化，并复用框架既有范式（文件约定、产物清单、app 级 registry、统一产物驱动）。
 
 ## 使用场景
 
@@ -61,9 +61,9 @@ await tasks.enqueueGroup('book-import-chunks', batches, {
 });
 const group = await tasks.getGroup(`import:${importId}`); // 计数器快照（done/failed/…）
 
-// 5. 中间件 / 编程式：ctx.tasks（同 TaskClient）、app.tasks、lifecycle 钩子的 { tasks }
+// 5. 中间件 / 编程式：ctx.tasks（同 TaskClient）、app.tasks、app:boot / app:ready / app:close 事件载荷的 { tasks }
 
-// 6. 任务内访问 app 注册表（只读视图）：组装/调用 agent 不再依赖 getApp()——
+// 6. 任务内访问 app 注册表（只读视图）：组装/调用 agent 无需 getApp()——
 //    进程内任务拿活引用，隔离任务（worker.ts）拿派发时刻的纯数据快照（worker 内重建）
 export async function run(payload: Payload, taskCtx: TaskContext) {
   const agent = taskCtx.registries.agent.getAgent('log-analyzer');
@@ -96,16 +96,16 @@ export async function run(payload: Payload, taskCtx: TaskContext) {
 ## 设计决策
 
 - **超时取消必须真终止（worker 隔离执行）**：Node 主线程无法强杀协程——进程内"不再等待"式的超时是假取消（控制侧记失败、重试已投递，旧协程仍在跑）。因此隔离执行是**独立声明 API**（`worker.ts`，文件名即语义、路径构建期显式），不走 task.ts meta 的隐式判据——执行语义差异（config/registries 快照、payload 可克隆、真终止）在声明面上可见。`worker.ts` 任务走 `taskWorker.ts` 隔离线程执行，超时两段式取消：先 abort 信号给任务优雅退出（宽限 5s），未退出 `terminate()` 硬杀——判定超时即执行真正终止。取消与失败分流：被框架终止的任务记 `cancelled`（`TaskCancelledError` / job.signal 已 abort），run 自身出错记 `failed`。代价：隔离任务有 worker 冷启动开销、模块级状态每次执行独立、config/registries 为派发时刻快照（函数值不跨线程，config 经 `collectConfigSnapshot` 投影、函数字段不进快照，非函数不可克隆值派发显式报错；详见 configSnapshot.md 与 taskTypes.md 差异表）。停机超时由驱动 abort 在跑任务的 signal（pgboss/bullmq 已接线），进程退出兜底终止。
-- **任务侧注册表访问走只读视图（而非 getApp()）**：注册表是 app 实例级（方案 A），而 `getApp()` 在隔离 worker 线程内不可用（globalThis 独立）、全局访问器读的是 app 启动从不水合的默认实例——任务侧曾没有任何注册表访问路径。现两条执行路径都注入 `taskCtx.registries`（只读视图，不含 hydrate/clear 写接口）：进程内传活引用；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（`TaskRegistriesSnapshot`：agents 经 `toAgentSnapshotRecord` 投影为 `AgentSnapshotRecord`——工厂形态 systemPrompt 剥离仅保留字符串形态；tools 为纯数据 `ToolMetadata`）postMessage 传入、worker 内重建视图。agent 循环已收敛宿主执行（真实声明全量可见），快照中的 agent 仅服务 worker 侧只读查询（元数据面）。**快照语义**：视图反映派发时刻的注册表，执行中途 reload 变更不影响当次执行（与 worker 模块图独立的既有语义一致）。
-- **驱动必填（memory 内置驱动已移除）**：队列语义（存储/消费/重试/停机）抽象为 `TaskDriver` 接口（driverTypes.md），由独立子包提供实现——`@faapi/task-pgboss`（Postgres）、`@faapi/task-bullmq`（Redis），主包零依赖、按 `config.task.driver` 动态加载（loadTaskDriver.ts），未安装/未配置显式报错不静默降级。**存在任务清单时必须显式配置 driver**，否则 `createAppBase` 启动报错；无任务清单的项目不加载驱动（零任务项目无需安装驱动子包，`createAppBase` 用空闲占位驱动 idleTaskDriver）。进程内重启丢任务/多实例不防重跑的问题由持久化驱动天然解决——框架不再提供"可丢任务"的默认实现。
+- **任务侧注册表访问走只读视图（而非 getApp()）**：注册表是 app 实例级（方案 A），而 `getApp()` 在隔离 worker 线程内不可用（globalThis 独立）、全局访问器读的是 app 启动从不水合的默认实例——两条执行路径都注入 `taskCtx.registries`（只读视图，不含 hydrate/clear 写接口）：进程内传活引用；隔离路径注册表对象含函数闭包不可跨线程，由语义层生成纯数据快照（`TaskRegistriesSnapshot`：agents 经 `toAgentSnapshotRecord` 投影为 `AgentSnapshotRecord`——工厂形态 systemPrompt 剥离仅保留字符串形态；tools 为纯数据 `ToolMetadata`）postMessage 传入、worker 内重建视图。agent 循环已收敛宿主执行（真实声明全量可见），快照中的 agent 仅服务 worker 侧只读查询（元数据面）。**快照语义**：视图反映派发时刻的注册表，执行中途 reload 变更不影响当次执行（与 worker 模块图独立的既有语义一致）。
+- **驱动必填（无内置进程内驱动）**：队列语义（存储/消费/重试/停机）抽象为 `TaskDriver` 接口（driverTypes.md），由独立子包提供实现——`@faapi/task-pgboss`（Postgres）、`@faapi/task-bullmq`（Redis），主包零依赖、按 `config.task.driver` 动态加载（loadTaskDriver.ts），未安装/未配置显式报错不静默降级。**存在任务清单时必须显式配置 driver**，否则 `createAppBase` 启动报错；无任务清单的项目不加载驱动（零任务项目无需安装驱动子包，`createAppBase` 用空闲占位驱动 idleTaskDriver）。进程内重启丢任务/多实例不防重跑的问题由持久化驱动天然解决——框架不提供"可丢任务"的默认实现。
 - **统一产物驱动**：dev/prod 产物集一致（`faapi-tasks.js` + `tasks/**/zod.js` + `tasks/**/task.js` / `tasks/**/worker.js`），`createAppBase` 无 `if (isDev)` 分支。dev 与 handler 不同，任务文件启动时全量编译（任务数量小，且 worker 运行时 import 失败无法像 HTTP 请求那样反馈给调用方）。
 - **任务与定时一条线**：cron 只是"自动投递者"，到点调 `enqueue`，复用同一队列与执行模型，不做第二套执行器。
 - **任务组 = 记账在驱动侧 + 回调按任务名声明**：切批扇出/进度聚合/fan-in 三件编排样板收编为框架原语（见 taskGroups.md）——组记账存驱动（pg-boss 表 / Redis hash，跨实例/重启正确），完成回调是普通任务（持久化、可重试、独立 meta，不是闭包）；`TaskContext.tasks` 两条执行路径注入（隔离路径 postMessage RPC 代理回宿主），任务内扇出不绕 `getApp()`。组记账是驱动可选能力（`TaskDriver.groups`，未实现显式抛错不降级）；切分策略是业务知识，不在框架范围。
 - **任务事件 = 语义层观测面，不进驱动**：任务内 `taskCtx.emit(data)` 发射过程事件（agent 流式 chunk 等），宿主侧 `TaskClient.subscribe`（实时）/ `listEvents`（历史）消费——与 progress 的差异：progress 是单值覆盖槽（派发清空），事件是过程历史（seq 连续、重试不清、按 attempt 标注）。事件存本进程有界内存（单执行/全局两级上限），生命周期与任务记录绑定，**驱动零改动**——与组记账进驱动刻意对比：组记账要跨实例正确，事件是观测面（UI 桥接与任务同进程）。agent 事件不设专用管道 API：`agent.stream` chunk 原样 `emit` 即成管道（主包对 `@faapi/agent` 保持解耦，消费端本就要按 chunk 字段做业务分发）。完整契约见 [taskEvents.md](./taskEvents.md)。
-- **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 lifecycle `{ tasks }` 全部指向同一 app 实例的 TaskClient；不做外部 HTTP 触发端点。
+- **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 `app:boot` / `app:ready` / `app:close` 事件载荷的 `{ tasks }` 全部指向同一 app 实例的 TaskClient；不做外部 HTTP 触发端点。
 - **payload 校验复用 zod 代码生成链路**：`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时 safeParse，不合法抛 `ValidationError`（422）。无 Payload 类型声明则跳过校验（与 tool 行为对齐）。
 - **不实现 handler 返回值隐式投递**：混淆统一响应包装语义。
-- **失败事件**：`task:failed` app 事件在每次任务执行失败/取消后发射（含将重试的失败，载荷 `willRetry` / `cancelled` 区分），用于告警/死信上报等副作用——7.x 起替代原 `config.task.onFailed` 钩子，经 `getApp().on('task:failed', ...)` 订阅（见 [appEventBus](../events/appEventBus.md)）；订阅端抛错 `console.error` 留痕，不影响驱动重试决策。
+- **失败事件**：`task:failed` app 事件在每次任务执行失败/取消后发射（含将重试的失败，载荷 `willRetry` / `cancelled` 区分），用于告警/死信上报等副作用，经 `getApp().on('task:failed', ...)` 订阅（见 [appEventBus](../events/appEventBus.md)）；订阅端抛错 `console.error` 留痕，不影响驱动重试决策。
 - **管理端点不内置（业务方自建）**：管理 API（`listQueued`/`cancel`/`retry`）必须受鉴权保护，框架内置路由默认无鉴权是安全陷阱。业务方在受保护目录写 handler 即可暴露（见下方示例）——这符合"路由文件约定 + 注入即用"的框架范式。
 
 ### 管理端点示例（放在鉴权中间件保护的目录）
