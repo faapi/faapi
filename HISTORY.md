@@ -43,6 +43,7 @@
 | `AgentPathMeta` 类型 | 删除（与 `AgentManifest` 同构）；`AgentCore` / `AgentMetadata` 迁至 `agents/agentTypes.ts` | 同构类型重复 | 7.6.0 |
 | `toolSchemaResolver` 实现位于 `@faapi/agent` | 下沉主包 loader 域（`packages/faapi/src/loaders/toolSchemaResolver.ts`），`@faapi/agent` 保留 `ToolSchemaResolution` 类型 re-export | zod 同源、测试设施共用 | — |
 | `toProdExtension` 由 `cli/aliasPlugin.ts` 导出 | `utils/prodPaths.ts`（兼容 re-export 已随本台账建立一并删除） | 产物路径规则单一实现 | — |
+| `FAAPI_CONFIG_KEYS` 含 `'lifecycle'` 键 | 键移除——`lifecycle` 写进 `faapi.config.ts` 归入业务自定义配置（`ctx.config.lifecycle`），不再被框架消费（`FaapiConfig` 类型上早已无该字段；行为锚定见 `createAppCore.test.ts` 白名单用例） | 框架配置面与类型层一致，防已移除键被误认为仍受支持 | 7.9.0（类型层）/ 7.13.0（运行时键移除） |
 | 从未导出的 `startServer()` 启动函数 | `createAppCore` 统一编排（`startServer.ts` 文件名保留为历史路径，仅承载 listen 工具函数） | 与 `createServer` 功能子集漂移、listen 无 reject | 6.18.0 |
 | 静态文件服务 | 不提供——生产用 CDN / Nginx 等专用服务 | 非框架职责 | — |
 | `fallback.md` 降级台账 | 删除；禁止降级规则见 AGENTS.md 5.6.4，九条历史处置见本文件第 2 节末 | 维护者决策：本框架不允许降级 | 6.33.0 前后 |

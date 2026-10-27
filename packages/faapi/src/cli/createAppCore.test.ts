@@ -882,6 +882,31 @@ export function POST(body: CreateUserBody) {
       await app.close();
     }
   });
+
+  it('lifecycle 不再是框架配置键：作为业务自定义配置进 ctx.config（FAAPI_CONFIG_KEYS 白名单锚定）', async () => {
+    await setupApp(
+      `export default {
+  lifecycle: { onReady() {} },
+};\n`,
+      [
+        {
+          relPath: 'src/api/config/handler.ts',
+          content: `export function GET(ctx) {
+  return { hasLifecycle: ctx.config.lifecycle !== undefined };
+}\n`,
+        },
+      ],
+    );
+
+    const { app } = await startApp();
+    try {
+      const res = await getApp().inject({ method: 'GET', path: '/api/config' });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ data: { hasLifecycle: true } });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 /**
