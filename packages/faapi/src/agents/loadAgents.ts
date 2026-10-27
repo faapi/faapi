@@ -27,6 +27,13 @@ const KNOWN_CONFIG_FIELDS = [
   'vars',
 ] as const;
 
+/**
+ * 历史已移除的 config 字段（豁免白名单、静默忽略）——不做残留检测报错（维护者
+ * 决策 2026-10-28：历史残留静默无效即终态，见根目录 HISTORY.md 1.1）。拼写错误
+ * 防护只对全新未知字段生效，不追溯历史字段名。
+ */
+const LEGACY_CONFIG_FIELDS = ['model'] as const;
+
 /** handler 模块的运行时形态（config 导出 + run 迁移检测） */
 interface AgentHandlerModule {
   config?: unknown;
@@ -70,6 +77,7 @@ export function evaluateAgentDeclaration(
   const declaration = decl as Record<string, unknown>;
 
   for (const key of Object.keys(declaration)) {
+    if ((LEGACY_CONFIG_FIELDS as readonly string[]).includes(key)) continue; // 历史字段静默忽略
     if (!(KNOWN_CONFIG_FIELDS as readonly string[]).includes(key)) {
       throw new Error(
         `[faapi] ${where}: 未知 config 字段 "${key}"——仅支持 ${KNOWN_CONFIG_FIELDS.join(' / ')}`,
