@@ -495,6 +495,9 @@ async function emitHistoryOverBudgetEvent(
   messages.push(...replaced);
 }
 
+/** 补充输入片段的原输入占位符：落账拼接时展开为当轮输入原内容（见 reactLoop.md） */
+const RAW_INPUT_PLACEHOLDER = '{{rawInput}}';
+
 /** 补充输入片段缺省排序序号（中位锚点：显式小号插前、大号插后） */
 const DEFAULT_INPUT_INDEX = 100;
 
@@ -583,9 +586,23 @@ async function emitAgentInputEvent(
   if (joined === '') return;
   if (turnInputIndex >= 0) {
     const current = messages[turnInputIndex]!;
-    messages[turnInputIndex] = { ...current, content: `${joined}\n\n${current.content}` };
+    // {{rawInput}} 占位符：原输入嵌在订阅端指定位置（与缀尾互斥——占位符在场即不缀尾,
+    // 如 '规则…\n\n<user_input>{{rawInput}}</user_input>'）;单次展开不递归
+    // （原内容含字面占位符不再二次处理）。不含占位符 = 现状（前置 + 原内容缀尾）
+    const raw = current.content;
+    messages[turnInputIndex] = {
+      ...current,
+      content: joined.includes(RAW_INPUT_PLACEHOLDER)
+        ? joined.split(RAW_INPUT_PLACEHOLDER).join(raw)
+        : `${joined}\n\n${raw}`,
+    };
   } else {
-    messages.push({ role: 'user', content: joined });
+    // 无当轮输入（工具轮/纯续跑轮）：占位符无原值可嵌,展开为空串;
+    // 展开后全空白则不新增消息（同空片段过滤口径）
+    const content = joined.split(RAW_INPUT_PLACEHOLDER).join('');
+    if (content.trim() !== '') {
+      messages.push({ role: 'user', content });
+    }
   }
 }
 

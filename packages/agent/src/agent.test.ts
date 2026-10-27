@@ -1639,6 +1639,96 @@ describe('Agent', () => {
       expect(lastUser!.content).toBe('go');
     });
 
+    it('{{rawInput}} 占位符：原输入嵌在片段指定位置,不再缀尾', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        if (e.depth !== 1) return;
+        e.addInput('规则块\n\n<user_input>{{rawInput}}</user_input>');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 原输入嵌在占位符位置（互斥口径——不再前置+缀尾拼接）
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({
+        role: 'user',
+        content: '规则块\n\n<user_input>go</user_input>',
+      });
+      const lastUser = [...result.messages].reverse().find((m) => m.role === 'user');
+      expect(lastUser!.content).toBe('规则块\n\n<user_input>go</user_input>');
+    });
+
+    it('{{rawInput}} 多占位符全部展开;原输入含字面占位符不递归', async () => {
+      const events = createEventCollector();
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        if (e.depth !== 1) return;
+        e.addInput('[{{rawInput}}] [{{rawInput}}]');
+      });
+      const { provider, completeCalls } = createMockProvider([
+        llmResponse({ content: 'ok', stopReason: 'stop' }),
+      ]);
+      const agent = new Agent(
+        createDeps({
+          provider,
+          agent: agentMeta({ systemPrompt: 'base' }),
+          emitAppEvent: events.emitAppEvent,
+        }),
+      );
+
+      await agent.run('see {{rawInput}} here', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 两处占位符都展开;展开值里的字面占位符不再二次处理（单次展开）
+      const request = completeCalls.mock.calls[0][0];
+      expect(request.messages.at(-1)).toEqual({
+        role: 'user',
+        content: '[see {{rawInput}} here] [see {{rawInput}} here]',
+      });
+    });
+
+    it('工具轮 {{rawInput}} 展开为空串：含片段文本则保留,全占位符则不新增消息', async () => {
+      const events = createEventCollector();
+      let turn = 0;
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        turn += 1;
+        if (turn === 2) e.addInput('注{{rawInput}}记');
+      });
+      const { provider, completeCalls } = createMockProvider(toolTurnResponses());
+      const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 工具轮无原输入 → 占位符展开为空串,剩余文本保留
+      const request2 = completeCalls.mock.calls[1][0];
+      expect(request2.messages.at(-1)).toEqual({ role: 'user', content: '注记' });
+    });
+
+    it('工具轮片段只有占位符：展开后全空白,不新增消息', async () => {
+      const events = createEventCollector();
+      let turn = 0;
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        turn += 1;
+        if (turn === 2) e.addInput('{{rawInput}}');
+      });
+      const { provider, completeCalls } = createMockProvider(toolTurnResponses());
+      const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
+
+      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
+
+      // 展开后为空串 → 同空片段口径,不新增 user 消息
+      const request2 = completeCalls.mock.calls[1][0];
+      expect(request2.messages.at(-1)!.role).toBe('tool');
+    });
+
     it('工具轮落账：片段作为新增 user 消息追加（tool 结果之后）', async () => {
       const events = createEventCollector();
       let turn = 0;
