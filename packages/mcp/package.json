@@ -1,6 +1,6 @@
 {
   "name": "@faapi/mcp",
-  "version": "7.15.0",
+  "version": "7.16.0",
   "description": "MCP Server SDK for faapi — Streamable HTTP transport, zod-native tool definition",
   "type": "module",
   "main": "./src/index.ts",
