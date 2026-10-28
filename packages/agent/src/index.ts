@@ -77,8 +77,8 @@ export {
   type ReactLoopConfig,
   type ReactLoopResult,
   type ReactLoopStreamChunk,
-  type SubAgentDelta,
-  type SubAgentDeltaEmitter,
+  type SubAgentEvent,
+  type SubAgentEventEmitter,
   type SubAgentToolResult,
 } from './reactLoop';
 

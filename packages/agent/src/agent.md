@@ -484,6 +484,7 @@ export async function POST(agent: AgentHandle, ctx, body: { input: string }) {
     if (chunk.deltaContent) sse.send({ event: 'delta', data: chunk.deltaContent });
     if (chunk.toolCall) sse.send({ event: 'tool_call', data: chunk.toolCall });
     if (chunk.toolResult) sse.send({ event: 'tool_result', data: chunk.toolResult });
+    if (chunk.subagentEvent) sse.send({ event: 'subagent_event', data: chunk.subagentEvent });
     if (chunk.traceEvent) sse.send({ event: 'trace', data: chunk.traceEvent });
     if (chunk.done) sse.send({ event: 'done', data: chunk.done });
   }
@@ -491,7 +492,7 @@ export async function POST(agent: AgentHandle, ctx, body: { input: string }) {
 }
 ```
 
-**sub-agent 嵌套调试**：父 agent 调 sub-agent 时,sub-agent 的 trace 自动嵌入父 trace 的 `subagent_call` 事件（`enableTracing=true` 时,详见 [trace.md](./trace.md) 的「sub-agent 嵌套 trace」章节）,业务方可还原完整调用树。
+**sub-agent 嵌套调试**：父 agent 调 sub-agent 时,sub-agent 的 trace 自动嵌入父 trace 的 `subagent_call` 事件（`enableTracing=true` 时,详见 [trace.md](./trace.md) 的「sub-agent 嵌套 trace」章节）,业务方可还原完整调用树。sub-agent 的中间事件（LLM 增量、tool 调用/结果）经 `chunk.subagentEvent` 实时直播到父流（见 [reactLoop.md](./reactLoop.md)「子代理事件冒泡」）,与 trace 的回放视图互补。
 
 ### 错误处理
 

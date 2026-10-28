@@ -26,7 +26,7 @@
 | `ToolExecutor` | tool 执行函数 `(name, args) => Promise<unknown>`，由 Agent 类提供 |
 | `ReactLoopConfig` | 循环配置（provider + systemPrompt + tools + executeTool + maxTurns + model 等） |
 | `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage + traceId + trace）；`usage` / `turns` 为整树口径（见「usage 与 turns 的整树口径」章节）；`traceId` 由 Agent 层填充（循环不感知,见 [traceId.md](./traceId.md)） |
-| `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + done）；`done.usage` / `done.turns` 同整树口径；`done.messages` 为最终完整历史（与非流式 `ReactLoopResult.messages` 同源对齐） |
+| `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + subagentEvent + done）；`done.usage` / `done.turns` 同整树口径；`done.messages` 为最终完整历史（与非流式 `ReactLoopResult.messages` 同源对齐） |
 | `SubAgentToolResult` | sub-agent tool 的结构化返回值（`{ __subAgent: true, result, usage?, turns?, trace? }`），reactLoop 识别后上卷用量、剥壳回传（见「usage 与 turns 的整树口径」章节） |
 | `ReactLoopError` | 系统级错误（maxTurns 超限，携带中断时 messages 供续跑），tool 执行错误不抛此类型 |
 
@@ -174,38 +174,48 @@ interface ReactLoopStreamChunk {
   toolCall?: { name: string; arguments: Record<string, unknown> };
   /** tool 执行完成（含结果，供 UI 展示） */
   toolResult?: { name: string; result: string };
+  /** 嵌套子代理循环的中间事件（冒泡透传，见「子代理事件冒泡」章节） */
+  subagentEvent?: SubAgentEvent;
   /** 循环结束（最终结果）；`messages` 为最终完整历史（含最终 assistant 消息，已剥离推理内容），与非流式 `ReactLoopResult.messages` 同源——流式消费方持久化后经 `config.messages` 续跑（挂起/恢复编排）不必走异常路径 */
   done?: { content: string; reasoning?: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage; traceId?: string; messages: LLMMessage[] };
 }
 ```
 
-每个 chunk 至多含一个字段。`deltaContent` / `deltaReasoning` 在 LLM 流式输出时多次 yield；`toolCall`/`toolResult` 在 tool 执行时配对 yield；`done` 只在结束时 yield 一次。
+每个 chunk 至多含一个字段。`deltaContent` / `deltaReasoning` 在 LLM 流式输出时多次 yield；`toolCall`/`toolResult` 在 tool 执行时配对 yield；`subagentEvent` 由子循环事件实时冒泡；`done` 只在结束时 yield 一次。
 
-### 子代理 delta 冒泡（流式）
+### 子代理事件冒泡（流式）
 
-子代理（`agent-<name>` 派发 tool call）在 `executeSubAgent` 内递归跑自己的循环。流式父循环执行 sub-agent 时，嵌套循环的 `deltaContent` / `deltaReasoning` 经新增的 `subagentDelta` chunk **实时冒泡**到父流——多 agent 协作页面可直播子代理的思考与产出过程：
+子代理（`agent-<name>` 派发 tool call）在 `executeSubAgent` 内递归跑自己的循环。流式父循环执行 sub-agent 时，子循环的一切中间事件（LLM 增量、tool 调用、tool 结果）经统一的 `subagentEvent` chunk **实时冒泡**到父流——多 agent 协作页面可直播子代理的完整工作过程：
 
 ```ts
-interface SubAgentDelta {
-  /** 发起调用的派发 tool 名（agent-<name>） */
-  name: string;
-  /** 该子代理循环的递归深度（根循环 = 1,首次嵌套的子代理 = 2,与 maxAgentDepth 口径一致） */
-  depth: number;
-  deltaContent?: string;
-  deltaReasoning?: string;
-}
+export type SubAgentEvent =
+  | {
+      /** 事件形态判别：LLM 增量（deltaContent / deltaReasoning 至少存在其一） */
+      type: 'delta';
+      /** 发起调用的派发 tool 名（agent-<name>） */
+      name: string;
+      /** 该子代理循环的递归深度（根循环 = 1,首次嵌套的子代理 = 2,与 maxAgentDepth 口径一致） */
+      depth: number;
+      deltaContent?: string;
+      deltaReasoning?: string;
+    }
+  | { type: 'tool_call'; name: string; depth: number; toolName: string; arguments: Record<string, unknown> }
+  | { type: 'tool_result'; name: string; depth: number; toolName: string; result: string };
 
 interface ReactLoopStreamChunk {
   // …现有字段…
-  /** 嵌套子代理循环的增量（冒泡透传;仅流式路径,与现有字段互斥） */
-  subagentDelta?: SubAgentDelta;
+  /** 嵌套子代理循环的中间事件（冒泡透传;仅流式路径,与现有字段互斥） */
+  subagentEvent?: SubAgentEvent;
 }
 ```
 
-- **机制**：`await executeTool` 期间 async generator 挂起无法 yield——流式路径对每个 tool call 采用 fire-and-drain 泵：fire executeTool（携带 delta emitter）→ generator 循环 drain 队列逐个 yield `subagentDelta` → executeTool 完成后 flush 剩余。冒泡顺序即子代理实际输出顺序；流式路径同轮多 tool_call 串行执行,天然有序
-- **子循环升级**：父为流式时 `executeSubAgent` 让子循环也跑流式（`subAgent.stream()`）——非流式子循环没有 delta 可实时冒泡给父流,嵌套增量只能等子循环结束一次性返回。done/trace 语义不变：父侧从子流 `done` chunk 拼装与 `run()` 等价的结果（content/usage/turns）,tracing 开启时从 `traceEvent` 收集拼装 `AgentTrace`（结构不变,`subagent_call` 嵌套 trace 不回归）
+- **单一通道**：delta、tool_call、tool_result 三形态共用同一 chunk 字段,`type` 判别。`name` 恒为该子代理的派发工具名、`depth` 恒为该子代理循环深度;`toolName` 为子代理自己调用的 tool 名（含其派发孙代理的 `agent-<孙名>`——子代理的派发调用也是 tool call,统一转发不特判）。孙代理事件经各层原样透传（name/depth 已由所属循环标注）
+- **机制**：`await executeTool` 期间 async generator 挂起无法 yield——流式路径对每个 tool call 采用 fire-and-drain 泵：fire executeTool（携带 emitter）→ 子循环事件经 `onSubAgentEvent` push 进单队列并唤醒 → generator 循环 drain 逐个 yield `subagentEvent` → executeTool 完成后 flush 剩余。单队列保序：冒泡顺序即子代理内实际发生顺序；流式路径同轮多 tool_call 串行执行,天然有序
+- **子循环升级**：父为流式时 `executeSubAgent` 让子循环也跑流式（`subAgent.stream()`）——非流式子循环没有事件可实时冒泡给父流。done/trace 语义不变：父侧从子流 `done` chunk 拼装与 `run()` 等价的结果（content/usage/turns）,tracing 开启时从子流 `traceEvent` 收集拼装 `AgentTrace`（结构不变,`subagent_call` 嵌套 trace 不回归）
+- **不转发 traceEvent / done**：trace 事件经 `SubAgentToolResult.trace` 嵌入父 trace 树（派发结束后一次性可见）,done 供结果拼装——两者不进事件流,避免重复。显式能力边界：实时直播走 `subagentEvent`,完整过程回放走 tracing（见 [trace.md](./trace.md)）
+- **错误自然冒泡**：子代理 tool 执行失败时其循环已 yield `tool_result`（错误串）,事件流自然可见,无专用错误通道
 - **非流式路径不受影响**：父循环非流式时结果一次性返回,无冒泡需求
-- **语义不变式**：嵌套 `reasoning_content` 依旧**不进** messages 历史与续跑源（delta 仅透出给调用方,与 thinking 章节的剥离纪律一致）;`ReactLoopResult` / trace 结构不受影响;中断/`maxAgentDepth`/历史剥离全部不回归
+- **语义不变式**：嵌套 `reasoning_content` 依旧**不进** messages 历史与续跑源（事件仅透出给调用方,与 thinking 章节的剥离纪律一致）;`ReactLoopResult` / trace 结构不受影响;中断/`maxAgentDepth`/历史剥离全部不回归
 
 ### thinking（推理内容）
 

@@ -50,6 +50,7 @@
 | dev 启动全量编译 `src/**/*.ts` + 全量生成 `zod.js` | Vite 风格按需编译（`compileOnDemand`）：启动只编译 config + 生成路由清单，handler.js / zod.js 首次请求时按需生成 | 项目变大启动慢、watch 重建耗时高 | 6.x |
 | `scanRoutes` / `scanTools` 运行时 `import` handler / tool 模块提取方法名 | 零 import：正则 / AST 扫描源码 | 运行时 import 让 dev 启动慢、按需编译无法实现 | 6.x |
 | `extractAllTypes` 提前解析文件全部顶层类型 | 按需提取（`collectRouteSchemaSources`） | 任何无关类型坏掉都让提取整体失败 | — |
+| 流式父循环的子代理增量冒泡通道（`subagentDelta` chunk 字段、`SubAgentDelta` 类型、`SubAgentDeltaEmitter.onSubAgentDelta`） | `subagentEvent` 统一事件通道（`SubAgentEvent` 判别联合：`delta` / `tool_call` / `tool_result`；`SubAgentEventEmitter.onSubAgentEvent`） | 单一通道承载子代理全部中间事件（LLM 增量 + tool 调用/结果，孙代透传口径不变），不维护「增量」与「事件」两套形态 | 7.16.0 |
 
 ### 1.1 已移除的迁移护栏（2026-10-28 维护者决策）
 

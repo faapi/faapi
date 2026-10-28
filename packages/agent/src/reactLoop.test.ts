@@ -620,10 +620,10 @@ describe('reactLoopStream', () => {
     });
   });
 
-  describe('subagentDelta 冒泡（fire-and-drain 泵）', () => {
+  describe('subagentEvent 冒泡（fire-and-drain 泵）', () => {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-    it('executeTool 执行期间 emit 的 delta 实时透出,且在 toolResult 之前', async () => {
+    it('executeTool 执行期间 emit 的事件实时透出,且在 toolResult 之前', async () => {
       const { provider } = createMockStreamProvider([
         [{ toolCalls: [toolCall('c1', 'agent-x', {})], finishReason: 'tool_calls' }],
         [{ deltaContent: 'final', finishReason: 'stop' }],
@@ -633,38 +633,68 @@ describe('reactLoopStream', () => {
         reactLoopStream('go', {
           provider,
           executeTool: async (_name, _args, emitter) => {
-            emitter?.onSubAgentDelta({ name: 'agent-x', depth: 2, deltaReasoning: 'think' });
+            emitter?.onSubAgentEvent({
+              type: 'delta',
+              name: 'agent-x',
+              depth: 2,
+              deltaReasoning: 'think',
+            });
             await sleep(10);
-            emitter?.onSubAgentDelta({ name: 'agent-x', depth: 2, deltaContent: 'part1' });
-            emitter?.onSubAgentDelta({ name: 'agent-x', depth: 2, deltaContent: 'part2' });
+            emitter?.onSubAgentEvent({
+              type: 'tool_call',
+              name: 'agent-x',
+              depth: 2,
+              toolName: 'read_file',
+              arguments: { p: 1 },
+            });
+            emitter?.onSubAgentEvent({
+              type: 'delta',
+              name: 'agent-x',
+              depth: 2,
+              deltaContent: 'part1',
+            });
+            emitter?.onSubAgentEvent({
+              type: 'tool_result',
+              name: 'agent-x',
+              depth: 2,
+              toolName: 'read_file',
+              result: 'ok',
+            });
             return 'tool-ok';
           },
         }),
       );
 
-      // yield 顺序：llm流 → toolCall → subagentDelta×3 → toolResult → llm流 → done
+      // yield 顺序：llm流 → toolCall → subagentEvent×4 → toolResult → llm流 → done
       const kind = chunks.map((c) =>
         c.toolCall
           ? 'call'
-          : c.subagentDelta
-            ? 'delta'
+          : c.subagentEvent
+            ? 'event'
             : c.toolResult
               ? 'result'
               : c.done
                 ? 'done'
                 : 'llm',
       );
-      expect(kind).toEqual(['call', 'delta', 'delta', 'delta', 'result', 'llm', 'done']);
+      expect(kind).toEqual(['call', 'event', 'event', 'event', 'event', 'result', 'llm', 'done']);
 
-      const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
-      expect(deltas).toEqual([
-        { name: 'agent-x', depth: 2, deltaReasoning: 'think' },
-        { name: 'agent-x', depth: 2, deltaContent: 'part1' },
-        { name: 'agent-x', depth: 2, deltaContent: 'part2' },
+      const events = chunks.filter((c) => c.subagentEvent).map((c) => c.subagentEvent!);
+      expect(events).toEqual([
+        { type: 'delta', name: 'agent-x', depth: 2, deltaReasoning: 'think' },
+        {
+          type: 'tool_call',
+          name: 'agent-x',
+          depth: 2,
+          toolName: 'read_file',
+          arguments: { p: 1 },
+        },
+        { type: 'delta', name: 'agent-x', depth: 2, deltaContent: 'part1' },
+        { type: 'tool_result', name: 'agent-x', depth: 2, toolName: 'read_file', result: 'ok' },
       ]);
     });
 
-    it('executeTool 抛错时已 emit 的 delta 仍透出,toolResult 为错误串', async () => {
+    it('executeTool 抛错时已 emit 的事件仍透出,toolResult 为错误串', async () => {
       const { provider } = createMockStreamProvider([
         [{ toolCalls: [toolCall('c1', 'agent-x', {})], finishReason: 'tool_calls' }],
         [{ deltaContent: 'final', finishReason: 'stop' }],
@@ -674,20 +704,27 @@ describe('reactLoopStream', () => {
         reactLoopStream('go', {
           provider,
           executeTool: async (_name, _args, emitter) => {
-            emitter?.onSubAgentDelta({ name: 'agent-x', depth: 2, deltaContent: 'before-crash' });
+            emitter?.onSubAgentEvent({
+              type: 'delta',
+              name: 'agent-x',
+              depth: 2,
+              deltaContent: 'before-crash',
+            });
             await sleep(10);
             throw new Error('subagent died');
           },
         }),
       );
 
-      const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
-      expect(deltas).toEqual([{ name: 'agent-x', depth: 2, deltaContent: 'before-crash' }]);
+      const events = chunks.filter((c) => c.subagentEvent).map((c) => c.subagentEvent!);
+      expect(events).toEqual([
+        { type: 'delta', name: 'agent-x', depth: 2, deltaContent: 'before-crash' },
+      ]);
       const toolResult = chunks.find((c) => c.toolResult)!;
       expect(toolResult.toolResult!.result).toMatch(/subagent died/);
     });
 
-    it('executeTool 未 emit delta 时行为不变（无 subagentDelta chunk）', async () => {
+    it('executeTool 未 emit 事件时行为不变（无 subagentEvent chunk）', async () => {
       const { provider } = createMockStreamProvider([
         [{ toolCalls: [toolCall('c1', 't1', {})], finishReason: 'tool_calls' }],
         [{ deltaContent: 'final', finishReason: 'stop' }],
@@ -700,7 +737,7 @@ describe('reactLoopStream', () => {
         }),
       );
 
-      expect(chunks.some((c) => c.subagentDelta)).toBe(false);
+      expect(chunks.some((c) => c.subagentEvent)).toBe(false);
       expect(chunks.at(-1)?.done).toMatchObject({ content: 'final' });
     });
   });

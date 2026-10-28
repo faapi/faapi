@@ -40,7 +40,7 @@ import {
   type ReactLoopConfig,
   type ReactLoopResult,
   type ReactLoopStreamChunk,
-  type SubAgentDeltaEmitter,
+  type SubAgentEventEmitter,
   type SubAgentToolResult,
 } from './reactLoop';
 import type { AgentTraceEvent } from './trace';
@@ -542,7 +542,7 @@ export class Agent {
         );
         if (done) return;
         // done chunk 附带本次 traceId（与 ReactLoopResult.traceId 同语义,见 traceId.md）;
-        // 其余 chunk（delta/toolCall/traceEvent/subagentDelta）原样转发
+        // 其余 chunk（delta/toolCall/traceEvent/subagentEvent）原样转发
         if (value.done && traceId !== undefined) {
           yield { ...value, done: { ...value.done, traceId } };
         } else {
@@ -793,8 +793,8 @@ export class Agent {
               rootInputStaging,
             }
           : undefined,
-        executeTool: async (name, args, deltaEmitter) =>
-          this.executeTool(name, args, callCtx, deltaEmitter),
+        executeTool: async (name, args, eventEmitter) =>
+          this.executeTool(name, args, callCtx, eventEmitter),
       },
     };
   }
@@ -1045,7 +1045,7 @@ export class Agent {
     rawName: string,
     rawArgs: Record<string, unknown>,
     callCtx: AgentCallContext,
-    deltaEmitter?: SubAgentDeltaEmitter,
+    eventEmitter?: SubAgentEventEmitter,
   ): Promise<unknown | SubAgentToolResult> {
     const name = rawName;
     let args = rawArgs;
@@ -1098,11 +1098,11 @@ export class Agent {
     }
 
     // sub-agent 递归（映射取真实 agent 名;携带 callCtx,使其能继承 provider/model +
-    // 决定是否附带 trace;deltaEmitter 由流式父循环下发——嵌套循环增量经此冒泡,
+    // 决定是否附带 trace;eventEmitter 由流式父循环下发——嵌套循环中间事件经此冒泡,
     // 见 reactLoop.md）
     const subName = callCtx.agentToolNames.get(name);
     if (subName !== undefined) {
-      return await this.executeSubAgent(subName, args, callCtx, deltaEmitter);
+      return await this.executeSubAgent(subName, args, callCtx, eventEmitter);
     }
 
     // 常规 tool：执行半段（getTool → schema 校验 → handler → afterToolCall）抽为
@@ -1154,7 +1154,7 @@ export class Agent {
     subName: string,
     rawArgs: Record<string, unknown>,
     callCtx: AgentCallContext,
-    deltaEmitter?: SubAgentDeltaEmitter,
+    eventEmitter?: SubAgentEventEmitter,
   ): Promise<unknown | SubAgentToolResult> {
     const newDepth = this.depth + 1;
     const maxDepth = this.deps.config?.maxAgentDepth ?? DEFAULT_MAX_AGENT_DEPTH;
@@ -1180,7 +1180,7 @@ export class Agent {
       args = result.value ?? args;
     }
 
-    // 派发工具名（subagentDelta 冒泡标识 + afterToolCall 审计名,即 LLM 看到的名字）
+    // 派发工具名（subagentEvent 冒泡标识 + afterToolCall 审计名,即 LLM 看到的名字）
     const toolName = subAgentToolName(subName);
 
     // 构造子 agent（复用父 deps——providers/llms/访问器共享,无 per-agent 名绑定）
@@ -1225,25 +1225,44 @@ export class Agent {
       subAgent.subAgentContextBlock = payload.context;
     }
 
-    // 流式父循环（deltaEmitter 存在）：子循环也跑流式,嵌套循环的 deltaContent /
-    // deltaReasoning 经 emitter 实时冒泡为父流的 subagentDelta chunk（reasoning 仅
-    // 透出不进历史,与 thinking 剥离纪律一致）;done/traceEvent 在父侧拼装出与
-    // run() 等价的结果,usage/turns 上卷与 trace 结构不回归。详见 reactLoop.md
-    // 「子代理 delta 冒泡」章节
-    if (deltaEmitter) {
+    // 流式父循环（eventEmitter 存在）：子循环也跑流式,子循环的中间事件（LLM 增量、
+    // tool 调用/结果——含其派发孙代理的调用）经 emitter 实时冒泡为父流的
+    // subagentEvent chunk（reasoning 仅透出不进历史,与 thinking 剥离纪律一致）;
+    // done/traceEvent 在父侧拼装出与 run() 等价的结果,usage/turns 上卷与 trace
+    // 结构不回归。详见 reactLoop.md「子代理事件冒泡」章节
+    if (eventEmitter) {
       const startedAt = performance.now();
       const traceEvents: AgentTraceEvent[] | undefined = callCtx.enableTracing ? [] : undefined;
       let done: NonNullable<ReactLoopStreamChunk['done']> | undefined;
       for await (const chunk of subAgent.stream(extractSubAgentUserInput(args), subOptions)) {
-        if (chunk.subagentDelta) {
-          // 更深层代理的冒泡（孙代理）:name/depth 已是深层信息,原样透传
-          deltaEmitter.onSubAgentDelta(chunk.subagentDelta);
+        if (chunk.subagentEvent) {
+          // 更深层代理的事件（孙代理）:name/depth 已是深层信息,原样透传
+          eventEmitter.onSubAgentEvent(chunk.subagentEvent);
+        } else if (chunk.toolCall) {
+          // 该子代理自身的 tool 开始执行
+          eventEmitter.onSubAgentEvent({
+            type: 'tool_call',
+            name: toolName,
+            depth: newDepth,
+            toolName: chunk.toolCall.name,
+            arguments: chunk.toolCall.arguments,
+          });
+        } else if (chunk.toolResult) {
+          // 该子代理自身的 tool 执行完成（含错误串——tool 失败自然冒泡）
+          eventEmitter.onSubAgentEvent({
+            type: 'tool_result',
+            name: toolName,
+            depth: newDepth,
+            toolName: chunk.toolResult.name,
+            result: chunk.toolResult.result,
+          });
         } else if (
           (typeof chunk.deltaContent === 'string' && chunk.deltaContent.length > 0) ||
           (typeof chunk.deltaReasoning === 'string' && chunk.deltaReasoning.length > 0)
         ) {
           // 该子代理自身 LLM 的增量
-          deltaEmitter.onSubAgentDelta({
+          eventEmitter.onSubAgentEvent({
+            type: 'delta',
             name: toolName,
             depth: newDepth,
             deltaContent: chunk.deltaContent,

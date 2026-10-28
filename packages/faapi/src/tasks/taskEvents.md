@@ -6,7 +6,7 @@
 
 任务内组装跑 agent（长产线跑几十分钟、几十轮 LLM 调用）时过程对管理面是黑盒：
 
-- 对话内派发有框架级链路——`agent.stream` 冒泡 `deltaReasoning`/`toolCall`/`subagentDelta`，业务消费后广播成对话流水；
+- 对话内派发有框架级链路——`agent.stream` 冒泡 `deltaReasoning`/`toolCall`/`subagentEvent`（子代理中间事件统一通道），业务消费后广播成对话流水；
 - 任务侧没有对等出口——`taskCtx.progress(value)` 是**单值覆盖槽**（派发清空、终态忽略、`list()` 只见最新值），不是事件流也不可订阅；`TaskClient.list/listQueued` 只回任务记录快照，无事件历史、无流式订阅。
 
 业务要展示任务过程只能各自手搓 transport（worker→宿主克隆纪律、取消/重试时的事件口径、有界缓冲），每家一遍必然漂移。事件是**传输机制而非业务知识**（事件数据本身才是业务知识），收编为框架原语后业务只管发射与消费。

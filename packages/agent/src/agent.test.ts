@@ -2883,8 +2883,8 @@ describe('Agent', () => {
     });
   });
 
-  describe('stream 路径 subagentDelta 冒泡', () => {
-    it('子代理循环的 deltaContent/deltaReasoning 实时冒泡为 subagentDelta chunk', async () => {
+  describe('stream 路径 subagentEvent 冒泡', () => {
+    it('子代理 LLM 增量实时冒泡为 subagentEvent（type: delta）chunk', async () => {
       // chunk 按消费序：父轮1(tool_call) → 子轮1(thinking+内容) → 父轮2(最终回答)
       const { provider, streamCalls } = createMockStreamProvider([
         [
@@ -2906,24 +2906,24 @@ describe('Agent', () => {
 
       const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
 
-      // 顺序：toolCall → subagentDelta×2 → toolResult → 父 deltaContent → done
+      // 顺序：toolCall → subagentEvent×2 → toolResult → 父 deltaContent → done
       const kind = chunks.map((c) =>
         c.toolCall
           ? 'call'
-          : c.subagentDelta
-            ? 'delta'
+          : c.subagentEvent
+            ? 'event'
             : c.toolResult
               ? 'result'
               : c.done
                 ? 'done'
                 : 'llm',
       );
-      expect(kind).toEqual(['call', 'delta', 'delta', 'result', 'llm', 'done']);
+      expect(kind).toEqual(['call', 'event', 'event', 'result', 'llm', 'done']);
 
-      const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
-      expect(deltas).toEqual([
-        { name: 'agent-writer', depth: 2, deltaReasoning: '子思考' },
-        { name: 'agent-writer', depth: 2, deltaContent: '子内容' },
+      const events = chunks.filter((c) => c.subagentEvent).map((c) => c.subagentEvent!);
+      expect(events).toEqual([
+        { type: 'delta', name: 'agent-writer', depth: 2, deltaReasoning: '子思考' },
+        { type: 'delta', name: 'agent-writer', depth: 2, deltaContent: '子内容' },
       ]);
 
       // done/toolResult 不回归;子循环 usage 上卷（mock 子流无 usage → done.usage undefined）
@@ -2933,13 +2933,93 @@ describe('Agent', () => {
       expect(streamCalls).toHaveBeenCalledTimes(3);
     });
 
-    it('两层嵌套 depth 递增（子 = 2,孙 = 3）,冒泡顺序即实际执行顺序', async () => {
+    it('子代理调用常规 tool 实时冒泡为 tool_call/tool_result 事件（depth = 2）', async () => {
+      const { provider } = createMockStreamProvider([
+        // 父轮1:调 agent-writer
+        [
+          {
+            toolCalls: [toolCall('c1', 'agent-writer', { input: '查' })],
+            finishReason: 'tool_calls',
+          },
+        ],
+        // 子 writer 轮1:调 read_file
+        [
+          {
+            toolCalls: [toolCall('d1', 'read_file', { path: 'a.txt' })],
+            finishReason: 'tool_calls',
+          },
+        ],
+        // 子 writer 轮2:回答
+        [{ deltaContent: '子内容', finishReason: 'stop' }],
+        // 父轮2:回答
+        [{ deltaContent: 'final', finishReason: 'stop' }],
+      ]);
+      const readMeta = toolMeta({
+        name: 'read_file',
+        functionName: 'readFile',
+        filePath: 'dist/tools/fs/read.js',
+        description: '读文件',
+      });
+      const deps = createDeps({
+        provider,
+        agent: agentMeta({ agents: ['writer'] }),
+        subAgents: [agentMeta({ name: 'writer', systemPrompt: 'sub', tools: ['read_file'] })],
+        tools: [readMeta],
+        loadToolModuleImpl: async (_filePath, functionName) => ({
+          functionName,
+          handler: async () => '文件内容',
+        }),
+      });
+      // 默认 resolveAgentTools 只解析根——writer 的 tool 声明单独接线
+      deps.resolveAgentTools = (name: string) => (name === 'writer' ? [readMeta] : []);
+      const agent = new Agent(deps);
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      // 顺序：父 toolCall → 子 tool_call 事件 → 子 tool_result 事件 → 子 delta 事件 → 父 toolResult → 父 delta → done
+      const kind = chunks.map((c) =>
+        c.toolCall
+          ? 'call'
+          : c.subagentEvent
+            ? 'event'
+            : c.toolResult
+              ? 'result'
+              : c.done
+                ? 'done'
+                : 'llm',
+      );
+      expect(kind).toEqual(['call', 'event', 'event', 'event', 'result', 'llm', 'done']);
+
+      const events = chunks.filter((c) => c.subagentEvent).map((c) => c.subagentEvent!);
+      expect(events).toEqual([
+        {
+          type: 'tool_call',
+          name: 'agent-writer',
+          depth: 2,
+          toolName: 'read_file',
+          arguments: { path: 'a.txt' },
+        },
+        {
+          type: 'tool_result',
+          name: 'agent-writer',
+          depth: 2,
+          toolName: 'read_file',
+          result: '文件内容',
+        },
+        { type: 'delta', name: 'agent-writer', depth: 2, deltaContent: '子内容' },
+      ]);
+      expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
+    });
+
+    it('两层嵌套 depth 递增（子 = 2,孙 = 3）,派发调用与孙代工具事件全链冒泡且有序', async () => {
       const { provider } = createMockStreamProvider([
         // 父轮1:调 agent.a
         [{ toolCalls: [toolCall('c1', 'agent-a', { input: 'x' })], finishReason: 'tool_calls' }],
         // a 轮1:调 agent.b
         [{ toolCalls: [toolCall('d1', 'agent-b', { input: 'y' })], finishReason: 'tool_calls' }],
-        // b 轮:直接回答
+        // b 轮1:调 echo 工具
+        [{ toolCalls: [toolCall('e1', 'echo', { v: 1 })], finishReason: 'tool_calls' }],
+        // b 轮2:回答
         [{ deltaContent: '孙产出', finishReason: 'stop' }],
         // a 轮2:回答
         [{ deltaContent: '子产出', finishReason: 'stop' }],
@@ -2947,26 +3027,50 @@ describe('Agent', () => {
         [{ deltaContent: 'final', finishReason: 'stop' }],
       ]);
       const aMeta = agentMeta({ name: 'a', systemPrompt: 'a' });
-      const bMeta = agentMeta({ name: 'b', systemPrompt: 'b' });
+      const bMeta = agentMeta({ name: 'b', systemPrompt: 'b', tools: ['echo'] });
+      const echoMeta = toolMeta({
+        name: 'echo',
+        functionName: 'echo',
+        filePath: 'dist/tools/debug/echo.js',
+        description: '回显',
+      });
       const deps = createDeps({
         provider,
         agent: agentMeta({ agents: ['a'] }),
         subAgents: [aMeta],
+        tools: [echoMeta],
+        loadToolModuleImpl: async (_filePath, functionName) => ({
+          functionName,
+          handler: async (args) => `echo:${(args as { v: number }).v}`,
+        }),
       });
-      // createDeps 默认只挂根的 sub-agents/getAgent——覆盖为两层解析
+      // createDeps 默认只挂根的 sub-agents/getAgent——覆盖为两层解析;b 另有 echo tool
       deps.resolveSubAgents = (name: string) =>
         name === 'researcher' ? [aMeta] : name === 'a' ? [bMeta] : [];
       deps.getAgent = (name: string) =>
         name === 'researcher' ? agentMeta({ agents: ['a'] }) : name === 'a' ? aMeta : bMeta;
+      deps.resolveAgentTools = (name: string) => (name === 'b' ? [echoMeta] : []);
       const agent = new Agent(deps);
 
       const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
 
-      const deltas = chunks.filter((c) => c.subagentDelta).map((c) => c.subagentDelta!);
-      // b 先产出（a 在等 b 的 toolResult）,然后 a 产出
-      expect(deltas.map((d) => [d.name, d.depth, d.deltaContent])).toEqual([
-        ['agent-b', 3, '孙产出'],
-        ['agent-a', 2, '子产出'],
+      const events = chunks.filter((c) => c.subagentEvent).map((c) => c.subagentEvent!);
+      // 单队列保序：a 派发 b（a 循环的 tool call）→ b 调 echo → echo 结果 → b 产出
+      // → a 的派发 tool_result（b 完成）→ a 产出。孙代事件（depth=3）经 a 侧包装后
+      // 父侧原样透传,name/depth 已由所属循环标注
+      expect(events).toEqual([
+        {
+          type: 'tool_call',
+          name: 'agent-a',
+          depth: 2,
+          toolName: 'agent-b',
+          arguments: { input: 'y' },
+        },
+        { type: 'tool_call', name: 'agent-b', depth: 3, toolName: 'echo', arguments: { v: 1 } },
+        { type: 'tool_result', name: 'agent-b', depth: 3, toolName: 'echo', result: 'echo:1' },
+        { type: 'delta', name: 'agent-b', depth: 3, deltaContent: '孙产出' },
+        { type: 'tool_result', name: 'agent-a', depth: 2, toolName: 'agent-b', result: '孙产出' },
+        { type: 'delta', name: 'agent-a', depth: 2, deltaContent: '子产出' },
       ]);
       expect(chunks.at(-1)!.done).toMatchObject({ content: 'final' });
     });

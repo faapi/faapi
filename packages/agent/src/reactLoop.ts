@@ -42,34 +42,60 @@ import {
  * （`__trace` 标记,无用量字段）仍兼容识别,但不上卷用量。
  */
 /**
- * 嵌套子代理循环的增量（流式父循环冒泡透出）
+ * 嵌套子代理循环的中间事件（流式父循环冒泡透出）
  *
- * 仅流式路径产生；`depth` 与 `maxAgentDepth` 口径一致（根循环 = 1,首次嵌套的
- * 子代理 = 2）。`deltaContent` / `deltaReasoning` 至少存在其一。
+ * 单一通道承载三形态（`type` 判别）：LLM 增量（delta）、tool 开始执行（tool_call）、
+ * tool 执行完成（tool_result）。仅流式路径产生；`depth` 与 `maxAgentDepth` 口径
+ * 一致（根循环 = 1,首次嵌套的子代理 = 2）。
  */
-export interface SubAgentDelta {
-  /** 发起调用的派发 tool 名（agent-<name>） */
-  name: string;
-  /** 该子代理循环的递归深度（根 = 1） */
-  depth: number;
-  deltaContent?: string;
-  deltaReasoning?: string;
-}
+export type SubAgentEvent =
+  | {
+      /** 事件形态判别：LLM 增量（`deltaContent` / `deltaReasoning` 至少存在其一） */
+      type: 'delta';
+      /** 发起调用的派发 tool 名（agent-<name>） */
+      name: string;
+      /** 该子代理循环的递归深度（根 = 1） */
+      depth: number;
+      deltaContent?: string;
+      deltaReasoning?: string;
+    }
+  | {
+      /** 事件形态判别：子代理的 tool 开始执行（含其派发孙代理的 agent-<孙名>——派发也是 tool call） */
+      type: 'tool_call';
+      /** 发起调用的派发 tool 名（agent-<name>） */
+      name: string;
+      /** 该子代理循环的递归深度（根 = 1） */
+      depth: number;
+      /** 子代理自己调用的 tool 名 */
+      toolName: string;
+      arguments: Record<string, unknown>;
+    }
+  | {
+      /** 事件形态判别：子代理的 tool 执行完成（含错误串——tool 失败自然冒泡,无专用错误通道） */
+      type: 'tool_result';
+      /** 发起调用的派发 tool 名（agent-<name>） */
+      name: string;
+      /** 该子代理循环的递归深度（根 = 1） */
+      depth: number;
+      /** 子代理自己调用的 tool 名 */
+      toolName: string;
+      result: string;
+    };
 
 /**
- * delta 冒泡出口：executeTool 执行 sub-agent 时回调透出嵌套循环增量
+ * 子代理事件冒泡出口：executeTool 执行 sub-agent 时回调透出嵌套循环中间事件
  *
  * 仅流式父循环传入（`reactLoopStream` 的 tool 执行段构造 emitter 经第三参下发）；
  * 非流式 `reactLoop` 不传（结果一次性返回,无冒泡需求）。
  */
-export interface SubAgentDeltaEmitter {
-  onSubAgentDelta(delta: SubAgentDelta): void;
+export interface SubAgentEventEmitter {
+  onSubAgentEvent(event: SubAgentEvent): void;
 }
 
 export type ToolExecutor = (
   name: string,
   args: Record<string, unknown>,
-  deltaEmitter?: SubAgentDeltaEmitter,
+  eventEmitter?: SubAgentEventEmitter,
 ) => Promise<unknown | SubAgentToolResult>;
 
 /**
@@ -237,6 +263,7 @@ export interface ReactLoopResult {
  * - `deltaReasoning` — LLM 推理内容增量（thinking 模型，含中间 tool 轮）
  * - `toolCall` — tool 开始执行
  * - `toolResult` — tool 执行完成
+ * - `subagentEvent` — 嵌套子代理循环的中间事件（实时冒泡,见「子代理事件冒泡」）
  * - `traceEvent` — trace 事件（`enableTracing=true` 时增量推送,与上述字段互斥）
  * - `done` — 循环结束（只 yield 一次）
  */
@@ -250,13 +277,13 @@ export interface ReactLoopStreamChunk {
   /** tool 执行完成（含结果） */
   toolResult?: { name: string; result: string };
   /**
-   * 嵌套子代理循环的增量（冒泡透传;仅流式路径）。
-   * 详见 reactLoop.md「子代理 delta 冒泡」章节。
+   * 嵌套子代理循环的中间事件（冒泡透传;仅流式路径）。
+   * 详见 reactLoop.md「子代理事件冒泡」章节。
    */
-  subagentDelta?: SubAgentDelta;
+  subagentEvent?: SubAgentEvent;
   /**
    * trace 事件（`enableTracing=true` 时增量推送）。
-   * 与 deltaContent / deltaReasoning / toolCall / toolResult / subagentDelta / done 互斥,一个 chunk 至多一个字段。
+   * 与 deltaContent / deltaReasoning / toolCall / toolResult / subagentEvent / done 互斥,一个 chunk 至多一个字段。
    */
   traceEvent?: AgentTraceEvent;
   /** 循环结束 */
@@ -1082,15 +1109,15 @@ export async function* reactLoopStream(
       let rawResult: unknown | TracingToolResult;
       let toolErr: unknown;
       let hasError = false;
-      // 子代理 delta 泵（fire-and-drain）：`await executeTool` 期间 async generator
-      // 挂起无法 yield——先 fire 执行（携带 emitter,执行方 push 进队列并唤醒）,
-      // generator 侧循环 drain 队列逐个 yield subagentDelta,执行完成后 flush 剩余。
-      // 错误延后到 drain 结束后 await 重抛,走既有 tool 错误路径（已 emit 的 delta 不丢）
-      const pendingDeltas: SubAgentDelta[] = [];
+      // 子代理事件泵（fire-and-drain）：`await executeTool` 期间 async generator
+      // 挂起无法 yield——先 fire 执行（携带 emitter,执行方 push 进单队列并唤醒）,
+      // generator 侧循环 drain 队列逐个 yield subagentEvent,执行完成后 flush 剩余。
+      // 错误延后到 drain 结束后 await 重抛,走既有 tool 错误路径（已 emit 的事件不丢）
+      const pendingEvents: SubAgentEvent[] = [];
       let wakeDrain: (() => void) | null = null;
-      const deltaEmitter: SubAgentDeltaEmitter = {
-        onSubAgentDelta: (delta) => {
-          pendingDeltas.push(delta);
+      const eventEmitter: SubAgentEventEmitter = {
+        onSubAgentEvent: (event) => {
+          pendingEvents.push(event);
           const wake = wakeDrain;
           wakeDrain = null;
           wake?.();
@@ -1099,14 +1126,14 @@ export async function* reactLoopStream(
       try {
         args = parseToolCallArguments(toolCall);
         yield { toolCall: { name: toolName, arguments: args } };
-        const toolPromise = config.executeTool(toolName, args, deltaEmitter);
+        const toolPromise = config.executeTool(toolName, args, eventEmitter);
         const settled = toolPromise.then(
           () => true,
           () => true, // 错误延后重抛,此处只关心执行结束以收尾 drain
         );
         drain: for (;;) {
-          while (pendingDeltas.length > 0) {
-            yield { subagentDelta: pendingDeltas.shift()! };
+          while (pendingEvents.length > 0) {
+            yield { subagentEvent: pendingEvents.shift()! };
           }
           if (await Promise.race([settled, new Promise<void>((r) => (wakeDrain = r))])) {
             break drain;
