@@ -44,15 +44,15 @@ const DEFAULT_KEEP_AGE_SECONDS = 7 * 24 * 3600;
 /**
  * 框架元数据的载荷包装（组标识 / 链键 / 挂起激活 / 执行上下文的传输载体）
  *
- * BullMQ 的 job 除 data（payload）外无任意元数据字段，组标识/链键/激活上下文随
- * 载荷一起存储：`enqueue(opts.groupId / opts.chainKey / opts.resumeState / opts.carry)`
+ * BullMQ 的 job 除 data（payload）外无任意元数据字段，批量标识/激活上下文随
+ * 载荷一起存储：`enqueue(opts.groupId / opts.resumeState / opts.carry)`
  * 时包装、worker 交付 / getJobs 查询时还原。仅带元数据的任务包装（存量行为不变）；
  * 包装对业务不可见，`TaskDriverRecord.payload` 恒为业务原始 payload。业务 payload
  * 恰为该形状（保留键 + 无其他键）会被误解包——保留键为框架命名空间，业务 payload
  * 不应占用。
  */
 const GROUP_KEY = '__faapiGroup';
-const CHAIN_KEY = '__faapiChain';
+const GROUP_INDEX_KEY = '__faapiGroupIndex';
 const RESUME_KEY = '__faapiResume';
 const CARRY_KEY = '__faapiCarry';
 const PAYLOAD_KEY = '__faapiPayload';
@@ -61,7 +61,7 @@ const PAYLOAD_KEY = '__faapiPayload';
 function wrapMetaPayload(
   meta: {
     groupId?: string;
-    chainKey?: string;
+    groupIndex?: number;
     resumeState?: unknown;
     carry?: Record<string, unknown>;
   },
@@ -69,7 +69,7 @@ function wrapMetaPayload(
 ): object {
   return {
     ...(meta.groupId !== undefined ? { [GROUP_KEY]: meta.groupId } : {}),
-    ...(meta.chainKey !== undefined ? { [CHAIN_KEY]: meta.chainKey } : {}),
+    ...(meta.groupIndex !== undefined ? { [GROUP_INDEX_KEY]: meta.groupIndex } : {}),
     ...(meta.resumeState !== undefined ? { [RESUME_KEY]: meta.resumeState } : {}),
     ...(meta.carry !== undefined ? { [CARRY_KEY]: meta.carry } : {}),
     [PAYLOAD_KEY]: payload,
@@ -79,14 +79,14 @@ function wrapMetaPayload(
 function unwrapMetaPayload(data: unknown): {
   payload: unknown;
   groupId?: string;
-  chainKey?: string;
+  groupIndex?: number;
   resumeState?: unknown;
   carry?: Record<string, unknown>;
 } {
   if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
     const wrapped = data as Record<string, unknown>;
     const hasGroup = typeof wrapped[GROUP_KEY] === 'string';
-    const hasChain = typeof wrapped[CHAIN_KEY] === 'string';
+    const hasGroupIndex = typeof wrapped[GROUP_INDEX_KEY] === 'number';
     const hasResume =
       typeof wrapped[RESUME_KEY] === 'object' &&
       wrapped[RESUME_KEY] !== null &&
@@ -96,7 +96,7 @@ function unwrapMetaPayload(data: unknown): {
       wrapped[CARRY_KEY] !== null &&
       !Array.isArray(wrapped[CARRY_KEY]);
     const metaCount =
-      (hasGroup ? 1 : 0) + (hasChain ? 1 : 0) + (hasResume ? 1 : 0) + (hasCarry ? 1 : 0);
+      (hasGroup ? 1 : 0) + (hasGroupIndex ? 1 : 0) + (hasResume ? 1 : 0) + (hasCarry ? 1 : 0);
     if (
       metaCount > 0 &&
       wrapped[PAYLOAD_KEY] !== undefined &&
@@ -105,7 +105,7 @@ function unwrapMetaPayload(data: unknown): {
       return {
         payload: wrapped[PAYLOAD_KEY],
         ...(hasGroup ? { groupId: wrapped[GROUP_KEY] as string } : {}),
-        ...(hasChain ? { chainKey: wrapped[CHAIN_KEY] as string } : {}),
+        ...(hasGroupIndex ? { groupIndex: wrapped[GROUP_INDEX_KEY] as number } : {}),
         ...(hasResume ? { resumeState: wrapped[RESUME_KEY] } : {}),
         ...(hasCarry ? { carry: wrapped[CARRY_KEY] as Record<string, unknown> } : {}),
       };
@@ -115,36 +115,62 @@ function unwrapMetaPayload(data: unknown): {
 }
 
 /**
+ * 成员 hash 值编码：'p:<index>'（串行序列成员——index 为 0 基成员序号，settle 推进
+ * 激活指针的依据）| 'pending'（并行批次成员）| 's:<outcome>'（已落定）。
+ */
+const memberPendingValue = (groupIndex?: number): string =>
+  groupIndex !== undefined ? `p:${groupIndex}` : 'pending';
+const isMemberPending = (value: string): boolean => value === 'pending' || value.startsWith('p:');
+
+/**
  * 任务组记账存储（两组 Redis key，经 `Queue.client` 复用驱动连接——不加新连接）：
- * - `<prefix>:group:<id>`：组行（task/total/计数器/onComplete/onFailure/completionEnqueued）
- * - `<prefix>:group-members:<id>`：成员行（jobId → 'pending' | 's:<outcome>'），
+ * - `<prefix>:group:<id>`：批量行（task/total/计数器/onComplete/onFailure/completionEnqueued
+ *   + mode/nextIndex/payloads/carry 批量任务扩展）
+ * - `<prefix>:group-members:<id>`：成员行（jobId → 'pending' | 'p:<index>' | 's:<outcome>'），
  *   落定记账的幂等守卫（同一成员重复 settle 不重复计数）
  *
  * 组记录常驻 Redis（框架不自动清理——自动删业务可能还要查的记账是静默丢数据），
  * 业务方按保留策略自行清理。
  */
 
-/** 组记账 Lua：原子 create（同 id 参数一致幂等返回 0 / 不一致返回 -1） */
+/**
+ * 批量记账 Lua：原子 create（同 id 参数一致幂等返回 0 / 不一致返回 -1）。
+ * ARGV: [task, total, onComplete, onFailure, mode, payloadsJSON, carryJSON]——
+ * mode/payloads/carry 为批量任务（taskBatch.md）扩展。
+ */
 const LUA_CREATE = `
 if redis.call('EXISTS', KEYS[1]) == 1 then
   if redis.call('HGET', KEYS[1], 'task') == ARGV[1]
     and redis.call('HGET', KEYS[1], 'total') == ARGV[2]
     and (redis.call('HGET', KEYS[1], 'onComplete') or '') == ARGV[3]
-    and redis.call('HGET', KEYS[1], 'onFailure') == ARGV[4] then
+    and redis.call('HGET', KEYS[1], 'onFailure') == ARGV[4]
+    and (redis.call('HGET', KEYS[1], 'mode') or 'parallel') == ARGV[5]
+    and (redis.call('HGET', KEYS[1], 'payloads') or '') == ARGV[6]
+    and (redis.call('HGET', KEYS[1], 'carry') or '') == ARGV[7] then
     return 0
   end
   return -1
 end
 redis.call('HSET', KEYS[1],
   'task', ARGV[1], 'total', ARGV[2], 'onComplete', ARGV[3], 'onFailure', ARGV[4],
-  'done', 0, 'failed', 0, 'cancelled', 0, 'completionEnqueued', 0)
+  'mode', ARGV[5], 'payloads', ARGV[6], 'carry', ARGV[7],
+  'done', 0, 'failed', 0, 'cancelled', 0, 'completionEnqueued', 0, 'nextIndex', 0)
 return 1`;
 
-/** 组记账 Lua：原子 settle（成员行守卫幂等 + 计数递增；返回记账后计数） */
+/**
+ * 批量记账 Lua：原子 settle（成员行守卫幂等 + 计数递增 + serial 激活指针推进；
+ * 返回行 = [changed, done, failed, cancelled, total, onComplete, onFailure, ce,
+ * mode, nextIndex(-1 无 next), nextPayloadJSON('' 无), nextCarryJSON('' 无)]）。
+ * 成员值 'p:<index>' 携带序号——serial 且非 fail-fast+failed 时按 GREATEST 语义
+ * 推进 nextIndex，真推进且未到顶时返回下一条（payloads/carry 从序列行 JSON 解码）。
+ * 落定即激活与记账同一脚本原子，无两步窗口。
+ */
 const LUA_SETTLE = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return {-1} end
 local prev = redis.call('HGET', KEYS[2], ARGV[1])
-if prev and prev ~= 'pending' then
+local mode = redis.call('HGET', KEYS[1], 'mode') or 'parallel'
+local pending = prev and (prev == 'pending' or string.sub(prev, 1, 2) == 'p:')
+if prev and not pending then
   return {0,
     tonumber(redis.call('HGET', KEYS[1], 'done')) or 0,
     tonumber(redis.call('HGET', KEYS[1], 'failed')) or 0,
@@ -152,10 +178,37 @@ if prev and prev ~= 'pending' then
     tonumber(redis.call('HGET', KEYS[1], 'total')) or 0,
     redis.call('HGET', KEYS[1], 'onComplete') or '',
     redis.call('HGET', KEYS[1], 'onFailure') or 'run-to-completion',
-    tonumber(redis.call('HGET', KEYS[1], 'completionEnqueued')) or 0}
+    tonumber(redis.call('HGET', KEYS[1], 'completionEnqueued')) or 0,
+    mode, -1, '', ''}
 end
 redis.call('HSET', KEYS[2], ARGV[1], 's:' .. ARGV[2])
 redis.call('HINCRBY', KEYS[1], ARGV[2], 1)
+local nextIdx, nextPayload, nextCarry = -1, '', ''
+local onFailure = redis.call('HGET', KEYS[1], 'onFailure') or 'run-to-completion'
+if mode == 'serial' and not (ARGV[2] == 'failed' and onFailure == 'fail-fast')
+  and prev and string.sub(prev, 1, 2) == 'p:' then
+  local memberIndex = tonumber(string.sub(prev, 3))
+  if memberIndex then
+    local cur = tonumber(redis.call('HGET', KEYS[1], 'nextIndex')) or 0
+    local candidate = math.max(cur, memberIndex + 1)
+    if candidate > cur then
+      redis.call('HSET', KEYS[1], 'nextIndex', candidate)
+      local total = tonumber(redis.call('HGET', KEYS[1], 'total')) or 0
+      if candidate < total then
+        local payloads = redis.call('HGET', KEYS[1], 'payloads')
+        if payloads and payloads ~= '' then
+          local ok, decoded = pcall(cjson.decode, payloads)
+          if ok and type(decoded) == 'table' and decoded[candidate + 1] ~= nil then
+            nextIdx = candidate
+            nextPayload = cjson.encode(decoded[candidate + 1])
+            local carry = redis.call('HGET', KEYS[1], 'carry')
+            if carry and carry ~= '' then nextCarry = carry end
+          end
+        end
+      end
+    end
+  end
+end
 return {1,
   tonumber(redis.call('HGET', KEYS[1], 'done')) or 0,
   tonumber(redis.call('HGET', KEYS[1], 'failed')) or 0,
@@ -163,7 +216,32 @@ return {1,
   tonumber(redis.call('HGET', KEYS[1], 'total')) or 0,
   redis.call('HGET', KEYS[1], 'onComplete') or '',
   redis.call('HGET', KEYS[1], 'onFailure') or 'run-to-completion',
-  tonumber(redis.call('HGET', KEYS[1], 'completionEnqueued')) or 0}`;
+  tonumber(redis.call('HGET', KEYS[1], 'completionEnqueued')) or 0,
+  mode, nextIdx, nextPayload, nextCarry}`;
+
+/**
+ * 批量记账 Lua：serial fail-fast 补齐落定（按计数差值补 outcome，未激活成员无成员行；
+ * 差值 > 0 守卫幂等）。ARGV: [outcome]。返回行布局同 LUA_SETTLE。
+ */
+const LUA_SETTLE_REMAINING = `
+if redis.call('EXISTS', KEYS[1]) == 0 then return {-1} end
+local done = tonumber(redis.call('HGET', KEYS[1], 'done')) or 0
+local failed = tonumber(redis.call('HGET', KEYS[1], 'failed')) or 0
+local cancelled = tonumber(redis.call('HGET', KEYS[1], 'cancelled')) or 0
+local total = tonumber(redis.call('HGET', KEYS[1], 'total')) or 0
+local diff = total - done - failed - cancelled
+if diff > 0 then
+  redis.call('HINCRBY', KEYS[1], ARGV[1], diff)
+end
+return {1,
+  tonumber(redis.call('HGET', KEYS[1], 'done')) or 0,
+  tonumber(redis.call('HGET', KEYS[1], 'failed')) or 0,
+  tonumber(redis.call('HGET', KEYS[1], 'cancelled')) or 0,
+  total,
+  redis.call('HGET', KEYS[1], 'onComplete') or '',
+  redis.call('HGET', KEYS[1], 'onFailure') or 'run-to-completion',
+  tonumber(redis.call('HGET', KEYS[1], 'completionEnqueued')) or 0,
+  redis.call('HGET', KEYS[1], 'mode') or 'parallel', -1, '', ''}`;
 
 /** 组记账 Lua：原子 unsettle（成员行守卫 + 按原 outcome 递减；未落定 no-op） */
 const LUA_UNSETTLE = `
@@ -187,6 +265,7 @@ const GROUP_CREATE_CMD = 'faapiGroupCreate';
 const GROUP_SETTLE_CMD = 'faapiGroupSettle';
 const GROUP_UNSETTLE_CMD = 'faapiGroupUnsettle';
 const GROUP_HSETNX_CMD = 'faapiGroupMemberHsetnx';
+const GROUP_SETTLE_REMAINING_CMD = 'faapiGroupSettleRemaining';
 
 /**
  * faapi 任务队列 BullMQ 驱动（Redis 持久化队列）
@@ -258,10 +337,20 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
     client.defineCommand(GROUP_SETTLE_CMD, { numberOfKeys: 2, lua: LUA_SETTLE });
     client.defineCommand(GROUP_UNSETTLE_CMD, { numberOfKeys: 2, lua: LUA_UNSETTLE });
     client.defineCommand(GROUP_HSETNX_CMD, { numberOfKeys: 1, lua: LUA_HSETNX });
+    client.defineCommand(GROUP_SETTLE_REMAINING_CMD, {
+      numberOfKeys: 1,
+      lua: LUA_SETTLE_REMAINING,
+    });
     return client;
   }
 
-  /** settle Lua 返回行（[changed, done, failed, cancelled, total, onComplete, onFailure, ce]）→ 快照 */
+  /**
+   * settle/settleRemaining Lua 返回行 → 快照。
+   * 行布局：[changed, done, failed, cancelled, total, onComplete, onFailure, ce,
+   * mode, nextIndex(-1 无 next), nextPayloadJSON('' 无), nextCarryJSON('' 无)]——
+   * 尾部四列为 serial 激活字段（与 pgboss settle CTE RETURNING 的 member_idx /
+   * next_payload 同语义，落定即激活）。
+   */
   function settleRowToSnapshot(groupId: string, row: unknown[]): TaskGroupSnapshot {
     const num = (i: number) => Number(row[i]);
     const done = num(1);
@@ -271,6 +360,12 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
     const onComplete = String(row[5] ?? '');
     const onFailure = String(row[6] ?? 'run-to-completion');
     const completionEnqueued = num(7) === 1;
+    const execution = (row.length > 8 ? String(row[8] ?? 'parallel') : 'parallel') as
+      | 'serial'
+      | 'parallel';
+    const nextIdx = row.length > 9 ? num(9) : -1;
+    const nextPayloadRaw = row.length > 10 ? String(row[10] ?? '') : '';
+    const nextCarryRaw = row.length > 11 ? String(row[11] ?? '') : '';
     const settled = done + failed + cancelled;
     return {
       groupId,
@@ -284,6 +379,19 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
       completionEnqueued,
       ...(onComplete !== '' ? { onComplete } : {}),
       onFailure: onFailure as TaskGroupSnapshot['onFailure'],
+      execution,
+      ...(execution === 'serial' ? { nextIndex: nextIdx >= 0 ? nextIdx : 0 } : {}),
+      ...(nextIdx >= 0 && nextPayloadRaw !== ''
+        ? {
+            next: {
+              index: nextIdx,
+              payload: JSON.parse(nextPayloadRaw) as unknown,
+              ...(nextCarryRaw !== ''
+                ? { carry: JSON.parse(nextCarryRaw) as Record<string, unknown> }
+                : {}),
+            },
+          }
+        : {}),
     };
   }
 
@@ -327,6 +435,12 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
     return {
       async create(decl: TaskDriverGroupCreate): Promise<void> {
         const c = await groupClient();
+        if (decl.mode === 'serial' && !Array.isArray(decl.payloads)) {
+          throw new Error(
+            `[faapi] Task sequence "${decl.id}" (mode=serial) requires payloads — ` +
+              'a sequence persists its member payloads for deferred activation.',
+          );
+        }
         const result = (await c.runCommand(GROUP_CREATE_CMD, [
           groupKey(decl.id),
           groupMembersKey(decl.id),
@@ -334,15 +448,19 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           String(decl.total),
           decl.onComplete ?? '',
           decl.onFailure,
+          decl.mode,
+          JSON.stringify(decl.payloads ?? null),
+          JSON.stringify(decl.carry ?? null),
         ])) as number;
         if (result === 0) return;
         if (result === -1) {
           // 同 id 已存在且参数漂移——静默沿用旧声明会让 fan-in 指向错误的回调任务
           const existing = (await c.hgetall(groupKey(decl.id))) as Record<string, string>;
           throw new Error(
-            `[faapi] Task group "${decl.id}" already exists with different options ` +
+            `[faapi] Task batch "${decl.id}" already exists with different options ` +
               `(existing: task=${existing.task}, total=${existing.total}, ` +
-              `onComplete=${existing.onComplete || '(none)'}, onFailure=${existing.onFailure})`,
+              `onComplete=${existing.onComplete || '(none)'}, onFailure=${existing.onFailure}, ` +
+              `mode=${existing.mode ?? 'parallel'})`,
           );
         }
       },
@@ -385,6 +503,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         const cancelled = Number(row.cancelled ?? 0);
         const total = Number(row.total ?? 0);
         const settled = done + failed + cancelled;
+        const execution = (row.mode ?? 'parallel') as TaskGroupSnapshot['execution'];
         return {
           groupId,
           task: row.task ?? '',
@@ -397,7 +516,21 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           completionEnqueued: row.completionEnqueued === '1',
           ...(row.onComplete ? { onComplete: row.onComplete } : {}),
           onFailure: (row.onFailure ?? 'run-to-completion') as TaskGroupSnapshot['onFailure'],
+          execution,
+          ...(execution === 'serial' ? { nextIndex: Number(row.nextIndex ?? 0) } : {}),
         };
+      },
+
+      async settleRemaining(groupId, outcome) {
+        const c = await groupClient();
+        const row = (await c.runCommand(GROUP_SETTLE_REMAINING_CMD, [
+          groupKey(groupId),
+          outcome,
+        ])) as unknown[];
+        if (Number(row[0]) === -1) {
+          throw new Error(`[faapi] Task batch "${groupId}" not found`);
+        }
+        return settleRowToSnapshot(groupId, row);
       },
 
       async cancelRemaining(groupId) {
@@ -405,12 +538,14 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         if (snap === undefined) {
           throw new Error(`[faapi] Task group "${groupId}" not found`);
         }
-        // 仅 fail-fast 组执行取消语义（run-to-completion 为 no-op，返回当前快照）
+        // 仅 fail-fast 并行批次执行取消语义（run-to-completion 为 no-op；
+        // serial 序列语义层走 settleRemaining——未激活成员无队列任务可取消）
         if (snap.onFailure !== 'fail-fast') return snap;
         const c = await groupClient();
         const members = (await c.hgetall(groupMembersKey(groupId))) as Record<string, string>;
         for (const [jobId, memberState] of Object.entries(members)) {
-          if (memberState !== 'pending') continue;
+          // 'pending' 与 'p:<index>'（serial）均为未落定
+          if (!isMemberPending(memberState)) continue;
           const job = await getQueue(snap.task).getJob(jobId);
           if (!job) continue;
           // 仅取消等待/延迟中的成员（在跑的自然跑完；仅此两状态取消语义可靠），
@@ -435,15 +570,15 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
       const queue = getQueue(name);
       const meta = {
         groupId: opts?.groupId,
-        chainKey: opts?.chainKey,
+        groupIndex: opts?.groupIndex,
         resumeState: opts?.resumeState,
         carry: opts?.carry,
       };
       const job = await queue.add(
         name,
-        // 组投递成员 / 链式任务 / 上下文携带以载荷包装携带元数据（交付时还原，业务 payload 不变）
+        // 批量成员 / 激活重投 / 上下文携带以载荷包装携带元数据（交付时还原，业务 payload 不变）
         meta.groupId !== undefined ||
-          meta.chainKey !== undefined ||
+          meta.groupIndex !== undefined ||
           meta.resumeState !== undefined ||
           meta.carry !== undefined
           ? wrapMetaPayload(meta, payload)
@@ -461,11 +596,16 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
         },
       );
       const id = job.id ?? crypto.randomUUID();
-      // 组投递成员登记（成员 hash = 落定记账的幂等守卫载体；set-if-absent——
-      // 幂等命中不覆盖已落定成员态，重复投递不重复登记）
+      // 批量成员登记（成员 hash = 落定记账的幂等守卫载体；set-if-absent——
+      // 幂等命中不覆盖已落定成员态，重复投递不重复登记）。串行序列成员值
+      // 'p:<index>' 携带序号（settle 推进激活指针的依据），并行批次为 'pending'
       if (opts?.groupId !== undefined) {
         const c = await groupClient();
-        await c.runCommand(GROUP_HSETNX_CMD, [groupMembersKey(opts.groupId), id, 'pending']);
+        await c.runCommand(GROUP_HSETNX_CMD, [
+          groupMembersKey(opts.groupId),
+          id,
+          memberPendingValue(opts.groupIndex),
+        ]);
       }
       return id;
     },
@@ -484,8 +624,8 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           // attemptsStarted 由 BullMQ 维护（首次执行为 1，重试递增，跨实例/重启准确）——
           // 进程内自计数会内存泄漏且多实例/重启后失真
           const attempt = job.attemptsStarted;
-          // 组投递成员 / 链式任务 / 激活重投 / 上下文携带：从载荷包装还原业务 payload 与元数据
-          const { payload, groupId, chainKey, resumeState, carry } = unwrapMetaPayload(job.data);
+          // 批量成员 / 激活重投 / 上下文携带：从载荷包装还原业务 payload 与元数据
+          const { payload, groupId, groupIndex, resumeState, carry } = unwrapMetaPayload(job.data);
           // 信号由驱动自管：stop 超时 abort（BullMQ 自身不提供执行中任务的取消能力）
           const controller = new AbortController();
           inflight.set(id, controller);
@@ -497,7 +637,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
               attempt,
               signal: controller.signal,
               ...(groupId !== undefined ? { groupId } : {}),
-              ...(chainKey !== undefined ? { chainKey } : {}),
+              ...(groupIndex !== undefined ? { groupIndex } : {}),
               ...(resumeState !== undefined ? { resumeState: resumeState as TaskResumeState } : {}),
               ...(carry !== undefined ? { carry } : {}),
             });
@@ -569,7 +709,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
           for (const job of jobs) {
             if (!job) continue;
             // 组投递成员 / 链式任务：从载荷包装还原业务 payload 与组/链标识（记录对业务不可见包装）
-            const { payload, groupId, chainKey, carry } = unwrapMetaPayload(job.data);
+            const { payload, groupId, groupIndex, carry } = unwrapMetaPayload(job.data);
             records.push({
               id: job.id ?? '',
               name: job.name,
@@ -581,7 +721,7 @@ export function createBullMQDriver(options: BullMQDriverOptions): TaskDriver {
                 : {}),
               ...(job.failedReason ? { error: job.failedReason } : {}),
               ...(groupId !== undefined ? { groupId } : {}),
-              ...(chainKey !== undefined ? { chainKey } : {}),
+              ...(groupIndex !== undefined ? { groupIndex } : {}),
               ...(carry !== undefined ? { carry } : {}),
               createdAt: job.timestamp,
               ...(job.processedOn ? { runAt: job.processedOn } : {}),

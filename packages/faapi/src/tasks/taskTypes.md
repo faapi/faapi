@@ -99,7 +99,7 @@ export interface AgentSnapshotRecord
 
 ## TaskContext.carry（执行上下文携带管道）与 taskCtx.agent（静默组装通道）
 
-`enqueue` / `enqueueGroup` / `enqueueChain` 的 `opts.carry` 声明**执行上下文快照**（身份/标记等纯数据，如 `carry: { currentUserId: ctx.currentUserId }`）：随任务 envelope 持久化（驱动载荷包装形态，跨实例/重启正确），执行端还原到 `taskCtx.carry`（两条路径均注入；未携带/旧格式任务归一为空对象）。**身份在它天然存在的地方声明一次，队列只搬运**（Sidekiq Current / Temporal headers 同款模式）：
+`enqueue` / `enqueueSequence` / `enqueueBatch` 的 `opts.carry` 声明**执行上下文快照**（身份/标记等纯数据，如 `carry: { currentUserId: ctx.currentUserId }`）：随任务 envelope 持久化（驱动载荷包装形态，跨实例/重启正确），执行端还原到 `taskCtx.carry`（两条路径均注入；未携带/旧格式任务归一为空对象）。**身份在它天然存在的地方声明一次，队列只搬运**（Sidekiq Current / Temporal headers 同款模式）：
 
 ```ts
 // HTTP handler 里入队——身份来自请求管线
@@ -127,7 +127,7 @@ export async function run(payload, taskCtx) {
 - **进程内路径**：活引用——直接调队列本体
 - **隔离路径**：worker 内代理对象——全方法经 `{ type: 'tasks-call' }` 消息回传宿主执行（宿主走完整 enqueue 通道：存在性检查 + payload 校验 + 驱动入队 + 本地记录），结果/错误按 seq 匹配回传；**参数与返回值须可结构化克隆**（不可克隆按执行错误处理，与 progress/log 同口径）；挂起的调用随任务超时两段式取消一并终止，无独立超时
 
-组投递 / fan-in / 记账语义见 [taskGroups.md](./taskGroups.md)。
+批量投递（串行有序 / 并行无序）/ fan-in / 记账语义见 [taskBatch.md](./taskBatch.md)。
 
 任务读 `src/resources/` 静态文件统一走主包免传参 `readResource`（相对路径 + 只能读 resources 内文件，详见 [readResource.md](../utils/readResource.md)）：进程内经 app 启动时的全局绑定即可读；隔离 worker 中读取根随快照播种到全局读取根，`readResource` 与 agent `systemPromptFile` 自动可用，无需手工传目录（`TaskQueueDeps.resourcesDir` 为内部字段，仅作隔离 worker 读取根播种的数据源，不进业务可见的 TaskContext）。
 

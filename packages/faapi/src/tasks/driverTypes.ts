@@ -27,10 +27,10 @@ export interface TaskDriverJob {
   attempt: number;
   /** 停机/取消信号；驱动不支持取消时为永不 abort 的信号 */
   signal: AbortSignal;
-  /** 所属任务组（组投递的成员任务携带；驱动在交付时从组标识载体还原） */
+  /** 所属批量（批量任务的成员任务携带；驱动在交付时从批量标识载体还原） */
   groupId?: string;
-  /** 所属链（链式投递的任务携带；驱动在交付时从链键载体还原） */
-  chainKey?: string;
+  /** 批量内成员序号（0 基；串行序列成员携带，驱动从载荷包装还原） */
+  groupIndex?: number;
   /** 挂起/激活上下文（激活重投的执行携带；驱动在交付时从挂起信封载体还原） */
   resumeState?: TaskResumeState;
   /**
@@ -61,10 +61,10 @@ export interface TaskDriverRecord {
   result?: unknown;
   /** 失败/取消原因 */
   error?: string;
-  /** 所属任务组（组投递的成员任务携带；驱动从组标识载体还原后返回） */
+  /** 所属批量（批量任务的成员任务携带；驱动从批量标识载体还原后返回） */
   groupId?: string;
-  /** 所属链（链式投递的任务携带；驱动从链键载体还原后返回） */
-  chainKey?: string;
+  /** 批量内成员序号（0 基；串行序列成员携带，驱动从载荷包装还原后返回） */
+  groupIndex?: number;
   /** enqueue 时携带的执行上下文快照（驱动从载荷包装还原后返回） */
   carry?: Record<string, unknown>;
   createdAt: number;
@@ -99,17 +99,17 @@ export interface TaskDriver {
       timeoutMs?: number;
       graceMs?: number;
       /**
-       * 所属任务组（组投递成员携带，可选）——驱动以此把组标识随任务持久化
+       * 所属批量（批量任务成员携带，可选）——驱动以此把批量标识随任务持久化
        * （载体为驱动内部实现，两内置驱动以载荷包装形态存储），交付/查询时还原为
        * `TaskDriverJob.groupId` / `TaskDriverRecord.groupId`
        */
       groupId?: string;
       /**
-       * 所属链（链式投递携带，可选）——驱动以此把链键随任务持久化（载体同组标识，
-       * 载荷包装形态），交付/查询时还原为 `TaskDriverJob.chainKey` /
-       * `TaskDriverRecord.chainKey`
+       * 批量内成员序号（0 基，可选；串行序列成员激活入队携带，与 groupId 配套）——
+       * 驱动以此登记成员行序号（激活指针推进的记账依据）并随任务持久化（载荷包装
+       * 形态），交付/查询时还原为 `TaskDriverJob.groupIndex` / `TaskDriverRecord.groupIndex`
        */
-      chainKey?: string;
+      groupIndex?: number;
       /**
        * 挂起/激活上下文（激活重投携带，可选）——驱动以此随任务持久化（载体同
        * 组标识，载荷包装形态），交付时还原为 `TaskDriverJob.resumeState`
@@ -161,8 +161,8 @@ export interface TaskDriver {
    */
   retry?(name: string, id: string): Promise<void>;
   /**
-   * 任务组记账（可选能力，整对象实现——未实现时 TaskClient.enqueueGroup /
-   * getGroup 显式抛错）。语义与两内置驱动的存储映射见 taskGroups.md。
+   * 批量记账（可选能力，整对象实现——未实现时 TaskClient.enqueueSequence /
+   * enqueueBatch / getGroup 显式抛错）。语义与两内置驱动的存储映射见 taskBatch.md。
    *
    * 记账语义约束（实现须满足）：
    * - 成员落定**幂等**——同一成员重复 settle 不重复计数（成员行 settled 守卫）
@@ -220,29 +220,53 @@ export interface TaskDriverTaskStateOps {
   list(): Promise<TaskStateEntry[]>;
 }
 
-/** 组记账 create 的声明（enqueueGroup 语义层透传） */
+/**
+ * 批量记账 create 的声明（enqueueSequence / enqueueBatch 语义层透传）
+ *
+ * 串行序列（mode='serial'）的 payloads/carry 随序列行持久化——激活发生在无调用栈
+ * 上下文的任意实例/重启之后，清单必须框架承载；并行批次（mode='parallel'）成员
+ * payload 随任务入队，payloads 不使用。
+ */
 export interface TaskDriverGroupCreate {
   id: string;
-  /** 成员任务名（一组一个任务名） */
+  /** 成员任务名（一个批量一个任务名） */
   task: string;
   total: number;
   onComplete?: string;
   onFailure: TaskGroupOnFailure;
+  /** 执行形态：'serial' 串行有序（payloads 必填）| 'parallel' 并行无序（payloads 忽略） */
+  mode: 'serial' | 'parallel';
+  /** 逐成员 payload（mode='serial' 必填，登记时全量校验后的值；parallel 忽略） */
+  payloads?: unknown[];
+  /** 执行上下文快照（mode='serial' 时随序列行持久化，每条激活入队注入；parallel 忽略） */
+  carry?: Record<string, unknown>;
 }
 
-/** settle 的返回：记账后快照 + 是否本次落定使组到达全部落定 */
+/**
+ * settle 的返回：记账后快照 + 是否本次落定使批量到达全部落定；serial 序列真推进
+ * 激活指针时附带下一条成员（记账与指针推进同一原子操作——落定即激活无崩溃窗口）
+ */
 export type TaskDriverGroupSettleResult = TaskGroupSnapshot & {
   /** 本次落定后 settled >= total */
   isLast: boolean;
+  /**
+   * serial 序列真推进激活指针（GREATEST(nextIndex, memberIndex+1)）且未到顶时的
+   * 下一条成员：index 为 0 基成员序号、payload 为登记时持久化的成员 payload、carry
+   * 为序列级声明。重放落定（指针已越过该成员位置）不推进、无 next（语义层 dedupId
+   * 幂等兜底重复激活）；fail-fast 成员最终失败不推进（语义层按形态走 settleRemaining /
+   * cancelRemaining）；parallel 批次恒无 next（成员随 enqueueBatch 全量入队）
+   */
+  next?: { index: number; payload: unknown; carry?: Record<string, unknown> };
 };
 
 /**
- * 任务组记账驱动能力（TaskDriver.groups）
+ * 批量记账驱动能力（TaskDriver.groups；服务 TaskClient.enqueueSequence /
+ * enqueueBatch，类型命名沿用组记账历史——存储表/hash 键名一致，不另开命名）
  */
 export interface TaskDriverGroupOps {
   /**
-   * 创建组记账。同 id 重复创建：参数完全一致幂等跳过；不一致抛错
-   * （组标识是业务关联键，形状漂移属调用方错误）
+   * 创建批量记账。同 id 重复创建：参数完全一致幂等跳过；不一致抛错
+   * （批量标识是业务关联键，形状漂移属调用方错误）
    */
   create(decl: TaskDriverGroupCreate): Promise<void>;
   /**
@@ -250,7 +274,7 @@ export interface TaskDriverGroupOps {
    *
    * @param outcome 成员最终终态
    * @returns 记账后快照；isLast = 本次落定后 settled >= total
-   * @throws 组不存在
+   * @throws 批量不存在
    */
   settle(
     groupId: string,
@@ -261,14 +285,23 @@ export interface TaskDriverGroupOps {
   unsettle(groupId: string, jobId: string): Promise<void>;
   /** 标记完成回调已入队（幂等） */
   markCompletionEnqueued(groupId: string): Promise<void>;
-  /** 组快照；不存在返回 undefined */
+  /** 批量快照；不存在返回 undefined */
   get(groupId: string): Promise<TaskGroupSnapshot | undefined>;
   /**
-   * fail-fast：取消组内未落定成员（等待/延迟中的不再执行；在跑的自然跑完），
-   * 实际取消成功的成员落定为 cancelled（幂等守卫防与运行实例的落定竞态重复计数），
-   * 返回记账后快照。对 run-to-completion 组为 no-op（返回当前快照）。
+   * parallel fail-fast：取消批量内未落定成员（等待/延迟中的不再执行；在跑的自然
+   * 跑完），实际取消成功的成员落定为 cancelled（幂等守卫防与运行实例的落定竞态
+   * 重复计数），返回记账后快照。对 run-to-completion 批量为 no-op（返回当前快照）。
+   * serial 序列语义层不调用（fail-fast 走 settleRemaining——未激活成员无队列任务可取消）。
    */
   cancelRemaining(groupId: string): Promise<TaskGroupSnapshot>;
+  /**
+   * serial fail-fast：把序列内未落定成员按指定 outcome 补齐落定（未激活成员无
+   * 成员行——按计数差值补齐；幂等守卫防重复，差值为 0 时不计数），返回记账后
+   * 快照（供 fan-in 判定）。parallel 批次语义层不调用（fail-fast 走 cancelRemaining）。
+   *
+   * @throws 批量不存在
+   */
+  settleRemaining(groupId: string, outcome: TaskGroupOutcome): Promise<TaskGroupSnapshot>;
 }
 
 /** 创建驱动时可选的工厂签名（loadTaskDriver 按包名动态加载后调用） */

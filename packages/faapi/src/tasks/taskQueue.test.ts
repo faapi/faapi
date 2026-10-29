@@ -19,8 +19,8 @@ interface EnqueueCall {
     delayMs?: number;
     retries?: number;
     carry?: Record<string, unknown>;
-    chainKey?: string;
     groupId?: string;
+    groupIndex?: number;
   };
 }
 
@@ -42,7 +42,7 @@ function makeFakeDriver(options: { syncDispatch?: boolean } = {}) {
     payload: unknown,
     attempt = 1,
     signal?: AbortSignal,
-    meta?: { groupId?: string; chainKey?: string; carry?: Record<string, unknown> },
+    meta?: { groupId?: string; groupIndex?: number; carry?: Record<string, unknown> },
   ): Promise<unknown> => {
     const worker = workers.get(name);
     if (!worker) throw new Error(`no worker registered for "${name}"`);
@@ -53,7 +53,7 @@ function makeFakeDriver(options: { syncDispatch?: boolean } = {}) {
       attempt,
       signal: signal ?? new AbortController().signal,
       ...(meta?.groupId !== undefined ? { groupId: meta.groupId } : {}),
-      ...(meta?.chainKey !== undefined ? { chainKey: meta.chainKey } : {}),
+      ...(meta?.groupIndex !== undefined ? { groupIndex: meta.groupIndex } : {}),
       ...(meta?.carry !== undefined ? { carry: meta.carry } : {}),
     };
     return worker.process(job);
@@ -1608,7 +1608,7 @@ describe('createTaskQueue — carry 执行上下文管道', () => {
     await queue.stop();
   });
 
-  it('任务内续投自动继承当前 carry，显式传 carry 覆盖（scoped client 统一走 withCarry helper，enqueue/enqueueGroup/enqueueChain 同语义）', async () => {
+  it('任务内续投自动继承当前 carry，显式传 carry 覆盖（scoped client 统一走 withCarry helper，enqueue/enqueueSequence/enqueueBatch 同语义）', async () => {
     const fake = makeFakeDriver();
     let enqueuedFromTask: (() => Promise<void>) | null = null;
     const run = vi.fn(async (_p: unknown, taskCtx: TaskContext) => {

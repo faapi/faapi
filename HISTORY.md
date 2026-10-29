@@ -43,6 +43,8 @@
 | 注册表模块级全局单例 + `hydrate` 整体替换 | app 实例级 `AppRegistries`（全局函数 `getTool` / `listAgents` 等为默认实例便捷访问器，与 app 实例无关） | 后创建的 app 覆盖先前注册、生命周期与 app 脱钩 | 4.0.0 |
 | `AgentPathMeta` 类型 | 删除（与 `AgentManifest` 同构）；`AgentCore` / `AgentMetadata` 迁至 `agents/agentTypes.ts` | 同构类型重复 | 7.6.0 |
 | `toolSchemaResolver` 实现位于 `@faapi/agent` | 下沉主包 loader 域（`packages/faapi/src/loaders/toolSchemaResolver.ts`），`@faapi/agent` 保留 `ToolSchemaResolution` 类型 re-export | zod 同源、测试设施共用 | — |
+| 任务组原语 `tasks.enqueueGroup(name, payloads, { groupId?, ... })` | `tasks.enqueueBatch(name, payloads, { batchId?, ... })`（并行无序，语义同原组投递：全量入队 / 记账 / fan-in / fail-fast 取消余下）；快照 `getGroup` / `TaskGroupSummary` / `TaskGroupSnapshot` 保留（新增 `execution` 字段区分形态） | 批量任务收敛为两形态统一体系（串行有序 / 并行无序），"组"概念由"批量"承接；原 groupId 参数更名 batchId，成员 dedupId / 回调 dedupId 形状（`faapi-group:` 前缀）不变，存储表 / hash 键名沿用 | 7.18.0 |
+| 链式任务原语 `tasks.enqueueChain(name, payload, { chainKey })`（键控单飞 / 自续投，`TaskJob.chainKey` / 载荷 `__faapiChain` 载体） | 串行有序批量 `tasks.enqueueSequence`——清单一次性登记（payloads 随序列行持久化），前一条终态（含重试耗尽）才激活下一条，业务零 remaining 计数、零自续投样板；自续投的"断点事实源是业务知识"边界由框架清单承载消除 | 链要求任务体内逐段计算下一条 payload（断点对账样板），与"清单已知、逐条激活"的批量形态重叠且样板更重；两形态统一后链无独立存在价值 | 7.18.0 |
 | `toProdExtension` 由 `cli/aliasPlugin.ts` 导出 | `utils/prodPaths.ts`（兼容 re-export 已随本台账建立一并删除） | 产物路径规则单一实现 | — |
 | `FAAPI_CONFIG_KEYS` 含 `'lifecycle'` 键 | 键移除——`lifecycle` 写进 `faapi.config.ts` 归入业务自定义配置（`ctx.config.lifecycle`），不再被框架消费（`FaapiConfig` 类型上早已无该字段；行为锚定见 `createAppCore.test.ts` 白名单用例） | 框架配置面与类型层一致，防已移除键被误认为仍受支持 | 7.9.0（类型层）/ 7.13.0（运行时键移除） |
 | 从未导出的 `startServer()` 启动函数 | `createAppCore` 统一编排（`startServer.ts` 文件名保留为历史路径，仅承载 listen 工具函数） | 与 `createServer` 功能子集漂移、listen 无 reject | 6.18.0 |

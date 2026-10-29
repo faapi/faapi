@@ -6,7 +6,7 @@
 
 任务等待**队列外事件**（人工审批、HTTP 回调、外部系统返回）时，现有形态只有两条坏路：任务内 await 事件（执行体长驻内存、进程重启全丢、占 worker 并发额度），或业务手搓状态持久化 + 重投（state 存哪、重投怎么带状态、挂起观测/单飞/取消语义全部自管）。挂起/激活把这套收编为框架原语：执行体可死、状态不死（驱动侧持久化），观测面上"挂起中"可见、单飞互斥不重复起线、取消/激活语义有标准答案。
 
-与既有原语的分工：**激活源在队列内**（子任务完成、fan-in）用链式任务 payload 流转（taskChain.md，state 随续投 payload 走）；**激活源在队列外**用本机制——队列不能"等一个事件"，suspended + resume 才是对应形态。两者不互相替代。
+与既有原语的分工：**激活源在队列内**（子任务完成、批量 fan-in、任务体内按业务条件续投）用任务体内投递流转（`taskCtx.tasks.enqueue` / `enqueueSequence`，state 随续投 payload 走）；**激活源在队列外**用本机制——队列不能"等一个事件"，suspended + resume 才是对应形态。两者不互相替代。
 
 ## 使用场景
 
@@ -40,7 +40,7 @@ export async function run(payload: Payload, taskCtx: TaskContext) {
 ## 概念与语义
 
 - **suspend(state?)**：两条执行路径均可用（`TaskContext.suspend` 进程内直调；`IsolatedTaskContext.suspend` 经 `{ type: 'suspend' }` 消息 RPC 回传宿主执行同一持久化，宿主走同一信封写入——语义零差；state 须可结构化克隆，不可克隆按执行错误处理，与 progress/log 同口径；驱动无 `taskState` 时宿主侧显式抛错、错误原样回传 worker）。调用后：state（连同原 payload）以信封形式持久化到驱动 `taskState` 存储、任务记录转 `suspended`、run 正常返回（驱动照常 complete 队列 job——语义层记录覆盖观测）。挂起后本任务的后续代码仍会执行到 return，但已完成挂起语义（结果不入 `result`、组记账不落定）。
-- **suspended 状态**：非终态（还会被激活）也不在跑——`list()` / `listQueued()` 可见；内存护栏不淘汰（非终态）；**计入单飞活跃判定**（挂起的任务在等激活，同键不允许第二条起线——`enqueueChain` 活跃集为 pending/running/retry/suspended 四态）。
+- **suspended 状态**：非终态（还会被激活）也不在跑——`list()` / `listQueued()` 可见；内存护栏不淘汰（非终态）；**计入单飞活跃判定**（挂起的任务在等激活，同键不允许第二条起线——活跃任务集为 pending/running/retry/suspended 四态）。
 - **resume(name, jobId, opts?)**：仅对 suspended 任务生效（其他状态显式抛错）。读取信封（原 payload + state）→ 删除信封 → 以原 payload 重新入队（新执行周期：attempt 从 1 重新计数、usage 只算本次）→ 信封 `activations + 1` 随执行上下文回传。原挂起记录转 `done`（该挂起周期已终结），新执行为独立任务记录。
 - **resumed 上下文**：`taskCtx.resumed = { state?, inject?, activations }`——`state` 为挂起时暂存值；`inject` 为本次激活传入的附加数据（审批意见等）；`activations` 为第几次激活（从 1 起）。经载荷包装随任务持久化传输（与组标识/链键同机制，跨实例正确），首跑为 `undefined`。
 - **信封（TaskStateEntry）**：驱动存储的挂起载体 `{ jobId, task, payload, state?, suspendedAt, activations }`——payload 随信封持久化，resume 重投不依赖业务重放。**resume 读出即删**（state 转移到新执行；未激活的挂起信封保留供重启水合）。
@@ -71,4 +71,4 @@ export async function run(payload: Payload, taskCtx: TaskContext) {
 - `src/tasks/taskTypes.ts` — TaskContext.suspend / resumed / TaskClient.resume / TaskJobStatus.suspended
 - `src/tasks/driverTypes.ts` — TaskDriver.taskState 可选能力 / enqueue opts.resumeState / TaskDriverJob.resumeState
 - `packages/task-pgboss` / `packages/task-bullmq` — 信封存储 + 包装还原
-- `src/tasks/taskChain.md` — 队列内激活源的姊妹原语（payload 流转），分工见上
+- `src/tasks/taskBatch.md` — 队列内激活源的姊妹原语（串行序列 / 批量 fan-in 的 payload 流转），分工见上

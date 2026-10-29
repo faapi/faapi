@@ -31,7 +31,7 @@
 
 ## 组记账能力（`groups`，可选）
 
-`TaskDriver.groups?: TaskDriverGroupOps`——任务组记账（创建 / 落定 / 逆向 / 查询 / fail-fast 取消余下）的驱动侧存储与原子性，**整对象实现**（与 list/cancel/retry 同为可选能力，未实现时 `TaskClient.enqueueGroup` / `getGroup` 显式抛错不降级）。完整语义、两内置驱动的存储与原子性映射、成员组标识的载荷包装传输见 [taskGroups.md](./taskGroups.md)。
+`TaskDriver.groups?: TaskDriverGroupOps`——批量记账（创建 / 落定 / 逆向 / 查询 / fail-fast 双形态收口：parallel `cancelRemaining` 取消余下、serial `settleRemaining` 差值补齐）的驱动侧存储与原子性，**整对象实现**（与 list/cancel/retry 同为可选能力，未实现时 `TaskClient.enqueueSequence` / `enqueueBatch` / `getGroup` 显式抛错不降级）。完整语义、两内置驱动的存储与原子性映射、成员批量标识与序号的载荷包装传输见 [taskBatch.md](./taskBatch.md)。
 
 ## 相关模块
 

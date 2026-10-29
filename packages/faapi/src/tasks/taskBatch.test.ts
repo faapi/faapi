@@ -10,13 +10,13 @@ import type {
   TaskDriverJob,
   TaskDriverProcess,
 } from './driverTypes';
-import type { TaskClient, TaskGroupSnapshot, TaskModule } from './taskTypes';
+import type { TaskGroupSnapshot, TaskModule } from './taskTypes';
 
 /**
- * 任务组语义层测试：组投递门面（全量校验前置 / 幂等重投 / 能力边界）与
- * runJob 终态落定接线（计数 / fan-in 回调 / fail-fast / 逆向记账）。
- * 组记账存储语义由驱动子包适配测试覆盖，此处用内存版 fake driver 固定
- * TaskDriverGroupOps 契约。
+ * 并行无序批量任务语义层测试：enqueueBatch 门面（全量入队 / 全量校验前置 / 幂等重投 /
+ * 能力边界）与 runJob 终态落定接线（计数 / fan-in 回调 / fail-fast cancelRemaining /
+ * 逆向记账）。串行形态（enqueueSequence）见 taskSequence.test.ts——两形态共用记账
+ * 机制，此处用内存版 fake driver 固定并行侧驱动契约（cancelRemaining 逐成员取消）。
  */
 
 interface EnqueueCall {
@@ -25,8 +25,8 @@ interface EnqueueCall {
   opts?: { delayMs?: number; retries?: number; dedupId?: string; groupId?: string };
 }
 
-/** 内存版组记账（与驱动契约同语义：成员行幂等守卫、unsettle 逆向、参数一致性） */
-function makeMemGroups() {
+/** 内存版批量记账（与驱动契约同语义：成员行幂等守卫、unsettle 逆向、参数一致性） */
+function makeMemBatchGroups() {
   const groups = new Map<
     string,
     TaskDriverGroupCreate & {
@@ -34,6 +34,7 @@ function makeMemGroups() {
       failed: number;
       cancelled: number;
       completionEnqueued: boolean;
+      nextIndex: number;
     }
   >();
   const members = new Map<string, Map<string, { settled: boolean; outcome?: string }>>();
@@ -54,6 +55,8 @@ function makeMemGroups() {
       completionEnqueued: g.completionEnqueued,
       ...(g.onComplete !== undefined ? { onComplete: g.onComplete } : {}),
       onFailure: g.onFailure,
+      execution: g.mode === 'serial' ? 'serial' : 'parallel',
+      ...(g.mode === 'serial' ? { nextIndex: g.nextIndex } : {}),
     };
   };
 
@@ -71,13 +74,23 @@ function makeMemGroups() {
           existing.task !== decl.task ||
           existing.total !== decl.total ||
           existing.onComplete !== decl.onComplete ||
-          existing.onFailure !== decl.onFailure
+          existing.onFailure !== decl.onFailure ||
+          existing.mode !== decl.mode ||
+          JSON.stringify(existing.payloads) !== JSON.stringify(decl.payloads) ||
+          JSON.stringify(existing.carry) !== JSON.stringify(decl.carry)
         ) {
           throw new Error(`[faapi] Task group "${decl.id}" already exists with different options`);
         }
         return;
       }
-      groups.set(decl.id, { ...decl, done: 0, failed: 0, cancelled: 0, completionEnqueued: false });
+      groups.set(decl.id, {
+        ...decl,
+        done: 0,
+        failed: 0,
+        cancelled: 0,
+        completionEnqueued: false,
+        nextIndex: 0,
+      });
       members.set(decl.id, new Map());
     },
     async settle(gid, jobId, outcome): Promise<TaskDriverGroupSettleResult> {
@@ -95,6 +108,7 @@ function makeMemGroups() {
         set.set(jobId, { settled: true, outcome });
       }
       g[outcome] += 1;
+      // parallel 组不推进激活指针（成员随 enqueueBatch 全量入队，settle 仅记账）
       const snap = snapshot(gid);
       return { ...snap, isLast: snap.settled >= snap.total };
     },
@@ -124,16 +138,20 @@ function makeMemGroups() {
       }
       return snapshot(gid);
     },
+    // serial fail-fast 专用；parallel 批次语义层不调用（stub 断言误用）
+    async settleRemaining() {
+      throw new Error('settleRemaining must not be called on a parallel batch');
+    },
   };
 
   return { ops, groups, calls, snapshot, registerMember };
 }
 
-/** 带组记账的可编程 fake driver（成员 dedup 命中返回既有 id） */
-function makeFakeGroupDriver() {
+/** 带批量记账的可编程 fake driver（成员 dedup 命中返回既有 id） */
+function makeFakeBatchDriver() {
   const enqueues: EnqueueCall[] = [];
   const workers = new Map<string, { concurrency: number; process: TaskDriverProcess }>();
-  const groupOps = makeMemGroups();
+  const groupOps = makeMemBatchGroups();
   const dedupIds = new Map<string, string>();
   let seq = 0;
 
@@ -196,64 +214,65 @@ function makeDeps(modules: Record<string, TaskModule>, schemas: Record<string, u
   return { registry, rootDir: '/fake', config: {}, loadTaskModule, loadPayloadSchema };
 }
 
-describe('enqueueGroup（组投递）', () => {
-  it('N 个成员全部入队：groupId 透传驱动、dedupId 自动派生、本地记录带 groupId', async () => {
+describe('enqueueBatch（并行无序批量）', () => {
+  it('N 个成员全部入队：batchId 透传驱动、dedupId 自动派生、本地记录带 groupId', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() }, summary: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 
-    const res = await queue.enqueueGroup('chunks', [{ i: 1 }, { i: 2 }, { i: 3 }], {
-      groupId: 'import:1',
+    const res = await queue.enqueueBatch('chunks', [{ i: 1 }, { i: 2 }, { i: 3 }], {
+      batchId: 'campaign:1',
       onComplete: 'summary',
     });
-    expect(res.groupId).toBe('import:1');
+    expect(res.batchId).toBe('campaign:1');
     expect(res.jobs).toEqual([{ id: 'd-1' }, { id: 'd-2' }, { id: 'd-3' }]);
     expect(fake.enqueues).toHaveLength(3);
     expect(fake.enqueues.map((e) => e.opts?.dedupId)).toEqual([
-      'faapi-group:import:1:1',
-      'faapi-group:import:1:2',
-      'faapi-group:import:1:3',
+      'faapi-group:campaign:1:1',
+      'faapi-group:campaign:1:2',
+      'faapi-group:campaign:1:3',
     ]);
-    expect(fake.enqueues.every((e) => e.opts?.groupId === 'import:1')).toBe(true);
-    expect(queue.list('chunks').every((j) => j.groupId === 'import:1')).toBe(true);
+    expect(fake.enqueues.every((e) => e.opts?.groupId === 'campaign:1')).toBe(true);
+    expect(queue.list('chunks').every((j) => j.groupId === 'campaign:1')).toBe(true);
+    expect(await queue.getGroup('campaign:1')).toMatchObject({ execution: 'parallel', total: 3 });
     await queue.stop();
   });
 
-  it('groupId 缺省自动生成；delayMs 透传各成员', async () => {
+  it('batchId 缺省自动生成；delayMs 透传各成员', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 
-    const res = await queue.enqueueGroup('chunks', [{}, {}], { delayMs: 100 });
-    expect(res.groupId).toMatch(/^[0-9a-f-]{36}$/);
+    const res = await queue.enqueueBatch('chunks', [{}, {}], { delayMs: 100 });
+    expect(res.batchId).toMatch(/^[0-9a-f-]{36}$/);
     expect(fake.enqueues.every((e) => e.opts?.delayMs === 100)).toBe(true);
     await queue.stop();
   });
 
-  it('空 payloads 显式抛错（组无成员 fan-in 永不触发）', async () => {
+  it('空 payloads 显式抛错（批次无成员 fan-in 永不触发）', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 
-    await expect(queue.enqueueGroup('chunks', [])).rejects.toThrow(/empty/i);
+    await expect(queue.enqueueBatch('chunks', [])).rejects.toThrow(/empty/i);
     expect(fake.enqueues).toHaveLength(0);
     await queue.stop();
   });
 
-  it('任一 payload 校验失败整组不投递（全量校验前置）', async () => {
+  it('任一 payload 校验失败整批不投递（全量校验前置）', async () => {
     const zodLike = {
       safeParse: (v: unknown) =>
         (v as { i: number }).i > 1 ? { success: true, data: v } : { success: false, error: [] },
     };
     const deps = makeDeps({ chunks: { run: vi.fn() } }, { chunks: zodLike });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 
-    await expect(queue.enqueueGroup('chunks', [{ i: 2 }, { i: 0 }])).rejects.toThrow();
+    await expect(queue.enqueueBatch('chunks', [{ i: 2 }, { i: 0 }])).rejects.toThrow();
     expect(fake.enqueues).toHaveLength(0);
     await expect(queue.getGroup('g')).resolves.toBeUndefined();
     await queue.stop();
@@ -261,12 +280,12 @@ describe('enqueueGroup（组投递）', () => {
 
   it('onComplete 任务不存在抛错，不触达驱动', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 
     await expect(
-      queue.enqueueGroup('chunks', [{}], { onComplete: 'no-such-task' }),
+      queue.enqueueBatch('chunks', [{}], { onComplete: 'no-such-task' }),
     ).rejects.toThrow(/Unknown task "no-such-task"/);
     expect(fake.enqueues).toHaveLength(0);
     await queue.stop();
@@ -274,72 +293,73 @@ describe('enqueueGroup（组投递）', () => {
 
   it('驱动未实现组记账（TaskDriver.groups 缺失）显式抛错', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     delete (fake.driver as { groups?: unknown }).groups;
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 
-    await expect(queue.enqueueGroup('chunks', [{}])).rejects.toThrow(/group accounting/i);
+    await expect(queue.enqueueBatch('chunks', [{}])).rejects.toThrow(/group accounting/i);
     await expect(queue.getGroup('g')).rejects.toThrow(/group accounting/i);
     await queue.stop();
   });
 
-  it('同 groupId 幂等重投：create 不重复、成员 dedup 命中返回既有 id', async () => {
+  it('同 batchId 幂等重投：create 不重复、成员 dedup 命中返回既有 id', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() }, summary: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 
-    const first = await queue.enqueueGroup('chunks', [{ i: 1 }, { i: 2 }], { groupId: 'g1' });
-    const again = await queue.enqueueGroup('chunks', [{ i: 1 }, { i: 2 }], { groupId: 'g1' });
+    const first = await queue.enqueueBatch('chunks', [{ i: 1 }, { i: 2 }], { batchId: 'g1' });
+    const again = await queue.enqueueBatch('chunks', [{ i: 1 }, { i: 2 }], { batchId: 'g1' });
     expect(again.jobs).toEqual(first.jobs);
     expect(fake.enqueues).toHaveLength(2);
     await queue.stop();
   });
 
-  it('组已落定而回调未入队时幂等重投补投回调（自愈路径）', async () => {
+  it('批次已落定而回调未入队时幂等重投补投回调（自愈路径）', async () => {
     const summaryRun = vi.fn();
     const deps = makeDeps({ chunks: { run: vi.fn() }, summary: { run: summaryRun } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 
-    // 直接造一个已落定、回调未入队的组（模拟宿主在落定与回调入队之间崩溃）
+    // 直接造一个已落定、回调未入队的批次（模拟宿主在落定与回调入队之间崩溃）
     await fake.groupOps.ops.create({
       id: 'g1',
       task: 'chunks',
       total: 2,
       onComplete: 'summary',
       onFailure: 'run-to-completion',
+      mode: 'parallel',
     });
     await fake.groupOps.ops.settle('g1', 'd-a', 'done');
     await fake.groupOps.ops.settle('g1', 'd-b', 'done');
 
-    await queue.enqueueGroup('chunks', [{}, {}], { groupId: 'g1', onComplete: 'summary' });
+    await queue.enqueueBatch('chunks', [{}, {}], { batchId: 'g1', onComplete: 'summary' });
     expect(fake.groupOps.calls.markCompletionEnqueued).toBe(1);
     const completion = fake.enqueues.find((e) => e.opts?.dedupId === 'faapi-group:g1:complete');
     expect(completion?.name).toBe('summary');
     await queue.stop();
   });
 
-  it('队列停止后 enqueueGroup 抛错', async () => {
+  it('队列停止后 enqueueBatch 抛错', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
     await queue.stop();
 
-    await expect(queue.enqueueGroup('chunks', [{}])).rejects.toThrow(/stopped/i);
+    await expect(queue.enqueueBatch('chunks', [{}])).rejects.toThrow(/stopped/i);
   });
 });
 
 describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
   it('全部成员 done → 回调入队一次（summary payload 契约 + markCompletionEnqueued）', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() }, summary: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    await queue.enqueueGroup('chunks', [{ i: 1 }, { i: 2 }], {
-      groupId: 'g1',
+    await queue.enqueueBatch('chunks', [{ i: 1 }, { i: 2 }], {
+      batchId: 'g1',
       onComplete: 'summary',
     });
     queue.start();
@@ -388,9 +408,9 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
       { name: 'chunks', filePath: 'dist/tasks/chunks/task.js', mode: 'inline', retries: 1 },
       { name: 'summary', filePath: 'dist/tasks/summary/task.js', mode: 'inline' },
     ]);
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    await queue.enqueueGroup('chunks', [{ i: 1 }], { groupId: 'g1', onComplete: 'summary' });
+    await queue.enqueueBatch('chunks', [{ i: 1 }], { batchId: 'g1', onComplete: 'summary' });
     queue.start();
 
     const worker = fake.workers.get('chunks')!;
@@ -423,10 +443,10 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
       },
       summary: { run: vi.fn() },
     });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    await queue.enqueueGroup('chunks', [{ i: 1 }, { i: 2 }], {
-      groupId: 'g1',
+    await queue.enqueueBatch('chunks', [{ i: 1 }, { i: 2 }], {
+      batchId: 'g1',
       onComplete: 'summary',
     });
     queue.start();
@@ -469,10 +489,10 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
       },
       summary: { run: vi.fn() },
     });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    await queue.enqueueGroup('chunks', [{ i: 1 }, { i: 2 }], {
-      groupId: 'g1',
+    await queue.enqueueBatch('chunks', [{ i: 1 }, { i: 2 }], {
+      batchId: 'g1',
       onComplete: 'summary',
       onFailure: 'fail-fast',
     });
@@ -508,9 +528,9 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
       { name: 'chunks', filePath: 'dist/tasks/chunks/task.js', mode: 'inline', retries: 1 },
       { name: 'summary', filePath: 'dist/tasks/summary/task.js', mode: 'inline' },
     ]);
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    await queue.enqueueGroup('chunks', [{ i: 1 }], { groupId: 'g1', onComplete: 'summary' });
+    await queue.enqueueBatch('chunks', [{ i: 1 }], { batchId: 'g1', onComplete: 'summary' });
     queue.start();
 
     const worker = fake.workers.get('chunks')!;
@@ -544,9 +564,9 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
 
   it('手动 tasks.cancel(成员) 落定 cancelled；retry(已落定成员) 逆向记账', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() }, summary: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    await queue.enqueueGroup('chunks', [{ i: 1 }, { i: 2 }], { groupId: 'g1' });
+    await queue.enqueueBatch('chunks', [{ i: 1 }, { i: 2 }], { batchId: 'g1' });
     queue.start();
 
     await queue.cancel('chunks', 'd-1');
@@ -556,11 +576,11 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
     expect((await queue.getGroup('g1'))!).toMatchObject({ cancelled: 0, settled: 0 });
   });
 
-  it('无 onComplete 的组照常记账，不入队回调', async () => {
+  it('无 onComplete 的批次照常记账，不入队回调', async () => {
     const deps = makeDeps({ chunks: { run: vi.fn() } });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    await queue.enqueueGroup('chunks', [{ i: 1 }], { groupId: 'g1' });
+    await queue.enqueueBatch('chunks', [{ i: 1 }], { batchId: 'g1' });
     queue.start();
 
     const worker = fake.workers.get('chunks')!;
@@ -586,9 +606,9 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
         { chunks: { run: vi.fn() }, summary: { run: vi.fn() } },
         { summary: rejectAllSchema },
       );
-      const fake = makeFakeGroupDriver();
+      const fake = makeFakeBatchDriver();
       const queue = createTaskQueue({ ...deps, driver: fake.driver });
-      await queue.enqueueGroup('chunks', [{ i: 1 }], { groupId: 'g1', onComplete: 'summary' });
+      await queue.enqueueBatch('chunks', [{ i: 1 }], { batchId: 'g1', onComplete: 'summary' });
       queue.start();
 
       const worker = fake.workers.get('chunks')!;
@@ -612,19 +632,22 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
 });
 
 describe('taskCtx.tasks（任务侧客户端）', () => {
-  it('进程内任务的 taskCtx.tasks 委托队列本体：任务内扇出经其入队（enqueue 同一驱动通道）', async () => {
+  it('进程内任务的 taskCtx.tasks 委托队列本体：任务内批量登记经其入队（enqueue 同一驱动通道）', async () => {
     let fanoutEnqueued = false;
     const deps = makeDeps({
       fanout: {
-        run: vi.fn(async (_payload: unknown, taskCtx: { tasks: TaskClient }) => {
-          await taskCtx.tasks.enqueue('chunks', {});
+        run: vi.fn(async (_payload: unknown, taskCtx: { tasks: unknown }) => {
+          await (taskCtx.tasks as { enqueue: (n: string, p: unknown) => Promise<unknown> }).enqueue(
+            'chunks',
+            {},
+          );
           fanoutEnqueued = true;
           return 'ok';
         }),
       },
       chunks: { run: vi.fn() },
     });
-    const fake = makeFakeGroupDriver();
+    const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
 

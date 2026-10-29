@@ -53,8 +53,8 @@ await tasks.retry('send-email', failed.id);          // 重试失败/取消的�
 const off = tasks.subscribe('skill-distill', (e) => hub.publish(e.data)); // 实时（本进程）
 const history = tasks.listEvents('skill-distill', { jobId });             // 回放（有界保留）
 
-// 4.5 任务组：切批扇出 + 记账 + fan-in（完整语义见 taskGroups.md）
-await tasks.enqueueGroup('book-import-chunks', batches, {
+// 4.5 批量任务：串行有序 / 并行无序 + 记账 + fan-in（完整语义见 taskBatch.md）
+await tasks.enqueueBatch('book-import-chunks', batches, {
   groupId: `import:${importId}`,    // 业务关联键（缺省自动生成；同 id 重投幂等自愈）
   onComplete: 'import-finished',    // 全部落定时框架自动入队（payload = TaskGroupSummary）
   onFailure: 'fail-fast',           // 缺省 'run-to-completion'（跑完记 partial）
@@ -84,7 +84,7 @@ export async function run(payload: Payload, taskCtx: TaskContext) {
 | `scanTasks.ts` | CLI 扫描 `src/tasks/**` 下 `task.ts`（进程内）/ `worker.ts`（隔离）（零 import，正则提取 meta），产出 TaskManifest[] |
 | `taskRegistry.ts` | app 级 TaskRegistry（hydrate/get/list/clear，方案 A 实例化） |
 | `taskQueue.ts` | 队列语义层：payload zod 校验 + worker 执行包装（模块加载/run/记录）+ 生命周期编排 + 任务组门面与落定接线 |
-| `taskGroups.md` | 任务组原语契约（组投递 / 记账 / fan-in / 失败语义 / TaskContext.tasks）——完整设计单点维护 |
+| `taskBatch.md` | 批量任务原语契约（串行有序 enqueueSequence / 并行无序 enqueueBatch / 记账 / fan-in / 失败语义 / TaskContext.tasks）——完整设计单点维护 |
 | `taskEvents.md` | 任务事件原语契约（taskCtx.emit / subscribe / listEvents / 保留边界 / 取消口径）——完整设计单点维护 |
 | `driverTypes.ts` | `TaskDriver` 驱动抽象（存储/消费/重试/停机的边界接口，含可选组记账能力 `groups`） |
 | `loadTaskDriver.ts` | 按 `config.task.driver` 动态加载子包驱动 / 透传自定义实例，缺失显式抛错 |
@@ -100,7 +100,7 @@ export async function run(payload: Payload, taskCtx: TaskContext) {
 - **驱动必填（无内置进程内驱动）**：队列语义（存储/消费/重试/停机）抽象为 `TaskDriver` 接口（driverTypes.md），由独立子包提供实现——`@faapi/task-pgboss`（Postgres）、`@faapi/task-bullmq`（Redis），主包零依赖、按 `config.task.driver` 动态加载（loadTaskDriver.ts），未安装/未配置显式报错不静默降级。**存在任务清单时必须显式配置 driver**，否则 `createAppBase` 启动报错；无任务清单的项目不加载驱动（零任务项目无需安装驱动子包，`createAppBase` 用空闲占位驱动 idleTaskDriver）。进程内重启丢任务/多实例不防重跑的问题由持久化驱动天然解决——框架不提供"可丢任务"的默认实现。
 - **统一产物驱动**：dev/prod 产物集一致（`faapi-tasks.js` + `tasks/**/zod.js` + `tasks/**/task.js` / `tasks/**/worker.js`），`createAppBase` 无 `if (isDev)` 分支。dev 与 handler 不同，任务文件启动时全量编译（任务数量小，且 worker 运行时 import 失败无法像 HTTP 请求那样反馈给调用方）。
 - **任务与定时一条线**：cron 只是"自动投递者"，到点调 `enqueue`，复用同一队列与执行模型，不做第二套执行器。
-- **任务组 = 记账在驱动侧 + 回调按任务名声明**：切批扇出/进度聚合/fan-in 三件编排样板收编为框架原语（见 taskGroups.md）——组记账存驱动（pg-boss 表 / Redis hash，跨实例/重启正确），完成回调是普通任务（持久化、可重试、独立 meta，不是闭包）；`TaskContext.tasks` 两条执行路径注入（隔离路径 postMessage RPC 代理回宿主），任务内扇出不绕 `getApp()`。组记账是驱动可选能力（`TaskDriver.groups`，未实现显式抛错不降级）；切分策略是业务知识，不在框架范围。
+- **批量任务 = 记账在驱动侧 + 回调按任务名声明，两形态共用记账**：串行有序（`enqueueSequence`，前一条终态才激活下一条）/ 并行无序（`enqueueBatch`，全量立即执行）收编批量登记/进度聚合/fan-in 编排样板（见 taskBatch.md）——记账存驱动（pg-boss 表 / Redis hash，跨实例/重启正确），完成回调是普通任务（持久化、可重试、独立 meta，不是闭包）；`TaskContext.tasks` 两条执行路径注入（隔离路径 postMessage RPC 代理回宿主），任务内批量登记不绕 `getApp()`。批量记账是驱动可选能力（`TaskDriver.groups`，未实现显式抛错不降级）；切分策略是业务知识，不在框架范围。
 - **任务事件 = 语义层观测面，不进驱动**：任务内 `taskCtx.emit(data)` 发射过程事件（agent 流式 chunk 等），宿主侧 `TaskClient.subscribe`（实时）/ `listEvents`（历史）消费——与 progress 的差异：progress 是单值覆盖槽（派发清空），事件是过程历史（seq 连续、重试不清、按 attempt 标注）。事件存本进程有界内存（单执行/全局两级上限），生命周期与任务记录绑定，**驱动零改动**——与组记账进驱动刻意对比：组记账要跨实例正确，事件是观测面（UI 桥接与任务同进程）。agent 事件不设专用管道 API：`agent.stream` chunk 原样 `emit` 即成管道（主包对 `@faapi/agent` 保持解耦，消费端本就要按 chunk 字段做业务分发）。完整契约见 [taskEvents.md](./taskEvents.md)。
 - **触发入口三合一**：`tasks` 参数注入 / `ctx.tasks` / `app.tasks` 与 `app:boot` / `app:ready` / `app:close` 事件载荷的 `{ tasks }` 全部指向同一 app 实例的 TaskClient；不做外部 HTTP 触发端点。
 - **payload 校验复用 zod 代码生成链路**：`run` 首参类型（如 `Payload` interface）走 AST → zod 代码生成，入队时 safeParse，不合法抛 `ValidationError`（422）。无 Payload 类型声明则跳过校验（与 tool 行为对齐）。

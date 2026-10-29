@@ -32,33 +32,19 @@ import type {
 const TERMINAL_STATUSES: ReadonlySet<TaskJobStatus> = new Set(['done', 'failed', 'cancelled']);
 
 /**
- * 任务组成员 dedupId 前缀与完成回调 dedupId 后缀（组投递幂等键由框架独占管理，
- * 形状见 taskGroups.md——业务自拼序号扇出由本约定替代）
+ * 批量成员 dedupId 前缀与完成回调 dedupId 后缀（批量投递幂等键由框架独占管理，
+ * 形状见 taskBatch.md——键名沿用组记账历史 `faapi-group:` 前缀）
  */
 const GROUP_MEMBER_DEDUP = (groupId: string, index: number): string =>
   `faapi-group:${groupId}:${index}`;
 const GROUP_COMPLETION_DEDUP = (groupId: string): string => `faapi-group:${groupId}:complete`;
 
-/**
- * 链式投递幂等键（taskChain.md，框架独占管理）：时间戳后缀保证终态后可重投
- * （固定键在队列保留期内占坑会被 DO NOTHING 误挡续投）；同毫秒同键重复投递
- * 命中同一任务（dedup 语义，至多一份）
- */
-const CHAIN_DEDUP = (chainKey: string, at: number): string => `faapi-chain:${chainKey}:${at}`;
-
-/**
- * 链式活跃查证快照容量（driver.list 按 createdAt 降序截断）：同任务名历史记录
- * 积压超限时最旧的活跃任务可能不在快照内而漏判——建议配合队列侧保留策略清理
- * 终态记录（边界声明见 taskChain.md「记账与原子性边界」）
- */
-const CHAIN_SCAN_LIMIT = 200;
-
 /** 隔离任务 taskCtx.tasks 代理允许回传宿主的方法（纯数据方法全集；subscribe 为
  * 回调签名不可跨线程，隔离路径由 worker 侧代理显式拒绝，宿主侧白名单同样不放行） */
 const TASK_CLIENT_METHODS: ReadonlySet<string> = new Set([
   'enqueue',
-  'enqueueChain',
-  'enqueueGroup',
+  'enqueueSequence',
+  'enqueueBatch',
   'resume',
   'list',
   'listQueued',
@@ -303,18 +289,18 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     if (!driver.groups) {
       throw new Error(
         '[faapi] Task driver does not support group accounting (TaskDriver.groups is not implemented). ' +
-          'Group enqueue/settle requires a driver that implements it — see driverTypes.md / taskGroups.md.',
+          'Batch enqueue/settle requires a driver that implements it — see driverTypes.md / taskBatch.md.',
       );
     }
   }
 
   /**
-   * fan-in：组全部落定且声明了 onComplete 而回调未入队时，入队完成回调任务
+   * fan-in：批量全部落定且声明了 onComplete 而回调未入队时，入队完成回调任务
    * （TaskGroupSummary 契约 payload + dedup 兜底至多一份），成功后标记
-   * completionEnqueued。入队失败 console.error 留痕（组计数已落定、可经同
-   * groupId 幂等重投自愈）——记账失败不改成员执行语义，但不静默。
-   * 供落定接线与 enqueueGroup 幂等重投自愈两条路径共用（enqueueGroup 重投时
-   * 新组 settled=0 自然短路，零开销）。
+   * completionEnqueued。入队失败 console.error 留痕（批量计数已落定、可经同 id
+   * 幂等重投自愈）——记账失败不改成员执行语义，但不静默。
+   * 供落定接线与 enqueueSequence/enqueueBatch 幂等重投自愈两条路径共用（重投时
+   * 新批量 settled=0 自然短路，零开销）。
    */
   async function maybeFireCompletion(snap: TaskGroupSnapshot): Promise<void> {
     if (!driver.groups) return;
@@ -335,17 +321,22 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       await driver.groups.markCompletionEnqueued(snap.groupId);
     } catch (err) {
       console.error(
-        `[faapi] task group "${snap.groupId}" completion enqueue failed (group is settled; ` +
-          're-invoke enqueueGroup with the same groupId to re-arm the callback):',
+        `[faapi] task batch "${snap.groupId}" completion enqueue failed (batch is settled; ` +
+          're-invoke enqueueSequence/enqueueBatch with the same id to re-arm the callback):',
         err,
       );
     }
   }
 
   /**
-   * 组内成员落定接线：成员到达最终终态（done；failed/cancelled 且重试额度已尽）
-   * 时驱动侧记账 + fan-in 判定；fail-fast 组在成员最终失败时先取消余下成员
-   * （实际取消成功的成员由驱动落定 cancelled，取消后快照同样过 fan-in 判定）。
+   * 批量成员落定接线：成员到达最终终态（done；failed/cancelled 且重试额度已尽）
+   * 时驱动侧记账 + fan-in 判定 + 串行激活。fail-fast 成员最终失败即终止——串行
+   * 序列（execution='serial'）不再激活、未激活成员经 settleRemaining 按计数差值
+   * 补齐 cancelled；并行批次（execution='parallel'）经 cancelRemaining 取消队列中
+   * 未落定成员；终止后快照同样过 fan-in 判定。串行序列落定即激活：驱动 settle 在
+   * 记账同一原子操作内推进激活指针，真推进时返回下一条成员，语义层入队（成员
+   * dedupId 按 index 幂等——重复激活/多实例竞态自动命中不重复执行；严格顺序由
+   * willRetry 不落定守卫保证——重试耗尽才推进）。
    * 记账失败 console.error 留痕（成员执行语义已定，不因记账失败翻案，但不静默）。
    */
   async function settleGroup(
@@ -359,12 +350,29 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     try {
       const snap = await driver.groups.settle(groupId, record.id, outcome);
       if (outcome === 'failed' && snap.onFailure === 'fail-fast') {
-        await maybeFireCompletion(await driver.groups.cancelRemaining(groupId));
+        // 终止：serial 未激活成员补齐落定 / parallel 取消队列中未落定成员
+        const after =
+          snap.execution === 'serial'
+            ? await driver.groups.settleRemaining(groupId, 'cancelled')
+            : await driver.groups.cancelRemaining(groupId);
+        await maybeFireCompletion(after);
+        return;
+      }
+      if (snap.next) {
+        // 落定即激活下一条（serial）：dedupId 按 index 幂等（重放/多实例竞态命中
+        // 既有任务），激活入队失败（如队列已停）由外层 catch 留痕——序列停摆经同
+        // sequenceId 重投自愈（taskBatch.md「记账语义」）
+        await enqueueCore(snap.task, snap.next.payload, {
+          dedupId: GROUP_MEMBER_DEDUP(groupId, snap.next.index + 1),
+          groupId,
+          groupIndex: snap.next.index,
+          ...(snap.next.carry !== undefined ? { carry: snap.next.carry } : {}),
+        });
       }
       await maybeFireCompletion(snap);
     } catch (err) {
       console.error(
-        `[faapi] task group accounting failed for "${groupId}" (job ${record.id}, ` +
+        `[faapi] task batch accounting failed for "${groupId}" (job ${record.id}, ` +
           `outcome ${outcome}):`,
         err,
       );
@@ -438,7 +446,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       createdAt: Date.now(),
     };
     if (job.groupId !== undefined) record.groupId = job.groupId;
-    if (job.chainKey !== undefined) record.chainKey = job.chainKey;
+    if (job.groupIndex !== undefined) record.groupIndex = job.groupIndex;
     if (job.carry !== undefined) record.carry = job.carry;
     record.attempts = job.attempt;
     transitionStatus(record, 'running');
@@ -547,22 +555,16 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
               }
               let callArgs = args;
               // enqueue 系方法自动继承当前执行的 carry（与进程内 scoped client 同语义）
-              if (method === 'enqueue' || method === 'enqueueGroup') {
-                const idx = method === 'enqueue' ? 2 : 2;
-                const opts = (args[idx] as { carry?: Record<string, unknown> } | undefined) ?? {};
+              if (
+                method === 'enqueue' ||
+                method === 'enqueueSequence' ||
+                method === 'enqueueBatch'
+              ) {
+                const opts = (args[2] as { carry?: Record<string, unknown> } | undefined) ?? {};
                 if (opts.carry === undefined && job.carry !== undefined) {
                   callArgs = [...args];
-                  callArgs[idx] = { ...opts, carry: job.carry };
+                  callArgs[2] = { ...opts, carry: job.carry };
                 }
-              } else if (method === 'enqueueChain') {
-                const opts = (args[2] as { carry?: Record<string, unknown> } | undefined) ?? {};
-                const needsCarry = opts.carry === undefined && job.carry !== undefined;
-                callArgs = [...args];
-                callArgs[2] = {
-                  ...opts,
-                  ...(needsCarry ? { carry: job.carry } : {}),
-                  excludeJobId: job.id,
-                };
               }
               const fn = (queue as unknown as Record<string, (...a: unknown[]) => unknown>)[
                 method
@@ -634,8 +636,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         const taskCtx: TaskContext = {
           signal: job.signal,
           // 执行作用域客户端：委托队列本体（与 ctx.tasks / app.tasks 同一 app 实例），
-          // 链式投递自动注入调用方自身 job id（enqueueChain 排除自身）+ 续投
-          // 自动继承当前 carry
+          // 投递自动继承当前 carry
           tasks: scopedTasks,
           config: deps.config,
           job: { id: job.id, name: job.name, attempt: job.attempt },
@@ -747,7 +748,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   }
 
   /**
-   * 入队核心（queue.enqueue / enqueueGroup / fan-in 回调入队共用）：
+   * 入队核心（queue.enqueue / enqueueSequence / enqueueBatch / fan-in 回调入队共用）：
    * 停止检查 → 存在性检查 → payload 校验 → 驱动入队 → 本地记录。
    * 供对象字面量定义前引用的辅助函数形式（queue 方法内部调用时 queue 已初始化）。
    */
@@ -758,7 +759,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       delayMs?: number;
       dedupId?: string;
       groupId?: string;
-      chainKey?: string;
+      groupIndex?: number;
       resumeState?: TaskResumeState;
       carry?: Record<string, unknown>;
     },
@@ -779,7 +780,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       timeoutMs: meta.timeoutMs,
       graceMs: meta.graceMs,
       ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
-      ...(opts?.chainKey !== undefined ? { chainKey: opts.chainKey } : {}),
+      ...(opts?.groupIndex !== undefined ? { groupIndex: opts.groupIndex } : {}),
       ...(opts?.resumeState !== undefined ? { resumeState: opts.resumeState } : {}),
       ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
     });
@@ -793,7 +794,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         status: 'pending',
         attempts: 0,
         ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
-        ...(opts?.chainKey !== undefined ? { chainKey: opts.chainKey } : {}),
+        ...(opts?.groupIndex !== undefined ? { groupIndex: opts.groupIndex } : {}),
         ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
         createdAt: Date.now(),
         ...(opts?.delayMs ? { runAt: Date.now() + opts.delayMs } : {}),
@@ -826,7 +827,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         attempts: record.attempts,
         createdAt: record.createdAt,
         ...(record.groupId !== undefined ? { groupId: record.groupId } : {}),
-        ...(record.chainKey !== undefined ? { chainKey: record.chainKey } : {}),
+        ...(record.groupIndex !== undefined ? { groupIndex: record.groupIndex } : {}),
         ...(record.carry !== undefined ? { carry: record.carry } : {}),
         ...(record.result !== undefined ? { result: record.result } : {}),
         ...(record.error !== undefined ? { error: record.error } : {}),
@@ -842,16 +843,13 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   }
 
   /**
-   * 任务执行作用域的 TaskClient 包装：enqueueChain 自动注入调用方自身 job id
-   * （活跃查证排除自身——任务体内自续投不被自身 running 态挡住，手写
-   * `j.id !== 当前job.id` 的样板与漏写断链风险由本约定消除）；enqueue 系方法
-   * 自动继承当前执行的 carry（显式传 carry 覆盖——身份在任务链上自然流转，
-   * Sidekiq Current / Temporal headers 同款语义）。与队列本体的差异仅在这两
-   * 项约定，其余方法直委托（同一 app 实例队列语义不变）。
+   * 任务执行作用域的 TaskClient 包装：enqueue 系方法自动继承当前执行的 carry
+   * （显式传 carry 覆盖——身份在任务链上自然流转，Sidekiq Current / Temporal
+   * headers 同款语义）。与队列本体的差异仅在这一项约定，其余方法直委托
+   * （同一 app 实例队列语义不变）。
    */
-  function createScopedTaskClient(jobId: string): TaskClient {
-    // 当前执行的 carry（runJob 已写入 record；快照读取不随执行中变更漂移）
-    const inheritCarry = (): Record<string, unknown> | undefined => records.get(jobId)?.carry;
+  function createScopedTaskClient(_jobId: string): TaskClient {
+    const inheritCarry = (): Record<string, unknown> | undefined => records.get(_jobId)?.carry;
     const withCarry = <O extends { carry?: Record<string, unknown> }>(opts?: O): O | undefined => {
       if (opts?.carry !== undefined) return opts;
       const inherited = inheritCarry();
@@ -859,14 +857,13 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     };
     return {
       enqueue: (name, payload, opts) => queue.enqueue(name, payload, withCarry(opts)),
-      // opts 为 undefined 时 chainKey 守卫先抛错（注入无观察差异），不额外兜底
-      enqueueChain: (name, payload, opts) =>
-        queue.enqueueChain(name, payload, opts && { ...withCarry(opts)!, excludeJobId: jobId }),
       list: (name) => queue.list(name),
       listQueued: (name) => queue.listQueued(name),
       cancel: (name, id) => queue.cancel(name, id),
       retry: (name, id) => queue.retry(name, id),
-      enqueueGroup: (name, payloads, opts) => queue.enqueueGroup(name, payloads, withCarry(opts)),
+      enqueueSequence: (name, payloads, opts) =>
+        queue.enqueueSequence(name, payloads, withCarry(opts)),
+      enqueueBatch: (name, payloads, opts) => queue.enqueueBatch(name, payloads, withCarry(opts)),
       getGroup: (groupId) => queue.getGroup(groupId),
       resume: (name, jobId, opts) => queue.resume(name, jobId, opts),
       subscribe: (name, handler) => queue.subscribe(name, handler),
@@ -882,38 +879,6 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
       });
       return { id };
-    },
-
-    async enqueueChain(name, payload = {}, opts) {
-      if (stopped) {
-        throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
-      }
-      const chainKey = opts?.chainKey;
-      if (typeof chainKey !== 'string' || chainKey.trim() === '') {
-        throw new Error(
-          '[faapi] enqueueChain requires a non-empty chainKey (business correlation key, ' +
-            'e.g. "deconstruct:<novelId>") — keyed single-flight semantics need it to identify ' +
-            'the active task. See taskChain.md.',
-        );
-      }
-      assertKnownTask(name);
-      // 活跃查证（快照非事务，边界见 taskChain.md）：同键活跃（排除调用方自身）
-      // 存在则不投递返回现状
-      const snapshot = await listQueuedRecords(name, CHAIN_SCAN_LIMIT);
-      const excludeJobId = opts?.excludeJobId;
-      const active = snapshot.find(
-        (j) => j.chainKey === chainKey && !TERMINAL_STATUSES.has(j.status) && j.id !== excludeJobId,
-      );
-      if (active) {
-        return { enqueued: false, jobId: active.id, status: active.status };
-      }
-      const id = await enqueueCore(name, payload, {
-        delayMs: opts?.delayMs,
-        dedupId: CHAIN_DEDUP(chainKey, Date.now()),
-        chainKey,
-        ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
-      });
-      return { enqueued: true, id };
     },
 
     async resume(name, jobId, opts) {
@@ -961,7 +926,12 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       return { id };
     },
 
-    async enqueueGroup(name, payloads, opts) {
+    /**
+     * 并行无序批量投递（taskBatch.md）：一次登记 N 个同构子任务并挂同一批量标识，
+     * 全部成员立即入队并行执行。批量记账（成员行守卫 / unsettle 逆向 / fan-in）与
+     * 串行序列共用，差异仅在激活策略——parallel 全量入队，无激活指针推进。
+     */
+    async enqueueBatch(name, payloads, opts) {
       if (stopped) {
         throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
       }
@@ -969,42 +939,98 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       assertKnownTask(name);
       if (!Array.isArray(payloads) || payloads.length === 0) {
         throw new Error(
-          '[faapi] enqueueGroup requires a non-empty payloads array — a group without members can never settle.',
+          '[faapi] enqueueBatch requires a non-empty payloads array — a batch without members can never settle.',
         );
       }
       const onComplete = opts?.onComplete;
       if (onComplete !== undefined) assertKnownTask(onComplete);
       const onFailure: TaskGroupOnFailure = opts?.onFailure ?? 'run-to-completion';
-      // 全量校验前置：任一 payload 不合法整组不投递（部分投递的组永不落定）
+      // 全量校验前置：任一 payload 不合法整批不投递（部分投递的批量永不落定）
       const validated: unknown[] = [];
       for (const p of payloads) {
         validated.push(await validatePayload(name, p));
       }
-      const groupId = opts?.groupId ?? crypto.randomUUID();
+      const batchId = opts?.batchId ?? crypto.randomUUID();
       await driver.groups!.create({
-        id: groupId,
+        id: batchId,
         task: name,
         total: validated.length,
         ...(onComplete !== undefined ? { onComplete } : {}),
         onFailure,
+        mode: 'parallel',
       });
       const jobs: { id: string }[] = [];
       for (let i = 0; i < validated.length; i++) {
-        // 成员 dedupId 框架独占派生（组幂等键形状是组语义的一部分）：
-        // 同 groupId 幂等重投时已存在的成员直接命中不重复执行——发起任务
-        // （groupId 从业务键派生）被驱动重试时重调 enqueueGroup 即天然补投自愈
+        // 成员 dedupId 框架独占派生（批量幂等键形状是批量语义的一部分）：
+        // 同 batchId 幂等重投时已存在的成员直接命中不重复执行——发起任务
+        // （batchId 从业务键派生）被驱动重试时重调 enqueueBatch 即天然补投自愈
         const id = await enqueueCore(name, validated[i]!, {
           delayMs: opts?.delayMs,
-          dedupId: GROUP_MEMBER_DEDUP(groupId, i + 1),
-          groupId,
+          dedupId: GROUP_MEMBER_DEDUP(batchId, i + 1),
+          groupId: batchId,
           ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
         });
         jobs.push({ id });
       }
-      // 自愈路径：组已落定而回调未入队（宿主在落定与回调入队之间崩溃/失败）→ 补投；
-      // 新组 settled=0 自然短路
-      await maybeFireCompletion((await driver.groups!.get(groupId))!);
-      return { groupId, jobs };
+      // 自愈路径：批量已落定而回调未入队（宿主在落定与回调入队之间崩溃/失败）→ 补投；
+      // 新批量 settled=0 自然短路
+      await maybeFireCompletion((await driver.groups!.get(batchId))!);
+      return { batchId, jobs };
+    },
+
+    /**
+     * 串行有序批量投递（taskBatch.md）：一次登记 N 条已知 payload，前一条到达
+     * 终态（含重试耗尽）才激活下一条。payloads/carry 随序列行持久化（激活发生在
+     * 任意实例/重启之后），登记后仅入队首条，后续由 settleGroup 落定接线激活。
+     * 首投与幂等重投走同一"确保推进"路径：入队 payloads[nextIndex]（dedupId 按
+     * index 幂等——正常运行命中既有成员零开销，激活两步崩溃窗口真补投断链成员）。
+     */
+    async enqueueSequence(name, payloads, opts) {
+      if (stopped) {
+        throw new Error('[faapi] Task queue is stopped and no longer accepts jobs');
+      }
+      assertGroupSupport();
+      assertKnownTask(name);
+      if (!Array.isArray(payloads) || payloads.length === 0) {
+        throw new Error(
+          '[faapi] enqueueSequence requires a non-empty payloads array — a sequence without members can never settle.',
+        );
+      }
+      const onComplete = opts?.onComplete;
+      if (onComplete !== undefined) assertKnownTask(onComplete);
+      const onFailure: TaskGroupOnFailure = opts?.onFailure ?? 'run-to-completion';
+      if (opts?.carry !== undefined) assertCarryData(opts.carry);
+      // 全量校验前置：任一 payload 不合法整序列不登记（清单须完整持久化）
+      const validated: unknown[] = [];
+      for (const p of payloads) {
+        validated.push(await validatePayload(name, p));
+      }
+      const sequenceId = opts?.sequenceId ?? crypto.randomUUID();
+      await driver.groups!.create({
+        id: sequenceId,
+        task: name,
+        total: validated.length,
+        ...(onComplete !== undefined ? { onComplete } : {}),
+        onFailure,
+        mode: 'serial',
+        payloads: validated,
+        ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
+      });
+      // 确保推进：入队 nextIndex 指向的成员（新序列为 0 = 首条；重投 dedup 命中或补投）
+      const snap = (await driver.groups!.get(sequenceId))!;
+      let id: string | undefined;
+      if (snap.nextIndex !== undefined && snap.nextIndex < snap.total) {
+        id = await enqueueCore(name, validated[snap.nextIndex]!, {
+          ...(opts?.delayMs !== undefined && snap.nextIndex === 0 ? { delayMs: opts.delayMs } : {}),
+          dedupId: GROUP_MEMBER_DEDUP(sequenceId, snap.nextIndex + 1),
+          groupId: sequenceId,
+          groupIndex: snap.nextIndex,
+          ...(opts?.carry !== undefined ? { carry: opts.carry } : {}),
+        });
+      }
+      // 自愈路径：序列已落定而回调未入队 → 补投；新序列 settled=0 自然短路
+      await maybeFireCompletion((await driver.groups!.get(sequenceId))!);
+      return { sequenceId, ...(id !== undefined ? { id } : {}) };
     },
 
     async getGroup(groupId) {

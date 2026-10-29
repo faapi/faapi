@@ -19,7 +19,7 @@ interface EnqueueCall {
     retries?: number;
     dedupId?: string;
     groupId?: string;
-    chainKey?: string;
+    groupIndex?: number;
     resumeState?: { state?: unknown; inject?: unknown; activations: number };
   };
 }
@@ -48,7 +48,7 @@ function makeFakeSuspendDriver(opts: { withTaskState?: boolean } = {}) {
           retries: o?.retries,
           dedupId: o?.dedupId,
           groupId: o?.groupId,
-          chainKey: o?.chainKey,
+          groupIndex: o?.groupIndex,
           resumeState: o?.resumeState,
         },
       });
@@ -75,6 +75,7 @@ function makeFakeSuspendDriver(opts: { withTaskState?: boolean } = {}) {
         status: 'settled' as const,
         completionEnqueued: false,
         onFailure: 'run-to-completion' as const,
+        execution: 'parallel' as const,
         isLast: true,
       }),
       unsettle: async () => {},
@@ -91,8 +92,12 @@ function makeFakeSuspendDriver(opts: { withTaskState?: boolean } = {}) {
         completionEnqueued: false,
         ...(gid === 'g1' ? { onComplete: 'summary' } : {}),
         onFailure: 'run-to-completion' as const,
+        execution: 'parallel' as const,
       }),
       cancelRemaining: async () => {
+        throw new Error('not mocked');
+      },
+      settleRemaining: async () => {
         throw new Error('not mocked');
       },
     },
@@ -211,7 +216,7 @@ describe('taskCtx.suspend（任务挂起）', () => {
     });
     const fake = makeFakeSuspendDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    await queue.enqueueGroup('chunks', [{ i: 1 }], { groupId: 'g1', onComplete: 'summary' });
+    await queue.enqueueSequence('chunks', [{ i: 1 }], { sequenceId: 'g1', onComplete: 'summary' });
     await queue.start();
 
     const worker = fake.workers.get('chunks')!;
@@ -389,30 +394,7 @@ describe('tasks.resume（任务激活）', () => {
   });
 });
 
-describe('suspended 与单飞/水合', () => {
-  it('suspended 计入单飞活跃判定：enqueueChain 同键不投', async () => {
-    const deps = makeDeps({ planner: { run: vi.fn() }, chains: { run: vi.fn() } });
-    const fake = makeFakeSuspendDriver();
-    const queue = createTaskQueue({ ...deps, driver: fake.driver });
-    // 预置同任务名的 suspended 记录（驱动记录侧，listQueued 合并可见）
-    fake.driver.list = async () => [
-      {
-        id: 'd-sus',
-        name: 'chains',
-        payload: {},
-        status: 'suspended' as const,
-        attempts: 1,
-        createdAt: Date.now(),
-        chainKey: 'c:1',
-      },
-    ];
-    await queue.start();
-
-    const res = await queue.enqueueChain('chains', { seg: 2 }, { chainKey: 'c:1' });
-    expect(res).toEqual({ enqueued: false, jobId: 'd-sus', status: 'suspended' });
-    await queue.stop();
-  });
-
+describe('suspended 与水合', () => {
   it('重启水合：start() 时从驱动信封重建 suspended 记录（含原 payload，可激活）', async () => {
     const deps = makeDeps({ planner: { run: vi.fn() } });
     const fake = makeFakeSuspendDriver();

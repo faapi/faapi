@@ -120,6 +120,45 @@ describe('runTaskInWorker', () => {
     expect(calls[0]!.args).toEqual(['chunks', { i: 1 }, { dedupId: 'k1' }]);
   });
 
+  it('taskCtx.tasks 代理：enqueueSequence/enqueueBatch 经 RPC 回宿主（carry 自动继承）', async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const modulePath = writeTaskModule(
+      'tasks-proxy-batch',
+      `export async function run(payload, taskCtx) {
+        const seq = await taskCtx.tasks.enqueueSequence(
+          'chunks',
+          [{ i: 1 }, { i: 2 }],
+          { sequenceId: 'seq:1', onFailure: 'fail-fast' },
+        );
+        const batch = await taskCtx.tasks.enqueueBatch('chunks', [{ j: 1 }], {
+          batchId: 'batch:1',
+        });
+        return { seq, batch };
+      }`,
+    );
+    const result = await runTaskInWorker({
+      taskModulePath: modulePath,
+      payload: {},
+      taskCtx: { ...baseCtx, carry: { tenantId: 7 } },
+      timeoutMs: 5000,
+      onTasksCall: async (method, args) => {
+        calls.push({ method, args });
+        if (method === 'enqueueSequence') return { sequenceId: 'seq:1', id: 'h-1' };
+        if (method === 'enqueueBatch') return { batchId: 'batch:1', jobs: [{ id: 'h-2' }] };
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    expect(result).toEqual({
+      seq: { sequenceId: 'seq:1', id: 'h-1' },
+      batch: { batchId: 'batch:1', jobs: [{ id: 'h-2' }] },
+    });
+    expect(calls.map((c) => c.method)).toEqual(['enqueueSequence', 'enqueueBatch']);
+    // worker 侧参数原样透传（carry 自动继承在宿主侧语义层 onTasksCall 实现，
+    // 由 taskQueue.test.ts 的 scoped client 用例覆盖，非本代理职责）
+    expect(calls[0]!.args![2]).toEqual({ sequenceId: 'seq:1', onFailure: 'fail-fast' });
+    expect(calls[1]!.args![2]).toEqual({ batchId: 'batch:1' });
+  });
+
   it('taskCtx.tasks 代理：宿主 handler 抛错回传为 worker 侧异常（reject）', async () => {
     const modulePath = writeTaskModule(
       'tasks-proxy-err',

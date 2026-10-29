@@ -150,7 +150,7 @@ const SQL_IS = {
   pendingMembers: (t: string) => t.includes('settled = false') && t.includes('SELECT job_id'),
 };
 
-/** 组行假记录（SELECT 返回形态） */
+/** 序列行假记录（SELECT 返回形态；mode/next_index/payloads/carry 为批量记账扩展列） */
 const groupRow = (over: Record<string, unknown> = {}) => ({
   id: 'g1',
   task: 'chunks',
@@ -161,6 +161,10 @@ const groupRow = (over: Record<string, unknown> = {}) => ({
   on_complete: 'summary',
   on_failure: 'run-to-completion',
   completion_enqueued: false,
+  mode: 'parallel',
+  next_index: 0,
+  payloads: null,
+  carry: null,
   ...over,
 });
 
@@ -188,7 +192,7 @@ describe('createPgBossDriver 组记账', () => {
     const boss = fakeBosses()[0]!;
     expect(boss.sent[0]!.data).toEqual({ __faapiGroup: 'g1', __faapiPayload: { i: 1 } });
     const insert = boss.sqls.find((s) => SQL_IS.memberInsert(s.text))!;
-    expect(insert.values).toEqual(['g1', 'pgb-1']);
+    expect(insert.values).toEqual(['g1', 'pgb-1', null]);
     // 幂等命中（send 返回 null → 返回确定性 id）同样登记成员行
     boss.sqls.length = 0;
     boss.send.mockResolvedValue(null);
@@ -198,44 +202,13 @@ describe('createPgBossDriver 组记账', () => {
       { groupId: 'g1', dedupId: 'faapi-group:g1:2' },
     );
     expect(id2).toMatch(/^[0-9a-f-]{36}$/);
-    expect(boss.sqls.find((s) => SQL_IS.memberInsert(s.text))!.values).toEqual(['g1', id2]);
+    expect(boss.sqls.find((s) => SQL_IS.memberInsert(s.text))!.values).toEqual(['g1', id2, null]);
   });
 
   it('enqueue 不带组标识不包装（存量行为不变）', async () => {
     const driver = createPgBossDriver();
     await driver.enqueue('mail', { to: 'a@b.c' });
     expect(fakeBosses()[0]!.sent[0]!.data).toEqual({ to: 'a@b.c' });
-  });
-
-  it('enqueue 带链键：载荷包装存储、不登记成员表；work/findJobs 还原 chainKey', async () => {
-    const driver = createPgBossDriver();
-    await driver.enqueue('chains', { seg: 1 }, { chainKey: 'c:1' });
-    const boss = fakeBosses()[0]!;
-    expect(boss.sent[0]!.data).toEqual({ __faapiChain: 'c:1', __faapiPayload: { seg: 1 } });
-    expect(boss.sqls.find((s) => SQL_IS.memberInsert(s.text))).toBeUndefined();
-
-    // work 交付还原 chainKey
-    const process = vi.fn(async () => 'ok');
-    await driver.startWorker('chains', { concurrency: 1, process });
-    await boss.workHandlers
-      .at(-1)!
-      .handler([
-        { id: 'j1', data: { __faapiChain: 'c:1', __faapiPayload: { seg: 1 } }, retryCount: 0 },
-      ]);
-    expect(process).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'j1', payload: { seg: 1 }, chainKey: 'c:1' }),
-    );
-
-    // findJobs 记录还原 chainKey
-    boss.findJobs.mockResolvedValue([
-      rawJob({
-        id: 'j1',
-        state: 'created',
-        data: { __faapiChain: 'c:1', __faapiPayload: { seg: 1 } },
-      }),
-    ]);
-    const records = await driver.list!({ name: 'chains' });
-    expect(records[0]).toMatchObject({ id: 'j1', payload: { seg: 1 }, chainKey: 'c:1' });
   });
 
   it('work 交付从载荷包装还原业务 payload 与 groupId', async () => {
@@ -292,6 +265,107 @@ describe('createPgBossDriver 组记账', () => {
       SQL_IS.settle(t) ? [] : SQL_IS.getGroup(t) ? [groupRow({ done: 2, total: 2 })] : [];
     const again = await groups.settle('g1', 'j1', 'done');
     expect(again).toMatchObject({ done: 2, isLast: false });
+    expect(again.next).toBeUndefined();
+  });
+
+  it('settle serial：CTE 推进 next_index（GREATEST 守卫）并返回下一条成员；fail-fast 失败不返回 next', async () => {
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    // serial 序列成员 0 落定：CTE 返回推进后序列行 + member_idx + next_payload
+    boss.sqlHandler = (t) =>
+      SQL_IS.settle(t)
+        ? [
+            {
+              ...groupRow({
+                mode: 'serial',
+                total: 3,
+                done: 1,
+                next_index: 1,
+                payloads: [{ i: 1 }, { i: 2 }, { i: 3 }],
+                carry: { tenantId: 7 },
+              }),
+              member_idx: 0,
+              next_payload: { i: 2 },
+            },
+          ]
+        : [];
+    const res = await groups.settle('g1', 'j1', 'done');
+    expect(res.next).toEqual({ index: 1, payload: { i: 2 }, carry: { tenantId: 7 } });
+    expect(res).toMatchObject({ execution: 'serial', nextIndex: 1, isLast: false });
+    // SQL 形态：GREATEST 推进守卫 + fail-fast 失败不推进 + member_index 取自成员行
+    const settleSql = boss.sqls.find((s) => SQL_IS.settle(s.text))!.text;
+    expect(settleSql).toContain('GREATEST(g.next_index, member.member_index + 1)');
+    expect(settleSql).toContain(`NOT ($3 = 'failed' AND g.on_failure = 'fail-fast')`);
+    expect(settleSql).toContain('g.payloads -> (member.member_index + 1)');
+    // fail-fast + failed：SQL 条件不推进，JS 侧不返回 next
+    boss.sqlHandler = (t) =>
+      SQL_IS.settle(t)
+        ? [
+            {
+              ...groupRow({ mode: 'serial', on_failure: 'fail-fast', failed: 1, total: 3 }),
+              member_idx: 1,
+              next_payload: { i: 3 },
+            },
+          ]
+        : [];
+    const held = await groups.settle('g1', 'j2', 'failed');
+    expect(held.next).toBeUndefined();
+  });
+
+  it('settleRemaining：差值补齐 UPDATE（WHERE 守卫幂等）；序列不存在抛错', async () => {
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    boss.sqlHandler = (t) =>
+      t.includes('total > g.done + g.failed + g.cancelled')
+        ? [groupRow({ cancelled: 1, total: 2, done: 1 })]
+        : [];
+    const snap = await groups.settleRemaining('g1', 'cancelled');
+    expect(snap).toMatchObject({ cancelled: 1, settled: 2, status: 'settled' });
+    const update = boss.sqls.find((s) => s.text.includes('total > g.done'))!;
+    expect(update.values).toEqual(['g1', 'cancelled']);
+    // 差值 0（已齐）→ fallback SELECT 返回当前快照
+    boss.sqls.length = 0;
+    boss.sqlHandler = (t) =>
+      t.includes('total > g.done + g.failed + g.cancelled')
+        ? []
+        : SQL_IS.getGroup(t)
+          ? [groupRow({ done: 2, total: 2 })]
+          : [];
+    await expect(groups.settleRemaining('g1', 'cancelled')).resolves.toMatchObject({
+      settled: 2,
+    });
+    // 序列不存在 → 抛错
+    boss.sqlHandler = (t) =>
+      t.includes('total > g.done + g.failed + g.cancelled') ? [] : SQL_IS.getGroup(t) ? [] : [];
+    await expect(groups.settleRemaining('nope', 'cancelled')).rejects.toThrow(/not found/);
+  });
+
+  it('enqueue 串行序列成员：载荷包装带 __faapiGroupIndex、成员行登记序号、交付还原', async () => {
+    const driver = createPgBossDriver();
+    await driver.enqueue('chunks', { i: 2 }, { groupId: 'g1', groupIndex: 1 });
+    const boss = fakeBosses()[0]!;
+    expect(boss.sent[0]!.data).toEqual({
+      __faapiGroup: 'g1',
+      __faapiGroupIndex: 1,
+      __faapiPayload: { i: 2 },
+    });
+    expect(boss.sqls.find((s) => SQL_IS.memberInsert(s.text))!.values).toEqual(['g1', 'pgb-1', 1]);
+
+    // work 交付还原 groupIndex
+    const process = vi.fn(async () => 'ok');
+    await driver.startWorker('chunks', { concurrency: 1, process });
+    await boss.workHandlers.at(-1)!.handler([
+      {
+        id: 'j1',
+        data: { __faapiGroup: 'g1', __faapiGroupIndex: 1, __faapiPayload: { i: 2 } },
+        retryCount: 0,
+      },
+    ]);
+    expect(process).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'j1', payload: { i: 2 }, groupId: 'g1', groupIndex: 1 }),
+    );
   });
 
   it('create：首次插入返回行；同 id 参数一致幂等跳过；参数不一致抛错', async () => {
@@ -306,6 +380,7 @@ describe('createPgBossDriver 组记账', () => {
       total: 2,
       onComplete: 'summary',
       onFailure: 'fail-fast',
+      mode: 'parallel',
     });
     expect(boss.sqls.some((s) => s.text.includes('SELECT task, total'))).toBe(false);
     // 已存在 + 参数一致 → 幂等跳过
@@ -319,6 +394,9 @@ describe('createPgBossDriver 组记账', () => {
               total: 2,
               on_complete: 'summary',
               on_failure: 'fail-fast',
+              mode: 'parallel',
+              payloads: null,
+              carry: null,
             },
           ];
     await groups.create({
@@ -327,6 +405,7 @@ describe('createPgBossDriver 组记账', () => {
       total: 2,
       onComplete: 'summary',
       onFailure: 'fail-fast',
+      mode: 'parallel',
     });
     // 已存在 + 参数漂移 → 抛错（不静默沿用旧声明）
     await expect(
@@ -336,6 +415,7 @@ describe('createPgBossDriver 组记账', () => {
         total: 3,
         onComplete: 'summary',
         onFailure: 'fail-fast',
+        mode: 'parallel',
       }),
     ).rejects.toThrow(/already exists with different options/);
   });

@@ -151,10 +151,15 @@ const CMD = {
   settle: 'faapiGroupSettle',
   unsettle: 'faapiGroupUnsettle',
   hsetnx: 'faapiGroupMemberHsetnx',
+  settleRemaining: 'faapiGroupSettleRemaining',
 };
 
-/** settle Lua 返回行（[changed, done, failed, cancelled, total, onComplete, onFailure, ce]） */
-const settleRow = (over: number[] = []) => [
+/**
+ * settle Lua 返回行（[changed, done, failed, cancelled, total, onComplete,
+ * onFailure, ce, mode, nextIndex, nextPayloadJSON, nextCarryJSON]）；
+ * over 为 [done, failed, cancelled, total, ce] 增量，mode 参数切 serial
+ */
+const settleRow = (over: number[] = [], mode: 'parallel' | 'serial' = 'parallel') => [
   1,
   over[0] ?? 1,
   over[1] ?? 0,
@@ -163,6 +168,10 @@ const settleRow = (over: number[] = []) => [
   'summary',
   'fail-fast',
   over[4] ?? 0,
+  mode,
+  -1,
+  '',
+  '',
 ];
 
 describe('createBullMQDriver 组记账', () => {
@@ -213,39 +222,6 @@ describe('createBullMQDriver 组记账', () => {
     expect(records[1]!.groupId).toBeUndefined();
   });
 
-  it('enqueue 带链键：载荷包装存储、不登记成员 hash；work/getJobs 还原 chainKey', async () => {
-    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
-    await driver.enqueue('chains', { seg: 1 }, { chainKey: 'c:1' });
-    const queue = h.fakeQueues.find((q) => q.name === 'chains')!;
-    expect(queue.adds[0]!.data).toEqual({ __faapiChain: 'c:1', __faapiPayload: { seg: 1 } });
-    expect(h.fakeRedis.hashes.has('faapi:group-members:c:1')).toBe(false);
-
-    // work 交付还原 chainKey
-    const process = vi.fn(async () => 'ok');
-    await driver.startWorker('chains', { concurrency: 1, process });
-    const worker = h.fakeWorkers.at(-1)!;
-    await worker.handler({
-      id: 'j1',
-      data: { __faapiChain: 'c:1', __faapiPayload: { seg: 1 } },
-      attemptsStarted: 1,
-    });
-    expect(process).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'j1', payload: { seg: 1 }, chainKey: 'c:1' }),
-    );
-
-    // getJobs 记录还原 chainKey
-    queue.store.set('waiting', [
-      {
-        id: 'j2',
-        name: 'chains',
-        data: { __faapiChain: 'c:1', __faapiPayload: { seg: 1 } },
-        timestamp: 1700000000000,
-      },
-    ]);
-    const records = await driver.list!({ name: 'chains' });
-    expect(records[0]).toMatchObject({ id: 'j2', payload: { seg: 1 }, chainKey: 'c:1' });
-  });
-
   it('settle：Lua 原子计账调用（keys + jobId + outcome），返回行解析为快照 + isLast', async () => {
     const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
     const groups = driver.groups!;
@@ -284,6 +260,7 @@ describe('createBullMQDriver 组记账', () => {
       total: 2,
       onComplete: 'summary',
       onFailure: 'fail-fast' as const,
+      mode: 'parallel' as const,
     };
     // 首次创建（Lua 返回 1）
     h.fakeRedis.commandHandler = (c) => (c === CMD.create ? 1 : []);
@@ -296,6 +273,9 @@ describe('createBullMQDriver 组记账', () => {
       '2',
       'summary',
       'fail-fast',
+      'parallel',
+      'null',
+      'null',
     ]);
     // 幂等命中（返回 0）不抛错不读旧声明
     h.fakeRedis.commandHandler = (c) => (c === CMD.create ? 0 : []);
@@ -309,6 +289,105 @@ describe('createBullMQDriver 组记账', () => {
     });
     h.fakeRedis.commandHandler = (c) => (c === CMD.create ? -1 : []);
     await expect(groups.create(decl)).rejects.toThrow(/already exists with different options/);
+  });
+
+  it('create serial：mode/payloads/carry 随序列行持久化；serial 缺 payloads 显式抛错', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const groups = driver.groups!;
+    h.fakeRedis.commandHandler = (c) => (c === CMD.create ? 1 : []);
+    await groups.create({
+      id: 's1',
+      task: 'chunks',
+      total: 2,
+      onFailure: 'run-to-completion',
+      mode: 'serial',
+      payloads: [{ i: 1 }, { i: 2 }],
+      carry: { tenantId: 7 },
+    });
+    const createCall = h.fakeRedis.called.find((e) => e.command === CMD.create)!;
+    expect(createCall.args).toEqual([
+      'faapi:group:s1',
+      'faapi:group-members:s1',
+      'chunks',
+      '2',
+      '',
+      'run-to-completion',
+      'serial',
+      '[{"i":1},{"i":2}]',
+      '{"tenantId":7}',
+    ]);
+    await expect(
+      groups.create({
+        id: 's2',
+        task: 'chunks',
+        total: 2,
+        onFailure: 'run-to-completion',
+        mode: 'serial',
+      }),
+    ).rejects.toThrow(/requires payloads/);
+  });
+
+  it('settle serial：Lua 行带 nextIndex/nextPayload → 快照含 next；成员登记带序号', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const groups = driver.groups!;
+    // serial 成员登记：成员 hash 值 'p:<index>'
+    await driver.enqueue('chunks', { i: 2 }, { groupId: 'g1', groupIndex: 1 });
+    const queue = h.fakeQueues.find((q) => q.name === 'chunks')!;
+    expect(queue.adds[0]!.data).toEqual({
+      __faapiGroup: 'g1',
+      __faapiGroupIndex: 1,
+      __faapiPayload: { i: 2 },
+    });
+    expect(h.fakeRedis.hashes.get('faapi:group-members:g1')).toEqual({ 'bm-1': 'p:1' });
+
+    // work 交付还原 groupIndex
+    const process = vi.fn(async () => 'ok');
+    await driver.startWorker('chunks', { concurrency: 1, process });
+    await h.fakeWorkers[0]!.handler({
+      id: 'j1',
+      data: { __faapiGroup: 'g1', __faapiGroupIndex: 1, __faapiPayload: { i: 2 } },
+      attemptsStarted: 1,
+    });
+    expect(process).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'j1', payload: { i: 2 }, groupId: 'g1', groupIndex: 1 }),
+    );
+
+    // settle serial：返回行带推进后的 next（payload/carry 从序列行 JSON 解码）
+    h.fakeRedis.commandHandler = (c) =>
+      c === CMD.settle
+        ? [
+            1,
+            1,
+            0,
+            0,
+            3,
+            '',
+            'run-to-completion',
+            0,
+            'serial',
+            1,
+            JSON.stringify({ i: 2 }),
+            JSON.stringify({ tenantId: 7 }),
+          ]
+        : [];
+    const res = await groups.settle('g1', 'bm-1', 'done');
+    expect(res.next).toEqual({ index: 1, payload: { i: 2 }, carry: { tenantId: 7 } });
+    expect(res).toMatchObject({ execution: 'serial', nextIndex: 1, isLast: false });
+  });
+
+  it('settleRemaining：差值补齐命令（批量不存在返回行 -1 抛错）', async () => {
+    const driver = createBullMQDriver({ connection: { host: '127.0.0.1' } });
+    const groups = driver.groups!;
+    h.fakeRedis.commandHandler = (c) =>
+      c === CMD.settleRemaining
+        ? [1, 1, 0, 2, 3, '', 'run-to-completion', 0, 'serial', -1, '', '']
+        : [];
+    const snap = await groups.settleRemaining('g1', 'cancelled');
+    expect(snap).toMatchObject({ done: 1, cancelled: 2, total: 3, settled: 3, status: 'settled' });
+    const call = h.fakeRedis.called.find((e) => e.command === CMD.settleRemaining)!;
+    expect(call.args).toEqual(['faapi:group:g1', 'cancelled']);
+    h.fakeRedis.commandHandler = (c) => (c === CMD.settleRemaining ? [-1] : []);
+    await expect(groups.settleRemaining('nope', 'cancelled')).rejects.toThrow(/not found/);
   });
 
   it('cancelRemaining：fail-fast 取消 waiting/delayed 成员并落定；run-to-completion 为 no-op', async () => {

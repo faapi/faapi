@@ -380,11 +380,12 @@ export function buildTasksProxy(send: (msg: Record<string, unknown>) => void): {
     proxy: {
       enqueue: (name, payload, opts) =>
         call('enqueue', [name, payload, opts]) as ReturnType<TaskClient['enqueue']>,
-      // 链式投递：excludeJobId 由宿主侧分派注入（调用方自身），worker 侧原样透传
-      enqueueChain: (name, payload, opts) =>
-        call('enqueueChain', [name, payload, opts]) as ReturnType<TaskClient['enqueueChain']>,
-      enqueueGroup: (name, payloads, opts) =>
-        call('enqueueGroup', [name, payloads, opts]) as ReturnType<TaskClient['enqueueGroup']>,
+      enqueueSequence: (name, payloads, opts) =>
+        call('enqueueSequence', [name, payloads, opts]) as ReturnType<
+          TaskClient['enqueueSequence']
+        >,
+      enqueueBatch: (name, payloads, opts) =>
+        call('enqueueBatch', [name, payloads, opts]) as ReturnType<TaskClient['enqueueBatch']>,
       // 激活：与进程内同语义（宿主侧走完整 resume 通道，信封读出即删）；
       // worker 自身挂起走 taskCtx.suspend（独立 RPC 通道），此处是激活别人
       resume: (name, jobId, opts) =>

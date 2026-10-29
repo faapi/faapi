@@ -127,9 +127,10 @@ export type TaskJobStatus =
 export type TaskGroupOutcome = 'done' | 'failed' | 'cancelled';
 
 /**
- * 组级失败语义（enqueueGroup 声明）：
+ * 批量级失败语义（enqueueSequence / enqueueBatch 声明）：
  * - 'run-to-completion'（默认）：成员最终失败不影响其余成员，回调照常在全部落定时触发
- * - 'fail-fast'：首个成员最终失败即取消组内未落定成员（在跑的自然跑完），取消成员落定 cancelled
+ * - 'fail-fast'：首个成员最终失败即终止——串行序列不再激活后续条目（未激活成员补记
+ *   cancelled）；并行批次取消队列中未落定成员（在跑的自然跑完）
  */
 export type TaskGroupOnFailure = 'fail-fast' | 'run-to-completion';
 
@@ -139,7 +140,7 @@ export type TaskGroupOnFailure = 'fail-fast' | 'run-to-completion';
  * 建议 `interface Payload extends TaskGroupSummary {}`）
  */
 export interface TaskGroupSummary {
-  /** 组标识（业务关联键原样透传） */
+  /** 批量标识（业务关联键原样透传；存储层沿组记账通道，键名保留 groupId） */
   groupId: string;
   /** 成员任务名 */
   task: string;
@@ -154,17 +155,25 @@ export interface TaskGroupSummary {
 }
 
 /**
- * 组记账快照（getGroup 返回；驱动侧存储的实时投影）
+ * 批量记账快照（getGroup 返回；驱动侧存储的实时投影；两形态共用，机制见 taskBatch.md）
  */
 export interface TaskGroupSnapshot extends TaskGroupSummary {
   /** 完成回调任务名（未声明时无 fan-in，仅记账） */
   onComplete?: string;
-  /** 组级失败语义 */
+  /** 批量级失败语义 */
   onFailure: TaskGroupOnFailure;
   /** 'settled' = 全部落定 */
   status: 'open' | 'settled';
-  /** 完成回调是否已入队（false 且 status settled = 回调未入队——可经同 groupId 重投自愈） */
+  /** 完成回调是否已入队（false 且 status settled = 回调未入队——可经同 id 重投自愈） */
   completionEnqueued: boolean;
+  /** 执行形态：'serial' 串行有序（enqueueSequence）| 'parallel' 并行无序（enqueueBatch） */
+  execution: 'serial' | 'parallel';
+  /**
+   * 已推进的激活位置（仅 serial）：指向下一个可能需要（重新）入队的成员 0 基 index——
+   * 正常推进时指向最新激活成员（重投 dedup 命中零开销），激活两步崩溃窗口指向断链
+   * 成员（重投真补投）；全部落定时 = total
+   */
+  nextIndex?: number;
 }
 
 /**
@@ -183,10 +192,13 @@ export interface TaskJob {
   error?: string;
   /** 最近一次进度上报值（run 内 `taskCtx.progress(value)` 写入；派发时清空上一轮） */
   progress?: unknown;
-  /** 所属任务组（组投递的成员任务携带；非组任务无此字段） */
+  /** 所属批量（enqueueSequence / enqueueBatch 的成员任务携带；非批量任务无此字段） */
   groupId?: string;
-  /** 所属链（链式投递的任务携带；chainKey 键控单飞语义见 taskChain.md） */
-  chainKey?: string;
+  /**
+   * 批量内成员序号（0 基，串行序列的成员携带——激活入队时由框架传入，
+   * 观测成员在序列中的位置；并行批次与任务级投递无此字段）
+   */
+  groupIndex?: number;
   /** enqueue 时携带的执行上下文快照（`opts.carry`；未传无此字段） */
   carry?: Record<string, unknown>;
   createdAt: number;
@@ -338,7 +350,7 @@ export interface TaskContext {
    */
   llm?: LlmComplete;
   /**
-   * enqueue 时携带的执行上下文快照（`enqueue/enqueueGroup/enqueueChain` 的
+   * enqueue 时携带的执行上下文快照（`enqueue/enqueueSequence/enqueueBatch` 的
    * `opts.carry`）——身份/标记等**纯数据**（隔离快照同款边界），随任务持久化
    * 跨实例/重启正确。任务内续投自动继承当前 carry（显式传 carry 覆盖）；
    * cron 触发为空对象。典型用途：HTTP 入队处声明执行身份
@@ -484,36 +496,6 @@ export interface TaskClient {
     payload?: unknown,
     opts?: { delayMs?: number; dedupId?: string; carry?: Record<string, unknown> },
   ): Promise<{ id: string }>;
-  /**
-   * 链式投递：chainKey 键控单飞（同键至多一条活跃任务），无活跃才入队（完整
-   * 语义见 taskChain.md）
-   *
-   * - opts.chainKey 必填非空字符串——业务关联键（如 `deconstruct:<novelId>`），
-   *   活跃查证按键过滤，不依赖 payload 形状
-   * - 活跃（pending/running/retry）同键任务存在 → 不投，返回活跃任务现状；
-   *   无活跃 → 入队（dedupId 框架托管 `faapi-chain:<chainKey>:<时间戳>`，终态后
-   *   可重投），返回新任务 id
-   * - opts.excludeJobId：活跃查证时跳过的 job id——任务执行路径（taskCtx.tasks）
-   *   自动注入为调用方自身（任务内自续投不被自身 running 态挡住），非任务上下文
-   *   调用无需手传
-   *
-   * @returns enqueued=false 时附带活跃任务 jobId/status；enqueued=true 时附带新任务 id
-   * @throws 任务不存在 / chainKey 缺失或空白 / 队列已停止 / payload 校验失败
-   *   （ValidationError）/ 驱动未实现 TaskDriver.list（活跃查证能力边界，
-   *   与 listQueued 同口径）
-   */
-  enqueueChain(
-    name: string,
-    payload?: unknown,
-    opts?: {
-      chainKey: string;
-      delayMs?: number;
-      excludeJobId?: string;
-      carry?: Record<string, unknown>;
-    },
-  ): Promise<
-    { enqueued: true; id: string } | { enqueued: false; jobId: string; status: TaskJobStatus }
-  >;
   /** 任务记录快照（可按任务名过滤）——本进程内存活记录，不含其他实例/重启前历史 */
   list(name?: string): TaskJob[];
   /**
@@ -540,32 +522,60 @@ export interface TaskClient {
    */
   retry(name: string, id: string): Promise<void>;
   /**
-   * 组投递：一次投递 N 个同构子任务并挂同一组标识（组投递 / 记账 / fan-in 完整
-   * 语义见 taskGroups.md）
+   * 并行无序批量投递：一次登记 N 个同构子任务并挂同一批量标识，全部成员立即入队
+   * 并行执行（批量记账 / fan-in 完整语义见 taskBatch.md）
    *
-   * - payloads 全量校验前置（任一失败整组不投递）；空数组抛错
-   * - opts.groupId 缺省自动生成；同 id 幂等重投（成员 dedupId 自动派生
-   *   `faapi-group:<groupId>:<index>`，替代业务自拼序号；长任务扇出建议 groupId
+   * - payloads 全量校验前置（任一失败整批不投递）；空数组抛错
+   * - opts.batchId 缺省自动生成；同 id 幂等重投（成员 dedupId 自动派生
+   *   `faapi-group:<batchId>:<index>`，替代业务自拼序号；长任务扇出建议 batchId
    *   从业务键派生——发起任务重试即天然补投自愈）
    * - opts.onComplete：全部成员落定时框架自动入队的回调任务名（payload =
-   *   TaskGroupSummary 契约）；opts.onFailure：'fail-fast' | 'run-to-completion'
-   *   （缺省后者）
+   *   TaskGroupSummary 契约）；opts.onFailure：'fail-fast'（首个成员最终失败即取消
+   *   余下未落定成员）| 'run-to-completion'（缺省）
    *
-   * @returns groupId 与各成员任务 id
+   * @returns batchId 与各成员任务 id
    * @throws 任务不存在 / payloads 为空 / payload 校验失败（ValidationError）/
-   *   队列已停止 / 驱动未实现组记账（TaskDriver.groups 缺失）
+   *   队列已停止 / 驱动未实现批量记账（TaskDriver.groups 缺失）
    */
-  enqueueGroup(
+  enqueueBatch(
     name: string,
     payloads: unknown[],
     opts?: {
-      groupId?: string;
+      batchId?: string;
       onComplete?: string;
       onFailure?: TaskGroupOnFailure;
       delayMs?: number;
       carry?: Record<string, unknown>;
     },
-  ): Promise<{ groupId: string; jobs: { id: string }[] }>;
+  ): Promise<{ batchId: string; jobs: { id: string }[] }>;
+  /**
+   * 串行有序批量投递：一次登记 N 条已知 payload，框架保证严格串行——前一条到达
+   * 终态（含重试耗尽）才激活下一条（完整语义见 taskBatch.md）
+   *
+   * - payloads 全量校验前置（任一失败整序列不登记）并持久化到驱动侧序列行
+   *   （激活发生在任意实例/重启之后）；空数组抛错
+   * - opts.sequenceId 缺省自动生成；同 id 幂等重投（首条 dedup 命中零开销 /
+   *   激活两步崩溃窗口经 nextIndex 补投自愈；参数漂移抛错）
+   * - opts.onComplete：全部成员落定时框架自动入队的回调任务名（payload =
+   *   TaskGroupSummary 契约）；opts.onFailure：'fail-fast'（首个成员最终失败即终止，
+   *   未激活成员补记 cancelled）| 'run-to-completion'（缺省——失败跳过继续）
+   * - opts.delayMs 仅作用于首条入队；opts.carry 随序列声明持久化，每条激活入队注入
+   *
+   * @returns sequenceId 与首条成员任务 id（序列已落定的重投不再入队，无 id）
+   * @throws 任务不存在 / payloads 为空 / payload 校验失败（ValidationError）/
+   *   队列已停止 / 驱动未实现批量记账（TaskDriver.groups 缺失）
+   */
+  enqueueSequence(
+    name: string,
+    payloads: unknown[],
+    opts?: {
+      sequenceId?: string;
+      onComplete?: string;
+      onFailure?: TaskGroupOnFailure;
+      delayMs?: number;
+      carry?: Record<string, unknown>;
+    },
+  ): Promise<{ sequenceId: string; id?: string }>;
   /**
    * 组记账快照（计数器为驱动侧存储的实时投影——跨实例/重启正确）
    *
