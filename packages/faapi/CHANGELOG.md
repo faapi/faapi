@@ -1,5 +1,17 @@
 # @faapi/faapi
 
+## 7.16.1
+
+### Patch Changes
+
+- 22c0ecc: fix(faapi): dev 按需编译产物新鲜度改为依赖闭包感知，消除停机期间重构导致的新旧产物混编
+
+  dev server 停机期间源码被改（本机重构 / git pull）后重启，入口（bootstrap / handler / 中间件 / tool / agent / task）自身产物 mtime 仍新鲜时，此前会跳过依赖闭包检查——旧入口产物继续 import 陈旧依赖产物，与启动期 `compileConfig` 重编译的 config 闭包产物新旧混编：依赖导出面变更时报 `does not provide an export named ...`（报错点距根因很远），仅内部实现变更则静默跑旧代码。现在 `ensureCompiled` 对入口与依赖闭包逐文件做 mtime 新鲜度检查，发现 stale 只补编译 stale 集，全 fresh 零编译跳过（闭包扫描仅在每入口每进程首次调用发生）。`ensureSchemaGenerated` 同步收紧——zod.js 内容内联跨文件类型，新鲜度要求 zod.js 不晚于闭包内任何源文件，依赖类型在停机期间被改后重新生成。
+
+- 21ac217: fix(faapi): dev 模式 tool zod.js 与 build 一致全量生成，修复 tool 入参校验与 LLM 可见参数 schema 在 dev 静默缺失
+
+  此前文档描述 dev 下 tool zod.js「首次请求按需生成（`ensureToolSchemaGenerated`）」，该函数从未实现——dev 启动与 `reloadTools` 实际均跳过 zod.js 生成，声明了 `Input` 的 tool 在 dev 由自由 schema `{ type: 'object' }` 兜底：LLM 看不到参数描述、入参不校验，与 build 行为静默不一致。现在 dev 启动（`generateToolArtifactsForDev`）与 watcher 触发的 `reloadTools` 均全量生成 tool zod.js，与 build/agent/task 同款（tool 清单的 AST 增强本就要创建 Program，按需化无启动收益）。`generateToolArtifacts` 的 `skipSchema` 选项口径收敛为仅供测试设施 free-form 模式。注意：tool `Input` 含暂不支持的 AST 语法时 dev 启动即显式报错（此前静默旁路），与 build 行为对齐。
+
 ## 7.16.0
 
 ## 7.15.0
