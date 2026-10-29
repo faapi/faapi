@@ -10,6 +10,7 @@ import { scanRoutes } from '../routers/scanRoutes';
 import { sortRoutes } from '../routers/sortRoutes';
 import { serializeRoutes, writeRoutesModule } from './generateRoutes';
 import { generateSchemaFiles } from './generateSchemaFiles';
+import { setDevOnDemandEnabled, setDevDist } from './compileOnDemand';
 import { invalidateMiddlewareCache } from '../middlewares/loadMiddlewares';
 import { invalidateSchemaCache } from '../validators/validateInput';
 import { listTools, clearToolRegistry } from '../injection/toolRegistry';
@@ -209,6 +210,55 @@ export function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
     expect(toolsContent).toContain('export const tools = []');
 
     await app.close();
+  });
+
+  it('dev 按需模式：启动与 reloadTools 均生成 tool zod.js（与 build 一致，非仅清单）', async () => {
+    // 回归：文档承诺的 ensureToolSchemaGenerated 从未实现——dev 按需模式下
+    // 启动（generateToolArtifactsForDev）与 reloadTools 都传 skipSchema，声明了
+    // Input 的 tool 在 dev 无 zod.js：LLM 看到自由 schema、入参不校验，与 build
+    // 行为静默不一致（违反 dev/prod 一致与禁止降级）。
+    // 真实 dev 序列：devCommand 先 setDevOnDemandEnabled(true) 再调
+    // generateToolArtifactsForDev → createDevApp；watcher 改 tool 后调 reloadTools。
+    setDevOnDemandEnabled(true);
+    setDevDist('.faapi');
+    try {
+      writeHandler();
+      await compileArtifacts('.faapi');
+
+      const toolPath = join(tempDir, 'src/tools/weather/handler.ts');
+      mkdirSync(join(toolPath, '..'), { recursive: true });
+      writeFileSync(
+        toolPath,
+        `export interface WeatherInput { city: string }
+/** 获取天气 */
+export function getWeather(input: WeatherInput) { return 'sunny'; }\n`,
+        'utf-8',
+      );
+      await compileDevRoutes({ rootDir: tempDir, dist: '.faapi', files: [toolPath] });
+
+      // 启动期生成（generateToolArtifactsForDev，修复前仅清单无 zod.js）
+      const { generateToolArtifactsForDev } = await import('./devCommand');
+      await generateToolArtifactsForDev(tempDir, '.faapi');
+
+      const zodPath = join(tempDir, '.faapi', 'tools', 'weather', 'zod.js');
+      expect(existsSync(zodPath)).toBe(true);
+      expect(readFileSync(zodPath, 'utf-8')).toContain('WeatherInputSchema');
+
+      // watcher 改 tool 后 reloadTools：zod.js 按最新源码重新生成
+      const app = await createDevApp({ rootDir: tempDir });
+      try {
+        rmSync(zodPath);
+        await app.reloadTools();
+        expect(existsSync(zodPath)).toBe(true);
+        expect(readFileSync(zodPath, 'utf-8')).toContain('WeatherInputSchema');
+      } finally {
+        await app.close();
+      }
+    } finally {
+      setDevOnDemandEnabled(false);
+      setDevDist('');
+      clearToolRegistry();
+    }
   });
 
   it('缺失 faapi-routes.js 抛错', async () => {

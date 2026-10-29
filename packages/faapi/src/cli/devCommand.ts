@@ -84,9 +84,11 @@ export async function devCommand(options?: DevCommandOptions): Promise<void> {
   console.log('- Generating route manifest (schema generated on demand)...');
   await generateRouteArtifacts(rootDir, ROUTE_PATTERNS, devDist);
 
-  // 5. 生成 tool 清单（scanTools 不 import，仅读源码 + 正则提取函数名）
-  //    按需模式跳过 zod.js 生成——首次请求时按需生成（与路由 schema 策略一致）
-  console.log('- Generating tool manifest...');
+  // 5. 生成 tool 清单 + tool zod.js（scanTools 不 import，仅读源码 + 正则提取函数名）
+  //    zod.js 与 build 一致启动期全量生成（与 agent/task 同款）——清单 AST 增强
+  //    本就要创建 Program，跳过 zod.js 几乎不省启动成本，只会让声明了 Input 的
+  //    tool 在 dev 丢校验与 LLM 可见参数 schema（dev/prod 静默不一致）
+  console.log('- Generating tool artifacts...');
   await generateToolArtifactsForDev(rootDir, devDist);
 
   // 6. 生成 agent 清单（scanAgents 不 import，仅读源码 + 正则检测 config/run）
@@ -139,15 +141,16 @@ export async function generateRouteArtifacts(
 }
 
 /**
- * 生成 tool 产物：faapi-tools.js（仅 tool 清单，不含 zod.js）
+ * 生成 tool 产物：faapi-tools.js 清单 + 各 tool 的 zod.js
  *
- * 与 `generateRouteArtifacts` 对称——dev 按需模式跳过 zod.js 生成，
- * 首次请求时按需生成（tool zod.js 的按需生成由 toolRegistry 在 Phase 1.6+ 接入）。
- * 无 tool 文件时 scanTools 返回空列表，generateToolArtifacts 写入空清单。
+ * zod.js 与 build 一致全量生成（与 agent/task 同款）——tool 清单的 AST 增强
+ * 本就要创建 Program，跳过 zod.js 几乎不省启动成本，只会让声明了 Input 的 tool
+ * 在 dev 丢校验与 LLM 可见参数 schema。无 tool 文件时 scanTools 返回空列表，
+ * generateToolArtifacts 写入空清单。
  */
 export async function generateToolArtifactsForDev(rootDir: string, dist: string): Promise<void> {
   const tools = await scanTools(rootDir, TOOL_PATTERNS);
-  await generateToolArtifacts(tools, rootDir, dist, { skipSchema: true });
+  await generateToolArtifacts(tools, rootDir, dist);
 }
 
 /**

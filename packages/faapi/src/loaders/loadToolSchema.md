@@ -71,13 +71,11 @@ tool input 校验失败不阻断流程——`executeTool` 返回 `{ error }` 对
 
 faapi 核心包不声明 zod 为依赖（zod 是 peerDep，业务方自行安装）。`loadToolSchema` 返回 `unknown` 类型的 schema 对象——faapi 核心只负责加载 zod.js 模块（业务方安装的 zod 创建的 schema 对象），类型断言 + `z.toJSONSchema` / `safeParse` 由 `@faapi/agent` 负责（`@faapi/agent` 声明 zod 为 peerDep）。
 
-## dev 按需模式下的 zod.js
+## zod.js 生成时机（dev/prod 一致）
 
-dev 按需模式下 tool 的 zod.js 生成时机：
-- 启动时：`generateToolArtifacts(skipSchema: true)` 只生成 `faapi-tools.js` 清单，不预生成 zod.js
-- 首次请求：由 `ensureToolSchemaGenerated`（阶段 1.4）按需生成单文件 zod.js（与 route 的 `ensureSchemaGenerated` 同构）
+tool 的 zod.js 由 `generateToolArtifacts` 全量生成——dev 启动（`generateToolArtifactsForDev`）、dev `reloadTools`、build 三条路径行为一致（与 agent/task 同款）。
 
-`loadToolSchema` 不负责触发 zod.js 生成——只加载已存在的 zod.js。若 zod.js 不存在（`ensureToolSchemaGenerated` 未触发），返回 undefined（用自由 schema）。
+`loadToolSchema` 不负责触发 zod.js 生成——只加载已存在的 zod.js。zod.js 不存在（tool 未声明 `Input`）时返回 undefined，调用方用自由 schema `{ type: 'object' }`。
 
 ## 相关模块
 

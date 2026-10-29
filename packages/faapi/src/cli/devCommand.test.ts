@@ -291,13 +291,11 @@ describe('devCommand', () => {
       expect(scanTools).toHaveBeenCalledWith('/root', ['src/tools/**/*.ts']);
     });
 
-    it('generateToolArtifacts 传入 skipSchema: true（dev 按需模式跳过 zod.js）', async () => {
+    it('generateToolArtifacts 不传 skipSchema（dev 启动期生成 tool zod.js，与 build 一致）', async () => {
       const fakeTools = [{ name: 'tool1' }] as any;
       vi.mocked(scanTools).mockResolvedValue(fakeTools);
       await generateToolArtifactsForDev('/root', '.faapi');
-      expect(generateToolArtifacts).toHaveBeenCalledWith(fakeTools, '/root', '.faapi', {
-        skipSchema: true,
-      });
+      expect(generateToolArtifacts).toHaveBeenCalledWith(fakeTools, '/root', '.faapi');
     });
   });
 

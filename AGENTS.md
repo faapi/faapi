@@ -151,13 +151,13 @@ dev 和 prod 生成完全一致的产物集（`faapi-config.js` + `faapi-routes.
 | `faapi-config.js`（配置入口产物，import config 源产物 + export base） | `.faapi/faapi-config.js` | `dist/faapi-config.js` |
 | `faapi.config.js`（config 源编译产物，保留相对 import 指向项目模块） | `.faapi/faapi.config.js` | `dist/faapi.config.js` |
 | `faapi-routes.js`（路由清单） | `.faapi/faapi-routes.js` | `dist/faapi-routes.js` |
-| `faapi-tools.js`（tool 清单，可选——无 tool 的项目生成空清单） | `.faapi/faapi-tools.js` | `dist/faapi-tools.js` |
+| `faapi-tools.js`（tool 清单，可选——无 tool 的项目生成空清单）+ 各 tool 的 `zod.js` | `.faapi/faapi-tools.js` + `.faapi/tools/**/zod.js` | `dist/faapi-tools.js` + `dist/tools/**/zod.js` |
 | `zod.js`（schema 模块） | `.faapi/**/zod.js` | `dist/**/zod.js` |
 | `faapi-helpers.js`（coerce 公用函数，仅有 number/boolean 字段时生成） | `.faapi/faapi-helpers.js` | `dist/faapi-helpers.js` |
 | `resources/`（运行时静态文件，`src/resources/` 原样复制——不编译、不被任何扫描器识别；dev watcher 监听变化增量同步，详见 `src/cli/copyResources.md`） | `.faapi/resources/` | `dist/resources/` |
 | `main.js`（启动入口，仅 prod） | — | `dist/main.js` |
 
-- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `generateToolArtifacts` 生成 `faapi-tools.js`（**仅 tool 清单，不预生成 zod.js**），调 `copyResources` 镜像复制 `src/resources/` → `.faapi/resources/`（无该目录时跳过），调 `createDevApp()`（内部：createAppBase → **加载执行 `src/bootstrap.ts`** → 追加热替换方法）+ `listen()`，watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` / `app.reloadTools()` 热替换路由/tool；`src/resources/` 下任意扩展名文件走增量复制/删除，不进编译调度器）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
+- `faapi` / `faapi dev`：dev 模式（**Vite 风格按需编译**），`devCommand` 先兜底 `NODE_ENV=development`（未显式设置时）+ `loadEnv(rootDir)` 加载 `.env` 系列文件到 `process.env`，设 `FAAPI_DIST=.faapi`（dev 产物目录固定为 `.faapi`，不可修改），启用按需编译模式（`setDevOnDemandEnabled(true)` + `setDevDist('.faapi')`），调 `compileConfig` 两步编译生成 `.faapi/faapi-config.js`（config 源 + 项目模块逐文件编译 + 入口 bundle external），调 `generateRouteArtifacts` 生成 `faapi-routes.js`（**仅路由清单，不预编译 handler.js，不预生成 zod.js**），调 `generateToolArtifacts` 生成 `faapi-tools.js` + 各 tool 的 `zod.js`（与 build 一致全量生成，与 agent/task 同款），调 `copyResources` 镜像复制 `src/resources/` → `.faapi/resources/`（无该目录时跳过），调 `createDevApp()`（内部：createAppBase → **加载执行 `src/bootstrap.ts`** → 追加热替换方法）+ `listen()`，watch 文件变化（增量编译 + 重生成 `faapi-config.js` + 调 `app.reloadRoutes()` / `app.reloadTools()` 热替换路由/tool；`src/resources/` 下任意扩展名文件走增量复制/删除，不进编译调度器）。handler.js / zod.js 在首次请求时按需编译/生成（详见 `src/cli/compileOnDemand.md`）
 - `faapi build`：构建，`compileBuildRoutes` 逐文件编译（`bundle: false`，与 dev 一致，打平 src 前缀）→ `dist/*.js`（含 `src/bootstrap.ts → dist/bootstrap.js`）+ `compileConfig` 两步编译配置 → `dist/faapi-config.js` + 编译本地 TS 插件（config.plugins 的 path 声明 → `dist/plugins/`，保留相对结构）+ 生成 `dist/faapi-routes.js` + 生成 `dist/faapi-tools.js`（tool 清单，可选）+ 每个 handler/tool 的 `zod.js` + 复制 `src/resources/` → `dist/resources/`（原样镜像，无该目录时跳过）+ 生成 `dist/main.js` 启动入口（零入口设计：内部 import `$start` + `loadEnv` + 兜底 `NODE_ENV`），不启动服务器
 - `node dist/main`：生产模式，直接运行 `dist/main.js`，先兜底 `NODE_ENV=production`（未显式设置时）+ `loadEnv(cwd)` 加载 `.env` 系列文件到 `process.env`，`$start()` 读 `FAAPI_DIST`（未设置时默认 `dist`），内部 `createProdApp`（水合 `dist/faapi-routes.js` 路由清单 + `dist/faapi-tools.js` tool 清单 + `loadConfig` 读 `dist/faapi-config.js` + **加载执行 `src/bootstrap.ts` 编译产物 `dist/bootstrap.js`**）后 `listen()`，运行时按需 import `zod.js` 做 zod safeParse
 
@@ -620,15 +620,17 @@ dev 模式采用 Vite 风格按需编译——启动时只编译 config + 生成
 | 阶段 | 触发时机 | 行为 |
 |------|---------|------|
 | 启动 | `faapi dev` | 编译 config + 生成 `faapi-routes.js`（scanRoutes 仅读源码 + 正则提取方法名，零 import） |
-| 首次请求 | `loadRouteModule` import 失败 | `ensureCompiled` 单文件编译 handler.js → 重试 import |
-| 首次请求 | `createServer` 在 `validateInput` 之前 | `ensureSchemaGenerated` 单文件生成 zod.js |
+| 首次请求 | `loadRouteModule` import 之前 | `ensureCompiled` 依赖闭包按需编译 handler.js（先编译后 import，避免 import 不存在的文件污染加载器状态） |
+| 首次请求 | `createServer` 在 `validateInput` 之前 | `ensureSchemaGenerated` 按需生成 zod.js |
 | watcher 文件变化 | `reloadRoutes` | 删 stale zod.js + 清缓存（`clearCompiledFiles` / `clearGeneratedSchemas` / `invalidateMiddlewareCache`），下次请求按需重建 |
 
-**三层 mtime 缓存**（`ensureCompiled` / `ensureSchemaGenerated` 共用策略）：
+**mtime 缓存（闭包感知）**（`ensureCompiled` / `ensureSchemaGenerated` 共用策略）：
 
-1. 内存 Set 命中 → 跳过（最快路径）
-2. 产物存在且 mtime ≥ 源码 mtime → 加入 Set 跳过（复用 watcher 已编译的产物）
-3. 产物不存在或 stale → 编译/生成 → 加入 Set
+1. 内存 Set 命中 → 跳过（最快路径，稳态请求零 fs 访问）
+2. 依赖闭包逐文件新鲜度检查——产物 mtime ≥ 对应源码 mtime 的文件复用；入口产物 fresh 不跳过闭包检查（dev 停机期间依赖源码被改后重启，仅比对入口 mtime 会漏判 stale 依赖，旧入口产物与启动期被 `compileConfig` 重编译的 config 闭包产物新旧混编——导出面变更即 ESM 链接错误，报错点距根因很远）
+3. 有 stale → 只编译/生成 stale 集 → 加入 Set；全 fresh 零编译跳过
+
+闭包扫描只发生在每入口每进程首次调用；`ensureSchemaGenerated` 的 zod.js 内容内联跨文件类型（checker 解析），新鲜度同样要求 zod.js 不晚于闭包内任何源文件。详见 `src/cli/compileOnDemand.md`。
 
 **与 prod 模式的差异**：prod 模式（`node dist/main`）不启用按需编译——`faapi build` 阶段已固化全部产物，import 失败即报错。`isDevOnDemandEnabled()` 是全局开关，prod 始终为 `false`。
 
@@ -923,7 +925,7 @@ ValidationError 状态码按 issue.code 自动推导（多 issue 取最高严重
 - 输入字段二分口径：`query`/`params`/`body` 恒为校验转换后的值，`rawQuery`/`rawParams`/`rawBody` 恒为原始值（`rawBody` 为请求体原始文本，签名验签场景；全局中间件 `await next()` 前仅 rawParams/rawQuery 可用）。路由匹配提前到中间件链之前，全局中间件 `next()` 前 `ctx.params` 为原始段（不再是空对象）。详见 `src/server/createServer.md` 的「输入字段口径」。
 - WS 握手输入同样声明即校验：同文件约定 `interface Query`/`Params` 生成 `WSQuery`/`WSParams` schema，校验失败 422 拒绝握手，未声明透传原始字符串（见 5.9）。
 - dev 和 prd 行为一致，不降级：
-  - dev（Vite 风格按需模式）：启动时仅编译 config + 生成路由清单，**不预生成 `zod.js`**；首次请求时 `ensureSchemaGenerated` 按需生成（mtime 缓存复用未变更的产物），watch 时删 stale zod.js + 清缓存 + 下次请求按需重建。
+  - dev（Vite 风格按需模式）：启动时仅编译 config + 生成路由清单，**不预生成路由 `zod.js`**（tool/agent/task 的 zod.js 启动期与 build 一致全量生成）；首次请求时 `ensureSchemaGenerated` 按需生成（mtime 缓存复用未变更的产物），watch 时删 stale zod.js + 清缓存 + 下次请求按需重建。
   - prd：`faapi build` 全量生成 `zod.js`，启动时按需 import。
   - schema 缺失（`zod.js` 文件不存在或 import 失败）抛 `InternalError`，不静默放行。
 

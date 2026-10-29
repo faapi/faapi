@@ -131,11 +131,10 @@ export async function createDevApp(options?: CreateAppOptions): Promise<DevApp> 
     if (!suppressProgramInvalidation) invalidateProgramCache();
     // 重新扫描 tools（零 import，仅读源码 + 正则提取函数名）
     const tools = await scanTools(ctx.rootDir, TOOL_PATTERNS);
-    // 重生成 faapi-tools.js（含 AST 增强：description / inputTypeName）
-    // 按需模式跳过 zod.js 生成——首次请求时按需生成（与 reloadRoutes 的策略一致）
-    await generateToolArtifacts(tools, ctx.rootDir, ctx.dist, {
-      skipSchema: isDevOnDemandEnabled(),
-    });
+    // 重生成 faapi-tools.js（含 AST 增强：description / inputTypeName）+ 各 tool
+    // 的 zod.js——与启动期/build 一致全量生成（每次 reload 重写，天然无 stale；
+    // toolSchemaResolver 的 mtime 缓存自动感知重新解析）
+    await generateToolArtifacts(tools, ctx.rootDir, ctx.dist);
     // 重新水合 faapi-tools.js 到 toolRegistry（reload 后需更新注册表）
     await loadAndHydrateTools(ctx.rootDir, ctx.dist, ctx.registries);
   };

@@ -99,6 +99,8 @@
 | **业务项目从 `@faapi/faapi` import 类型踩坑**（llm 项目 `api-types.ts` 注释记录） | `@faapi/next` client 目录所有类型独立声明 |
 | **轻量补全失败被静默吞掉**：切章分类超时静默回落纯正则，整书错误切分无人知晓 | `lightComplete` 传输失败恒抛 `LLMProviderError`，无降级出口 |
 | **两条等价路径并存**：载荷实体名 vs 专属名订阅；root-input 可写 `input` vs `addInput` + `{{rawInput}}` | 单一路径原则——7.10.0 / 7.12.0+ 两次收敛（见第 1 节） |
+| **dev 停机期间重构 → 新旧产物混编**：`ensureCompiled` 入口产物 mtime fresh 即跳过依赖闭包检查，停机期间被改的依赖（本机重构 / git pull）保持陈旧产物，与启动期 `compileConfig` 重编译的 config 闭包混编——导出面变更报远距离 ESM 链接错误、内部变更静默跑旧代码（业务反馈 TODO-faapi-bugs，writer 项目 `markChatInput` 事故） | 闭包感知新鲜度：入口 + 依赖闭包逐文件 mtime 比对，只补编译 stale 集；zod.js 新鲜度同样要求不晚于闭包内任何源文件（`compileOnDemand.md` / AGENTS.md 5.6.1） |
+| **`ensureToolSchemaGenerated` 文档承诺从未实现**：三处文档/注释描述 dev 下 tool zod.js 首次请求按需生成，代码中不存在该函数，dev 实际启动/reload 均跳过 zod.js——声明了 Input 的 tool 在 dev 丢校验与 LLM 可见参数 schema，与 build 静默不一致（清单 AST 增强本就创建 Program，按需化无收益） | dev 启动与 `reloadTools` 均全量生成 tool zod.js，与 build/agent/task 同款；`skipSchema` 口径收敛为仅测试设施 free-form 模式（`generateToolArtifacts.md` / `loadToolSchema.md`） |
 | **禁止降级历史处置（原 `fallback.md` 九条，全部了结）**：任务 payload 无声明跳过校验 / 隔离任务错误 props 不可克隆丢 props / 日志 fields 不可序列化降级提示文本 / 隔离任务日志 fields 不可克隆丢 fields / 隔离任务 `taskCtx.llm` 插件不可解析 warn+undefined / 中间件加载失败空 bundle / 插件失败汇总后继续启动 / 任务 meta 非字面量警告后忽略——以上八条均改为显式失败；隔离任务 config JSON 快照改为不传 config（后以纯数据投影承接） | AGENTS.md 5.6.4 三种显式出口（抛错 / 声明能力边界 / 留痕不改主流程） |
 
 ---

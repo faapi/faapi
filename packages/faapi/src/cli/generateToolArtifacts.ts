@@ -293,7 +293,7 @@ export function generateToolSchemaFileSource(
  *    (AST 增强:补全 description / inputTypeName)
  * 2. `serializeTools(metadata, dist)` → SerializedToolRecord[](filePath 转产物形式)
  * 3. `writeToolsModule(serialized, faapiToolsPath)` → 写入 `<dist>/faapi-tools.js`
- * 4. 若 `skipSchema=true`(dev 按需模式)→ 返回,不生成 zod.js
+ * 4. 若 `skipSchema=true`→ 返回,不生成 zod.js
  * 5. `collectToolSchemaSources` 从 ToolMetadata[] 收集 schema 源数据(按文件分组)
  * 6. 为每个文件计算 `helpersImportPath` + 生成 zod.js 源码(暂存)
  * 7. `maybeGenerateHelpers` 检测并生成/复用 `faapi-helpers.js`
@@ -302,7 +302,8 @@ export function generateToolSchemaFileSource(
  * @param tools scanTools 产出的 ToolManifest[](仅路径推导字段)
  * @param rootDir 项目根目录
  * @param dist 产物目录(`.faapi` 或 `dist`)
- * @param options.skipSchema 跳过 zod.js 生成(dev 按需模式启动时仅生成清单)
+ * @param options.skipSchema 跳过 zod.js 生成（仅测试设施 free-form 模式使用；
+ *        dev 启动/reload 与 build 一致全量生成）
  * @returns AST 增强后的 ToolMetadata[](供调用方日志/调试)
  */
 export async function generateToolArtifacts(
@@ -331,7 +332,7 @@ export async function generateToolArtifacts(
   const toolsPath = path.resolve(rootDir, dist, TOOLS_FILE);
   await writeToolsModule(serialized, toolsPath);
 
-  // 4. dev 按需模式:跳过 zod.js 生成(首次请求时由 ensureToolSchemaGenerated 按需生成)
+  // 4. skipSchema：仅测试设施 free-form 模式使用（dev 启动/reload 与 build 一致全量生成）
   if (options?.skipSchema) {
     return metadata;
   }

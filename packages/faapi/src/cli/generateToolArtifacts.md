@@ -13,7 +13,7 @@
 
 ## 使用场景
 
-- `faapi dev`：`generateToolArtifacts` 生成 `.faapi/faapi-tools.js`（**仅清单，不预生成 zod.js**——zod.js 在首次请求时由 `ensureToolSchemaGenerated` 按需生成，与 [compileOnDemand](./compileOnDemand.md) 同源思想）
+- `faapi dev`：`generateToolArtifacts` 生成 `.faapi/faapi-tools.js` + 每个 tool 的 `zod.js`（与 build 一致全量生成——清单 AST 增强本就要创建 Program，跳过 zod.js 几乎不省启动成本，只会让声明了 Input 的 tool 在 dev 丢校验与 LLM 可见参数 schema）
 - `faapi build`：`generateToolArtifacts` 生成 `dist/faapi-tools.js` + 每个 tool 的 `zod.js`（全量预生成，prod 启动时按需 import）
 - `node dist/main`（prod）：`createAppCore` import 读取 `dist/faapi-tools.js` → `hydrateTools` 还原 `ToolMetadata[]` → 喂给 `toolRegistry`
 - 首次请求：`agentRegistry` / `toolRegistry` 按需 import `zod.js` 做 zod `safeParse`（agent 调用 tool 前的输入校验）
@@ -194,15 +194,15 @@ interface ToolSchemaSource {
 1. 批量 `createPrograms`（全部 tool 文件共享同一个 Program）+ 逐个 `extractToolMetadata` → `ToolMetadata[]`（含 AST 字段）
 2. `serializeTools(metadata, dist)` → `SerializedToolRecord[]`（filePath 转产物形式）
 3. `writeToolsModule(serialized, faapiToolsPath)` → 写入 `<dist>/faapi-tools.js`
-4. 若 `skipSchema=true`（dev 按需模式）→ 返回，不生成 zod.js
+4. 若 `skipSchema=true`（仅测试设施 free-form 模式）→ 返回，不生成 zod.js
 5. `collectToolSchemaSources` 从 `ToolMetadata[]` 收集 schema 源数据（按文件分组）
 6. 为每个文件计算 `helpersImportPath` + 生成 zod.js 源码（暂存）
 7. `usesCoerceHelpers` 检测是否需要 helpers，需要时 `maybeGenerateHelpers` 生成/复用 `faapi-helpers.js`
 8. 并行写入所有 zod.js
 
-## dev 模式按需生成
+## dev 与 build 一致全量生成
 
-dev 启动时 `generateToolArtifacts(skipSchema: true)` 只生成 `faapi-tools.js`，不预生成 zod.js。首次 agent 调用 tool 时由 `ensureToolSchemaGenerated`（阶段 1.4）按需生成单文件 zod.js（与 `ensureSchemaGenerated` 同构，复用 mtime 缓存策略）。
+dev 启动（`generateToolArtifactsForDev`）与 `reloadTools` 均全量生成 zod.js，与 build 行为一致——每次生成/重载都按当前源码重写，天然无 stale 问题（`toolSchemaResolver` 的 mtime 缓存感知 mtime 变化自动重新解析）。
 
 > zod.js 的分组/写入/helpers 生成流程由 `generateZodArtifacts` 共享管线执行（与 routes/tasks 同一份）。
 
