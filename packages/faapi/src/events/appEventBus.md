@@ -116,7 +116,7 @@ export default async function bootstrap() {
 
 ## 发射侧（框架内部接线）
 
-- 总线实例挂 `AppRegistries.appEvents`（app 实例级，`app.close()` 时 `clear()`）；`@faapi/agent` 插件 setup 时把 `registries.appEvents.emit` 经 `createAgentDeps` 的 `overrides.emitAppEvent` 注入 `AgentDeps`——HTTP 请求路径与隔离任务 RPC 路径（宿主执行）同一份 deps。
+- 总线实例挂 `AppRegistries.appEvents`（app 实例级，`app.close()` 时 `clear()`）；`@faapi/agent` 插件 setup 时把 `registries.appEvents.emit` 经 `createAgentDeps` 的 `overrides.emitAppEvent` 注入 `AgentDeps`——HTTP 请求路径与任务路径同一份 deps。
 - `createProdApp`/`createDevApp` 内部加载执行 `src/bootstrap.ts`（listen 前窗口）；`listen()` 发射 `app:boot`/`app:ready`、`close()` 发射 `app:close`（副作用流程：boot 失败仍停任务运行时、close 仍在 drain 后）。
 - `createServer` 的 `sendErrorResponse` 发射 `request:error`（仅服务端故障 5xx，响应发出后；SSE 流中断路径不按状态码门控）；`taskQueue` 发射 `task:failed`（fire-and-forget）。
 

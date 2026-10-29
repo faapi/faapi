@@ -1,59 +1,18 @@
-import type { ToolMetadata } from '../ast/extractToolMetadata';
-import type { AgentMetadata, AgentCore } from '../agents/agentTypes';
 import type { TaskRegistry } from './taskRegistry';
 import type { TaskDriver } from './driverTypes';
-import type { TaskWorkerRunner } from './taskWorker';
 import type { TaskRegistriesView, LlmChannelStore } from '../injection/registries';
 import type { LlmComplete } from '../injection/llmTypes';
 import type { FaapiContextConfig } from '../runtime/contextTypes';
 import type { Logger } from '../loggers/loggerTypes';
 
 /**
- * 进程内任务元信息（业务方在 `src/tasks/<name>/task.ts` 中 `export const task = {...}` 声明）。
+ * 任务元信息（业务方在 `src/tasks/<name>/task.ts` 中 `export const task = {...}` 声明）。
  *
- * 不收 `timeoutMs` / `graceMs`：执行路径由声明文件种类决定（task.ts 进程内 / worker.ts 隔离），
- * 不由超时字段隐式判定——进程内任务声明超时字段构建期报错（scanTasks 校验，附迁移指引）。
- * 进程内 deadline 由业务自行 `Promise.race`。未声明字段时由运行时使用默认值
- * （concurrency=1、retries=0、无 cron）。
+ * 不收 `timeoutMs` / `graceMs`：任务在进程内执行，deadline 由业务自行 `Promise.race`；
+ * 队列系统执行硬限由驱动兜底（pgboss 走 defaultExpireSeconds，可按部署调整）。
+ * 未声明字段时由运行时使用默认值（concurrency=1、retries=0、无 cron）。
  */
 export interface FaapiTaskMeta {
-  /** 同名任务的最大并行执行数（默认 1） */
-  concurrency?: number;
-  /** 失败重试次数（默认 0——失败即 failed，不重试） */
-  retries?: number;
-  /** cron 表达式（croner 语法，支持秒级）——到点自动入队空 payload */
-  cron?: string;
-}
-
-/**
- * 隔离任务元信息（业务方在 `src/tasks/<name>/worker.ts` 中 `export const task = {...}` 声明）。
- *
- * 隔离任务在独立 worker 线程执行，具备真终止取消（见 taskWorker.ts 文档头）。
- * `timeoutMs` 必填：隔离语义即"需要真取消的长任务"，执行预算显式声明。
- *
- * 所有声明字段与 FaapiTaskMeta 同款字面量约定（零 import 扫描，数字字段支持下划线分隔）。
- */
-export interface FaapiWorkerTaskMeta {
-  /**
-   * 执行超时（毫秒，必填，最小 60000 即 1 分钟、最大 82800000 即 23h——越界在扫描期报错）。
-   * 超时两段式取消（先 abort 信号宽限，未退出 terminate 硬杀）——判定超时即执行真正终止。
-   * 超时从派发起算，包含 worker 冷启动（线程创建 + 模块加载）。
-   */
-  timeoutMs: number;
-  /**
-   * 取消宽限期（毫秒，仅隔离任务生效）：两段式取消第一段发出 abort 信号后等待任务
-   * 自行退出的最长时间，超时未退出 `terminate()` 硬杀。默认 5000（5s）；`0` 表示不留
-   * 宽限期（判定取消即硬杀）。
-   */
-  graceMs?: number;
-  /**
-   * worker 线程 V8 老生代堆上限（MB，仅隔离任务生效）：透传 worker_threads
-   * `resourceLimits.maxOldGenerationSizeMb`，超限 V8 以 ERR_WORKER_OUT_OF_MEMORY
-   * 终止线程，任务按执行失败处理（failed，驱动按 retries 重试）。下限 16
-   * （scanTasks 校验），未声明不设限制（继承宿主进程默认）。内存密集任务的
-   * 资源护栏之一（跨任务全局并发预算见 config.task.maxIsolatedWorkers）。
-   */
-  maxOldGenerationSizeMb?: number;
   /** 同名任务的最大并行执行数（默认 1） */
   concurrency?: number;
   /** 失败重试次数（默认 0——失败即 failed，不重试） */
@@ -68,19 +27,11 @@ export interface FaapiWorkerTaskMeta {
 export interface TaskManifest {
   /** 任务名：tasks/ 后目录路径段用 . 连接（如 `send-email`、`a.b`） */
   name: string;
-  /** 源码相对路径（`src/tasks/<dir>/task.ts` 或 `src/tasks/<dir>/worker.ts`） */
+  /** 源码相对路径（`src/tasks/<dir>/task.ts`） */
   filePath: string;
-  /** 执行模式：由声明文件种类决定（task.ts → inline，worker.ts → isolated） */
-  mode: 'inline' | 'isolated';
   cron?: string;
   concurrency?: number;
   retries?: number;
-  /** 隔离任务执行预算（FaapiWorkerTaskMeta 必填；进程内任务无此字段） */
-  timeoutMs?: number;
-  /** 隔离任务取消宽限期 */
-  graceMs?: number;
-  /** 隔离任务 worker 堆上限（MB），未声明不设限制 */
-  maxOldGenerationSizeMb?: number;
 }
 
 /**
@@ -88,25 +39,17 @@ export interface TaskManifest {
  */
 export interface TaskMetadata {
   name: string;
-  /** 产物路径（`<dist>/tasks/<dir>/task.js` / `<dist>/tasks/<dir>/worker.js`），运行时 import 任务模块 */
+  /** 产物路径（`<dist>/tasks/<dir>/task.js`），运行时 import 任务模块 */
   filePath: string;
-  /** 执行模式（清单序列化保留），运行时执行路径判据 */
-  mode: 'inline' | 'isolated';
   cron?: string;
   concurrency?: number;
   retries?: number;
-  /** 隔离任务执行预算（mode 为 isolated 时必有，scanTasks 构建期保证） */
-  timeoutMs?: number;
-  /** 取消宽限期（毫秒，仅隔离任务生效），未声明用框架默认 5s */
-  graceMs?: number;
-  /** worker 堆上限（MB，仅隔离任务生效），未声明不设限制 */
-  maxOldGenerationSizeMb?: number;
 }
 
 /**
  * 任务记录状态
  *
- * cancelled = 执行被框架终止（超时两段式取消 / 停机取消），区别于 run 自身抛错的 failed；
+ * cancelled = 执行被框架终止（停机取消——驱动 signal abort），区别于 run 自身抛错的 failed；
  * 驱动重试时记录回到 running 继续流转。
  * suspended = 任务挂起等激活（`taskCtx.suspend` 暂存状态后执行体已释放，非终态
  * 也不在跑——计入单飞活跃判定，激活用 `tasks.resume`，见 taskSuspend.md）。
@@ -119,6 +62,18 @@ export type TaskJobStatus =
   | 'done'
   | 'failed'
   | 'cancelled';
+
+/**
+ * 任务被框架终止的标记错误（停机取消——驱动 signal abort 传播至 run 内部时业务
+ * 可主动抛出）——runJob 据此把记录记为 `cancelled`（与 run 自身抛错的 `failed`
+ * 分流）；`job.signal.aborted` 命中同口径。
+ */
+export class TaskCancelledError extends Error {
+  constructor(message = 'Task was cancelled') {
+    super(message);
+    this.name = 'TaskCancelledError';
+  }
+}
 
 /**
  * 组内成员落定的终态（TaskJobStatus 的终态子集——落定 = 最终终态，
@@ -227,75 +182,21 @@ export interface TaskEvent {
 }
 
 /**
- * 隔离执行跨线程传递的注册表快照（纯数据，结构化克隆安全）
- *
- * 注册表对象含函数闭包不可 postMessage；元数据本身是纯数据——语义层从
- * `TaskRegistriesView` 生成快照，worker wrapper 内重建只读视图。
- *
- * agent 循环已收敛宿主（AgentRunner 单次 agent-run RPC），快照中的 agent 仅服务
- * worker 侧只读查询（registries.agent 元数据面），经 {@link AgentSnapshotRecord}
- * 投影保证可克隆。
- */
-export interface TaskRegistriesSnapshot {
-  /** agent 投影元数据（纯数据——工厂形态 systemPrompt 剥离） */
-  agents: AgentSnapshotRecord[];
-  tools: ToolMetadata[];
-}
-
-/**
- * 隔离快照内的 agent 投影（`AgentMetadata` 的可结构化克隆子集）
- *
- * agent 声明运行时化后 `AgentCore` 含函数形态字段（systemPrompt 工厂），不可跨
- * 线程。循环在宿主执行（真实声明全量可见），快照只服务 worker 侧只读查询：
- * systemPrompt 仅保留字符串形态（工厂剥离——查询方在隔离侧拿不到动态人设是
- * 快照语义的一部分）。
- */
-export interface AgentSnapshotRecord extends Omit<AgentCore, 'systemPrompt'> {
-  filePath: string;
-  inputTypeName?: string;
-  /** 字符串形态人设（工厂函数剥离后不出现——隔离侧查询仅见静态事实） */
-  systemPrompt?: string;
-}
-
-/**
- * AgentMetadata → AgentSnapshotRecord 投影（宿主与测试共用的单一实现）
- *
- * 剥离不可跨线程的函数形态字段：工厂形态 systemPrompt 剥离（字符串形态原样
- * 保留）。taskQueue 快照与 taskWorker 视图一致性测试共用，防止两处投影漂移。
- */
-export function toAgentSnapshotRecord(entry: AgentMetadata): AgentSnapshotRecord {
-  if (typeof entry.systemPrompt === 'function') {
-    const { systemPrompt: _sp, ...noPrompt } = entry;
-    return noPrompt;
-  }
-  return { ...entry, systemPrompt: entry.systemPrompt };
-}
-
-/**
- * 进程内任务的 run 第二参数（`src/tasks/<name>/task.ts` 声明的任务）
- *
- * 与 {@link IsolatedTaskContext} 显式分开：两条执行路径的行为差异是实质性的
- * （config 有无、registries 活引用 vs 快照、模块级状态共享 vs 独立、取消语义），
- * 由声明文件种类决定（task.ts 进程内 / worker.ts 隔离，见 {@link FaapiTaskMeta}）——
- * 业务按路径标注对应类型，边界编译期可见；标注与文件种类不符构建期报错
- * （generateTaskArtifacts AST 校验）。
+ * 任务的 run 第二参数（`src/tasks/<name>/task.ts` 声明的任务）——任务在进程内
+ * 执行，config 为活引用、registries 为活引用、模块级状态与宿主共享。
  */
 export interface TaskContext {
   /** 优雅停机时对在跑任务 abort 的信号 */
   signal: AbortSignal;
   /**
    * 任务客户端（与 `ctx.tasks` / `app.tasks` 同一 app 实例队列）——任务内入队 /
-   * 组投递 / 查询不绕 `getApp()`。隔离路径为 postMessage RPC 代理（语义一致，
-   * 参数与返回值须可结构化克隆）
+   * 批量登记 / 查询不绕 `getApp()`。
    */
   tasks: TaskClient;
   /**
    * faapi.config.ts 全量配置（含自定义业务配置），类型经 `FaapiContextConfig`
    * 声明合并增强——与 handler `ctx.config` 同一类型、同一对象（活引用）。
-   * 业务增强的类型字段全部可读，函数字段可调用（同进程）。
-   *
-   * 隔离任务（`worker.ts` 声明）的 {@link IsolatedTaskContext.config} 为派发
-   * 时刻的纯数据快照（函数字段不进快照——宿主回调面不跨线程，见 configSnapshot.md）。
+   * 业务增强的类型字段全部可读，函数字段可调用。
    */
   config: FaapiContextConfig;
   job: { id: string; name: string; attempt: number };
@@ -324,8 +225,7 @@ export interface TaskContext {
    * 到驱动 `taskState` 存储，任务记录转 `suspended`，run 正常返回（驱动照常
    * complete）。挂起后本任务的后续代码仍执行到 return，但结果不入 `result`、
    * 组记账不落定。激活用 `tasks.resume`（state 经 `taskCtx.resumed` 回传）。
-   * 隔离任务（IsolatedTaskContext.suspend）语义零差——经 RPC 回传宿主执行同一
-   * 信封写入。驱动未实现 `TaskDriver.taskState` 时显式抛错。完整语义见 taskSuspend.md。
+   * 驱动未实现 `TaskDriver.taskState` 时显式抛错。完整语义见 taskSuspend.md。
    */
   suspend?: (state?: unknown) => Promise<void>;
   /**
@@ -346,12 +246,11 @@ export interface TaskContext {
    * `registries.llm` 的活引用（与 agent 循环共享 providers 单例）。
    * 一次性补全（分类/蒸馏/摘要等）用此通道，不必在任务内组装 agent；
    * 工具循环场景仍走 registries.agent 组装 Agent。详见 `@faapi/agent` 的 lightComplete.md。
-   * 隔离路径为同签名纯转发代理（complete 经 RPC 回宿主执行，见 {@link IsolatedTaskContext.llm}）。
    */
   llm?: LlmComplete;
   /**
    * enqueue 时携带的执行上下文快照（`enqueue/enqueueSequence/enqueueBatch` 的
-   * `opts.carry`）——身份/标记等**纯数据**（隔离快照同款边界），随任务持久化
+   * `opts.carry`）——身份/标记等**纯数据**，随任务持久化
    * 跨实例/重启正确。任务内续投自动继承当前 carry（显式传 carry 覆盖）；
    * cron 触发为空对象。典型用途：HTTP 入队处声明执行身份
    * （`carry: { currentUserId: ctx.currentUserId }`），任务侧经
@@ -362,121 +261,10 @@ export interface TaskContext {
 }
 
 /**
- * 隔离任务的 run 第二参数（`src/tasks/<name>/worker.ts` 声明的任务——独立 worker 线程执行）
- *
- * 与进程内 {@link TaskContext} 显式分开，差异由隔离语义决定：
- * - config 为派发时刻的**纯数据快照**（collectConfigSnapshot 投影——函数值不进
- *   快照（`app:*` / `task:failed` 事件订阅端、log sink、middlewares 等宿主行为
- *   面不跨线程，与 registries 快照同款边界），其余值 structuredClone 保真；含非函数
- *   不可克隆值时派发显式报错列路径。见 configSnapshot.md）
- * - registries 为派发时刻的**快照**重建视图（执行中途 reload 不影响当次执行）
- * - llm 为纯转发代理（complete 经 RPC 回宿主执行——LLM IO 全在宿主，worker 不加载 `@faapi/agent`）
- * - log 条目经 postMessage 回传宿主统一输出（fields 须可结构化克隆，
- *   不可克隆按执行错误处理）
- * - progress 值经 postMessage 回传（须可结构化克隆，不可克隆按执行错误处理）
- * - emit 事件值经 postMessage 回传（须可结构化克隆，不可克隆按执行错误处理；
- *   取消判定后到达的事件不采纳——与 progress 同口径）
- * - suspend 经 RPC 回传宿主执行同一信封写入（语义与进程内零差，state 须可克隆）；
- *   resumed 随 run 消息透传（信封为纯数据）
- * - 模块级状态每次执行独立；取消为两段式真终止（abort 宽限 → terminate 硬杀）
- */
-export interface IsolatedTaskContext {
-  /** 优雅停机时对在跑任务 abort 的信号（abort 后宽限期内未退出 terminate 硬杀） */
-  signal: AbortSignal;
-  /**
-   * 任务客户端代理——全方法经 postMessage RPC 回传宿主执行（宿主走完整 enqueue
-   * 通道：存在性检查 + payload 校验 + 驱动入队 + 本地记录），与进程内路径零语义差；
-   * **参数与返回值须可结构化克隆**（不可克隆按执行错误处理，与 progress/log 同口径）；
-   * 挂起的调用随任务超时两段式取消一并终止，无独立超时
-   */
-  tasks: TaskClient;
-  job: { id: string; name: string; attempt: number };
-  /**
-   * 进程配置的**纯数据快照**（必有；框架随 run 消息下发）——派发时刻由
-   * `collectConfigSnapshot` 投影：函数值（`app:*` / `task:failed` 事件订阅端、
-   * log sink、middlewares 等宿主行为面）与 symbol 值不进快照（与 registries 快照
-   * 同款能力边界），其余值 structuredClone 保真（Date/Map/Set 原样）；含非函数
-   * 不可克隆值时任务派发即显式失败（错误列出路径）。读数据字段（端口/驱动选项/
-   * llms/业务自定义段）无需 payload 手工搬运。见 configSnapshot.md。
-   */
-  config: FaapiContextConfig;
-  /**
-   * app 注册表只读视图——**派发时刻的快照**在 worker 内重建（宿主生成
-   * `TaskRegistriesSnapshot` 纯数据随 postMessage 传入），查询方法与活引用
-   * 视图同型；执行中途的 reload 变更不影响当次执行。
-   */
-  registries: TaskRegistriesView;
-  /**
-   * 进度上报（可选）：值经 postMessage 回传宿主写入任务记录——**值必须可
-   * 结构化克隆**，不可克隆按执行错误处理。仅 running 状态生效；取消判定后
-   * （宽限期内）到达的上报忽略。
-   */
-  progress?: (value: unknown) => void;
-  /**
-   * 任务事件出口（可选）：值经 postMessage 回传宿主落事件缓冲并扇出订阅者
-   * （`TaskClient.subscribe` / `listEvents` 消费）——**值必须可结构化克隆**，
-   * 不可克隆按执行错误处理（与 progress 同口径）。仅 running 状态生效；取消
-   * 判定后（宽限期内）到达的事件不采纳。完整契约见 taskEvents.md。
-   */
-  emit?: (data: unknown) => void;
-  /**
-   * 任务挂起（可选）：与进程内 {@link TaskContext.suspend} **语义零差**——经
-   * `{ type: 'suspend' }` 消息 RPC 回传宿主执行同一信封写入（`driver.taskState`），
-   * 任务记录转 `suspended`、run 正常返回；宿主拒绝（驱动无 `taskState` 等）
-   * 错误原样 reject。**state 须可结构化克隆**（不可克隆按执行错误处理，与
-   * progress/log 同口径）；挂起的 RPC 调用随任务超时两段式取消一并终止。
-   * 完整语义见 taskSuspend.md。
-   */
-  suspend?: (state?: unknown) => Promise<void>;
-  /**
-   * 挂起/激活上下文（可选）：与进程内同语义——首跑为 `undefined`；经
-   * `tasks.resume` 激活的执行携带 `{ state, inject?, activations }`（信封为
-   * 纯数据，随 run 消息透传）。
-   */
-  resumed?: { state?: unknown; inject?: unknown; activations: number };
-  /**
-   * 任务级日志器（可选字段；框架注入）——scope `task:<name>`，条目经 postMessage
-   * 回传宿主走 `config.log` 统一管道；**fields 须可结构化克隆**（不可克隆按
-   * 执行错误处理，与 progress 同语义）。
-   */
-  log?: Logger;
-  /**
-   * 轻量 LLM 补全通道（可选字段）——**纯转发代理**：complete 经单次
-   * `{ type: 'llm-complete' }` 消息回传宿主，宿主从 AppRegistries.llm 取派发时刻
-   * 注册的通道执行（LLM IO 全在宿主，worker 不加载 `@faapi/agent`）；通道未注册
-   * 时为 `undefined`（能力不存在，非降级）。入参/返回值须可结构化克隆——
-   * `options.onFailure` 钩子为函数不可跨线程（显式拒绝，任务内 try/catch 自行
-   * 实现失败副作用）；`options.signal` 不可克隆但支持——剥离后转发，任务内业务级
-   * 取消经 `{ type: 'llm-abort' }` 回传宿主 abort 对应请求。使用语义见
-   * `@faapi/agent` 的 lightComplete.md。
-   */
-  llm?: LlmComplete;
-  /**
-   * enqueue 时携带的执行上下文快照（与进程内 {@link TaskContext.carry} 同源）——
-   * 纯数据随 run 消息下发（天然可结构化克隆），worker 内原样可用。
-   */
-  carry: Record<string, unknown>;
-}
-
-/**
- * 进程内任务模块形态（task.ts 编译产物中与执行相关的导出）
- *
- * run 第二参数类型为进程内 {@link TaskContext}；隔离任务（worker.ts 声明）的
- * 模块形态见 {@link IsolatedTaskModule}——两种声明 API 的 run 签名分别对应，
- * ctx 标注与文件种类不符构建期报错（generateTaskArtifacts AST 校验）。
+ * 任务模块形态（task.ts 编译产物中与执行相关的导出）
  */
 export interface TaskModule {
   run?: (payload: unknown, taskCtx: TaskContext) => unknown;
-}
-
-/**
- * 隔离任务模块形态（worker.ts 编译产物中与执行相关的导出）
- *
- * run 第二参数类型为隔离 {@link IsolatedTaskContext}（config 为派发时刻纯数据
- * 快照，见 configSnapshot.md），标注与文件种类不符构建期报错。
- */
-export interface IsolatedTaskModule {
-  run?: (payload: unknown, taskCtx: IsolatedTaskContext) => unknown;
 }
 
 /**
@@ -638,47 +426,24 @@ export interface TaskQueueDeps {
    * 缺省（裸 createTaskQueue 的测试/嵌入场景）不发射——能力边界，非降级
    */
   appEvents?: import('../events/appEventBus.js').AppEventBus;
-  /** faapi.config.ts 全量配置——注入进程内路径的 TaskContext.config（必填：无配置文件传空对象；隔离任务不传 config） */
+  /** faapi.config.ts 全量配置——注入 TaskContext.config（必填：无配置文件传空对象） */
   config: FaapiContextConfig;
   /**
-   * 产物 resources 目录绝对路径——**内部字段**，仅作隔离 worker 读取根播种的
-   * 数据源（经 workerData 传入 workerEntry，不进业务可见的 TaskContext——
-   * 任务读资源统一走免传参 `readResource`）；缺省不播种（直接构造队列的
-   * 测试/嵌入场景，readResource 未绑定即显式抛错）
-   */
-  resourcesDir?: string;
-  /**
-   * app 注册表只读视图（`createTaskRegistriesView`）——注入两条执行路径的
-   * TaskContext.registries；缺省为空视图（直接构造队列的测试/嵌入场景）
+   * app 注册表只读视图（`createTaskRegistriesView`）——注入 TaskContext.registries；
+   * 缺省为空视图（直接构造队列的测试/嵌入场景）
    */
   registries?: TaskRegistriesView;
   /**
-   * 轻量 LLM 补全通道 store（AppRegistries.llm）——进程内执行路径在任务执行时刻
-   * 惰性读取（插件晚于队列构造注册，构造期快照会漏）；缺省 taskCtx.llm 恒 undefined
+   * 轻量 LLM 补全通道 store（AppRegistries.llm）——任务执行时刻惰性读取
+   * （插件晚于队列构造注册，构造期快照会漏）；缺省 taskCtx.llm 恒 undefined
    */
   llm?: LlmChannelStore;
   /**
-   * 隔离执行路径的补全通道走 RPC 纯转发（worker 内 taskCtx.llm.complete 经
-   * llm-complete 消息回传宿主，从 `llm` store 取派发时刻注册的通道执行）——
-   * worker 纯转发：不携带 llms 快照、不在 worker 内加载 @faapi/agent
-   */
-  /**
-   * agent handle 工厂 store（AppRegistries.agentHandle）——进程内执行路径
-   * `taskCtx.agent` 惰性通道的数据源（以 carry + 任务级能力合成的契约 ctx 构造，
-   * 与 HTTP 请求链同一份 baseDeps）；缺省 taskCtx.agent 恒 undefined。
-   * 隔离路径不消费本 store（工厂为宿主闭包不可跨线程）——隔离的 agent 通道走
-   * `agentRunner`（宿主完整循环 RPC）
+   * agent handle 工厂 store（AppRegistries.agentHandle）——`taskCtx.agent` 惰性
+   * 通道的数据源（以 carry + 任务级能力合成的契约 ctx 构造，与 HTTP 请求链同一份
+   * baseDeps）；缺省 taskCtx.agent 恒 undefined
    */
   agentHandle?: import('../injection/registries.js').AgentHandleStore;
-  /**
-   * agent 循环执行器 store（AppRegistries.agentRunner，`@faapi/agent` 插件注册）
-   * ——隔离 worker 调 agent 收敛为单次 agent-run RPC：worker 侧 `taskCtx.agent.run`
-   * 转发请求，宿主以任务合成契约 ctx 构造 Agent 跑完整编排循环（LLM IO、tool
-   * 执行、钩子、sub-agent 全在宿主，见 taskToolContext.md）。已注册时
-   * run 消息携带 `agentChannel: true`，worker 内挂载 `taskCtx.agent`（run-only
-   * 句柄）；缺省（插件未加载）worker 内 taskCtx.agent 恒 undefined（能力不存在非降级）
-   */
-  agentRunner?: import('../injection/registries.js').AgentRunnerStore;
   /**
    * 队列驱动（必填）：`loadTaskDriver` 解析结果（pgboss/bullmq 子包驱动）
    * 或自定义 TaskDriver 实例；无任务清单时由 createAppBase 传入 idleTaskDriver
@@ -688,18 +453,13 @@ export interface TaskQueueDeps {
   loadTaskModule?: (filePath: string) => Promise<TaskModule>;
   /** payload schema 加载器（默认：import 任务目录 zod.js，取首个 `*Schema` 导出） */
   loadPayloadSchema?: (filePath: string) => Promise<unknown>;
-  /**
-   * 隔离执行器（默认 runTaskInWorker）——任务 mode 为 isolated（worker.ts 声明）时
-   * 由语义层调用，独立 worker 线程执行 + 超时两段式取消；测试注入 spy 验证执行路径路由
-   */
-  runIsolated?: TaskWorkerRunner;
 }
 
 /**
  * 任务失败信息（`task:failed` 事件载荷）
  *
  * willRetry 按任务 meta.retries 推算（attempt <= retries 时驱动会重试）；
- * cancelled = 执行被框架终止（超时终止/停机取消），与 run 自身失败区分。
+ * cancelled = 执行被框架终止（停机取消），与 run 自身失败区分。
  */
 export interface TaskFailedInfo {
   task: string;

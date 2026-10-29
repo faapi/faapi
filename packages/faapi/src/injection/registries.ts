@@ -251,77 +251,6 @@ export function createTaskHandleStore(): TaskHandleStore {
 
 // ─── agent 循环执行器 store ──────────────────────────────────────────
 
-/**
- * agent-run RPC 请求（隔离任务 agent 通道的唯一载荷，纯数据）
- *
- * `options` 为 `@faapi/agent` `AgentRunOptions` 的可结构化克隆子集（model /
- * temperature / maxTokens / enableTracing / traceId / messages / provider）——
- * `provider` 仅支持 `LlmConfig` 纯数据形态，`LLMProvider` 实例不可跨线程（worker
- * 侧代理显式报错指引）。主包不反向依赖 agent 包类型，此处按结构声明。
- */
-export interface AgentRunRequest {
-  /** 目标 agent 名（调用侧决策） */
-  agentName: string;
-  /**
-   * 用户输入（可选——续跑场景不传新输入）。字符串为 user 消息直传；结构化对象
-   * 为富 schema 派发形态（宿主先按 agent 的 Input schema 校验，再经
-   * extractSubAgentUserInput 构造 user 消息——与 sub-agent 派发同约定）
-   */
-  input?: string | Record<string, unknown>;
-  /** 本次调用的 LLM 配置（AgentRunOptions 纯数据形态；原样透传宿主） */
-  options?: Record<string, unknown>;
-}
-
-/**
- * agent 循环执行器（由 `@faapi/agent` 插件注册）
- *
- * 隔离 worker 调 agent 收敛为**一次 agent-run RPC**：编排循环（LLM IO + tool
- * 调度 + sub-agent 递归）整体在宿主执行，worker 只负责转发请求
- * 与回传结果——db 等资源单实例、业务函数零跨线程。
- *
- * 执行器以任务合成契约 ctx（carry + scoped TaskClient + 任务级 logger +
- * job.signal，与进程内 `taskCtx.agent` 同配方，见 taskToolContext.md）构造
- * Agent 实例跑完整循环；`request.options` 原样透传为 run 覆盖。返回值/
- * 参数均须可结构化克隆（跨 postMessage 边界，不可克隆按执行错误显式失败）。
- */
-export interface AgentRunner {
-  /**
-   * 执行一次完整 agent 循环，返回 ReactLoopResult 纯数据；失败上抛（RPC ok:false 回传）。
-   * `execution.signal` 为宿主侧任务取消控制器（隔离任务两段式取消第一段 abort）——
-   * 执行器合入 run options（宿主侧优先），ReactLoop 每轮预检查 + provider 请求中断
-   * 抛 AgentAbortError（messages 经宿主留痕 agent-aborted 事件）
-   */
-  runAgent(
-    ctx: AgentToolContext,
-    request: AgentRunRequest,
-    execution?: { signal?: AbortSignal },
-  ): Promise<unknown>;
-}
-
-/** agent 循环执行器 store（app 实例级，随 app 生命周期；与 LlmChannelStore 同形态） */
-export interface AgentRunnerStore {
-  /** 注册执行器（null 清理）；二次注册覆盖 */
-  register(runner: AgentRunner | null): void;
-  /** 执行器已注册时返回实例，未注册返回 undefined */
-  get(): AgentRunner | undefined;
-  clear(): void;
-}
-
-export function createAgentRunnerStore(): AgentRunnerStore {
-  let current: AgentRunner | null = null;
-  return {
-    register(runner) {
-      current = runner;
-    },
-    get() {
-      return current ?? undefined;
-    },
-    clear() {
-      current = null;
-    },
-  };
-}
-
 // ─── App 级集合 ──────────────────────────────────────────────────────
 
 /** 一个 app 实例持有的全套注册表 */
@@ -333,8 +262,6 @@ export interface AppRegistries {
   taskHandle: TaskHandleStore;
   /** 轻量 LLM 补全通道（`@faapi/agent` 插件注册；未加载插件时为空） */
   llm: LlmChannelStore;
-  /** agent 循环执行器（`@faapi/agent` 插件注册；未加载插件时为空——worker 内 taskCtx.agent 不挂载） */
-  agentRunner: AgentRunnerStore;
   /** app 事件总线（`agent:root-input` / `agent:input` 等，见 [appEventBus](../events/appEventBus.md)——业务方经 `getApp().on(...)` 订阅，`app.close()` 清空） */
   appEvents: AppEventBus;
 }
@@ -343,7 +270,7 @@ export interface AppRegistries {
  * 任务侧注册表只读视图（AppRegistries 的查询投影）
  *
  * 注入任务执行上下文（`TaskContext.registries`）——任务执行侧不在 handler 请求链路上
- * （拿不到 `FaapiContext.registries`），`getApp()` 在隔离 worker 线程内也不可用
+ * （拿不到 `FaapiContext.registries`）——任务执行侧的注册表访问由 `taskCtx.registries` 承担
  * （globalThis 独立）。刻意不暴露 `hydrate`/`clear` 写接口：任务不是注册表的所有者。
  */
 export interface TaskRegistriesView {
@@ -400,9 +327,8 @@ export function createAppRegistries(): AppRegistries {
   const agentHandle = createAgentHandleStore();
   const taskHandle = createTaskHandleStore();
   const llm = createLlmChannelStore();
-  const agentRunner = createAgentRunnerStore();
   const appEvents = createAppEventBus();
-  return { tool, agent, task, agentHandle, taskHandle, llm, agentRunner, appEvents };
+  return { tool, agent, task, agentHandle, taskHandle, llm, appEvents };
 }
 
 /**

@@ -1,6 +1,6 @@
 # taskEvents（任务事件：taskCtx.emit / 宿主侧订阅与查询）
 
-一句话概括：任务级过程事件原语——任务执行中经 `taskCtx.emit(data)` 发射业务事件（agent 流式 chunk、阶段标记等），宿主侧有界保留并支持实时订阅（`TaskClient.subscribe`）与查询（`TaskClient.listEvents`），两条执行路径（进程内 / 隔离 worker）口径一致。
+一句话概括：任务级过程事件原语——任务执行中经 `taskCtx.emit(data)` 发射业务事件（agent 流式 chunk、阶段标记等），宿主侧有界保留并支持实时订阅（`TaskClient.subscribe`）与查询（`TaskClient.listEvents`）。
 
 ## 为什么需要
 
@@ -40,13 +40,12 @@ const events = tasks.listEvents('skill-distill', { jobId }); // seq 升序
 
 ## API 契约
 
-### taskCtx.emit（两条执行路径同签名）
+### taskCtx.emit
 
-`TaskContext.emit? / IsolatedTaskContext.emit?: (data: unknown) => void`
+`TaskContext.emit?: (data: unknown) => void`
 
 - `data` 形状是业务知识，框架不规定、不校验（不参与 payload zod 通道）。
 - **仅 `running` 状态生效，终态后调用被忽略**（与 progress 同口径，调用方无需自行守卫）。
-- **隔离路径**：值经 `{ type: 'event' }` 消息 postMessage 回传宿主——**值须可结构化克隆**，不可克隆按执行错误处理（与 progress/log 同口径，显式失败不静默丢事件）；取消判定后（宽限期内）到达的事件宿主不采纳（超时判定即终局，与 progress/log 同口径）。
 - 可选字段（与 progress/log/llm 同模式）：直接构造 TaskContext 的测试/自定义执行器可不传；业务侧经 `taskCtx.emit?.(x)` 调用。
 
 ### TaskClient 扩展（宿主侧观测面）
@@ -55,7 +54,7 @@ const events = tasks.listEvents('skill-distill', { jobId }); // seq 升序
   - 本进程实时订阅：该任务名后续每次 emit 落账后**同步**回调（匹配所有执行/所有 attempt；handler 须快速返回，不做异步等待——同步扇出无背压）。
   - **不回放订阅前历史**（补历史用 `listEvents`；UI 桥接用 seq 去重衔接两段）。
   - handler 抛错 `console.error` 留痕（副作用回调，与 `task:failed` 事件同口径）——不影响任务执行与其他订阅者。
-  - **仅宿主侧可用**：隔离任务 `taskCtx.tasks.subscribe` 显式抛错（回调函数不可结构化克隆跨线程）；进程内任务 `taskCtx.tasks.subscribe` 可用（活引用），但订阅面向管理面/桥接，任务内自订阅无典型场景。
+  - **任务侧可用（活引用）**：`taskCtx.tasks.subscribe` 调用可用，但订阅面向管理面/桥接，任务内自订阅无典型场景。
 - `listEvents(name, opts?)` → `TaskEvent[]`（单执行内 seq 升序；跨执行按 job 首次发射序）
   - `opts.jobId?`：收窄到单次执行。
   - 本进程有界保留的历史查询，**驱动无关**（不进 TaskDriver——与组记账进驱动刻意对比：组记账要跨实例正确，事件是观测面）。
@@ -80,13 +79,10 @@ const events = tasks.listEvents('skill-distill', { jobId }); // seq 升序
 
 ## 取消 / 重试口径（对齐 progress）
 
-- 终态后（done/failed/cancelled）调用忽略——进程内由 status 守卫，隔离路径取消判定后宿主不采纳。
+- 终态后（done/failed/cancelled）调用忽略——由 status 守卫。
 - 重试不清事件：新 attempt 的事件追加进同一缓冲（`attempt` 字段标注、`seq` 连续），历史完整可回放——与 progress「派发清空上一轮」是两种语义（单值进度 vs 过程历史）。
-- 停机取消（驱动 abort）：宽限期内到达的事件不采纳，与 progress/log 同口径。
 
 ## 相关模块
 
-- `src/tasks/taskTypes.ts` — `TaskEvent` 类型、两上下文 `emit` 字段、TaskClient 扩展
+- `src/tasks/taskTypes.ts` — `TaskEvent` 类型、`emit` 字段、TaskClient 扩展
 - `src/tasks/taskQueue.ts` — 事件落账（appendEvent：缓冲 + 订阅扇出）、`TASK_CLIENT_METHODS` 白名单加 `listEvents`
-- `src/tasks/taskWorker.ts` — 隔离管道 `{ type: 'event' }` 消息接线（`onEvent` 回调，grace 期丢弃）
-- `src/tasks/workerEntry.ts` — worker 侧 `emit` 构造（不可克隆显式失败）、tasks 代理 `subscribe` 显式拒绝 / `listEvents` RPC 透传

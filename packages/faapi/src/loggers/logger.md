@@ -62,8 +62,6 @@ export async function run(payload, taskCtx) {
 }
 ```
 
-进程内执行与隔离执行（`worker.ts` 声明的隔离任务）行为一致：隔离路径下日志条目作为纯数据经 postMessage 回传宿主、由宿主统一的 sink 输出——自定义 sink 同样覆盖隔离任务。宽限期（取消判定后）产生的日志与进度同语义：不采纳（超时判定即终局）。
-
 ### 4. egg 风格文件输出（`config.log.dir`，一条配置得文件日志）
 
 传统部署按文件采集日志、error 需要单独文件盘查的场景，不需要手写 sink——配置 `dir` 即启用内置文件管道（详见 `fileSink.md`），且**请求日志自动并入同一管道**（一份配置管全部输出）：
@@ -83,7 +81,7 @@ export default {
 
 ### 5. 接管输出目标（业务方接入 pino / 写文件）
 
-框架**不内置 pino**（不新增依赖、不代替业务选型）——`config.log.sink` 就是业务方接入 pino 的官方入口，一次赋值完成整条管道接管（`ctx.log` / `createLogger` / `taskCtx.log` 全部走 sink，隔离任务也覆盖）：
+框架**不内置 pino**（不新增依赖、不代替业务选型）——`config.log.sink` 就是业务方接入 pino 的官方入口，一次赋值完成整条管道接管（`ctx.log` / `createLogger` / `taskCtx.log` 全部走 sink）：
 
 ```ts
 // faapi.config.ts
@@ -195,8 +193,7 @@ scope `access` 与业务日志的 `http` 区分，`requestId` 关联两者；文
 - `runtime/createContext.ts` - 每请求创建 `ctx.requestId` + `ctx.log`
 - `runtime/contextTypes.ts` - `FaapiContext.requestId`/`FaapiContext.log` 字段声明
 - `injection/injectParams.ts` + `injection/resolveInjection.ts` - 参数名 `log` 注入 `ctx.log`
-- `task/taskQueue.ts` - 进程内任务注入 `taskCtx.log`
-- `task/taskWorker.ts` - 隔离任务的内联日志桥（postMessage 回传宿主）
+- `task/taskQueue.ts` - 任务注入 `taskCtx.log`
 - `cli/createAppCore.ts` - `createAppBase` 读 `config.log` 调 `configureLogging`；`log` 列入内置 config key
 - `middleware/logger.ts` - 请求日志中间件（`accessLog` 并入统一管道，scope `access`）
 - `config/configTypes.ts` - `log?: LogConfig | boolean` 配置项

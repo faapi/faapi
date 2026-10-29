@@ -51,7 +51,7 @@ const batch = await tasks.getGroup('campaign:5');
 
 ## 概念与语义（两形态共用）
 
-- **成员（member）**：批量内单个任务执行，复用单任务全部既有语义（payload zod 校验、meta retries/并发、隔离执行、事件管道）。
+- **成员（member）**：批量内单个任务执行，复用单任务全部既有语义（payload zod 校验、meta retries/并发、事件管道）。
 - **落定（settle）**：成员到达最终终态——`done` / `failed`（重试耗尽后）/ `cancelled`。失败但重试额度未尽（`willRetry`）不算落定，重试派发后继续流转。
 - **完成回调（fan-in）**：全部成员落定时框架自动入队 `onComplete` 声明的任务，payload 为框架契约 `TaskGroupSummary`（回调任务 Payload 声明须兼容，建议 `interface Payload extends TaskGroupSummary {}`）。回调按任务名声明而非闭包——持久化、可重试、有独立 meta，停机重启不丢；入队 dedupId `faapi-group:<id>:complete` 兜底至多一份。
 - **失败策略 `onFailure`**（二值，激活语义按形态适配）：
@@ -92,12 +92,11 @@ const batch = await tasks.getGroup('campaign:5');
 - **序列记录常驻驱动存储**（量级 = 批次数 × 成员数行）——框架不自动清理；pg-boss 侧随业务库迁移管理，BullMQ 侧为两组 Redis key，业务方按保留策略自行清理。
 - **组进度口径**：框架只提供计数器进度（done/failed/cancelled/total）+ 串行激活指针（nextIndex）。业务自有进度指标是业务知识，留业务侧存储，经 sequenceId/batchId 关联。
 
-## TaskContext.tasks（两条执行路径注入任务客户端）
+## TaskContext.tasks（任务侧任务客户端）
 
-`TaskContext.tasks` / `IsolatedTaskContext.tasks` 均为 `TaskClient`——批量登记不绕 `getApp()`（隔离 worker 内 `getApp()` 本就不可用）：
+`TaskContext.tasks` 为 `TaskClient`——批量登记不绕 `getApp()`：
 
-- **进程内路径**：活引用（与 `ctx.tasks` / `app.tasks` 同一 app 实例队列），enqueue 系方法自动继承当前执行的 carry。
-- **隔离路径**：worker 内代理对象——全方法经 `{ type: 'tasks-call' }` 消息回传宿主执行（宿主走完整投递通道），结果/错误按 seq 回传；参数与返回值须可结构化克隆。挂起的调用随任务超时两段式取消一并终止，无独立超时。
+- **活引用**（与 `ctx.tasks` / `app.tasks` 同一 app 实例队列），enqueue 系方法自动继承当前执行的 carry。
 
 ## 驱动映射（TaskDriver.groups 可选能力）
 
@@ -116,6 +115,5 @@ const batch = await tasks.getGroup('campaign:5');
 
 - `src/tasks/taskQueue.ts` — enqueueSequence / enqueueBatch / getGroup 门面 + runJob 终态落定接线（消费方）
 - `src/tasks/driverTypes.ts` — `TaskDriverGroupOps` 驱动能力接口（TaskDriverGroupCreate.mode / SettleResult.next / settleRemaining / cancelRemaining）
-- `src/tasks/taskTypes.ts` — `TaskClient.enqueueSequence` / `enqueueBatch` / `TaskGroupSummary` / `TaskGroupSnapshot` / 两上下文 `tasks` 字段
-- `src/tasks/taskWorker.ts` + `workerEntry.ts` — 隔离路径 tasks 代理 RPC（宿主 `onTasksCall`）
+- `src/tasks/taskTypes.ts` — `TaskClient.enqueueSequence` / `enqueueBatch` / `TaskGroupSummary` / `TaskGroupSnapshot` / `tasks` 字段
 - `packages/task-pgboss` / `packages/task-bullmq` — 组记账驱动实现

@@ -1,16 +1,10 @@
 import path from 'node:path';
 import { APP_EVENT } from '../events/appEventBus';
 import { ValidationError } from '../errors/httpErrors';
-import { runTaskInWorker, TaskCancelledError } from './taskWorker';
-import { IsolatedWorkerBudget, resolveDefaultIsolatedWorkerLimit } from './isolatedWorkerBudget';
-import { collectConfigSnapshot } from './configSnapshot';
 import { createTaskToolContext } from './taskToolContext';
-import { toAgentSnapshotRecord } from './taskTypes';
+import { TaskCancelledError } from './taskTypes';
 import { createEmptyTaskRegistriesView } from '../injection/registries';
-import { createLogger, getEffectiveLogLevel, writeLogEntry } from '../loggers/logger';
-import type { LlmCompleteOptions } from '../injection/llmTypes';
-import type { AgentMetadata } from '../agents/agentTypes';
-import type { TaskConfig } from '../configs/configTypes';
+import { createLogger } from '../loggers/logger';
 import type { TaskDriver, TaskDriverJob, TaskResumeState, TaskStateEntry } from './driverTypes';
 import type {
   TaskClient,
@@ -25,7 +19,6 @@ import type {
   TaskModule,
   TaskQueue,
   TaskQueueDeps,
-  TaskRegistriesSnapshot,
 } from './taskTypes';
 
 /** 终态（内存护栏的计数范围）：pending/running/retry 永不淘汰 */
@@ -38,21 +31,6 @@ const TERMINAL_STATUSES: ReadonlySet<TaskJobStatus> = new Set(['done', 'failed',
 const GROUP_MEMBER_DEDUP = (groupId: string, index: number): string =>
   `faapi-group:${groupId}:${index}`;
 const GROUP_COMPLETION_DEDUP = (groupId: string): string => `faapi-group:${groupId}:complete`;
-
-/** 隔离任务 taskCtx.tasks 代理允许回传宿主的方法（纯数据方法全集；subscribe 为
- * 回调签名不可跨线程，隔离路径由 worker 侧代理显式拒绝，宿主侧白名单同样不放行） */
-const TASK_CLIENT_METHODS: ReadonlySet<string> = new Set([
-  'enqueue',
-  'enqueueSequence',
-  'enqueueBatch',
-  'resume',
-  'list',
-  'listQueued',
-  'listEvents',
-  'cancel',
-  'retry',
-  'getGroup',
-]);
 
 /**
  * 终态记录内存上限：`list()` 为进程内观测快照而非持久化历史，长驻进程的
@@ -118,17 +96,6 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
 
   /** 任务侧注册表只读视图（缺省空视图——直接构造队列的测试/嵌入场景） */
   const registriesView = deps.registries ?? createEmptyTaskRegistriesView();
-
-  /**
-   * 全局隔离 worker 并发预算（isolatedWorkerBudget.md）：config.task.maxIsolatedWorkers
-   * 配置，默认 `max(1, availableParallelism() - 1)`（预留 1 核给宿主事件循环）。
-   * 配置非法（<1/非整数）构造期即抛错（fail fast——启动失败早于任何任务派发）；
-   * 每 createTaskQueue 一份（每进程一个队列实例 = 每进程一份预算）
-   */
-  const isolatedBudget = new IsolatedWorkerBudget(
-    (deps.config.task as TaskConfig | undefined)?.maxIsolatedWorkers ??
-      resolveDefaultIsolatedWorkerLimit(),
-  );
 
   /** 任务记录（id → job；跨驱动一致的本地快照） */
   const records = new Map<string, TaskJob>();
@@ -279,7 +246,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     } catch {
       throw new Error(
         '[faapi] carry must be structured-cloneable pure data (it persists with the job and ' +
-          'crosses the isolated-worker thread boundary) — functions, symbols and non-cloneable ' +
+          'functions, symbols and non-cloneable ' +
           'host objects are not allowed. See taskTypes.md (TaskContext.carry).',
       );
     }
@@ -379,23 +346,6 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     }
   }
 
-  /**
-   * 注册表纯数据快照（隔离路径 postMessage 用）——agent 经 AgentSnapshotRecord
-   * 投影（工厂形态 systemPrompt 剥离——循环在宿主执行，快照仅服务 worker 侧
-   * 只读查询），派发时刻生成
-   */
-  function snapshotRegistries(): TaskRegistriesSnapshot {
-    return {
-      agents: registriesView.agent
-        .listAgents()
-        .map((core) => registriesView.agent.getAgentEntry(core.name))
-        .filter((entry): entry is AgentMetadata => entry !== undefined)
-        // 投影单一实现（宿主快照与测试共用，防止漂移）
-        .map((entry) => toAgentSnapshotRecord(entry)),
-      tools: registriesView.tool.list(),
-    };
-  }
-
   async function validatePayload(name: string, payload: unknown): Promise<unknown> {
     if (!schemaCache.has(name)) {
       const meta = registry.get(name)!;
@@ -426,10 +376,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
 
   /**
    * worker 执行函数（交给驱动调用的 process）：模块加载 + run 调用 + 任务记录更新
-   *
-   * 按 meta.mode（声明文件种类）分两条执行路径：
-   * - isolated（worker.ts 声明）→ 隔离执行器（独立 worker 线程，超时两段式取消真终止，见 taskWorker.md）
-   * - inline（task.ts 声明）→ 进程内执行（零开销；卡住时框架只能不再等待）
+   * （任务在进程内执行；卡住时框架只能不再等待——停机 abort 由驱动 signal 承担）
    *
    * 抛错 = 本次失败，由驱动按 retries 决定重试；重试再次进入本函数（attempt 递增）。
    */
@@ -463,237 +410,80 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
     let suspended = false;
 
     try {
-      let result: unknown;
-      if (meta.mode === 'isolated') {
-        // 防御性校验：清单由 scanTasks 构建期保证 isolated 必有 timeoutMs，缺了说明
-        // 清单损坏/手写清单——派发即显式抛错，不静默走进程内路径
-        if (meta.timeoutMs === undefined || meta.timeoutMs <= 0) {
-          throw new Error(
-            `[faapi] Isolated task "${job.name}" (worker.ts) was hydrated without timeoutMs — ` +
-              'the task manifest is broken (regenerate it with faapi build/dev).',
-          );
-        }
-        // 隔离 agent 通道：agentRunner 已注册（@faapi/agent 插件加载）时注入
-        // agent-run 分派——worker 侧 taskCtx.agent.run 转发请求，宿主以任务合成
-        // 契约 ctx（与进程内 taskCtx.agent 同配方）构造 Agent 跑完整循环。未注册
-        // 时 run 消息不带 agentChannel，worker 内 taskCtx.agent 不挂载（能力不
-        // 存在非降级）
-        const agentRunner = deps.agentRunner?.get();
-        const agentHostCtx = agentRunner
-          ? createTaskToolContext({
-              carry: job.carry ?? {},
-              tasks: createScopedTaskClient(job.id),
-              log: createLogger(`task:${job.name}`, {
-                fields: { jobId: job.id, task: job.name, attempt: job.attempt },
-              }),
-              signal: job.signal,
-            })
-          : undefined;
-        // 隔离 llm 通道：AppRegistries.llm 已注册补全通道（@faapi/agent 插件加载）
-        // 时注入 llm-complete 分派——worker 内 taskCtx.llm.complete 纯转发回宿主
-        // 执行（LLM IO 全在宿主，worker 不加载 @faapi/agent）。通道在派发时刻取值
-        // （快照语义，与 registries 快照一致——执行中途 reload 不影响当次执行）；
-        // 未注册时 run 消息不带 llmChannel，worker 内 taskCtx.llm 不挂载（能力不
-        // 存在非降级）
-        const llmChannel = deps.llm?.get();
-        // 全局 worker 并发预算（config.task.maxIsolatedWorkers，默认预留 1 核）：
-        // 跨任务封顶同时在跑的隔离 worker 数——单任务 concurrency 挡不住多任务
-        // 并发的线程数累加。等待上限 30s，超限显式失败交驱动重试（不无限排队——
-        // pgboss expire_in 会把等待中的执行判失联重投）；等待不计入 timeoutMs
-        // （超时从下面真正派发起算）；等待中 job.signal abort 抛 TaskCancelledError
-        // 记 cancelled。try/finally 保证 runner 调用（含 collectConfigSnapshot 对
-        // 不可克隆配置的同步抛错）任何退出路径都归还席位。语义见 isolatedWorkerBudget.md
-        await isolatedBudget.acquire(job.signal);
-        try {
-          result = await (deps.runIsolated ?? runTaskInWorker)({
-            taskModulePath: path.resolve(rootDir, meta.filePath),
-            payload: job.payload,
-            taskCtx: {
-              resourcesDir: deps.resourcesDir,
-              job: { id: job.id, name: job.name, attempt: job.attempt },
-              // config 纯数据快照随 run 消息下发（collectConfigSnapshot 投影——函数
-              // 值不进快照与 registries 快照同边界；非函数不可克隆值派发显式报错，
-              // 见 configSnapshot.md），worker 内 taskCtx.config 读取
-              config: collectConfigSnapshot(deps.config),
-              // 执行上下文快照（enqueue 时刻已校验纯数据）同 run 消息下发
-              carry: job.carry ?? {},
-              // 挂起/激活上下文透传（信封为纯数据；首跑不传）
-              ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
-            },
-            registries: snapshotRegistries(),
-            // 日志配置随 workerData 下发（纯数据），worker 内联重建 taskCtx.log，
-            // 条目回传宿主走统一管道（scope/fields 与进程内路径一致）
-            log: {
-              level: getEffectiveLogLevel(),
-              scope: `task:${job.name}`,
-              fields: { jobId: job.id, task: job.name, attempt: job.attempt },
-            },
-            timeoutMs: meta.timeoutMs,
-            graceMs: meta.graceMs,
-            // worker 堆上限透传（meta.maxOldGenerationSizeMb；未声明不传该 key——
-            // worker 不设资源限制，与既有行为一致）
-            ...(meta.maxOldGenerationSizeMb !== undefined
-              ? { maxOldGenerationSizeMb: meta.maxOldGenerationSizeMb }
-              : {}),
-            externalSignal: job.signal,
-            onProgress: (value) => {
-              if (record.status === 'running') record.progress = value;
-            },
-            // 隔离路径事件回传：与进程内 emit 同一落账通道（仅 running 采纳；宽限期内
-            // 的消息在 taskWorker 消息循环即被丢弃——取消判定即终局，与 progress 同口径）
-            onEvent: (value) => {
-              if (record.status === 'running') appendEvent(record, value);
-            },
-            onLog: writeLogEntry,
-            // 隔离路径的 taskCtx.tasks 为 postMessage RPC 代理——宿主侧按方法名
-            // 分派到队列本体（与 ctx.tasks / app.tasks 同一实例），结果/错误按 seq 回传；
-            // 链式投递注入调用方自身 job id（与进程内 scoped 客户端同语义——任务内
-            // 自续投的活跃查证排除自身）
-            onTasksCall: async (method, args) => {
-              if (!TASK_CLIENT_METHODS.has(method)) {
-                throw new Error(`[faapi] Unknown task client method "${method}"`);
-              }
-              let callArgs = args;
-              // enqueue 系方法自动继承当前执行的 carry（与进程内 scoped client 同语义）
-              if (
-                method === 'enqueue' ||
-                method === 'enqueueSequence' ||
-                method === 'enqueueBatch'
-              ) {
-                const opts = (args[2] as { carry?: Record<string, unknown> } | undefined) ?? {};
-                if (opts.carry === undefined && job.carry !== undefined) {
-                  callArgs = [...args];
-                  callArgs[2] = { ...opts, carry: job.carry };
-                }
-              }
-              const fn = (queue as unknown as Record<string, (...a: unknown[]) => unknown>)[
-                method
-              ] as (...a: unknown[]) => unknown;
-              return fn.apply(queue, callArgs);
-            },
-            // 隔离路径挂起：worker 内 taskCtx.suspend 经 RPC 回传宿主执行同一信封
-            // 写入（与进程内 suspend 共用 persistSuspendEnvelope，语义零差——见
-            // taskSuspend.md），宿主写入完成后回传 worker 继续执行；成功后落
-            // suspended 标记（完成分支据此转 suspended）
-            onSuspend: async (state?: unknown) => {
-              await persistSuspendEnvelope(driver, job, state);
-              suspended = true;
-            },
-            // 隔离 agent RPC（单次 agent-run）：请求原样转发执行器（宿主以任务
-            // 合成契约 ctx 构造 Agent 跑完整循环），结果/错误按 seq 回传 worker
-            // （克隆边界在 taskWorker 回传层处理——不可克隆按执行错误回传）。
-            // 第二参为宿主侧取消控制器 signal（taskWorker 每调用构造），经
-            // AgentRunner 第三参 execution 合入 run options（宿主侧优先）
-            onAgentRun: agentRunner
-              ? async (request, signal) => {
-                  try {
-                    return await agentRunner.runAgent(agentHostCtx!, request, { signal });
-                  } catch (err) {
-                    // AgentAbortError：任务取消传播宿主中断 agent 循环——部分对话
-                    // 历史留痕事件缓冲（agent-aborted，业务可基于 messages 续跑）。
-                    // 仅 running 采纳（与 onEvent 同口径，取消判定即终局不翻案）；
-                    // 按 err.name 检测（主包不依赖 @faapi/agent）；错误原样上抛
-                    // （RPC ok:false 回传 worker 以任务错误浮出）
-                    if (
-                      err instanceof Error &&
-                      err.name === 'AgentAbortError' &&
-                      record.status === 'running'
-                    ) {
-                      appendEvent(record, {
-                        type: 'agent-aborted',
-                        messages: (err as Error & { messages?: unknown }).messages ?? [],
-                      });
-                    }
-                    throw err;
-                  }
-                }
-              : undefined,
-            // 隔离 llm RPC（纯转发）：补全请求转发到派发时刻取到的注册通道（LLM IO
-            // 全在宿主），结果/错误按 seq 回传 worker；signal 由执行器注入宿主侧
-            // AbortController（worker 侧业务级取消经 llm-abort 触发）
-            onLlmComplete: llmChannel
-              ? (input, options) => llmChannel.complete(input, options as LlmCompleteOptions)
-              : undefined,
-          });
-        } finally {
-          isolatedBudget.release();
-        }
-      } else {
-        let mod = moduleCache.get(job.name);
-        if (!mod) {
-          mod = await loadTaskModule(path.resolve(rootDir, meta.filePath));
-          moduleCache.set(job.name, mod);
-        }
-        if (typeof mod.run !== 'function') {
-          throw new Error(`Task "${job.name}" module has no run export`);
-        }
-        // 任务级能力先建局部变量：taskCtx 与 agent 执行 ctx 合成共用同一实例
-        // （同一执行内的 tasks/log/signal 全链同源）
-        const scopedTasks = createScopedTaskClient(job.id);
-        const taskLog = createLogger(`task:${job.name}`, {
-          fields: { jobId: job.id, task: job.name, attempt: job.attempt },
-        });
-        const taskCtx: TaskContext = {
-          signal: job.signal,
-          // 执行作用域客户端：委托队列本体（与 ctx.tasks / app.tasks 同一 app 实例），
-          // 投递自动继承当前 carry
-          tasks: scopedTasks,
-          config: deps.config,
-          job: { id: job.id, name: job.name, attempt: job.attempt },
-          registries: registriesView,
-          // 轻量补全通道惰性读取（插件晚于队列构造注册，执行时刻取值才可见）
-          llm: deps.llm?.get(),
-          // enqueue 时携带的执行上下文快照（未携带/旧格式任务为空对象）
-          carry: job.carry ?? {},
-          log: taskLog,
-          progress: (value) => {
-            if (record.status === 'running') record.progress = value;
-          },
-          // 事件出口：与本进程事件缓冲 + 订阅扇出同一落账通道（仅 running 采纳）
-          emit: (data) => {
-            if (record.status === 'running') appendEvent(record, data);
-          },
-          // 任务挂起：与隔离路径共用同一信封写入（persistSuspendEnvelope——语义
-          // 零差），落账由完成分支按 suspended 标记执行。驱动未实现 taskState
-          // 能力显式抛错（错误同步抛给 run，隔离路径经 RPC 原样回传）
-          suspend: async (state?: unknown) => {
-            await persistSuspendEnvelope(driver, job, state);
-            suspended = true;
-          },
-          // 挂起/激活上下文：首跑 undefined；激活重投的执行经驱动载体还原回传
-          ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
-        };
-        // taskCtx.agent 惰性通道（TaskContext 不声明该字段——类型由 @faapi/agent
-        // declare module 增强为 AgentHandle）：首次访问经 agentHandle 工厂构造
-        // （与 HTTP 请求链同一份 baseDeps），缓存复用；store 未注入/插件未注册
-        // 工厂时为 undefined（隔离路径不消费本 store——隔离 agent 通道走 agentRunner）
-        if (deps.agentHandle) {
-          const store = deps.agentHandle;
-          let cachedAgent: unknown;
-          let agentResolved = false;
-          Object.defineProperty(taskCtx, 'agent', {
-            enumerable: true,
-            get: () => {
-              if (!agentResolved) {
-                // 执行 ctx 按契约合成：carry 数据字段落顶层（身份在 enqueue 处
-                // 声明一次）+ 契约字段（tasks/log/signal）后置——carry 不可覆盖
-                // 框架保证。与隔离路径宿主侧执行器同配方（createTaskToolContext）
-                cachedAgent = store.get(
-                  createTaskToolContext({
-                    carry: taskCtx.carry,
-                    tasks: scopedTasks,
-                    log: taskLog,
-                    signal: job.signal,
-                  }),
-                );
-                agentResolved = true;
-              }
-              return cachedAgent;
-            },
-          });
-        }
-        result = await mod.run(job.payload, taskCtx);
+      let mod = moduleCache.get(job.name);
+      if (!mod) {
+        mod = await loadTaskModule(path.resolve(rootDir, meta.filePath));
+        moduleCache.set(job.name, mod);
       }
+      if (typeof mod.run !== 'function') {
+        throw new Error(`Task "${job.name}" module has no run export`);
+      }
+      // 任务级能力先建局部变量：taskCtx 与 agent 执行 ctx 合成共用同一实例
+      // （同一执行内的 tasks/log/signal 全链同源）
+      const scopedTasks = createScopedTaskClient(job.id);
+      const taskLog = createLogger(`task:${job.name}`, {
+        fields: { jobId: job.id, task: job.name, attempt: job.attempt },
+      });
+      const taskCtx: TaskContext = {
+        signal: job.signal,
+        // 执行作用域客户端：委托队列本体（与 ctx.tasks / app.tasks 同一 app 实例），
+        // 投递自动继承当前 carry
+        tasks: scopedTasks,
+        config: deps.config,
+        job: { id: job.id, name: job.name, attempt: job.attempt },
+        registries: registriesView,
+        // 轻量补全通道惰性读取（插件晚于队列构造注册，执行时刻取值才可见）
+        llm: deps.llm?.get(),
+        // enqueue 时携带的执行上下文快照（未携带/旧格式任务为空对象）
+        carry: job.carry ?? {},
+        log: taskLog,
+        progress: (value) => {
+          if (record.status === 'running') record.progress = value;
+        },
+        // 事件出口：与本进程事件缓冲 + 订阅扇出同一落账通道（仅 running 采纳）
+        emit: (data) => {
+          if (record.status === 'running') appendEvent(record, data);
+        },
+        // 任务挂起：与隔离路径共用同一信封写入（persistSuspendEnvelope——语义
+        // 零差），落账由完成分支按 suspended 标记执行。驱动未实现 taskState
+        // 能力显式抛错（错误同步抛给 run，隔离路径经 RPC 原样回传）
+        suspend: async (state?: unknown) => {
+          await persistSuspendEnvelope(driver, job, state);
+          suspended = true;
+        },
+        // 挂起/激活上下文：首跑 undefined；激活重投的执行经驱动载体还原回传
+        ...(job.resumeState !== undefined ? { resumed: job.resumeState } : {}),
+      };
+      // taskCtx.agent 惰性通道（TaskContext 不声明该字段——类型由 @faapi/agent
+      // declare module 增强为 AgentHandle）：首次访问经 agentHandle 工厂构造
+      // （与 HTTP 请求链同一份 baseDeps），缓存复用；store 未注入/插件未注册工厂时
+      // 为 undefined
+      if (deps.agentHandle) {
+        const store = deps.agentHandle;
+        let cachedAgent: unknown;
+        let agentResolved = false;
+        Object.defineProperty(taskCtx, 'agent', {
+          enumerable: true,
+          get: () => {
+            if (!agentResolved) {
+              // 执行 ctx 按契约合成：carry 数据字段落顶层（身份在 enqueue 处
+              // 声明一次）+ 契约字段（tasks/log/signal）后置——carry 不可覆盖
+              // 框架保证。与隔离路径宿主侧执行器同配方（createTaskToolContext）
+              cachedAgent = store.get(
+                createTaskToolContext({
+                  carry: taskCtx.carry,
+                  tasks: scopedTasks,
+                  log: taskLog,
+                  signal: job.signal,
+                }),
+              );
+              agentResolved = true;
+            }
+            return cachedAgent;
+          },
+        });
+      }
+      const result = await mod.run(job.payload, taskCtx);
       if (suspended) {
         // 挂起落账：非终态（内存护栏不淘汰、单飞活跃判定涵盖），不记 result、
         // 不落组账——驱动照常 complete 队列 job，语义层记录覆盖观测
@@ -706,7 +496,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       await settleGroup(record, 'done', willRetry);
       return result;
     } catch (err) {
-      // 取消（执行被框架终止：隔离执行超时终止 / 停机取消）与 run 自身失败分开记，
+      // 取消（执行被框架终止：停机取消——驱动 signal abort）与 run 自身失败分开记，
       // list() 可区分"任务被取消"与"任务出错"；两者都向上抛错交驱动按 retries 重试
       const cancelled = err instanceof TaskCancelledError || job.signal.aborted;
       const outcome: TaskGroupOutcome = cancelled ? 'cancelled' : 'failed';
@@ -775,10 +565,6 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
       delayMs: opts?.delayMs,
       retries: meta.retries ?? 0,
       dedupId: opts?.dedupId,
-      // 执行硬限预算透传驱动（pgboss 映射 expireInSeconds）：仅隔离任务（worker.ts）
-      // 有 timeoutMs，进程内任务两字段为 undefined，驱动用自身兜底
-      timeoutMs: meta.timeoutMs,
-      graceMs: meta.graceMs,
       ...(opts?.groupId !== undefined ? { groupId: opts.groupId } : {}),
       ...(opts?.groupIndex !== undefined ? { groupIndex: opts.groupIndex } : {}),
       ...(opts?.resumeState !== undefined ? { resumeState: opts.resumeState } : {}),

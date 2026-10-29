@@ -43,7 +43,7 @@ agent 元数据分两层接口，对应两类使用方（类型定义见 [agentT
 | 方法 | 返回类型 | 用途 |
 | --- | --- | --- |
 | `getAgent(name)` | `AgentCore \| undefined` | LLM-facing 场景：`agents` 注入器、`asTool` 描述、`resolveAgentTools` / `resolveSubAgents` 解析。仅查文件 registry |
-| `getAgentEntry(name)` | `AgentMetadata \| undefined` | 框架内部：查声明文件定位 / Input schema 判据（清单可观测性、隔离快照投影） |
+| `getAgentEntry(name)` | `AgentMetadata \| undefined` | 框架内部：查声明文件定位 / Input schema 判据（清单可观测性） |
 | `listAgents()` | `AgentCore[]` | 返回所有已注册文件型 agent（副本，修改不影响内部状态） |
 
 **调用方选择**：消费 LLM 可见字段的代码用 `getAgent`；需要 `filePath` / `inputTypeName` 的代码用 `getAgentEntry`。

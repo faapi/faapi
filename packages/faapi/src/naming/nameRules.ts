@@ -14,7 +14,7 @@
  * 白名单保证「目录路径 → 注册名」映射单射。agent / tool / task 三域共用此规则：
  * - agent 目录段（`src/agents/<path>/handler.ts`）
  * - tool 目录段（`src/tools/<path>/handler.ts`）
- * - task 目录段（`src/tasks/<path>/task.ts | worker.ts`）
+ * - task 目录段（`src/tasks/<path>/task.ts`）
  */
 export const DIR_SEGMENT_PATTERN = /^[a-zA-Z0-9-]+$/;
 

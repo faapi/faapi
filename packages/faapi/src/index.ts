@@ -60,9 +60,6 @@ export type {
   AgentRegistry,
   AgentHandleStore,
   AgentHandleFactory,
-  AgentRunner,
-  AgentRunnerStore,
-  AgentRunRequest,
   TaskRegistriesView,
   LlmChannelStore,
 } from './injection/registries';
@@ -103,26 +100,22 @@ export type {
 // 任务子系统（队列式异步任务，详见 src/tasks/README.md）
 export type {
   FaapiTaskMeta,
-  FaapiWorkerTaskMeta,
   TaskManifest,
   TaskMetadata,
   TaskJob,
   TaskJobStatus,
   TaskEvent,
-  IsolatedTaskContext,
   TaskContext,
   TaskModule,
-  IsolatedTaskModule,
   TaskClient,
   TaskQueue,
-  TaskRegistriesSnapshot,
-  AgentSnapshotRecord,
   TaskFailedInfo,
   TaskGroupSummary,
   TaskGroupSnapshot,
   TaskGroupOnFailure,
   TaskGroupOutcome,
 } from './tasks/taskTypes';
+export { TaskCancelledError } from './tasks/taskTypes';
 export type { TaskRegistry } from './tasks/taskRegistry';
 export { createTaskToolContext, type TaskToolContextSource } from './tasks/taskToolContext';
 export type {

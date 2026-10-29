@@ -1,11 +1,7 @@
 import path from 'node:path';
 import { generateZodArtifacts } from './generateZodArtifacts';
 import type { TaskManifest, TaskMetadata } from '../tasks/taskTypes';
-import {
-  extractToolMetadata,
-  getSecondParamTypeName,
-  type ToolMetadata,
-} from '../ast/extractToolMetadata';
+import { extractToolMetadata, type ToolMetadata } from '../ast/extractToolMetadata';
 import { createPrograms } from '../ast/createProgram';
 import { toProdFilePath } from '../utils/prodPaths';
 import { atomicWriteFile } from '../utils/atomicWrite';
@@ -35,13 +31,9 @@ export interface SerializedTaskRecord {
   name: string;
   /** 产物路径（如 `dist/tasks/send-email/task.js`），运行时 import 任务模块 */
   filePath: string;
-  /** 执行模式（清单序列化保留）：task.ts → inline / worker.ts → isolated */
-  mode: 'inline' | 'isolated';
   cron?: string;
   concurrency?: number;
   retries?: number;
-  timeoutMs?: number;
-  graceMs?: number;
 }
 
 /**
@@ -54,12 +46,9 @@ export function serializeTasks(
   return tasks.map((t) => ({
     name: t.name,
     filePath: toProdFilePath(t.filePath, dist),
-    mode: t.mode,
     ...(t.cron !== undefined ? { cron: t.cron } : {}),
     ...(t.concurrency !== undefined ? { concurrency: t.concurrency } : {}),
     ...(t.retries !== undefined ? { retries: t.retries } : {}),
-    ...(t.timeoutMs !== undefined ? { timeoutMs: t.timeoutMs } : {}),
-    ...(t.graceMs !== undefined ? { graceMs: t.graceMs } : {}),
   }));
 }
 
@@ -83,12 +72,9 @@ export function hydrateTasks(manifest: SerializedTaskRecord[]): TaskMetadata[] {
   return manifest.map((t) => ({
     name: t.name,
     filePath: t.filePath,
-    mode: t.mode,
     cron: t.cron ?? undefined,
     concurrency: t.concurrency ?? undefined,
     retries: t.retries ?? undefined,
-    timeoutMs: t.timeoutMs ?? undefined,
-    graceMs: t.graceMs ?? undefined,
   }));
 }
 
@@ -230,20 +216,6 @@ export async function generateTaskArtifacts(
             'or explicitly opt out of validation with "type Payload = unknown"',
         );
         continue;
-      }
-      // ctx 类型标注与文件种类不符 → 构建期报错（路径错注从运行时静默变构建期失败；
-      // 未标注 ctx 的任务不校验——ctx 可省略）
-      const ctxAnnotation = getSecondParamTypeName(programByFile.get(absPath)!, absPath, 'run');
-      if (ctxAnnotation !== undefined) {
-        const expected = manifest.mode === 'isolated' ? 'IsolatedTaskContext' : 'TaskContext';
-        if (ctxAnnotation !== expected) {
-          declarationErrors.push(
-            `"${manifest.name}" (${manifest.filePath}): run's second parameter is annotated ` +
-              `"${ctxAnnotation}" but this ${manifest.mode === 'isolated' ? 'worker.ts (isolated)' : 'task.ts (in-process)'} ` +
-              `task executes with "${expected}" — annotate the context type that matches the declaration file ` +
-              '(task.ts → TaskContext / worker.ts → IsolatedTaskContext).',
-          );
-        }
       }
       metadata.push({ ...result, taskName: manifest.name });
     }

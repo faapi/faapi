@@ -25,14 +25,9 @@ HTTP 中间件塞 ctx.user / ctx.workspace     ← 现有模式，零新增
           ├─ tool handler: (args, ctx)      ← 第二参数（AgentToolContext 契约）
           └─ sub-agent: 同一 ctx 递归传导    ← subDeps 共享 deps，ctx 随行
 
-进程内任务（taskCtx.agent 静默通道）
+任务（taskCtx.agent 静默通道）
   └─ createTaskToolContext 合成 → AgentDeps.ctx   ← carry 数据字段落顶层 + scoped
       tasks / 任务级 logger / job.signal（与 HTTP 同契约，见 taskToolContext.md）
-
-隔离任务（worker 内 taskCtx.agent）
-  └─ 单次 agent-run RPC 收敛宿主 → 完整循环（含事件发射）在宿主执行
-      └─ 宿主 runAgent 以任务合成契约 ctx 构造 Agent（同配方合成 AgentDeps.ctx，
-          见 taskToolContext.md），业务函数面与资源零跨线程
 
 无 app 编排（测试 / 编程式）
   └─ createStandaloneToolContext 显式构造   ← 诚实缺省（tasks 抛错桩等）

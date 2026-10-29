@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createTaskQueue } from './taskQueue';
 import { createTaskRegistry } from './taskRegistry';
-import { TaskCancelledError } from './taskWorker';
+import { TaskCancelledError } from './taskTypes';
 import type {
   TaskDriver,
   TaskDriverGroupCreate,
@@ -200,7 +200,6 @@ function makeDeps(modules: Record<string, TaskModule>, schemas: Record<string, u
     Object.keys(modules).map((name) => ({
       name,
       filePath: `dist/tasks/${name}/task.js`,
-      mode: 'inline' as const,
     })),
   );
   const loadTaskModule = vi.fn(async (filePath: string) => {
@@ -405,8 +404,8 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
     });
     // meta retries=1：attempt 1 失败 willRetry=true，attempt 2 失败才落定
     deps.registry.hydrate([
-      { name: 'chunks', filePath: 'dist/tasks/chunks/task.js', mode: 'inline', retries: 1 },
-      { name: 'summary', filePath: 'dist/tasks/summary/task.js', mode: 'inline' },
+      { name: 'chunks', filePath: 'dist/tasks/chunks/task.js', retries: 1 },
+      { name: 'summary', filePath: 'dist/tasks/summary/task.js' },
     ]);
     const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });
@@ -525,8 +524,8 @@ describe('成员落定接线（fan-in / 失败语义 / 逆向记账）', () => {
       summary: { run: vi.fn() },
     });
     deps.registry.hydrate([
-      { name: 'chunks', filePath: 'dist/tasks/chunks/task.js', mode: 'inline', retries: 1 },
-      { name: 'summary', filePath: 'dist/tasks/summary/task.js', mode: 'inline' },
+      { name: 'chunks', filePath: 'dist/tasks/chunks/task.js', retries: 1 },
+      { name: 'summary', filePath: 'dist/tasks/summary/task.js' },
     ]);
     const fake = makeFakeBatchDriver();
     const queue = createTaskQueue({ ...deps, driver: fake.driver });

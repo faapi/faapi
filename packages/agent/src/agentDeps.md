@@ -61,7 +61,7 @@ function createAgentDeps(options: CreateAgentDepsOptions): AgentDeps;
 
 ## 行为约定
 
-- **纯装配无副作用**：不注册 handle 工厂、不建 app、不触碰全局状态；每次调用返回独立的 deps 对象（providers Map、schema 解析器缓存均随 deps 生命周期）——**进程级复用由调用方负责**：插件 setup 调一次天然闭包单例；任务侧建议模块级创建一次（进程内任务跨执行复用；隔离 worker 每次执行新模块图，缓存随执行重建）
+- **纯装配无副作用**：不注册 handle 工厂、不建 app、不触碰全局状态；每次调用返回独立的 deps 对象（providers Map、schema 解析器缓存均随 deps 生命周期）——**进程级复用由调用方负责**：插件 setup 调一次天然闭包单例；任务侧建议模块级创建一次（任务模块跨执行复用）
 - **schema 解析器**：默认内部 `createToolSchemaResolver({ rootDir })`（同一实例注入 `resolveToolSchema` + `resolveAgentInputSchema`，tool 与派发入参共用缓存）；经 `overrides` 覆盖时（如富化包装）以覆盖值为准
 - **空 apiKey 照常注册 provider**：部分网关/本地模型场景无需 key；「key 未配置」的启动期显性提示由插件 setup 负责（工厂可能在任务内调用，不在此处刷警告）——上游 401 的错误文案来自上游，可按 provider 名定位
 - **overrides 浅合并**：`{ ...decorated, ...overrides }`——覆盖单个访问器不影响其余装配；需要深度定制时用完整的编程式组装（`new Agent(deps)` 直拼）

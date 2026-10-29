@@ -83,10 +83,6 @@ export interface TaskDriver {
    * @param opts.dedupId 幂等键（可选）——同键任务在队列系统保留期内不重复入队。
    *   pgboss 映射 send 自定义 id（驱动内做任意字符串 → 确定性 UUID 映射，冲突跳过）；
    *   bullmq 映射 jobId。重复投递时返回已存在任务的 id。
-   * @param opts.timeoutMs 任务执行超时毫秒（语义层从任务 meta 取）——驱动以此设置
-   *   队列系统的执行硬限（pgboss 映射 expireInSeconds），防止队列系统默认限值
-   *   （pg-boss DDL 15 分钟）强杀仍在运行的长任务后重试，导致同一任务两份并发执行
-   * @param opts.graceMs 超时取消宽限期毫秒（与 timeoutMs 配套，驱动计入执行硬限预算）
    * @throws 驱动已停止 / 连接失败等
    */
   enqueue(
@@ -96,8 +92,6 @@ export interface TaskDriver {
       delayMs?: number;
       retries?: number;
       dedupId?: string;
-      timeoutMs?: number;
-      graceMs?: number;
       /**
        * 所属批量（批量任务成员携带，可选）——驱动以此把批量标识随任务持久化
        * （载体为驱动内部实现，两内置驱动以载荷包装形态存储），交付/查询时还原为

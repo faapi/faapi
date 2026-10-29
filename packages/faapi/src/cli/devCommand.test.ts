@@ -70,7 +70,7 @@ vi.mock('./generateAgentArtifacts', () => ({
 // mock generateTaskArtifactsForDev 的依赖（任务子系统）
 vi.mock('../tasks/scanTasks', () => ({
   scanTasks: vi.fn(async () => []),
-  TASK_PATTERNS: ['src/tasks/**/task.ts', 'src/tasks/**/worker.ts'],
+  TASK_PATTERNS: ['src/tasks/**/task.ts'],
 }));
 vi.mock('./generateTaskArtifacts', () => ({
   generateTaskArtifacts: vi.fn(async () => []),

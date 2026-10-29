@@ -43,7 +43,7 @@ export async function run(payload, taskCtx) {
 
 - **解析**：`loadToolSchema` 返回 `undefined`（无 `inputTypeName` / zod.js 不存在 / import 失败）→ 返回 `undefined`；有 schema 时 `jsonSchema = z.toJSONSchema(schema)`，`validate = schema.safeParse` 包装（成功返回 coerce 后的 value，失败返回 error 消息）。tool 侧 `undefined` → agent 用自由 schema `{ type: 'object' }`；agent 派发侧 `undefined` 的语义（声明了 `inputTypeName` 即产物异常，显式抛错）由 `@faapi/agent` 的 agent.md「派发入参 schema 声明」定义，本工厂只如实返回
 - **缓存**：工厂闭包级 `Map<key, { mtimeMs, resolution }>`——缓存键 `zodPath#inputTypeName`，每次查找 `statSync` 一次做 mtime 自校验，mtime 变化即重新解析（dev reload 后重生成 zod.js 自愈，prod 产物固化永远命中）；in-flight Promise 直接入缓存，同一来源的并发调用共享同一次解析。tool 与 agent 入参共用同一实例时缓存共享（`zod.js` 路径不同，键天然不冲突）
-- **作用域**：每次 `createToolSchemaResolver` 调用返回独立缓存的 resolver——插件 setup 一次（root + sub-agent 共享）；任务侧建议模块级创建一次（隔离 worker 每次执行新模块图，缓存随执行重建；进程内任务跨执行复用）
+- **作用域**：每次 `createToolSchemaResolver` 调用返回独立缓存的 resolver——插件 setup 一次（root + sub-agent 共享）；任务侧建议模块级创建一次（任务跨执行复用）
 - **dist 选项**（可选）：显式指定产物目录（如测试设施的临时目录），不传时走 dev on demand / `FAAPI_DIST` 全局解析——与生产 dev/prod 默认路径一致。传显式 dist 时不读全局状态，与同进程的生产路径互不干扰
 
 ## 相关模块

@@ -7,8 +7,8 @@ describe('createCronScheduler', () => {
   it('到点自动 enqueue 对应任务（秒级 cron），投递携带多实例防重幂等键', async () => {
     const registry = createTaskRegistry();
     const tasks: TaskMetadata[] = [
-      { name: 'tick', filePath: 'dist/tasks/tick/task.js', mode: 'inline', cron: '*/1 * * * * *' },
-      { name: 'nocr', filePath: 'dist/tasks/nocr/task.js', mode: 'inline' },
+      { name: 'tick', filePath: 'dist/tasks/tick/task.js', cron: '*/1 * * * * *' },
+      { name: 'nocr', filePath: 'dist/tasks/nocr/task.js' },
     ];
     registry.hydrate(tasks);
     const enqueue = vi.fn(async () => ({ id: 'x' }));
@@ -29,7 +29,7 @@ describe('createCronScheduler', () => {
 
   it('两次触发的 dedupId 时间窗不同（各自计划触发时刻）', async () => {
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'tick', filePath: 'd.js', mode: 'inline', cron: '*/1 * * * * *' }]);
+    registry.hydrate([{ name: 'tick', filePath: 'd.js', cron: '*/1 * * * * *' }]);
     const keys: string[] = [];
     const enqueue = vi.fn(async (_name: string, opts: { dedupId?: string }) => {
       keys.push(opts.dedupId!);
@@ -49,7 +49,7 @@ describe('createCronScheduler', () => {
     // ——后者随多实例 setTimeout 毫秒级抖动，键几乎必然不同，多实例防重失效；
     // nextRun() 键秒级对齐（toISOString 恒以 .000Z 结尾）且不晚于投递时刻
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'tick', filePath: 'd.js', mode: 'inline', cron: '*/1 * * * * *' }]);
+    registry.hydrate([{ name: 'tick', filePath: 'd.js', cron: '*/1 * * * * *' }]);
     const keys: string[] = [];
     const enqueue = vi.fn(async (_name: string, opts: { dedupId?: string }) => {
       keys.push(opts.dedupId!);
@@ -67,7 +67,7 @@ describe('createCronScheduler', () => {
 
   it('stop 后不再投递', async () => {
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'tick', filePath: 'd.js', mode: 'inline', cron: '*/1 * * * * *' }]);
+    registry.hydrate([{ name: 'tick', filePath: 'd.js', cron: '*/1 * * * * *' }]);
     let count = 0;
     const enqueue = vi.fn(async () => {
       count += 1;
@@ -84,7 +84,7 @@ describe('createCronScheduler', () => {
 
   it('非法 cron 表达式启动时抛错（不静默跳过）', () => {
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'bad', filePath: 'd.js', mode: 'inline', cron: 'not-a-cron' }]);
+    registry.hydrate([{ name: 'bad', filePath: 'd.js', cron: 'not-a-cron' }]);
     const scheduler = createCronScheduler(registry, async () => ({ id: 'x' }));
     expect(() => scheduler.start()).toThrow();
   });

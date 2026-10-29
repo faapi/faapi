@@ -63,7 +63,6 @@ export type { LlmComplete, LlmCompleteOptions } from '@faapi/faapi';
 // tool handler 第二参数契约（主包声明、三路径合成保证），re-export 供业务方统一标注
 export type { AgentToolContext } from '@faapi/faapi';
 // 任务路径契约 ctx 合成（单一配方，见 faapi 的 taskToolContext.md）——值 re-export：
-// 隔离 worker 内 buildAgentChannel 只解析 '@faapi/agent' 一个说明符（workerEntry
 // 自包含约束），合成函数经本出口到达
 export { createTaskToolContext } from '@faapi/faapi';
 
@@ -117,9 +116,8 @@ export { createToolSchemaResolver, type SchemaSourceRef } from '@faapi/faapi';
 export { type AgentHandle, type AgentRunOptions } from './agentHandle';
 
 // TaskContext.agent 类型增强（7.1）——declare module 声明合并:业务 import
-// '@faapi/agent' 即得 taskCtx.agent 的 AgentHandle 强类型（进程内任务的静默
-// 组装通道,见 taskContextAgent.ts）;隔离任务为 run-only RPC 句柄（AgentRpcHandle）
-export type { AgentRpcHandle } from './taskContextAgent';
+// '@faapi/agent' 即得 taskCtx.agent 的 AgentHandle 强类型（任务的静默组装通道,
+// 见 taskContextAgent.ts）
 import './taskContextAgent';
 
 // 默认导出：faapi 插件（Phase 3.5）——在 faapi.config.ts 的 plugins 中声明 '@faapi/agent' 即启用

@@ -15,7 +15,7 @@
 
 ## 使用场景
 
-- agent 目录段校验（`src/agents/<path>/handler.ts`）、tool 目录段校验（`src/tools/<path>/handler.ts`）、task 目录段校验（`src/tasks/<path>/task.ts | worker.ts`）——三域共用 `DIR_SEGMENT_PATTERN`
+- agent 目录段校验（`src/agents/<path>/handler.ts`）、tool 目录段校验（`src/tools/<path>/handler.ts`）、task 目录段校验（`src/tasks/<path>/task.ts`）——三域共用 `DIR_SEGMENT_PATTERN`
 - tool 合成名校验（`子目录_函数名`）与 sub-agent 派发工具名运行时闸门（[subAgentToolName](../injection/subAgentToolName.md)）——用 `LLM_TOOL_NAME_PATTERN`
 - 未来任何新的「目录即标识」域（如新增的资源类型 scanner）直接 import 本模块，不再复制常量
 

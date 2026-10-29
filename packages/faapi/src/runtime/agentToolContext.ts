@@ -45,7 +45,7 @@ export type AgentToolContext = {
   log: Logger;
   /**
    * 取消信号——HTTP: `request.signal`（客户端断开）；任务: `job.signal`
-   * （停机/超时两段式取消的第一段 abort）。长耗时上游调用可携带：
+   * （停机取消——驱动 signal abort）。长耗时上游调用可携带：
    * `fetch(url, { signal: ctx.signal })`
    */
   signal: AbortSignal;

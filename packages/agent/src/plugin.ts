@@ -40,8 +40,7 @@
  */
 
 import { type FaapiPlugin, type PluginContext, type AgentConfig } from '@faapi/faapi';
-import { Agent, AgentError, extractSubAgentUserInput } from './agent';
-import type { AgentRunOptions } from './agentHandle';
+import { Agent } from './agent';
 import { createAgentDeps } from './agentDeps';
 import { createLightComplete } from './lightComplete';
 import { createStandaloneToolContext } from './standaloneToolContext';
@@ -118,50 +117,6 @@ const agentPlugin: FaapiPlugin = {
     // systemPromptFile 读取走主包免传参 readResource（读取根 app 启动时已绑定）
     ctx.registries.agentHandle.register((ctx) => {
       return new Agent({ ...baseDeps, ctx });
-    });
-
-    // 注册 agent 循环执行器——隔离 worker 调 agent 收敛为单次 agent-run RPC：
-    // worker 侧 taskCtx.agent.run 转发请求，宿主在此以任务合成契约 ctx 构造 Agent
-    // 跑完整编排循环（LLM IO、tool 执行、钩子、sub-agent 全在宿主——
-    // db 连接池等资源单实例、业务函数零跨线程）。插件未加载时 runner store 为空
-    // ——worker 内 taskCtx.agent 不挂载（能力不存在非降级，见 taskTypes.md）
-    ctx.registries.agentRunner.register({
-      runAgent: async (ctx, request, execution) => {
-        const { agentName, options } = request;
-        const entry = baseDeps.getAgentEntry(agentName);
-        // 派发入参校验（富 schema 派发形态——镜像 executeSubAgent：声明 Input 且
-        // resolver 已接线时校验，失败/产物缺失显式抛错，RPC ok:false 原样回传
-        // worker 以任务错误浮出）。字符串入参为 user 消息直传（与 HTTP/编程式
-        // run 同语义，不经派发 schema）；结构化对象为派发形态，宿主跑循环前校验
-        let runInput: string | undefined;
-        if (typeof request.input === 'object' && request.input !== null) {
-          if (entry?.inputTypeName && baseDeps.resolveAgentInputSchema) {
-            const schemaRes = await baseDeps.resolveAgentInputSchema(entry);
-            if (!schemaRes) {
-              throw new AgentError(
-                `Agent "${agentName}" declares input schema "${entry.inputTypeName}" but its zod.js artifact is missing or broken (run \`faapi build\` / restart \`faapi dev\` to regenerate)`,
-              );
-            }
-            const result = schemaRes.validate(request.input);
-            if (!result.ok) {
-              throw new AgentError(`Agent "${agentName}" input validation failed: ${result.error}`);
-            }
-          }
-          runInput = extractSubAgentUserInput(request.input);
-        } else {
-          runInput = request.input;
-        }
-        // 完整循环：与 HTTP 请求链同一份 baseDeps（工具/钩子单一实现）
-        const agent = new Agent({ ...baseDeps, ctx });
-        return agent.run(runInput, {
-          ...(options as AgentRunOptions | undefined),
-          agent: agentName,
-          // 宿主任务取消传播 agent 循环（宿主侧优先）：隔离任务两段式取消第一段
-          // abort 此 signal——ReactLoop 每轮预检查 + provider 请求中断抛
-          // AgentAbortError（messages 由宿主留痕 agent-aborted 事件，可续跑）
-          signal: execution?.signal ?? (options as AgentRunOptions | undefined)?.signal,
-        });
-      },
     });
 
     console.log(

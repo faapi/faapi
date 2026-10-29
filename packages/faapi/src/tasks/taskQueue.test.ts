@@ -1,16 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createTaskQueue } from './taskQueue';
 import { createTaskRegistry } from './taskRegistry';
-import { TaskCancelledError } from './taskWorker';
-import {
-  createAppRegistries,
-  createLlmChannelStore,
-  createTaskRegistriesView,
-} from '../injection/registries';
+import { TaskCancelledError } from './taskTypes';
 import type { LlmChannelStore } from '../injection/registries';
+import { createAppRegistries, createTaskRegistriesView } from '../injection/registries';
 import type { LlmComplete } from '../injection/llmTypes';
 import type { TaskDriver, TaskDriverJob, TaskDriverProcess } from './driverTypes';
-import type { IsolatedTaskContext, TaskContext, TaskEvent, TaskModule } from './taskTypes';
+import type { TaskContext, TaskEvent, TaskModule } from './taskTypes';
 
 interface EnqueueCall {
   name: string;
@@ -97,7 +93,6 @@ function makeDeps(modules: Record<string, TaskModule>, schemas: Record<string, u
     Object.keys(modules).map((name) => ({
       name,
       filePath: `dist/tasks/${name}/task.js`,
-      mode: 'inline' as const,
     })),
   );
   const loadTaskModule = vi.fn(async (filePath: string) => {
@@ -134,9 +129,7 @@ describe('createTaskQueue', () => {
 
   it('入队时把任务 meta 的 retries 透传给驱动', async () => {
     const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'mail', filePath: 'dist/tasks/mail/task.js', mode: 'inline', retries: 3 },
-    ]);
+    registry.hydrate([{ name: 'mail', filePath: 'dist/tasks/mail/task.js', retries: 3 }]);
     const fake = makeFakeDriver();
     const queue = createTaskQueue({
       registry,
@@ -208,7 +201,6 @@ describe('createTaskQueue', () => {
       ...deps,
       driver: fake.driver,
       config: { db: 1 },
-      resourcesDir: '/proj/dist/resources',
     });
     queue.start();
 
@@ -278,8 +270,8 @@ describe('createTaskQueue', () => {
     const fake = makeFakeDriver();
     const registry = createTaskRegistry();
     registry.hydrate([
-      { name: 'a', filePath: 'dist/tasks/a/task.js', mode: 'inline', concurrency: 4 },
-      { name: 'b', filePath: 'dist/tasks/b/task.js', mode: 'inline' },
+      { name: 'a', filePath: 'dist/tasks/a/task.js', concurrency: 4 },
+      { name: 'b', filePath: 'dist/tasks/b/task.js' },
     ]);
     const queue = createTaskQueue({ ...deps, registry, driver: fake.driver });
     await queue.start();
@@ -414,7 +406,7 @@ describe('createTaskQueue', () => {
   it('进程内 taskCtx.progress 记入记录（list 可见），派发清空上一轮，终态后调用被忽略', async () => {
     let lateProgress: ((value: unknown) => void) | undefined;
     let calls = 0;
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       calls += 1;
       if (calls === 1) {
         taskCtx.progress?.({ pct: 30 });
@@ -445,7 +437,7 @@ describe('createTaskQueue', () => {
   // ── 任务事件（taskCtx.emit / subscribe / listEvents，契约见 taskEvents.md）──
 
   it('进程内 taskCtx.emit 落事件缓冲：listEvents 按 seq 升序返回，字段齐全', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       taskCtx.emit?.({ kind: 'stage', at: 'start' });
       taskCtx.emit?.({ kind: 'stage', at: 'end' });
       return 'ok';
@@ -471,7 +463,7 @@ describe('createTaskQueue', () => {
   });
 
   it('subscribe 实时回调（emit 落账后同步触发）；退订后不再回调；订阅前历史不回放', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       taskCtx.emit?.('tick');
       return 'ok';
     });
@@ -500,7 +492,7 @@ describe('createTaskQueue', () => {
 
   it('终态后 emit 被忽略：不落账、不触发订阅（与 progress 终态口径一致）', async () => {
     let lateEmit: ((data: unknown) => void) | undefined;
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       taskCtx.emit?.('in-run');
       lateEmit = taskCtx.emit;
       return 'ok';
@@ -518,7 +510,7 @@ describe('createTaskQueue', () => {
   });
 
   it('重试不清事件：同 job attempt 2 的事件追加，seq 跨 attempt 连续，attempt 字段区分', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       taskCtx.emit?.(`attempt-${taskCtx.job.attempt}`);
       if (taskCtx.job.attempt === 1) throw new Error('boom');
       return 'ok';
@@ -540,7 +532,7 @@ describe('createTaskQueue', () => {
 
   it('subscribe 按 name 过滤；handler 抛错 console.error 留痕，不影响任务与其他订阅者', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       taskCtx.emit?.('tick');
       return 'ok';
     });
@@ -570,7 +562,7 @@ describe('createTaskQueue', () => {
   });
 
   it('listEvents(name, { jobId }) 收窄到单次执行', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       taskCtx.emit?.('tick');
       return 'ok';
     });
@@ -592,7 +584,7 @@ describe('createTaskQueue', () => {
   });
 
   it('单执行事件超上限（1000）丢最旧，seq 不回退', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       for (let i = 1; i <= 1002; i++) taskCtx.emit?.(i);
       return 'ok';
     });
@@ -610,7 +602,7 @@ describe('createTaskQueue', () => {
   });
 
   it('全局事件上限（10000）按 job 首次发射序整体淘汰最旧执行的事件缓冲', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       for (let i = 1; i <= 1000; i++) taskCtx.emit?.(i);
       return 'ok';
     });
@@ -632,7 +624,7 @@ describe('createTaskQueue', () => {
   });
 
   it('记录终态淘汰时事件一并清理（生命周期与任务记录绑定）', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => {
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => {
       taskCtx.emit?.('tick');
       return 'ok';
     });
@@ -651,38 +643,6 @@ describe('createTaskQueue', () => {
     expect(queue.list('bulk')).toHaveLength(1000);
     expect(queue.list('bulk').find((j) => j.id === first.id)).toBeUndefined();
     expect(queue.listEvents('bulk', { jobId: first.id })).toHaveLength(0);
-    await queue.stop();
-  });
-
-  it('隔离路径：runIsolated 的 onEvent 回调落同一事件缓冲并扇出订阅者（两路径口径一致）', async () => {
-    const runIsolated = vi.fn(async (opts: { onEvent?: (value: unknown) => void }) => {
-      opts.onEvent?.('from-worker-1');
-      opts.onEvent?.('from-worker-2');
-      return 'from-worker';
-    });
-    const fake = makeFakeDriver();
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
-    ]);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({ run: vi.fn() }),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    const { id } = await queue.enqueue('heavy');
-    const seen: TaskEvent[] = [];
-    queue.subscribe('heavy', (e) => seen.push(e));
-    await fake.dispatch('heavy', {});
-    const events = queue.listEvents('heavy', { jobId: id });
-    expect(events.map((e) => e.data)).toEqual(['from-worker-1', 'from-worker-2']);
-    expect(events.map((e) => e.seq)).toEqual([1, 2]);
-    expect(seen.map((e) => e.data)).toEqual(['from-worker-1', 'from-worker-2']);
     await queue.stop();
   });
 
@@ -734,316 +694,22 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('隔离 agent 通道：agentRunner 已注册时注入 onAgentRun 单分派（runAgent 收任务合成契约 ctx + 请求）；未注册时不注入', async () => {
-    const fake = makeFakeDriver();
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
-    ]);
-
-    // runner 已注册：onAgentRun 注入，请求原样透传给 runAgent，ctx 为合成契约 ctx
-    const calls: Array<{ request: Record<string, unknown>; ctx: Record<string, unknown> }> = [];
-    const runnerStore = {
-      register: vi.fn(),
-      get: () => ({
-        runAgent: async (ctx: Record<string, unknown>, request: Record<string, unknown>) => {
-          calls.push({ request, ctx });
-          return { output: 'agent-ok' };
-        },
-      }),
-      clear: vi.fn(),
-    };
-    let capturedOpts: {
-      onAgentRun?: (request: {
-        agentName: string;
-        input?: unknown;
-        options?: unknown;
-      }) => Promise<unknown>;
-    } = {};
-    const runIsolated = vi.fn(async (opts: typeof capturedOpts) => {
-      capturedOpts = opts;
-      return 'from-worker';
-    });
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      agentRunner: runnerStore as never,
-      loadTaskModule: async () => ({ run: vi.fn() }),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    await queue.enqueue('heavy', {}, { carry: { currentUserId: 9 } });
-    await fake.dispatch('heavy', {}, 1, undefined, { carry: { currentUserId: 9 } });
-
-    expect(capturedOpts.onAgentRun).toBeDefined();
-    const request = { agentName: 'log-analyzer', input: '分析', options: { temperature: 0.2 } };
-    await expect(capturedOpts.onAgentRun!(request)).resolves.toEqual({ output: 'agent-ok' });
-    // 单一 RPC：请求对象原样透传（无 per-behavior kind 分派）
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.request).toEqual(request);
-    // 合成契约 ctx：carry 字段落顶层 + tasks/log/signal 恒在
-    expect(calls[0]!.ctx.currentUserId).toBe(9);
-    expect(calls[0]!.ctx.tasks).toBeDefined();
-    expect(calls[0]!.ctx.log).toBeDefined();
-    expect(calls[0]!.ctx.signal).toBeInstanceOf(AbortSignal);
-    await queue.stop();
-
-    // runner 未注册：onAgentRun 不注入（worker 消息不带 agentChannel）
-    const fake2 = makeFakeDriver();
-    const runIsolated2 = vi.fn(async (opts: { onAgentRun?: unknown }) => {
-      expect(opts.onAgentRun).toBeUndefined();
-      return 'ok';
-    });
-    const queue2 = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake2.driver,
-      runIsolated: runIsolated2 as never,
-      loadTaskModule: async () => ({ run: vi.fn() }),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue2.start();
-    await queue2.enqueue('heavy');
-    await fake2.dispatch('heavy', {});
-    await queue2.stop();
-  });
-
-  it('隔离 agent 通道取消传播：onAgentRun 透传取消 signal（AgentRunner 第三参 execution），AgentAbortError 经事件留痕（agent-aborted 携带 messages 可续跑）', async () => {
-    const fake = makeFakeDriver();
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
-    ]);
-
-    const seenSignals: AbortSignal[] = [];
-    const runnerStore = {
-      register: vi.fn(),
-      get: () => ({
-        runAgent: async (
-          _ctx: Record<string, unknown>,
-          _request: Record<string, unknown>,
-          execution?: { signal?: AbortSignal },
-        ) => {
-          if (execution?.signal) seenSignals.push(execution.signal);
-          const err = new Error('agent loop aborted');
-          (err as unknown as { name: string }).name = 'AgentAbortError';
-          (err as unknown as { messages: unknown[] }).messages = [
-            { role: 'user', content: 'hi' },
-            { role: 'assistant', content: 'partial' },
-          ];
-          throw err;
-        },
-      }),
-      clear: vi.fn(),
-    };
-    let capturedOpts: {
-      onAgentRun?: (
-        request: { agentName: string; input?: unknown; options?: unknown },
-        signal?: AbortSignal,
-      ) => Promise<unknown>;
-    } = {};
-    let agentError: unknown;
-    const controller = new AbortController();
-    const request = { agentName: 'log-analyzer', input: '分析' };
-    const runIsolated = vi.fn(async (opts: typeof capturedOpts) => {
-      capturedOpts = opts;
-      // 执行进行中调用（record.status === 'running'）——留痕走 onEvent 同一 running 守卫
-      try {
-        await opts.onAgentRun!(request, controller.signal);
-      } catch (err) {
-        agentError = err;
-      }
-      return 'from-worker';
-    });
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      agentRunner: runnerStore as never,
-      loadTaskModule: async () => ({ run: vi.fn() }),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    const { id } = await queue.enqueue('heavy', {}, { carry: { currentUserId: 9 } });
-    await fake.dispatch('heavy', {}, 1, undefined, { carry: { currentUserId: 9 } });
-
-    expect(capturedOpts.onAgentRun).toBeDefined();
-    // 错误原样上抛（RPC ok:false 回传 worker 以任务错误浮出）
-    expect((agentError as Error | undefined)?.name).toBe('AgentAbortError');
-    // 取消 signal 经 AgentRunner 第三参 execution 到达宿主循环（宿主侧优先合入 run options）
-    expect(seenSignals).toEqual([controller.signal]);
-    // AgentAbortError 留痕事件缓冲：{ type: 'agent-aborted', messages }——部分对话
-    // 历史可续跑（任务终局仍由两段式取消判定，留痕只追加不翻案）
-    const events = queue.listEvents('heavy', { jobId: id });
-    expect(events.at(-1)!.data).toEqual({
-      type: 'agent-aborted',
-      messages: [
-        { role: 'user', content: 'hi' },
-        { role: 'assistant', content: 'partial' },
-      ],
-    });
-    await queue.stop();
-  });
-
-  it('mode: isolated 的任务走隔离执行器（runIsolated），进程内 run 不被调用', async () => {
-    const run = vi.fn(async () => 'in-process');
-    const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
-    ]);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      resourcesDir: '/fake/dist/resources',
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({ run }),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    await queue.enqueue('heavy', { a: 1 });
-    await fake.dispatch('heavy', { a: 1 }, 1);
-    expect(runIsolated).toHaveBeenCalledTimes(1);
-    const call = runIsolated.mock.calls[0]![0] as {
-      taskModulePath: string;
-      payload: unknown;
-      timeoutMs: number;
-      externalSignal: AbortSignal;
-      taskCtx: { resourcesDir?: string };
-    };
-    expect(call.taskModulePath).toContain('heavy');
-    expect(call.timeoutMs).toBe(3000);
-    expect(call.payload).toEqual({ a: 1 });
-    expect(call.externalSignal).toBeInstanceOf(AbortSignal);
-    expect(call.taskCtx.resourcesDir).toBe('/fake/dist/resources');
-    expect(run).not.toHaveBeenCalled();
-    expect(queue.list('heavy')[0]).toMatchObject({ status: 'done', result: 'from-worker' });
-    await queue.stop();
-  });
-
-  it('mode: isolated 但缺 timeoutMs（清单损坏/手写清单）时派发即显式抛错，不静默走进程内', async () => {
-    const run = vi.fn(async () => 'in-process');
-    const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async () => 'from-worker');
-    const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'broken', filePath: 'dist/tasks/broken/task.js', mode: 'isolated' }]);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({ run }),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    await queue.enqueue('broken');
-    await expect(fake.dispatch('broken', {}, 1)).rejects.toThrow(/hydrated without timeoutMs/);
-    expect(runIsolated).not.toHaveBeenCalled();
-    expect(run).not.toHaveBeenCalled();
-    await queue.stop();
-  });
-
-  it('隔离执行透传 meta.graceMs（宽限期），未声明时不传', async () => {
-    const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      {
-        name: 'heavy',
-        filePath: 'dist/tasks/heavy/task.js',
-        mode: 'isolated',
-        timeoutMs: 1000,
-        graceMs: 8000,
+  it('run 抛 TaskCancelledError：记 cancelled（区别于 run 自身失败）', async () => {
+    const deps = makeDeps({
+      heavy: {
+        run: vi.fn(async () => {
+          throw new TaskCancelledError('Task "heavy" was cancelled');
+        }),
       },
-      {
-        name: 'default',
-        filePath: 'dist/tasks/default/task.js',
-        mode: 'isolated',
-        timeoutMs: 1000,
-      },
-    ]);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
-    queue.start();
-    await queue.enqueue('heavy');
-    await queue.enqueue('default');
-    await fake.dispatch('heavy', {});
-    await fake.dispatch('default', {});
-    const opts = runIsolated.mock.calls.map((call) => call[0]) as Array<{
-      taskModulePath: string;
-      graceMs?: number;
-    }>;
-    expect(opts.find((o) => o.taskModulePath.includes('heavy'))?.graceMs).toBe(8000);
-    expect(opts.find((o) => o.taskModulePath.includes('default'))?.graceMs).toBeUndefined();
-    await queue.stop();
-  });
-
-  it('隔离执行抛错：记 failed 并向上传播（驱动重试语义不变）', async () => {
     const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async () => {
-      throw new Error('worker terminated');
-    });
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
-    ]);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
+    const queue = createTaskQueue({ ...deps, driver: fake.driver });
     queue.start();
     await queue.enqueue('heavy');
-    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow('worker terminated');
-    expect(queue.list('heavy')[0]).toMatchObject({ status: 'failed', error: 'worker terminated' });
-    await queue.stop();
-  });
-
-  it('隔离执行抛 TaskCancelledError：记 cancelled（区别于 run 自身失败）', async () => {
-    const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async () => {
-      throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
-    });
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
-    ]);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    await queue.enqueue('heavy');
-    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/timed out/);
+    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/was cancelled/);
     expect(queue.list('heavy')[0]).toMatchObject({
       status: 'cancelled',
-      error: 'Task "heavy" timed out after 100ms and was terminated',
+      error: 'Task "heavy" was cancelled',
     });
     await queue.stop();
   });
@@ -1075,25 +741,6 @@ describe('createTaskQueue', () => {
     controller.abort();
     await fake.dispatch('light', {}, 1, controller.signal);
     expect(queue.list('light')[0]).toMatchObject({ status: 'done', result: 'finished anyway' });
-    await queue.stop();
-  });
-
-  it('mode: inline 的任务走进程内路径，不触达 runIsolated（执行路径由声明文件种类决定）', async () => {
-    const run = vi.fn(async () => 'in-process');
-    const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async () => 'from-worker');
-    const deps = makeDeps({ light: { run } });
-    const queue = createTaskQueue({
-      ...deps,
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-    });
-    queue.start();
-    await queue.enqueue('light');
-    await fake.dispatch('light', {}, 1);
-    expect(runIsolated).not.toHaveBeenCalled();
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(queue.list('light')[0]).toMatchObject({ status: 'done', result: 'in-process' });
     await queue.stop();
   });
 
@@ -1222,7 +869,7 @@ describe('createTaskQueue', () => {
 
   it('task:failed 事件：执行失败后发射，willRetry 按 meta.retries 推算', async () => {
     const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'flaky', filePath: 'd.js', mode: 'inline', retries: 2 }]);
+    registry.hydrate([{ name: 'flaky', filePath: 'd.js', retries: 2 }]);
     const registries = createAppRegistries();
     const failed = vi.fn();
     registries.appEvents.on('task:failed', failed);
@@ -1255,31 +902,28 @@ describe('createTaskQueue', () => {
   });
 
   it('task:failed：取消路径发射且 cancelled 为 true；订阅端抛错 console.error 留痕（不影响队列）', async () => {
-    const registry = createTaskRegistry();
-    registry.hydrate([{ name: 'heavy', filePath: 'd.js', mode: 'isolated', timeoutMs: 100 }]);
     const failed = vi.fn(async (_info: unknown) => {
       throw new Error('hook blew up');
     });
     const registries = createAppRegistries();
     registries.appEvents.on('task:failed', failed);
-    const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async () => {
-      throw new TaskCancelledError('Task "heavy" timed out after 100ms and was terminated');
+    const deps = makeDeps({
+      heavy: {
+        run: vi.fn(async () => {
+          throw new TaskCancelledError('Task "heavy" was cancelled');
+        }),
+      },
     });
+    const fake = makeFakeDriver();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
+      ...deps,
       driver: fake.driver,
       appEvents: registries.appEvents,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
     queue.start();
     await queue.enqueue('heavy');
-    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/timed out/);
+    await expect(fake.dispatch('heavy', {}, 1)).rejects.toThrow(/was cancelled/);
     expect(failed).toHaveBeenCalledTimes(1);
     expect(failed.mock.calls[0]![0]).toMatchObject({
       task: 'heavy',
@@ -1336,79 +980,19 @@ describe('createTaskQueue', () => {
     await queue.stop();
   });
 
-  it('隔离执行传注册表纯数据快照：runIsolated 收到 agents（完整元数据）/tools', async () => {
-    const appRegistries = createAppRegistries();
-    appRegistries.agent.hydrate([
-      {
-        name: 'log-analyzer',
-        description: 'analyzer',
-        filePath: 'dist/agents/log-analyzer/handler.js',
-        systemPrompt: 'p',
-      },
-    ]);
-    appRegistries.tool.hydrate([
-      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
-    ]);
-
-    const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async (_opts: unknown) => 'from-worker');
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 3000 },
-    ]);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      registries: createTaskRegistriesView(appRegistries),
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    await queue.enqueue('heavy');
-    await fake.dispatch('heavy', {}, 1);
-
-    const call = runIsolated.mock.calls[0]![0] as {
-      registries: {
-        agents: Array<{ name: string; filePath?: string; systemPrompt?: string }>;
-        tools: Array<{ name: string }>;
-      };
-    };
-    // agents 为完整元数据快照（含 filePath，非仅 LLM 可见字段）
-    expect(call.registries.agents).toEqual([
-      {
-        name: 'log-analyzer',
-        description: 'analyzer',
-        filePath: 'dist/agents/log-analyzer/handler.js',
-        systemPrompt: 'p',
-      },
-    ]);
-    expect(call.registries.tools).toEqual([
-      { name: 'parse', functionName: 'parse', filePath: 'dist/tools/parse/handler.ts' },
-    ]);
-    await queue.stop();
-  });
-
-  it('未传 registries 的 deps：两条路径均以空视图兜底（直接构造队列的测试场景不破坏）', async () => {
+  it('未传 registries 的 deps：以空视图兜底（直接构造队列的测试场景不破坏）', async () => {
     const run = vi.fn(async (_payload: unknown, taskCtx: unknown) => {
       const r = (taskCtx as { registries: { agent: { listAgents: () => unknown[] } } }).registries;
       return { agentCount: r.agent.listAgents().length };
     });
     const fake = makeFakeDriver();
-    const runIsolated = vi.fn(async (opts: { registries: unknown }) => opts.registries);
     const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'hello', filePath: 'dist/tasks/hello/task.js', mode: 'inline' },
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
-    ]);
+    registry.hydrate([{ name: 'hello', filePath: 'dist/tasks/hello/task.js' }]);
     const queue = createTaskQueue({
       registry,
       rootDir: '/fake',
       config: {},
       driver: fake.driver,
-      runIsolated: runIsolated as never,
       loadTaskModule: async () => ({ run }),
       loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
     });
@@ -1418,19 +1002,13 @@ describe('createTaskQueue', () => {
     await fake.dispatch('hello', {}, 1);
     // 空视图：查询可用且返回空（任务调用 listAgents() 得 0）
     expect(run).toHaveResolvedWith({ agentCount: 0 });
-
-    await queue.enqueue('heavy');
-    await fake.dispatch('heavy', {}, 1);
-    expect(runIsolated.mock.calls[0]![0]).toMatchObject({
-      registries: { agents: [], tools: [] },
-    });
     await queue.stop();
   });
 
   // ─── taskCtx.llm 轻量补全通道注入 ─────────────────────────
 
   it('进程内 taskCtx.llm 注入：deps.llm store 惰性读取（执行时刻取值，插件后注册也可见）', async () => {
-    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext | IsolatedTaskContext) => ({
+    const run = vi.fn(async (_payload: unknown, taskCtx: TaskContext) => ({
       llmTag: (taskCtx.llm as (LlmComplete & { tag: string }) | undefined)?.tag ?? 'none',
     }));
     const fake = makeFakeDriver();
@@ -1476,74 +1054,6 @@ describe('createTaskQueue', () => {
     await queue.enqueue('hello');
     await fake.dispatch('hello', {}, 1);
     expect(run).toHaveResolvedWith({ hasLlm: false });
-    await queue.stop();
-  });
-
-  it('隔离路径：deps.llm store 已注册通道时注入 onLlmComplete 分派（worker 内 complete 经 RPC 回宿主）', async () => {
-    const fake = makeFakeDriver();
-    let captured: { input: string; options: Record<string, unknown> | undefined } | undefined;
-    const channel = {
-      complete: async (input: string, options?: Record<string, unknown>) => {
-        captured = { input, options };
-        return 'ok';
-      },
-    };
-    const runIsolated = vi.fn(
-      async (opts: { onLlmComplete?: unknown }) => opts.onLlmComplete ?? null,
-    );
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
-    ]);
-    const llmStore = createLlmChannelStore();
-    llmStore.register(channel);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      llm: llmStore,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    await queue.enqueue('heavy');
-    await fake.dispatch('heavy', {}, 1);
-    const handler = runIsolated.mock.calls[0]![0] as {
-      onLlmComplete?: (input: string, options?: Record<string, unknown>) => Promise<string>;
-    };
-    expect(typeof handler.onLlmComplete).toBe('function');
-    // 分派转发到注册通道（宿主执行 LLM IO）；signal 由执行器层注入
-    // （taskWorker 的 llm-complete 处理——不在本 mock 执行器路径内）
-    await expect(handler.onLlmComplete!('hi', { model: 'm' })).resolves.toBe('ok');
-    expect(captured!.input).toBe('hi');
-    expect(captured!.options).toEqual({ model: 'm' });
-    await queue.stop();
-  });
-
-  it('隔离路径 llm store 未注册：onLlmComplete 为 undefined（worker 内 taskCtx.llm 不挂载，能力不存在非降级）', async () => {
-    const fake = makeFakeDriver();
-    const runIsolated = vi.fn(
-      async (opts: { onLlmComplete?: unknown }) => opts.onLlmComplete ?? null,
-    );
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      { name: 'heavy', filePath: 'dist/tasks/heavy/task.js', mode: 'isolated', timeoutMs: 100 },
-    ]);
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    await queue.enqueue('heavy');
-    await fake.dispatch('heavy', {}, 1);
-    expect(runIsolated.mock.calls[0]![0]).toMatchObject({ onLlmComplete: undefined });
     await queue.stop();
   });
 });
@@ -1696,215 +1206,5 @@ describe('createTaskQueue — carry 执行上下文管道', () => {
     await queue2.enqueue('solo');
     await expect(fake2.dispatch('solo', {}, 1)).resolves.toBe('ok');
     await queue2.stop();
-  });
-});
-
-// ─── 全局 worker 并发预算（config.task.maxIsolatedWorkers） ─────────────
-
-describe('createTaskQueue — 全局 worker 并发预算', () => {
-  function hydrateIsolated(names: string[]) {
-    const registry = createTaskRegistry();
-    registry.hydrate(
-      names.map((name) => ({
-        name,
-        filePath: `dist/tasks/${name}/task.js`,
-        mode: 'isolated' as const,
-        timeoutMs: 60_000,
-      })),
-    );
-    return registry;
-  }
-
-  /** 直接构造 TaskDriverJob 调 process（绕开 fake.dispatch 共享 lastId 的并发撞 id 问题） */
-  function dispatchJob(
-    fake: ReturnType<typeof makeFakeDriver>,
-    name: string,
-    id: string,
-    signal?: AbortSignal,
-  ): Promise<unknown> {
-    const worker = fake.workers.get(name);
-    if (!worker) throw new Error(`no worker registered for "${name}"`);
-    return worker.process({
-      id,
-      name,
-      payload: {},
-      attempt: 1,
-      signal: signal ?? new AbortController().signal,
-    });
-  }
-
-  /** 派发链路全是微任务——真实定时器一拍即可跑完到「在跑/排队」稳态 */
-  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-  function makeBudgetQueue(
-    names: string[],
-    maxIsolatedWorkers?: number,
-    runIsolatedImpl?: () => Promise<unknown>,
-  ) {
-    const runIsolated = vi.fn(runIsolatedImpl ?? (async () => 'from-worker'));
-    const fake = makeFakeDriver();
-    const queue = createTaskQueue({
-      registry: hydrateIsolated(names),
-      rootDir: '/fake',
-      config: maxIsolatedWorkers !== undefined ? { task: { maxIsolatedWorkers } } : {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    return { queue, fake, runIsolated };
-  }
-
-  it('limit=2：4 个并发隔离派发峰值同时在跑为 2，全部完成后记录 done', async () => {
-    let inFlight = 0;
-    let peak = 0;
-    const gates: Array<() => void> = [];
-    const { queue, fake, runIsolated } = makeBudgetQueue(['t1', 't2', 't3', 't4'], 2, async () => {
-      inFlight += 1;
-      peak = Math.max(peak, inFlight);
-      await new Promise<void>((resolve) => gates.push(resolve));
-      inFlight -= 1;
-      return 'ok';
-    });
-    queue.start();
-    for (const name of ['t1', 't2', 't3', 't4']) await queue.enqueue(name);
-    const pending = [
-      dispatchJob(fake, 't1', 'j-1'),
-      dispatchJob(fake, 't2', 'j-2'),
-      dispatchJob(fake, 't3', 'j-3'),
-      dispatchJob(fake, 't4', 'j-4'),
-    ];
-    await flush();
-    expect(runIsolated).toHaveBeenCalledTimes(2);
-    expect(peak).toBe(2);
-    // 释放前两个席位 → 排队的 t3/t4 交接进入
-    gates.splice(0).forEach((release) => release());
-    await flush();
-    expect(runIsolated).toHaveBeenCalledTimes(4);
-    expect(peak).toBe(2);
-    gates.splice(0).forEach((release) => release());
-    await Promise.all(pending);
-    // enqueue 会先建 d-* 的 pending 记录（fake 驱动不自动消费）——按直接派发的 j-* id 断言
-    for (const [idx, name] of ['t1', 't2', 't3', 't4'].entries()) {
-      expect(queue.list(name).find((r) => r.id === `j-${idx + 1}`)).toMatchObject({
-        status: 'done',
-        result: 'ok',
-      });
-    }
-    await queue.stop();
-  });
-
-  it('席位等待超限（30s）：派发显式失败（IsolatedDispatchSaturatedError → failed），占位执行不受影响', async () => {
-    vi.useFakeTimers();
-    try {
-      const gates: Array<() => void> = [];
-      const { queue, fake, runIsolated } = makeBudgetQueue(['slow'], 1, () => {
-        void gates;
-        return new Promise<void>((resolve) => gates.push(() => resolve()));
-      });
-      queue.start();
-      await queue.enqueue('slow');
-      const first = dispatchJob(fake, 'slow', 'j-first');
-      await vi.advanceTimersByTimeAsync(0);
-      expect(queue.list('slow').find((r) => r.id === 'j-first')).toMatchObject({
-        status: 'running',
-      });
-      const second = dispatchJob(fake, 'slow', 'j-second').catch((err: Error) => err);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(runIsolated).toHaveBeenCalledTimes(1);
-      // 推进到预算等待上限：第二个派发显式失败（不无限排队占坑）
-      await vi.advanceTimersByTimeAsync(30_000);
-      const err = (await second) as Error;
-      expect(err.name).toBe('IsolatedDispatchSaturatedError');
-      expect(err.message).toMatch(/global isolated worker budget/);
-      const failed = queue.list('slow').find((r) => r.id === 'j-second');
-      expect(failed).toMatchObject({ status: 'failed' });
-      expect(failed?.error).toMatch(/global isolated worker budget/);
-      // 占位执行不受波及
-      expect(queue.list('slow').find((r) => r.id === 'j-first')).toMatchObject({
-        status: 'running',
-      });
-      expect(runIsolated).toHaveBeenCalledTimes(1);
-      gates.splice(0).forEach((release) => release());
-      await first;
-      await queue.stop();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('等待席位中 job signal abort：TaskCancelledError 记 cancelled，不占席位', async () => {
-    const gates: Array<() => void> = [];
-    const { queue, fake, runIsolated } = makeBudgetQueue(['slow'], 1, () => {
-      void gates;
-      return new Promise<void>((resolve) => gates.push(() => resolve()));
-    });
-    queue.start();
-    await queue.enqueue('slow');
-    const first = dispatchJob(fake, 'slow', 'j-first');
-    await flush();
-    const ctrl = new AbortController();
-    const second = dispatchJob(fake, 'slow', 'j-second', ctrl.signal).catch((err: Error) => err);
-    await flush();
-    expect(runIsolated).toHaveBeenCalledTimes(1);
-    ctrl.abort();
-    const err = (await second) as Error;
-    expect(err.name).toBe('TaskCancelledError');
-    expect(queue.list('slow').find((r) => r.id === 'j-second')).toMatchObject({
-      status: 'cancelled',
-    });
-    // 失败的等待不消耗席位：占位执行归还后预算清零
-    gates.splice(0).forEach((release) => release());
-    await first;
-    await queue.stop();
-  });
-
-  it('config.task.maxIsolatedWorkers 非法（0/-1/1.5/NaN）：构造队列即抛错（fail fast）', () => {
-    for (const bad of [0, -1, 1.5, Number.NaN]) {
-      expect(() =>
-        createTaskQueue({
-          registry: hydrateIsolated(['t']),
-          rootDir: '/fake',
-          config: { task: { maxIsolatedWorkers: bad } },
-          driver: makeFakeDriver().driver,
-          loadTaskModule: async () => ({}),
-          loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-        }),
-      ).toThrow(/maxIsolatedWorkers/);
-    }
-  });
-
-  it('meta.maxOldGenerationSizeMb 透传 runIsolated；未声明不传该 key', async () => {
-    const registry = createTaskRegistry();
-    registry.hydrate([
-      {
-        name: 'capped',
-        filePath: 'dist/tasks/capped/task.js',
-        mode: 'isolated',
-        timeoutMs: 60_000,
-        maxOldGenerationSizeMb: 256,
-      },
-      { name: 'free', filePath: 'dist/tasks/free/task.js', mode: 'isolated', timeoutMs: 60_000 },
-    ]);
-    const runIsolated = vi.fn(async () => 'ok');
-    const fake = makeFakeDriver();
-    const queue = createTaskQueue({
-      registry,
-      rootDir: '/fake',
-      config: {},
-      driver: fake.driver,
-      runIsolated: runIsolated as never,
-      loadTaskModule: async () => ({}),
-      loadPayloadSchema: async () => PASS_THROUGH_SCHEMA,
-    });
-    queue.start();
-    await queue.enqueue('capped');
-    await queue.enqueue('free');
-    await dispatchJob(fake, 'capped', 'j-1');
-    await dispatchJob(fake, 'free', 'j-2');
-    const calls = runIsolated.mock.calls as unknown as Array<[Record<string, unknown>]>;
-    expect(calls[0][0]).toMatchObject({ maxOldGenerationSizeMb: 256 });
-    expect(calls[1][0]).not.toHaveProperty('maxOldGenerationSizeMb');
-    await queue.stop();
   });
 });

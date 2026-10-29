@@ -290,17 +290,12 @@ export async function createAppBase(options?: CreateAppOptions): Promise<{
     registry: registries.task,
     rootDir,
     config: config ?? {},
-    resourcesDir,
     registries: createTaskRegistriesView(registries),
-    // 轻量补全通道：进程内路径经 store 惰性读取（插件注册后的活引用）；
-    // 隔离路径同样从该 store 取派发时刻通道（worker 内 complete 经 RPC 纯转发回宿主执行）
+    // 轻量补全通道：经 store 惰性读取（插件注册后的活引用）
     llm: registries.llm,
-    // taskCtx.agent 惰性通道数据源（进程内路径；以 carry + 任务级能力合成的
-    // 契约 ctx 构造，与 HTTP 请求链同一份 baseDeps——插件未注册工厂时为 undefined）
+    // taskCtx.agent 惰性通道数据源（以 carry + 任务级能力合成的契约 ctx 构造，
+    // 与 HTTP 请求链同一份 baseDeps——插件未注册工厂时为 undefined）
     agentHandle: registries.agentHandle,
-    // 隔离 agent 通道数据源（agentRunner——worker 内 taskCtx.agent.run 经单次
-    // agent-run RPC 回传宿主跑完整循环；插件未注册执行器时 worker 内 taskCtx.agent 不挂载）
-    agentRunner: registries.agentRunner,
     driver: taskDriver,
     // task:failed 事件发射源（总线在 app 实例注册表）
     appEvents: registries.appEvents,

@@ -4,12 +4,12 @@
 
 ## 为什么需要
 
-日志器跨越多条注入路径（handler 的 `ctx.log` / 参数 `log`、任务的 `taskCtx.log`、任意位置的 `createLogger`）与配置入口（`config.log`），类型是各路径形状一致的单一来源；隔离任务经 postMessage 回传的日志条目也以 `LogEntry`（纯数据）为跨线程契约。
+日志器跨越多条注入路径（handler 的 `ctx.log` / 参数 `log`、任务的 `taskCtx.log`、任意位置的 `createLogger`）与配置入口（`config.log`），类型是各路径形状一致的单一来源。
 
 ## 使用场景
 
 - 业务方：`import type { Logger, LogLevel, LogConfig } from '@faapi/faapi'` 标注自定义 sink 参数、封装日志工具
-- 框架内：`createContext`（ctx.log）、`injectParams`（log 注入）、`taskQueue`/`taskWorker`（taskCtx.log 与跨线程桥）、`createServer` 无直接依赖（请求日志中间件是独立管道）
+- 框架内：`createContext`（ctx.log）、`injectParams`（log 注入）、`taskQueue`（taskCtx.log）、`createServer` 无直接依赖（请求日志中间件是独立管道）
 
 | 类型 | 形状 | 说明 |
 |------|------|------|

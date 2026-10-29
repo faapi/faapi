@@ -579,17 +579,7 @@ describe('createPgBossDriver', () => {
     expect(boss.complete).toHaveBeenCalledTimes(3);
   });
 
-  it('enqueue 按任务元信息映射 expireInSeconds（timeoutMs + graceMs + 缓冲）', async () => {
-    const driver = createPgBossDriver();
-    await driver.enqueue('long', {}, { timeoutMs: 30 * 60_000, graceMs: 5000 });
-    const boss = fakeBosses()[0]!;
-    const options = boss.sent[0]!.options as { expireInSeconds: number };
-    // 30min + 5s grace + 60s 缓冲 = 1865s——pg-boss DDL 默认 15 分钟会强杀仍在运行的
-    // 长任务并重试（同一任务两份并发），必须按任务预算给足
-    expect(options.expireInSeconds).toBe(Math.ceil((30 * 60_000 + 5000) / 1000) + 60);
-  });
-
-  it('未声明 timeoutMs 的任务用 defaultExpireSeconds 兜底（可配置，默认 24h − 1s）', async () => {
+  it('全部任务统一 defaultExpireSeconds 兜底（可配置，默认 24h − 1s）', async () => {
     const driver = createPgBossDriver();
     await driver.enqueue('short', {});
     const boss = fakeBosses()[0]!;

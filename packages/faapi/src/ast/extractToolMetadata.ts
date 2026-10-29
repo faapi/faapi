@@ -186,29 +186,6 @@ export function findExportedFunction(
 }
 
 /**
- * 提取第二个参数的类型名（TypeReference）
- *
- * 任务 run 的 ctx 类型标注校验用（generateTaskArtifacts）：task.ts 任务应标注
- * `TaskContext`、worker.ts 任务应标注 `IsolatedTaskContext`，标注与文件种类不符
- * 构建期报错。无第二参 / 无类型标注 / 非类型引用（内联字面量等）返回 `undefined`
- * ——ctx 可省略，未标注不做校验。
- */
-export function getSecondParamTypeName(
-  program: ts.Program,
-  filePath: string,
-  functionName: string,
-): string | undefined {
-  const sourceFile = program.getSourceFile(filePath);
-  if (!sourceFile) return undefined;
-  const found = findExportedFunction(sourceFile, functionName);
-  if (!found) return undefined;
-  const secondParam = found.fn.parameters[1];
-  if (!secondParam?.type) return undefined;
-  if (!ts.isTypeReferenceNode(secondParam.type)) return undefined;
-  return secondParam.type.typeName.getText(sourceFile);
-}
-
-/**
  * 提取第一个参数的 interface/type 名(TypeReference)
  *
  * - 参数有 TypeReference 类型标注(如 `input: WeatherInput`)→ `'WeatherInput'`

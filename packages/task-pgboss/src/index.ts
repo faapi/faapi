@@ -235,9 +235,7 @@ function dedupIdToUuid(dedupId: string): string {
  * （12.28 起放宽到允许恰好 24h，保守值对两者都安全） */
 const DEFAULT_EXPIRE_SECONDS = 24 * 60 * 60 - 1;
 /** expire_in 在任务执行预算之外的缓冲（秒）——留出调度/网络抖动余量 */
-const EXPIRE_BUFFER_SECONDS = 60;
 /** graceMs 未声明时的默认值（与主包 taskWorker 的取消宽限期默认一致） */
-const DEFAULT_GRACE_MS = 5000;
 
 export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): TaskDriver {
   const { defaultExpireSeconds, ...options } = driverOptions;
@@ -648,13 +646,10 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
       }
       const b = await ensureBoss();
       await ensureQueue(b, name);
-      // pg-boss 以 job 的 expire_in 硬限 handler 执行（DDL 默认 15 分钟）：超时判失败
-      // 重试，而任务还在后台跑 → 同一任务两份并发执行。按任务元信息给足执行预算：
-      // timeoutMs + graceMs + 缓冲；未声明 timeoutMs 的任务用 defaultExpireSeconds 兜底
-      const expireInSeconds = opts?.timeoutMs
-        ? Math.ceil((opts.timeoutMs + (opts.graceMs ?? DEFAULT_GRACE_MS)) / 1000) +
-          EXPIRE_BUFFER_SECONDS
-        : (defaultExpireSeconds ?? DEFAULT_EXPIRE_SECONDS);
+      // pg-boss 以 job 的 expire_in 硬限 handler 执行：超时判失败重试，而任务还在
+      // 后台跑 → 同一任务两份并发执行。全部任务统一走 defaultExpireSeconds 兜底
+      // （业务按部署经 task.pgboss.defaultExpireSeconds 调整）
+      const expireInSeconds = defaultExpireSeconds ?? DEFAULT_EXPIRE_SECONDS;
       const sendOptions: SendOptions = {
         retryLimit: opts?.retries ?? 0,
         retryDelay: 1, // 秒；配合 retryBackoff 指数退避

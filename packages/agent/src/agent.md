@@ -63,8 +63,7 @@ Agent 类**不直接 import** faapi 核心的注册表/加载器,而是通过 `A
 | 路径 | ctx 来源 |
 | --- | --- |
 | HTTP 请求（@faapi/agent 插件工厂） | `toAgentToolContext` 从完整请求 ctx 收窄（契约字段 + 全量字段透传） |
-| 进程内任务（`taskCtx.agent` 静默通道） | `createTaskToolContext` 合成：carry 数据字段落顶层 + scoped TaskClient / 任务级 logger / `job.signal` |
-| 隔离任务（worker 内 `taskCtx.agent`） | run-only 句柄（单次 agent-run RPC 收敛宿主）；宿主 runAgent 以任务合成契约 ctx 构造 Agent 跑完整循环（同配方合成，见 [taskToolContext.md](../../faapi/src/tasks/taskToolContext.md)） |
+| 任务（`taskCtx.agent` 静默通道） | `createTaskToolContext` 合成：carry 数据字段落顶层 + scoped TaskClient / 任务级 logger / `job.signal` |
 | 测试 / 编程式（无 app 编排） | `createStandaloneToolContext`（诚实缺省：tasks 抛错桩 / console logger / 永不触发 signal） |
 
 `AgentDeps.ctx` 为**必填**（类型层强制 + `createAgentDeps` 运行时 invariant）——无 ctx 的 Agent 组装会让 tool handler 第二参数缺席，契约破坏即显式失败。sub-agent 递归复用同一 deps，ctx 随行不变。完整传递链见 [toolChainEvents.md](./toolChainEvents.md)，任务侧组装示例见主包 [taskTypes.md](../../faapi/src/tasks/taskTypes.md)「任务内组装 Agent」。
@@ -152,8 +151,8 @@ agent config 声明 `systemPromptFile: 'prompts/review.md'`（相对产物 resou
 
 - 文件定位：主包免传参 `readResource(meta.systemPromptFile, 'utf-8')`——相对产物 resources
   目录（`<rootDir>/<dist>/resources`）解析，越界（绝对路径 / `..` 穿越 / 符号链接逃逸）
-  防护内建。读取根在 app 启动时由 `createAppBase` 绑定、隔离任务 worker 由 wrapper 从
-  快照播种（见主包 [readResource.md](../../faapi/src/utils/readResource.md)），调用方无需传目录
+  防护内建。读取根在 app 启动时由 `createAppBase` 绑定
+  （见主包 [readResource.md](../../faapi/src/utils/readResource.md)），调用方无需传目录
 - 错误语义：读取失败（读取根未绑定 / 文件不存在 / 越界）→ 抛 `AgentError`
   （带 agent 名与文件路径），不静默降级为空提示词
 - 路径基准为产物 resources 目录（读取经主包免传参 `readResource`，详见 [copyResources](../../faapi/src/cli/copyResources.md)）

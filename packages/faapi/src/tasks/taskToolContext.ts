@@ -20,7 +20,7 @@ export interface TaskToolContextSource {
   tasks: AgentToolContext['tasks'];
   /** 任务级 logger（scope `task:<name>`，jobId/task/attempt） */
   log: Logger;
-  /** 任务取消信号（停机/超时两段式取消的第一段 abort） */
+  /** 任务取消信号（停机取消——驱动 signal abort） */
   signal: AbortSignal;
 }
 

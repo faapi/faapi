@@ -124,7 +124,7 @@ describe('task runtime e2e', () => {
   it('app.tasks.enqueue 走完整产物链路执行任务', async () => {
     // 产物准备（build 阶段职责的等效操作）
     const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
-    expect(tasks.map((t) => t.name)).toEqual(['echo', 'timeout']);
+    expect(tasks.map((t) => t.name)).toEqual(['echo']);
     await compileSourceFiles({
       rootDir: FIXTURES_DIR,
       dist,
@@ -186,40 +186,6 @@ describe('task runtime e2e', () => {
     await app.close();
   });
 
-  it('停机取消真终止隔离任务并记 cancelled（externalSignal → 两段式 → terminate）', async () => {
-    // 产物准备（同上）。timeout fixture 刻意不配合取消（不监听 signal）——
-    // 只能靠 graceMs 宽限到点后的 terminate() 硬杀结束；timeoutMs 本身（60s 最小）
-    // 不会到点，取消由驱动停机 drain 超时 abort 触发（externalSignal 路径）
-    const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
-    await compileSourceFiles({
-      rootDir: FIXTURES_DIR,
-      dist,
-      files: tasks.map((t) => path.resolve(FIXTURES_DIR, t.filePath)),
-    });
-    await generateTaskArtifacts(tasks, FIXTURES_DIR, dist);
-    const { routes, wsRoutes } = await scanRoutes(FIXTURES_DIR, ['src/api/**/*.ts']);
-    const routesPath = path.resolve(dist, 'faapi-routes.js');
-    await writeRoutesModule(serializeRoutes(routes, wsRoutes, FIXTURES_DIR, dist), routesPath);
-    writeConfigWithDriver(dist);
-
-    const { app } = await createAppBase({ rootDir: FIXTURES_DIR, dist });
-    // 任务自然结束需 10s——若框架没有真终止，stop 的 abort + 宽限 terminate 后
-    // 任务记录不会落定，本用例会以 viWaitFor 超时失败
-    const start = Date.now();
-    await app.tasks.enqueue('timeout');
-    // 停机 drain 50ms 后 abort 在跑任务（externalSignal）→ graceMs 宽限 500ms
-    // → 任务不配合 → terminate 硬杀
-    await app.tasks.stop(50);
-    // 取消与失败分流：停机取消记 cancelled（非 failed）
-    await viWaitFor(() => app.tasks.list('timeout')[0]?.status === 'cancelled');
-    const job = app.tasks.list('timeout')[0]!;
-    expect(job.status).toBe('cancelled');
-    expect(job.error).toMatch(/cancelled/);
-    // 50ms drain + 500ms 宽限 + terminate——远小于任务自然结束的 10s，证明执行被真终止
-    expect(Date.now() - start).toBeLessThan(3000);
-    await app.close();
-  });
-
   it('createAppBase resolve 时任务 runtime 已就绪（worker 注册完成，listen 前时序确定）', async () => {
     // 产物准备（同上）
     const tasks = await scanTasks(FIXTURES_DIR, TASK_PATTERNS);
@@ -240,7 +206,7 @@ describe('task runtime e2e', () => {
     const mod = (await import(pathToFileURL(path.join(dist, 'faapi-task-driver.js')).href)) as {
       driverState: { startedWorkers: string[] };
     };
-    expect([...mod.driverState.startedWorkers].sort()).toEqual(['echo', 'timeout']);
+    expect([...mod.driverState.startedWorkers].sort()).toEqual(['echo']);
   });
 
   it('任务驱动启动失败 → createAppBase 直接 reject（fail fast，端口不暴露）', async () => {

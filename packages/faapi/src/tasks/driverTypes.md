@@ -16,7 +16,7 @@
 - 重试策略在**入队时**由语义层传 `retries`（从任务 meta 取），驱动负责执行（pg-boss：retryLimit/retryBackoff；bullmq：attempts/backoff）
 - `process` 抛错 = 本次执行失败，驱动决定是否重试；语义层在每次 process 调用中更新任务记录（attempt/done/failed）
 - `dedupId`（可选，幂等键）：同键任务在队列系统保留期内不重复入队——pgboss 映射 `send` 的自定义 `id`（**要求 UUID 格式，驱动内做任意字符串 → 确定性 UUID（SHA-1）映射**，主键冲突 DO NOTHING 即跳过投递）；bullmq 映射 `jobId`（waiting/active 等存活期内同键忽略；终态任务默认 7 天后清理，存活期即保留期，可经 `removeOnComplete`/`removeOnFail` 覆盖）。cron 投递自动携带（见 cronScheduler.md）
-- **执行硬限**：入队时语义层透传任务 meta 的 `timeoutMs`/`graceMs`，驱动以此设置队列系统的执行硬限（pgboss 映射 `expireInSeconds` = timeoutMs + graceMs + 60s 缓冲；未声明 `timeoutMs` 的任务用驱动兜底默认）。不映射会让队列系统的默认限值（pg-boss DDL 15 分钟）强杀仍在运行的长任务并重试——同一任务两份并发执行
+- **执行硬限**：任务 meta 不含执行预算声明（任务在进程内执行，deadline 由业务自行 `Promise.race`），驱动统一用队列系统的执行硬限兜底（pgboss 映射 `expireInSeconds` = `defaultExpireSeconds` 兜底，可按部署调整）。不映射会让队列系统的默认限值（pg-boss DDL 15 分钟）强杀仍在运行的长任务并重试——同一任务两份并发执行
 - **批内失败隔离**（pgboss）：`work` handler 内批任务并发执行、逐任务 complete/fail 结算（pg-boss 的结算 SQL 带 state 守卫，语义层先结算后 handler 正常返回的批量 complete 是 no-op）——单个任务失败只消耗自己的重试额度，不毒化同批其他任务；`concurrency` 语义与 bullmq（原生并行消费）一致
 - `stop(timeoutMs)` 停消费等 in-flight，**超时后 abort 在跑任务的 signal**（任务监听可尽快退出；进程退出兜底终止），子包 pgboss/bullmq 均已实现，且 stop 整体有界返回（pgboss 侧 offWork/boss.stop 与 deadline 竞速——卡死任务不再永久悬挂停机；pg-boss `stop({ timeout })` 的单位是毫秒）；`stopWorkers()` 仅停消费不断连接（dev 热替换重注册用，可选实现）
 - 驱动实例必须挂 `error` 事件监听（pg-boss 把连接池错误/worker 异常 emit 为 'error'，无监听器会成为 uncaughtException 崩进程）
@@ -37,5 +37,4 @@
 
 - `src/tasks/loadTaskDriver.ts` — 按 config.task.driver 动态加载子包驱动
 - `src/tasks/idleTaskDriver.ts` — 无任务清单时的占位实现
-- `src/tasks/taskWorker.ts` — 隔离执行器（`worker.ts` 隔离任务的真终止能力）
 - `src/tasks/taskQueue.ts` — 语义层消费方
