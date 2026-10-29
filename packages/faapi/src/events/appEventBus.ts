@@ -46,17 +46,21 @@ export interface AgentRootInputEvent {
 }
 
 /**
- * `agent:input` 载荷——每轮 LLM 调用前的历史编辑窗口（append-only 不可变账本）
+ * `agent:input` 载荷——用户输入消息发送前的塑形窗口（append-only 不可变账本）
+ *
+ * **仅当轮有新 user 输入时发射**（loop 首轮非空 input——根调用与子代理派发同口径；
+ * 续跑携带新输入同属输入轮）：工具轮 / 纯续跑轮当轮无新 user 输入，不发射、也不虚构
+ * 新增 user 消息承载片段——塑形窗口附着在真实输入消息上。
  *
  * **不含 agent 名**（同 `AgentRootInputEvent` 口径）：按 agent 路由走
  * `agent:input:<agentName>` 专属名订阅，通用订阅是 agent 无关的横切处理。
  *
  * 写面只有 `addInput`：补充的文本片段在扇出结束后按 index 升序稳定排序（同 index
- * 保持调用序）、`'\n\n'` 拼接，前置进当轮输入消息（当轮无新输入的工具轮/纯续跑轮
- * 为新增 user 消息）——**落账进对话历史，后续轮次 / result.messages / 断点续跑链
- * 全部可见，落账即不可变**。loop 首轮与 `agent:root-input` 共用暂存、一起合并落账
- * （root-input 片段暂存更早，同 index 下在前）。`messages` 是深冻结只读快照，整体
- * 替换赋值抛 `TypeError`（历史不开放改写）。
+ * 保持调用序）、`'\n\n'` 拼接，前置进**当轮输入消息**（原内容逐字节不动）——**落账进
+ * 对话历史，后续轮次 / result.messages / 断点续跑链全部可见，落账即不可变**。loop
+ * 首轮与 `agent:root-input` 共用暂存、一起合并落账（root-input 片段暂存更早，同
+ * index 下在前）。`messages` 是深冻结只读快照，整体替换赋值抛 `TypeError`（历史
+ * 不开放改写）。
  */
 export interface AgentInputEvent {
   /** 递归深度（根循环 = 1） */
@@ -67,9 +71,8 @@ export interface AgentInputEvent {
    * 补充输入片段（本轮暂存，扇出结束后落账进历史）
    *
    * @param text 片段文本（框架不包裹不转义，`<system-reminder>` 等标签包裹是订阅端
-   *   自己的事）。含 `{{rawInput}}` 占位符时：当轮有新输入 → 占位符全部展开为原输入
-   *   内容（原输入嵌在订阅端指定位置、不再缀尾——片段产物与原输入互斥，位置由占位符
-   *   裁决）；无当轮输入的轮（工具轮/纯续跑轮）展开为空串（展开后全空白不落账）；
+   *   自己的事）。含 `{{rawInput}}` 占位符时：占位符全部展开为当轮输入原内容（原输入
+   *   嵌在订阅端指定位置、不再缀尾——片段产物与原输入互斥，位置由占位符裁决）；
    *   不含占位符 → 片段前置 + 原输入缀尾
    * @param index 排序序号（升序稳定排序，同 index 保持调用序；缺省 100——显式小号插前、
    *   大号插后；推荐留隙 10/20/30 便于后续插入不牵动既有序号）

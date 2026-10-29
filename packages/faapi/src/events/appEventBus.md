@@ -15,7 +15,7 @@
 | 事件名 | 载荷 | 触发时机 |
 | --- | --- | --- |
 | `agent:root-input` | `AgentRootInputEvent`（`{ input, ctx, addInput }`） | 所有 agent 对话首次 user 消息发送前——根调用（depth=1）与子代理派发（depth≥2）；纯续跑不触发。`input` 为首条 user 输入原文（只读），写面是 `addInput`——与 `agent:input` 同一条落账管道（片段在 loop 首轮与 `agent:input` 片段合并落账进首条 user 消息，`{{rawInput}}` 占位符展开为原输入） |
-| `agent:input` | `AgentInputEvent`（`{ depth, messages, ctx, addInput }`） | 每轮 LLM 调用前、历史超限事件之前（含首轮、工具轮、子代理各轮、续跑轮）；`messages` 为历史只读快照，`addInput` 片段落账进历史 |
+| `agent:input` | `AgentInputEvent`（`{ depth, messages, ctx, addInput }`） | 当轮有新 user 输入时、该 user 消息发送前（loop 首轮非空 input——根调用与子代理派发同口径），历史超限事件之前；工具轮 / 纯续跑轮（当轮无新 user 输入）不发射、不虚构新增 user 消息；`messages` 为历史只读快照，`addInput` 片段落账进当轮输入消息 |
 | `agent:history-over-budget` | `AgentHistoryOverBudgetEvent`（`{ depth, estimatedTokens, budget, messages, ctx, replace }`） | 每轮估算历史 tokens 超过 `maxHistoryTokens` 阈值时（`agent:input` 落账之后）；业务经 `replace` 整体替换循环历史——框架零内置裁剪，压缩完全由订阅端承接 |
 | `agent:before-tool-call` | `BeforeToolCallEvent` | tool/sub-agent 执行前——ctx 声明即校验之后、白名单与分流之前；handler 原地改写 `args`、设 `error` 拒绝 |
 | `agent:after-tool-call` | `AfterToolCallEvent` | tool/sub-agent 成功执行后（异常路径不触发）；name 为 tool 名（sub-agent 为派发名 `agent-<name>`） |
@@ -101,7 +101,7 @@ export default async function bootstrap() {
 - handler 同步或返回 `Promise`；`emit` 按注册顺序 `await` 依次执行。
 - **改写语义**：handler 原地修改载荷（或对标记可赋值的字段整体赋值，如 `payload.args` / `payload.context`）；多 handler 顺序串联（后者看到前者改写结果）。
 - **通用名与专属名的顺序**：每个接缝先发射通用名、后发射专属名（`agent:input:<agentName>` 等），**同一载荷对象**顺序串联——专属 handler 看得到通用 handler 的改写并可覆盖。
-- **输入事件的写面（`agent:root-input` 与 `agent:input` 同一条落账管道）**：两事件的唯一写面都是 `addInput(text, index = 100)`——片段按 index 升序稳定排序（同 index 保持调用序）后 `'\n\n'` 拼接，前置进**当轮输入消息**（当轮无新输入的工具轮/纯续跑轮为新增 user 消息），**落账进对话历史、落账即不可变**；拼接结果含 `{{rawInput}}` 占位符时占位符展开为原输入（原输入嵌在订阅端指定位置、不再缀尾，无输入轮展开为空串）。`agent:root-input` 在 loop 首轮之前暂存，与首轮 `agent:input` 的片段**合并为一条**首条 user 消息（同 index 下 root-input 片段在前）；`input` 只读（getter-only，赋值抛 `TypeError`），原输入恒在消息中——可包裹/重排、不可丢弃或改写原文（显式声明的能力边界）。`agent:input` 的 `messages` 为历史只读快照（深冻结克隆，整体替换赋值抛 `TypeError`）。完整契约见 `@faapi/agent` [reactLoop](../../../agent/src/reactLoop.md) 同名章节。
+- **输入事件的写面（`agent:root-input` 与 `agent:input` 同一条落账管道）**：两事件的唯一写面都是 `addInput(text, index = 100)`——片段按 index 升序稳定排序（同 index 保持调用序）后 `'\n\n'` 拼接，前置进**当轮输入消息**（原内容逐字节不动），**落账进对话历史、落账即不可变**；拼接结果含 `{{rawInput}}` 占位符时占位符展开为原输入（原输入嵌在订阅端指定位置、不再缀尾）。两事件均**仅输入轮发射**（当轮有新 user 输入——root-input 为对话首条、`agent:input` 为 loop 首轮；工具轮 / 纯续跑轮当轮无新 user 输入，不发射、不虚构新增 user 消息）。`agent:root-input` 在 loop 首轮之前暂存，与首轮 `agent:input` 的片段**合并为一条**首条 user 消息（同 index 下 root-input 片段在前）；`input` 只读（getter-only，赋值抛 `TypeError`），原输入恒在消息中——可包裹/重排、不可丢弃或改写原文（显式声明的能力边界）。`agent:input` 的 `messages` 为历史只读快照（深冻结克隆，整体替换赋值抛 `TypeError`）。完整契约见 `@faapi/agent` [reactLoop](../../../agent/src/reactLoop.md) 同名章节。
 - **通用名与专属名的分工（agent 域统一口径）**：专属名（`agent:root-input:<agentName>`、`agent:before-tool-call:<toolName>` 等）是按实体（agent/tool）路由的入口——名字在事件名里；**通用名载荷不含实体名**（agent 名 / tool 名一概不在载荷上）——通用订阅做实体无关的横切处理（租户改写、审计打标、全量守卫等），需要按实体分流时订阅对应专属名。
 - 订阅返回退订函数（幂等）；无订阅者 emit 为 no-op；订阅集合随 `app.close()` 清空。
 

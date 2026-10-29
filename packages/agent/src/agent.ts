@@ -781,9 +781,10 @@ export class Agent {
         signal: options?.signal,
         messages: options?.messages,
         enableTracing,
-        // agent:input 每轮发送前事件（见 reactLoop.md 同名章节）——emitAppEvent
-        // 未接线时不携带,循环零开销;rootInputStaging 为 agent:root-input 的暂存器,
-        // loop 首轮 agent:input 复用同一数组,两路片段一起落账
+        // agent:input 用户输入发送前事件（仅 loop 首轮非空 input 发射——工具轮 /
+        // 纯续跑轮不发射、不虚构新增 user 消息,见 reactLoop.md 同名章节）——
+        // emitAppEvent 未接线时不携带,循环零开销;rootInputStaging 为 agent:root-input
+        // 的暂存器,loop 首轮 agent:input 复用同一数组,两路片段一起落账
         appEvent: this.deps.emitAppEvent
           ? {
               emit: this.deps.emitAppEvent,

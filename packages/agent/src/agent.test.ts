@@ -1380,12 +1380,14 @@ describe('Agent', () => {
       expect(result.messages[1]!.content).toBe('[turn-first]\n\n[root]\n\n[turn]\n\ngo');
     });
 
-    it('root 暂存只在首轮消费：工具轮的 agent:input 落账不含 root-input 片段', async () => {
+    it('root 暂存只在首轮消费：工具轮零事件、不新增 user 消息,root 片段不泄漏', async () => {
       const events = createEventCollector();
+      let fired = 0;
       events.bus.on('agent:root-input', (e: AgentRootInputEvent) => {
         e.addInput('[root]');
       });
       events.bus.on('agent:input', (e: AgentInputEvent) => {
+        fired += 1;
         e.addInput('[turn]');
       });
       const { provider, completeCalls } = createMockProvider([
@@ -1403,10 +1405,11 @@ describe('Agent', () => {
       // 首轮：root + turn 合并进输入消息
       const firstRequest = completeCalls.mock.calls[0][0];
       expect(firstRequest.messages[1]).toEqual({ role: 'user', content: '[root]\n\n[turn]\n\ngo' });
-      // 工具轮：仅 agent:input 片段作为新增 user 消息追加（tool 结果之后）,root 片段不泄漏
+      // 工具轮零事件、不新增 user 消息（以 tool 结果收尾）——root / turn 片段仅存在于首轮落账产物
+      expect(fired).toBe(1);
       const secondRequest = completeCalls.mock.calls[1][0];
-      expect(secondRequest.messages.at(-1)).toEqual({ role: 'user', content: '[turn]' });
-      expect(secondRequest.messages.at(-2)!.role).toBe('tool');
+      expect(secondRequest.messages.at(-1)!.role).toBe('tool');
+      expect(secondRequest.messages.filter((m: LLMMessage) => m.role === 'user')).toHaveLength(1);
     });
 
     it('派发路径同样触发：专属名订阅 addInput 塑形子对话首条 user 消息（载荷不含 agent 名）', async () => {
@@ -1527,7 +1530,7 @@ describe('Agent', () => {
     });
   }
 
-  describe('agent:input 每轮发送前事件（历史编辑窗口）', () => {
+  describe('agent:input 用户输入发送前事件（历史编辑窗口）', () => {
     /** 主控派发 writer 的三响应序列（主控轮1 → 子循环 → 主控轮2） */
     function dispatchResponses() {
       return [
@@ -1551,7 +1554,7 @@ describe('Agent', () => {
       ];
     }
 
-    it('每轮 LLM 调用恰好发射一次：派发流程主控两轮 + 子循环一轮 = 3 次,depth 正确（载荷不含 agent 名）', async () => {
+    it('仅输入轮发射：派发流程根首轮 + 子首轮 = 2 次,工具轮不发射（depth 正确,载荷不含 agent 名）', async () => {
       const events = createEventCollector();
       const { provider, completeCalls } = createMockProvider(dispatchResponses());
       const agent = new Agent(
@@ -1565,9 +1568,11 @@ describe('Agent', () => {
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
+      // 3 次 LLM 调用（主控轮1 → 子循环 → 主控轮2）,事件只在两个输入轮发射——
+      // 主控轮2 是工具轮（当轮无新 user 输入）,零事件
       expect(completeCalls).toHaveBeenCalledTimes(3);
       const inputEvents = events.emitted.filter((e) => e.name === 'agent:input');
-      expect(inputEvents).toHaveLength(3);
+      expect(inputEvents).toHaveLength(2);
       const seq = inputEvents.map((e) => {
         const p = e.payload as AgentInputEvent;
         return { depth: p.depth, hasAgentName: 'agentName' in p };
@@ -1575,10 +1580,9 @@ describe('Agent', () => {
       expect(seq).toEqual([
         { depth: 1, hasAgentName: false },
         { depth: 2, hasAgentName: false },
-        { depth: 1, hasAgentName: false },
       ]);
-      // 每轮同时发射专属名（按 agent 路由的入口——名字在事件名里）
-      expect(events.emitted.filter((e) => e.name === 'agent:input:researcher')).toHaveLength(2);
+      // 输入轮同时发射专属名（按 agent 路由的入口——名字在事件名里）
+      expect(events.emitted.filter((e) => e.name === 'agent:input:researcher')).toHaveLength(1);
       expect(events.emitted.filter((e) => e.name === 'agent:input:writer')).toHaveLength(1);
     });
 
@@ -1777,81 +1781,50 @@ describe('Agent', () => {
       });
     });
 
-    it('工具轮 {{rawInput}} 展开为空串：含片段文本则保留,全占位符则不新增消息', async () => {
+    it('工具轮不发射、不新增 user 消息：没有可塑形的输入就不发事件、不虚构消息', async () => {
       const events = createEventCollector();
-      let turn = 0;
+      const depths: number[] = [];
       events.bus.on('agent:input', (e: AgentInputEvent) => {
-        turn += 1;
-        if (turn === 2) e.addInput('注{{rawInput}}记');
-      });
-      const { provider, completeCalls } = createMockProvider(toolTurnResponses());
-      const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
-
-      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      // 工具轮无原输入 → 占位符展开为空串,剩余文本保留
-      const request2 = completeCalls.mock.calls[1][0];
-      expect(request2.messages.at(-1)).toEqual({ role: 'user', content: '注记' });
-    });
-
-    it('工具轮片段只有占位符：展开后全空白,不新增消息', async () => {
-      const events = createEventCollector();
-      let turn = 0;
-      events.bus.on('agent:input', (e: AgentInputEvent) => {
-        turn += 1;
-        if (turn === 2) e.addInput('{{rawInput}}');
-      });
-      const { provider, completeCalls } = createMockProvider(toolTurnResponses());
-      const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
-
-      await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-
-      // 展开后为空串 → 同空片段口径,不新增 user 消息
-      const request2 = completeCalls.mock.calls[1][0];
-      expect(request2.messages.at(-1)!.role).toBe('tool');
-    });
-
-    it('工具轮落账：片段作为新增 user 消息追加（tool 结果之后）', async () => {
-      const events = createEventCollector();
-      let turn = 0;
-      events.bus.on('agent:input', (e: AgentInputEvent) => {
-        turn += 1;
-        if (turn === 2) e.addInput('second-turn-note');
+        depths.push(e.depth);
+        // 仅「第二次发射」（旧行为的工具轮）才暂存标记——新语义下永不发生
+        if (depths.length > 1) e.addInput('should-never-land');
       });
       const { provider, completeCalls } = createMockProvider(toolTurnResponses());
       const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
 
       const result = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      // 轮2发送请求：新增 user 消息紧随 tool 结果
+      expect(completeCalls).toHaveBeenCalledTimes(2);
+      // 仅首轮（输入轮）发射,工具轮零事件——订阅端在工具轮不会被打到
+      expect(depths).toEqual([1]);
+      // 工具轮请求以 tool 结果收尾,无虚构的新增 user 消息
       const request2 = completeCalls.mock.calls[1][0];
-      expect(request2.messages.at(-2)!.role).toBe('tool');
-      expect(request2.messages.at(-1)).toEqual({ role: 'user', content: 'second-turn-note' });
-      // 落账进历史（最终 assistant 之前）
-      expect(result.messages.at(-1)).toEqual({ role: 'assistant', content: 'done' });
-      expect(result.messages.at(-2)).toEqual({ role: 'user', content: 'second-turn-note' });
+      expect(request2.messages.at(-1)!.role).toBe('tool');
+      expect(JSON.stringify(request2.messages)).not.toContain('should-never-land');
+      // 历史零扰动
+      expect(JSON.stringify(result.messages)).not.toContain('should-never-land');
     });
 
-    it('跨轮可见且不可变：轮1落账片段,轮2快照含它且写它抛错', async () => {
+    it('跨轮可见且不可变：首轮落账片段进历史,工具轮请求（零事件）仍携带它,快照只读', async () => {
       const events = createEventCollector();
-      let turn = 0;
+      let fired = 0;
       events.bus.on('agent:input', (e: AgentInputEvent) => {
-        turn += 1;
-        if (turn === 1) {
-          e.addInput('turn-one');
-          return;
-        }
-        // 轮2：快照含轮1落账片段（当轮输入消息 = 前置产物）,且仍只读
-        const inputMsg = e.messages.find((m) => m.role === 'user');
-        expect(inputMsg!.content).toBe('turn-one\n\ngo');
+        fired += 1;
+        e.addInput('turn-one');
+        // 快照只读：写操作抛 TypeError
         expect(() => (e.messages as LLMMessage[]).shift()).toThrow();
       });
-      const { provider } = createMockProvider(toolTurnResponses());
+      const { provider, completeCalls } = createMockProvider(toolTurnResponses());
       const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
 
       await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
 
-      expect(turn).toBe(2);
+      // 仅输入轮发射
+      expect(fired).toBe(1);
+      // 落账进历史：工具轮请求（不再发射事件）仍携带首轮落账产物
+      const request2 = completeCalls.mock.calls[1][0];
+      const inputMsg = request2.messages.find((m: LLMMessage) => m.role === 'user');
+      expect(inputMsg!.content).toBe('turn-one\n\ngo');
     });
 
     it('事务性：订阅端抛错,暂存整批丢弃、历史零污染（经 per-tool 回灌路径观察）', async () => {
@@ -1910,11 +1883,11 @@ describe('Agent', () => {
       expect(completeCalls).not.toHaveBeenCalled();
     });
 
-    it('纯续跑轮（无新输入）：片段作为新增 user 消息追加', async () => {
+    it('纯续跑轮（无新输入）不发射、不新增 user 消息', async () => {
       const events = createEventCollector();
-      let stage = 0;
+      const depths: number[] = [];
       events.bus.on('agent:input', (e: AgentInputEvent) => {
-        if (stage === 2) e.addInput('resume-note');
+        depths.push(e.depth);
       });
       const { provider, completeCalls } = createMockProvider([
         llmResponse({ content: 'first', stopReason: 'stop' }),
@@ -1928,20 +1901,19 @@ describe('Agent', () => {
         }),
       );
 
-      stage = 1;
       const first = await agent.run('go', { agent: 'researcher', model: 'gpt-4o' });
-      stage = 2;
       const second = await agent.run('', {
         agent: 'researcher',
         model: 'gpt-4o',
         messages: first.messages,
       });
 
-      // 续跑轮无新输入 → 片段为新增 user 消息（本轮发送可见 + 落账进历史）
+      // 首次 run 是输入轮（发射一次）;纯续跑轮零事件
+      expect(depths).toEqual([1]);
+      // 续跑请求原样发送（历史本体,无虚构新增 user 消息）
       const request = completeCalls.mock.calls[1][0];
-      expect(request.messages.at(-1)).toEqual({ role: 'user', content: 'resume-note' });
+      expect(request.messages).toEqual(first.messages);
       expect(second.messages.at(-1)).toEqual({ role: 'assistant', content: 'second' });
-      expect(second.messages.at(-2)).toEqual({ role: 'user', content: 'resume-note' });
     });
 
     it('流式同款：片段进 stream 请求并落账进 done.messages', async () => {
@@ -1967,6 +1939,38 @@ describe('Agent', () => {
       const done = chunks.at(-1)!.done!;
       const lastUser = [...done.messages].reverse().find((m) => m.role === 'user');
       expect(lastUser!.content).toBe('stream-note\n\ngo');
+    });
+
+    it('流式同款：工具轮不发射、不新增 user 消息', async () => {
+      const events = createEventCollector();
+      const depths: number[] = [];
+      events.bus.on('agent:input', (e: AgentInputEvent) => {
+        depths.push(e.depth);
+        // 仅「第二次发射」（旧行为的工具轮）才暂存标记——新语义下永不发生
+        if (depths.length > 1) e.addInput('should-never-land');
+      });
+      const { provider, streamCalls } = createMockStreamProvider([
+        [
+          {
+            toolCalls: [toolCall('c1', 'weather_getWeather', { city: '北京' })],
+            finishReason: 'tool_calls',
+          },
+        ],
+        [{ deltaContent: 'done', finishReason: 'stop' }],
+      ]);
+      const agent = new Agent(toolTurnDeps(provider, events.emitAppEvent));
+
+      const chunks = await collect(agent.stream('go', { agent: 'researcher', model: 'gpt-4o' }));
+
+      expect(streamCalls).toHaveBeenCalledTimes(2);
+      // 仅首轮（输入轮）发射,工具轮零事件
+      expect(depths).toEqual([1]);
+      // 工具轮请求以 tool 结果收尾,无虚构的新增 user 消息
+      const request2 = streamCalls.mock.calls[1][0];
+      expect(request2.messages.at(-1)!.role).toBe('tool');
+      expect(JSON.stringify(request2.messages)).not.toContain('should-never-land');
+      const done = chunks.at(-1)!.done!;
+      expect(JSON.stringify(done.messages)).not.toContain('should-never-land');
     });
 
     it('超限但未订阅超限事件：原样发送（框架零内置裁剪的阴性对照）', async () => {

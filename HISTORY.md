@@ -22,6 +22,7 @@
 | deps 钩子 `resolveSystemPrompt` / `resolveSubAgentContext` | `agent:system-prompt` / `agent:sub-agent-context` 事件 | 同上 | 7.9.0 |
 | deps 钩子 `resolveRootInput` / `resolveSubAgentInput` | `agent:root-input` 事件（7.9.0 起可写 `e.input`）→ 写面收敛为 `addInput`，与 `agent:input` 首轮共用暂存一起合并（7.12.0 之后） | 两套输入改写语义（整体替换 vs 片段落账）并存是等价路径；`{{rawInput}}` 占位符让片段即可拼出任意形态。**原「整体替换输入 / 丢弃原文」能力不再提供**——原输入恒在首条 user 消息中 | 7.9.0 → 7.12.0+ |
 | `agent:input` 载荷 `messages` 可整体替换（改写仅作用本轮发送、不落历史） | `messages` 深冻结只读快照 + `addInput(text, index?)` 落账进历史 | 「发送副本改写不落历史」让 result.messages 与实际发送不一致；统一为 append-only 账本 | 7.11.0 |
+| `agent:input` 无输入轮发射（工具轮 / 纯续跑轮也触发，订阅端片段虚构为新增 user 消息承载） | 仅输入轮发射——当轮有新 user 输入（loop 首轮非空 input，根调用与子代理派发同口径；续跑携带新输入同属输入轮），每 loop 恰好一次；跨轮注入走 `agent:system-prompt`（per-run）或业务自行编排 | 「input」语义 = role=user 消息——没有可塑形的输入消息就不发事件，虚构 user 消息污染历史与续跑链 | 7.16.1 → 7.17.0 |
 | `trimHistory` 自动截断 + `agentConfig.historyCompactor` 策略位（`HistoryCompactor` / `HistoryCompactorInput` 导出、`historyCompaction` 模块） | `agent:history-over-budget` 事件 `replace(history)`；`maxHistoryTokens` 语义收敛为超限阈值 | 框架零内置裁剪——长度控制是业务知识 | 7.11.0 |
 | agent 域事件载荷上的实体名字段（`agentName` / `name` / `subName`） | 专属名订阅 `agent:<event>:<实体名>`（名字在事件名里） | 「载荷字段分流」与「专属名订阅」两条等价路径并存造成使用困惑 | 7.10.0 |
 | `config.task.onFailed` 钩子 | `task:failed` 事件 | 事件化 | 7.9.0 |

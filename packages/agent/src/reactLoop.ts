@@ -191,13 +191,14 @@ export interface ReactLoopConfig {
   enableTracing?: boolean;
   /**
    * app 事件上下文（可选——`buildLoopConfig` 自 `AgentDeps.emitAppEvent` 透传；
-   * 未接线时不携带,每轮发送前事件不发射、循环零开销）
+   * 未接线时不携带,发送前事件不发射、循环零开销）
    *
-   * 已接线时每轮 provider 调用前（历史裁剪/压缩之前）发射
+   * 已接线时,当轮有新 user 输入的轮次（loop 首轮非空 input——工具轮 / 纯续跑轮
+   * 不发射、不虚构新增 user 消息）在 provider 调用前发射
    * [appEventBus](../../faapi/src/events/appEventBus.md) 的 `agent:input` /
    * `agent:input:<agentName>`——载荷为历史只读快照 + `addInput` 补充输入（片段
-   * 落账进历史,append-only 不可变）。见 reactLoop.md「agent:input 每轮发送前
-   * 事件（历史编辑窗口）」。
+   * 落账进当轮输入消息,append-only 不可变）。见 reactLoop.md「agent:input 用户输入
+   * 发送前事件（历史编辑窗口）」。
    */
   appEvent?: {
     emit: AppEventEmitter;
@@ -592,38 +593,37 @@ function createReadView(messages: LLMMessage[]): readonly LLMMessage[] {
 }
 
 /**
- * agent:input 每轮发送前事件——历史编辑窗口（见主包 events/appEventBus.md 与
+ * agent:input 用户输入发送前事件——历史编辑窗口（见主包 events/appEventBus.md 与
  * reactLoop.md 同名章节）
  *
- * appEvent 已接线时每轮发射（历史裁剪/压缩**之前**——片段落账后才投影发送），
- * 通用名 + 专属名同一载荷对象先通用后专属。载荷 `messages` 为历史只读快照
- * （深冻结克隆，首次访问才构造——订阅端不读则零拷贝开销），`addInput(text,
- * index=100)` 暂存补充输入片段。
+ * 仅当轮有新 user 输入（`turnInputMessage` 在场——调用方守卫,工具轮 / 纯续跑轮
+ * 不调用本函数）时调用:appEvent 已接线则发射,通用名 + 专属名
+ * 同一载荷对象先通用后专属。载荷 `messages` 为历史只读快照（深冻结克隆,首次访问
+ * 才构造——订阅端不读则零拷贝开销）,`addInput(text, index=100)` 暂存补充输入片段。
  *
- * 暂存器选择：当轮有新输入（`turnInputIndex >= 0`，即 loop 首轮）复用
- * `appEvent.rootInputStaging`——`agent:root-input` 在循环启动前已把片段暂存在同一
- * 数组里，本轮 addInput 续接其后（seq 连续），两路片段一起落账；其余轮次（工具轮 /
- * 纯续跑轮）各自新建暂存器，root-input 片段不参与。
+ * 暂存器选择:复用 `appEvent.rootInputStaging`——`agent:root-input` 在循环启动前已把
+ * 片段暂存在同一数组里,本轮 addInput 续接其后（seq 连续）,两路片段一起落账
+ * （rootInputStaging 缺席时新建——reactLoop 直调方自组 config 未挂暂存器的路径,
+ * 此时无 root 片段可合并）。
  *
- * 扇出结束后落账：片段按 (index, seq) 升序排序（同 index 保持调用序）→ 过滤
- * 空白片段 → `'\n\n'` 拼接 → 前置进当轮输入消息（`turnInputIndex >= 0`，原内容
- * 逐字节不动）；当轮无新输入（工具轮/纯续跑轮，-1）为新增 user 消息追加。
- * 落账即进对话历史——后续轮次 / result.messages / 断点续跑链全部可见，不可变。
+ * 扇出结束后落账:片段按 (index, seq) 升序排序（同 index 保持调用序）→ 过滤空白
+ * 片段 → `'\n\n'` 拼接 → 前置进当轮输入消息（原内容逐字节不动;`{{rawInput}}`
+ * 占位符展开为原输入）。当轮输入消息以调用方捕获的**消息引用**定位（`indexOf`
+ * 回查 + role=user 断言,不变量破坏显式抛错）——附着目标是那条真实 user 消息,
+ * 不是数组位置。落账即进对话历史——后续轮次 / result.messages / 断点续跑链
+ * 全部可见,不可变。
  *
- * handler 抛错 → emit 冒泡走 run/stream 既有错误链，尚未落账，历史零污染
- * （事务性 all-or-nothing）。appEvent 未接线时整体跳过（能力边界，非降级）。
+ * handler 抛错 → emit 冒泡走 run/stream 既有错误链,尚未落账,历史零污染
+ * （事务性 all-or-nothing）。appEvent 未接线时整体跳过（能力边界,非降级）。
  */
 async function emitAgentInputEvent(
   messages: LLMMessage[],
   config: ReactLoopConfig,
-  turnInputIndex: number,
+  turnInputMessage: LLMMessage,
 ): Promise<void> {
   const appEvent = config.appEvent;
   if (!appEvent) return;
-  const staging =
-    turnInputIndex >= 0 && appEvent.rootInputStaging
-      ? appEvent.rootInputStaging
-      : createInputStaging();
+  const staging = appEvent.rootInputStaging ?? createInputStaging();
   let readView: readonly LLMMessage[] | undefined;
   const payload = {
     depth: appEvent.depth,
@@ -642,26 +642,26 @@ async function emitAgentInputEvent(
     .filter((t) => t.trim() !== '')
     .join('\n\n');
   if (joined === '') return;
-  if (turnInputIndex >= 0) {
-    const current = messages[turnInputIndex]!;
-    // {{rawInput}} 占位符：原输入嵌在订阅端指定位置（与缀尾互斥——占位符在场即不缀尾,
-    // 如 '规则…\n\n<user_input>{{rawInput}}</user_input>'）;单次展开不递归
-    // （原内容含字面占位符不再二次处理）。不含占位符 = 现状（前置 + 原内容缀尾）
-    const raw = current.content;
-    messages[turnInputIndex] = {
-      ...current,
-      content: joined.includes(RAW_INPUT_PLACEHOLDER)
-        ? joined.split(RAW_INPUT_PLACEHOLDER).join(raw)
-        : `${joined}\n\n${raw}`,
-    };
-  } else {
-    // 无当轮输入（工具轮/纯续跑轮）：占位符无原值可嵌,展开为空串;
-    // 展开后全空白则不新增消息（同空片段过滤口径）
-    const content = joined.split(RAW_INPUT_PLACEHOLDER).join('');
-    if (content.trim() !== '') {
-      messages.push({ role: 'user', content });
-    }
+  // 附着目标核验：按消息引用回查历史当前位置——语义是「片段前置进当轮输入消息」,
+  // 目标必须仍是发射时捕获的那条 role=user 消息。「末条恰为新输入」的构造事实若被
+  // 未来改动破坏,在此显式抛错（框架内部不变量）,不静默改写到错误消息上
+  const index = messages.indexOf(turnInputMessage);
+  if (index < 0 || turnInputMessage.role !== 'user') {
+    throw new Error(
+      `agent:input invariant violated: the turn input message must stay in history as a user message (index: ${index}, role: ${JSON.stringify(turnInputMessage.role)})`,
+    );
   }
+  const current = messages[index]!;
+  // {{rawInput}} 占位符：原输入嵌在订阅端指定位置（与缀尾互斥——占位符在场即不缀尾,
+  // 如 '规则…\n\n<user_input>{{rawInput}}</user_input>'）;单次展开不递归
+  // （原内容含字面占位符不再二次处理）。不含占位符 = 现状（前置 + 原内容缀尾）
+  const raw = current.content;
+  messages[index] = {
+    ...current,
+    content: joined.includes(RAW_INPUT_PLACEHOLDER)
+      ? joined.split(RAW_INPUT_PLACEHOLDER).join(raw)
+      : `${joined}\n\n${raw}`,
+  };
 }
 
 function buildRequestExtras(config: ReactLoopConfig) {
@@ -713,9 +713,11 @@ export async function reactLoop(
 ): Promise<ReactLoopResult> {
   const enableTracing = config.enableTracing ?? false;
   const messages = initLoopMessages(input, config);
-  // 当轮输入消息下标（仅首轮有意义）：非空 input 时 initLoopMessages 把新输入
-  // 追加为末条 user 消息；纯续跑（无 input）无「当轮输入」→ -1,片段走新增 user 消息
-  const turnInputIndex = input ? messages.length - 1 : -1;
+  // 当轮新增的 user 输入消息——捕获对象引用而非下标:agent:input 的附着目标就是这条
+  // role=user 消息（纯续跑无 input → undefined,无输入轮零事件）;合并点按引用回查
+  // 历史并断言 role（见 emitAgentInputEvent）,「新输入在末条」的构造事实被未来改动
+  // 破坏时显式抛错而非静默改写错位
+  const turnInputMessage = input ? messages[messages.length - 1] : undefined;
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
@@ -738,10 +740,14 @@ export async function reactLoop(
     loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
-    // agent:input 每轮发送前事件（先于超限事件）：历史只读快照 + addInput 补充输入,
-    // 扇出结束落账进历史本体;随后历史超限事件（超 maxHistoryTokens 阈值时发射,
-    // 订阅端 replace 整体替换循环历史——框架零内置裁剪）;发送 = 历史本体
-    await emitAgentInputEvent(messages, config, loopTurns === 1 ? turnInputIndex : -1);
+    // agent:input 用户输入发送前事件（先于超限事件）：仅当轮有新 user 输入消息
+    // （turnInputMessage 在场,即 loop 首轮非空 input）时发射——工具轮 / 纯续跑轮没有
+    // 可塑形的 user 消息,零事件、不虚构新增 user 消息;随后历史超限事件（每轮,超
+    // maxHistoryTokens 阈值时发射,订阅端 replace 整体替换循环历史——框架零内置裁剪）;
+    // 发送 = 历史本体
+    if (loopTurns === 1 && turnInputMessage) {
+      await emitAgentInputEvent(messages, config, turnInputMessage);
+    }
     await emitHistoryOverBudgetEvent(messages, config);
     const outgoingMessages = [...messages];
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
@@ -965,9 +971,11 @@ export async function* reactLoopStream(
 ): AsyncIterable<ReactLoopStreamChunk> {
   const enableTracing = config.enableTracing ?? false;
   const messages = initLoopMessages(input, config);
-  // 当轮输入消息下标（仅首轮有意义）：非空 input 时 initLoopMessages 把新输入
-  // 追加为末条 user 消息；纯续跑（无 input）无「当轮输入」→ -1,片段走新增 user 消息
-  const turnInputIndex = input ? messages.length - 1 : -1;
+  // 当轮新增的 user 输入消息——捕获对象引用而非下标:agent:input 的附着目标就是这条
+  // role=user 消息（纯续跑无 input → undefined,无输入轮零事件）;合并点按引用回查
+  // 历史并断言 role（见 emitAgentInputEvent）,「新输入在末条」的构造事实被未来改动
+  // 破坏时显式抛错而非静默改写错位
+  const turnInputMessage = input ? messages[messages.length - 1] : undefined;
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   const extras = buildRequestExtras(config);
   let totalUsage: LLMUsage | undefined;
@@ -984,10 +992,14 @@ export async function* reactLoopStream(
     loopTurns++;
 
     const llmStartedAt = enableTracing ? nowMs() : 0;
-    // agent:input 每轮发送前事件（先于超限事件）：历史只读快照 + addInput 补充输入,
-    // 扇出结束落账进历史本体;随后历史超限事件（超 maxHistoryTokens 阈值时发射,
-    // 订阅端 replace 整体替换循环历史——框架零内置裁剪）;发送 = 历史本体
-    await emitAgentInputEvent(messages, config, loopTurns === 1 ? turnInputIndex : -1);
+    // agent:input 用户输入发送前事件（先于超限事件）：仅当轮有新 user 输入消息
+    // （turnInputMessage 在场,即 loop 首轮非空 input）时发射——工具轮 / 纯续跑轮没有
+    // 可塑形的 user 消息,零事件、不虚构新增 user 消息;随后历史超限事件（每轮,超
+    // maxHistoryTokens 阈值时发射,订阅端 replace 整体替换循环历史——框架零内置裁剪）;
+    // 发送 = 历史本体
+    if (loopTurns === 1 && turnInputMessage) {
+      await emitAgentInputEvent(messages, config, turnInputMessage);
+    }
     await emitHistoryOverBudgetEvent(messages, config);
     const outgoingMessages = [...messages];
     // 浅拷贝快照:该轮发给 LLM 的输入消息（数组新对象,消息对象引用共享）
