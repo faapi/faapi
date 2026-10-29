@@ -10,7 +10,7 @@ dev 模式如果在启动时全量编译所有 `src/**/*.ts` + 全量生成 `zod
 
 - **启动零编译**：dev 启动只编译 config + 生成路由清单（`faapi-routes.js`），handler.js 与 zod.js 均不预生成
 - **首次请求触发**：handler.js 由 `loadRouteModule` 先调 `ensureCompiled` 编译再 import；zod.js 由 `createServer` 在 `validateInput` 之前触发生成
-- **mtime 缓存复用**：产物存在且 mtime ≥ 源码 mtime 时跳过重新编译/生成，watcher 已编译过的文件首次请求时直接复用
+- **闭包感知 mtime 缓存复用**：入口 + 依赖闭包逐文件比对产物与源码 mtime，全部 fresh 时零编译跳过，有 stale 只编译 stale 集（仅比对入口不足以证明产物可用——见「mtime 缓存的边界」）
 - **缓存失效**：watcher 文件变化时清除内存缓存 + 删除 stale zod.js，下次请求按需重建
 
 prod 模式（`node dist/main`）不启用按需编译——build 阶段已固化全部产物，import 失败即报错。
@@ -70,18 +70,20 @@ async function ensureCompiled(
 ): Promise<boolean>
 ```
 
-调用方：`loadRouteModule`（import 失败时）+ `loadWsHandler`（WS 升级时）。
+调用方：`loadRouteModule`（import 前）+ `loadWsHandler`（WS 升级时）+ `bootstrap`/`devCommand`/`createDevApp`（bootstrap、agent、task 加载链）+ `loadToolModule`/`loadPlugins`（tool、本地 TS 插件）。
 
 四层处理（命中即跳过）：
 
 1. **mutex 命中**：`inFlightCompilations.has(sourceAbsPath)` → await 后返回 `false`（别的请求正在编译）
-2. **内存 Set 命中**：`compiledFiles.has(sourceAbsPath)` → 跳过（最快路径）
-3. **mtime 复用**：产物存在且 `mtimeMs ≥ 源码 mtimeMs` → 加入 Set 跳过（复用 watcher 已编译的产物）
-4. **产物不存在或 stale**：收集依赖闭包后批量编译 → 加入 Set
+2. **内存 Set 命中**：`compiledFiles.has(sourceAbsPath)` → 跳过（最快路径，稳态请求零 fs 访问）
+3. **依赖闭包逐文件新鲜度检查**：`collectRelativeImports` 收集闭包后，入口与每个闭包文件各自比对产物/源码 mtime——产物存在且 `mtimeMs ≥ 源码 mtimeMs` 的文件复用
+4. **全部 fresh → 零编译跳过；有 stale → 只编译 stale 集** → 加入 Set
 
-**依赖闭包**：`bundle: false` 逐文件编译不分析 import 关系，只编译 handler 单文件时，handler 引用的共享模块（如 `import { db } from '../../lib/db'`）没有产物，首次请求 import 即 `ERR_MODULE_NOT_FOUND`。因此第 4 步先用 `collectRelativeImports`（见 [collectImports.md](./collectImports.md)，覆盖相对 import 与 tsconfig paths 别名）收集 src 内传递依赖，跳过产物已新鲜的文件后与入口一起批量传入 `compileDevRoutes`。src 外依赖不收集（outbase=src 语义限制，与 watcher 增量编译一致）。
+**为什么入口产物 fresh 也要走闭包检查**：mtime 只能证明入口产物不过期，证明不了传递依赖。dev 停机期间依赖源码被改（本机重构 / git pull 他人提交）后重启，入口产物仍 fresh，旧入口产物会 import 陈旧依赖产物；而 config 闭包在每次启动时总会被 `compileConfig` 重编译为最新——两路产物新旧混编：导出面变更即 ESM 链接错误（`does not provide an export named ...`，报错点距根因很远），仅内部实现变更则静默跑旧代码。依赖闭包新增文件（旧产物未 import 的新模块）同样由闭包收集覆盖。
 
-返回 `true` 表示实际触发了编译（调用方据此决定是否重试 import），`false` 表示跳过（已编译过 / 产物已最新 / 源文件不存在 / 别的请求正在编译）。**编译失败时抛错**（带原始 cause），由调用方错误处理链接管，不静默吞错。
+**依赖闭包**：`bundle: false` 逐文件编译不分析 import 关系，只编译 handler 单文件时，handler 引用的共享模块（如 `import { db } from '../../lib/db'`）没有产物，首次请求 import 即 `ERR_MODULE_NOT_FOUND`。因此第 3 步用 `collectRelativeImports`（见 [collectImports.md](./collectImports.md)，覆盖相对 import 与 tsconfig paths 别名）收集 src 内传递依赖。src 外依赖不收集（outbase=src 语义限制，与 watcher 增量编译一致）。
+
+返回 `true` 表示实际触发了编译（含仅编译 stale 依赖闭包的场合），`false` 表示跳过（已编译过 / 全部产物已最新 / 源文件不存在 / 别的请求正在编译）。**编译失败时抛错**（带原始 cause），由调用方错误处理链接管，不静默吞错。
 
 ### 路径反推
 
@@ -137,11 +139,13 @@ async function ensureSchemaGenerated(
 
 1. **mutex 命中**：`inFlightSchemaGenerations.has(schemaPath)` → await 后返回 `false`
 2. **内存 Set 命中**：`generatedSchemas.has(schemaPath)` → 跳过
-3. **mtime 复用**：zod.js 存在且 `mtimeMs ≥ 源码 mtimeMs` → 加入 Set 跳过
+3. **闭包感知 mtime 复用**：zod.js 存在且 `mtimeMs ≥ 源码 mtimeMs` 且依赖闭包内源文件均不晚于 zod.js → 加入 Set 跳过（闭包检查仅在前半条件满足时执行——缺失/stale 直接走生成，不付闭包扫描开销）。zod.js 内容内联跨文件类型（checker 解析完整 RuntimeType，每个 zod.js 自包含），仅凭 handler mtime 不足以证明 schema 最新——依赖类型在 dev 停机期间被改时旧 schema 会按旧类型校验（静默错）
 4. **zod.js 不存在或 stale**：
    - 用 `prodPathToSourcePath` 把产物 route.filePath 反推源码 .ts 路径
    - 过滤同文件所有路由，把产物 filePath 改回源码 filePath（`generateSchemaFiles` 内部 AST 分析需要源码 .ts 路径）
    - 调 `generateSchemaFiles(sourceRoutes, rootDir, dist)` 生成 → 加入 Set
+
+同进程内的跨文件类型解析依赖 AST Program 缓存（`invalidateProgramCache()` 清理）——watcher 每次文件变化经 `reloadRoutes` 清理，重启场景新进程天然为空。
 
 返回 `true` 表示实际触发了生成，`false` 表示跳过（已生成过 / 产物已最新 / 源文件不存在 / 别的请求正在生成）。**生成失败时抛错**（带原始 cause），由 `createServer` 错误处理链接管，不静默吞错。
 
@@ -191,20 +195,21 @@ function prodPathToSourcePath(
 
 ```
 请求到达 → matchRoute 命中 → loadRouteModule(absoluteFilePath, method, rootDir)
-  ├─ importWithCacheBust(filePath) 成功 → 直接用
-  └─ import 失败 + isDevOnDemandEnabled()
-       ├─ prodPathToSourcePath(filePath) → 源码 .ts 路径
-       ├─ ensureCompiled(sourcePath, rootDir, dist)
-       │    ├─ compiledFiles.has → return false
-       │    ├─ mtime fresh → return false
-       │    └─ compileDevRoutes({ files: [sourcePath] }) → return true
-       └─ 编译成功 → 重试 importWithCacheBust(filePath)
+  ├─ isDevOnDemandEnabled()：
+  │    ├─ prodPathToSourcePath(filePath) → 源码 .ts 路径
+  │    ├─ ensureCompiled(sourcePath, rootDir, dist)
+  │    │    ├─ inFlight / compiledFiles.has → return false
+  │    │    ├─ 依赖闭包逐文件 mtime 检查 → 全 fresh → return false（零编译）
+  │    │    └─ 有 stale → compileDevRoutes({ files: stale 集 }) → return true
+  │    └─ 再 importWithCacheBust(filePath)（先编译后 import，避免 import 缺失
+  │       文件污染 Vite SSR 内部状态）
+  └─ 非 dev 按需：直接 importWithCacheBust(filePath)，失败即报错
 → resolveInput(method, request)
 → getRuntimeSchemaPath(route.filePath, dist, rootDir) → schemaPath
 → isDevOnDemandEnabled() + getDevDist()
   └─ ensureSchemaGenerated(schemaPath, route.filePath, routes, rootDir, dist)
-       ├─ generatedSchemas.has → return false
-       ├─ mtime fresh → return false
+       ├─ inFlight / generatedSchemas.has → return false
+       ├─ zod.js fresh（入口 + 依赖闭包 mtime）→ return false
        └─ prodPathToSourcePath → 过滤同文件路由 → generateSchemaFiles → return true
 → validateInput(schemaPath, method, inputType, input)
 → invokeHandler(handler, ctx, body, middlewares, injectors)
@@ -235,9 +240,13 @@ watcher 文件变化（debounce 100ms）
 ## mtime 缓存的边界
 
 - **首次冷启动**：所有 handler.js / zod.js 都不存在 → 第一次请求触发编译/生成（约 50ms 单文件延迟）
-- **watcher 已编译**：handler.js 存在且 mtime ≥ 源码 → mtime 复用，跳过编译
-- **watcher 文件变化**：源码 mtime 更新 → ensureCompiled 检测到 stale → 重新编译；同时 reloadRoutes 已 clearCompiledFiles，确保不命中内存缓存
+- **watcher 已编译**：handler.js 存在且 mtime ≥ 源码 → 闭包逐文件检查复用，零编译跳过
+- **watcher 文件变化**：源码 mtime 更新 → ensureCompiled 检测到 stale → 重新编译；同时 reloadRoutes 已 clearCompiledFiles + invalidateProgramCache，确保不命中内存缓存
 - **手编辑源码后立即请求（watcher 未触发）**：源码 mtime > 产物 mtime → ensureCompiled 检测到 stale → 重新编译
+- **dev 停机期间依赖变更（重启后入口产物仍 fresh）**：仅比对入口 mtime 会漏判——入口产物照旧 import 陈旧依赖产物，与启动期被 `compileConfig` 重编译的 config 闭包产物新旧混编（导出面变更即 ESM 链接错误，内部变更则静默跑旧代码）。闭包逐文件检查覆盖：发现 stale 依赖 → 只重编译 stale 集
+- **依赖闭包新增文件**：旧入口产物未 import 新模块产物 → 首次请求 `ERR_MODULE_NOT_FOUND`。闭包收集同样覆盖（新文件无产物 → 视为 stale 编译）
+- **zod 跨文件类型变更（handler 未改）**：zod.js 内容内联跨文件类型，依赖源码 mtime 晚于 zod.js → 重新生成（Program 缓存由 reloadRoutes 清理 / 重启后新进程天然为空）
+- **成本口径**：闭包扫描（`collectRelativeImports` 读源码 + 正则提取 import）只发生在每入口每进程首次调用（内存 Set 命中后不再发生，且 zod 侧仅在前半 fresh 条件满足时执行）；全部 fresh 时零 esbuild 调用
 
 ## 相关模块
 

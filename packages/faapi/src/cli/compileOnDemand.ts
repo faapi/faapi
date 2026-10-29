@@ -26,8 +26,10 @@ import type { RouteManifest } from '../routers/routeTypes';
  * 5. `createServer` / `handleWsUpgrade` 首次加载目录中间件前调 `ensureMiddlewaresCompiled`
  *
  * mtime 缓存（阶段 4）：
- * - `ensureCompiled`：handler.js 存在且 mtime ≥ 源码 mtime → 跳过编译
- * - `ensureSchemaGenerated`：zod.js 存在且 mtime ≥ 源码 mtime → 跳过生成
+ * - `ensureCompiled`：内存 Set 命中 → 跳过；否则对入口 + 依赖闭包逐文件做
+ *   mtime 新鲜度检查，全部 fresh → 零编译跳过，有 stale → 只编译 stale 集
+ * - `ensureSchemaGenerated`：zod.js 存在且 mtime ≥ 源码 mtime 且依赖闭包内
+ *   源文件均不晚于 zod.js → 跳过生成
  * - 首次调用后写入内存 Set，后续直接跳过（避免 fs.statSync 调用）
  * - watcher 触发时清除内存 Set，mtime 重新评估
  *
@@ -130,10 +132,16 @@ export function clearCompiledFiles(): void {
  * 依赖闭包：handler 引用的项目内共享模块（相对 import + tsconfig paths 别名）一并编译，
  * 跳过产物已新鲜的文件（watcher 已编译或此前请求已编译），只补缺口。
  *
+ * 闭包感知新鲜度：入口自身产物 fresh 也必须对依赖闭包逐文件做 mtime 检查——mtime
+ * 只能证明入口产物不过期，证明不了传递依赖。dev 停机期间依赖源码被改（本机重构 /
+ * git pull）后重启，入口产物仍 fresh，旧入口产物会 import 陈旧依赖产物；而 config
+ * 闭包在启动时总会被 compileConfig 重编译为最新——两路产物新旧混编，导出面变更即
+ * ESM 链接错误（报错点距根因很远），仅内部实现变更则静默跑旧代码。
+ *
  * mtime 缓存（阶段 4）：
  * 1. 内存 Set 命中 → 跳过（最快路径）
- * 2. 产物存在且 mtime ≥ 源码 mtime → 跳过（复用已有产物，如 watcher 已编译）
- * 3. 产物不存在或 stale → 编译（含 stale 的依赖闭包文件） → 加入内存 Set
+ * 2. 依赖闭包逐文件检查：产物存在且 mtime ≥ 源码 mtime → 跳过（复用已有产物）
+ * 3. 全部 fresh → 零编译跳过；入口或任一闭包文件 stale → 只编译 stale 集 → 加入内存 Set
  *
  * 并发去重（mutex）：
  * - 同一 sourceAbsPath 的并发请求共享同一 in-flight Promise
@@ -144,7 +152,7 @@ export function clearCompiledFiles(): void {
  * @param sourceAbsPath 源码 .ts 绝对路径
  * @param rootDir 项目根目录
  * @param dist 产物目录（dev 模式为 '.faapi'）
- * @returns 是否实际触发了编译（false 表示已编译过或产物已最新或源文件不存在）
+ * @returns 是否实际触发了编译（false 表示已编译过或全部产物已最新或源文件不存在）
  * @throws 编译失败时抛错（带原始 cause），调用方可据此给出精确错误信息
  */
 export async function ensureCompiled(
@@ -170,23 +178,29 @@ export async function ensureCompiled(
     return false;
   }
 
-  // mtime 缓存：产物已存在且最新 → 复用（watcher 已编译过的情况）
-  const productPath = prodSourcePathToProductPath(sourceAbsPath, rootDir, dist);
-  if (productPath && isProductFresh(sourceAbsPath, productPath)) {
-    state.compiledFiles.add(sourceAbsPath);
-    return false;
-  }
-
   // 触发编译：注册 in-flight Promise 防止并发重复编译
+  let compiled = false;
   const compilePromise = (async () => {
-    // 依赖闭包：入口本身 + src 内全部传递依赖；产物已新鲜的文件跳过（只补缺口）
+    // 依赖闭包：入口本身 + src 内全部传递依赖；产物已新鲜的文件跳过（只补缺口）。
+    // 入口自身产物 fresh 也走闭包检查（理由见函数 JSDoc「闭包感知新鲜度」）
     const { insideFiles } = await collectRelativeImports([sourceAbsPath], rootDir);
-    const files = [sourceAbsPath];
+
+    const files: string[] = [];
+    const entryProduct = prodSourcePathToProductPath(sourceAbsPath, rootDir, dist);
+    if (!(entryProduct && isProductFresh(sourceAbsPath, entryProduct))) {
+      files.push(sourceAbsPath);
+    }
     for (const dep of insideFiles) {
       if (state.compiledFiles.has(dep)) continue;
       const depProduct = prodSourcePathToProductPath(dep, rootDir, dist);
       if (depProduct && isProductFresh(dep, depProduct)) continue;
       files.push(dep);
+    }
+
+    // 全部 fresh：零 esbuild 跳过（内存 Set 兜底后续请求）
+    if (files.length === 0) {
+      state.compiledFiles.add(sourceAbsPath);
+      return;
     }
 
     await compileDevRoutes({
@@ -199,12 +213,13 @@ export async function ensureCompiled(
       state.compiledFiles.add(file);
     }
     state.compiledFiles.add(sourceAbsPath);
+    compiled = true;
   })();
 
   state.inFlightCompilations.set(sourceAbsPath, compilePromise);
   try {
     await compilePromise;
-    return true;
+    return compiled;
   } finally {
     state.inFlightCompilations.delete(sourceAbsPath);
   }
@@ -257,6 +272,37 @@ function prodSourcePathToProductPath(
 // ─── zod.js 按需生成 ────────────────────────────────────────────────
 
 /**
+ * 依赖闭包内所有源文件的 mtime 是否都不晚于产物 mtime
+ *
+ * zod.js 内容内联跨文件类型（checker 解析完整 RuntimeType，每个 zod.js 自包含），
+ * 入口 handler 未改不足以证明 schema 最新——依赖源码 mtime 晚于 zod.js（dev 停机
+ * 期间类型被改、重启后 handler 产物仍 fresh）时 schema 内容过期，校验按旧类型执行。
+ * 依赖源文件 stat 失败不据此判定 stale（缺失依赖在 collectRelativeImports 读取
+ * 阶段已被排除，实际生成错误由后续生成路径按原始错误暴露）。
+ */
+async function isClosureOlderThanProduct(
+  sourceAbsPath: string,
+  rootDir: string,
+  productAbsPath: string,
+): Promise<boolean> {
+  const { insideFiles } = await collectRelativeImports([sourceAbsPath], rootDir);
+  let productMtimeMs: number;
+  try {
+    productMtimeMs = fs.statSync(productAbsPath).mtimeMs;
+  } catch {
+    return false;
+  }
+  for (const dep of insideFiles) {
+    try {
+      if (fs.statSync(dep).mtimeMs > productMtimeMs) return false;
+    } catch {
+      // 依赖源文件不存在：不据此判定 stale
+    }
+  }
+  return true;
+}
+
+/**
  * 清空所有 schema 生成缓存（reloadRoutes 时调用）
  *
  * 同时清空 in-flight mutex Map。
@@ -276,7 +322,8 @@ export function clearGeneratedSchemas(): void {
  *
  * mtime 缓存（阶段 4）：
  * 1. 内存 Set 命中 → 跳过
- * 2. zod.js 存在且 mtime ≥ 源码 mtime → 跳过（复用已有产物）
+ * 2. zod.js 存在且 mtime ≥ 源码 mtime 且依赖闭包内源文件均不晚于 zod.js → 跳过
+ *    （复用已有产物；闭包检查仅在前半条件满足时执行——缺失/stale 直接走生成）
  * 3. zod.js 不存在或 stale → 生成 → 加入内存 Set
  *
  * 并发去重（mutex）：
@@ -322,10 +369,16 @@ export async function ensureSchemaGenerated(
     return false;
   }
 
-  // mtime 缓存：zod.js 已存在且最新 → 复用
+  // 产物新鲜度（闭包感知）：zod.js 已存在且不早于入口源码与依赖闭包内任何源文件 → 复用。
+  // 仅凭 handler mtime 不够——zod.js 内容内联跨文件类型（见 isClosureOlderThanProduct），
+  // 依赖类型在 dev 停机期间被改时旧 schema 静默过期，校验按旧类型执行。
+  // zod.js 缺失或入口 stale 时直接走生成路径，不付闭包扫描开销
   if (isProductFresh(sourceAbsPath, schemaPath)) {
-    state.generatedSchemas.add(schemaPath);
-    return false;
+    const closureFresh = await isClosureOlderThanProduct(sourceAbsPath, rootDir, schemaPath);
+    if (closureFresh) {
+      state.generatedSchemas.add(schemaPath);
+      return false;
+    }
   }
 
   // 过滤同文件的所有路由（一个 handler.ts 可能有 GET/POST/WS 多个方法——

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, existsSync, utimesSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { createDevApp } from './createDevApp';
 import { compileConfig } from './compileConfig';
@@ -510,5 +511,138 @@ describe('按需编译（Vite 风格）', () => {
     // 这验证了 reset 把 compiledFiles 清空了(否则会直接 return false 而不检查 mtime)
     const compiled = await ensureCompiled(sourcePath, tempDir, '.faapi');
     expect(compiled).toBe(false); // mtime fresh
+  });
+
+  it('dev 停机期间传递依赖变更：入口产物 fresh 也重编译 stale 闭包（新旧混编回归）', async () => {
+    // 复现业务反馈（TODO-faapi-bugs）：dev server 停机期间源码重构——b.ts 删除
+    // markChatInput 导出、a.ts 同步去引用（等价 lib/novel-memory.ts 与
+    // lib/agent-app-events.ts），bootstrap.ts 本身未改。
+    // b 在 config 依赖闭包内——重启时 compileConfig 必重编译 config 闭包（新进程
+    // 缓存为空），b.js 为新源码产物；a 只在 bootstrap 依赖闭包内——修复前
+    // ensureCompiled 入口产物 fresh 提前返回、闭包逐文件检查被跳过，a.js 保持
+    // 旧产物：旧 a.js `import { markChatInput } from './b'` 撞上新 b.js →
+    // ESM named export 缺失，启动报与根因距离很远的链接错误。
+    const libDir = join(tempDir, 'src', 'lib');
+    mkdirSync(libDir, { recursive: true });
+    const bSource = join(libDir, 'b.ts');
+    const aSource = join(libDir, 'a.ts');
+    const bootstrapSource = join(tempDir, 'src', 'bootstrap.ts');
+    writeFileSync(
+      bSource,
+      `export const bVersion = 'v1';\nexport function markChatInput() { return 'marked'; }\n`,
+      'utf-8',
+    );
+    writeFileSync(
+      aSource,
+      `import { markChatInput } from './b';\nexport function runA(): string { return markChatInput(); }\n`,
+      'utf-8',
+    );
+    writeFileSync(
+      bootstrapSource,
+      `import { runA } from './lib/a';\nexport default function bootstrap(): string { return runA(); }\n`,
+      'utf-8',
+    );
+    writeFileSync(
+      join(tempDir, 'faapi.config.ts'),
+      `import { bVersion } from './src/lib/b';\nexport default { tag: bVersion };\n`,
+      'utf-8',
+    );
+
+    // 第一会话：config 闭包含 b；bootstrap 加载链闭包编译 a、b
+    await generateManifestOnly();
+    await ensureCompiled(bootstrapSource, tempDir, '.faapi');
+    const aProduct = join(tempDir, '.faapi', 'lib', 'a.js');
+    const bProduct = join(tempDir, '.faapi', 'lib', 'b.js');
+    expect(existsSync(aProduct)).toBe(true);
+    expect(existsSync(bProduct)).toBe(true);
+
+    // 停机重构：b 删导出、a 去引用，bootstrap.ts 不动。
+    // mtime 显式后移（CI 文件系统 mtime 粒度可能较粗，禁止依赖自然 mtime 顺序）
+    const futureTime = Date.now() / 1000 + 10;
+    writeFileSync(bSource, `export const bVersion = 'v2';\n`, 'utf-8');
+    writeFileSync(aSource, `export function runA(): string { return 'refactored'; }\n`, 'utf-8');
+    utimesSync(aSource, futureTime, futureTime);
+    utimesSync(bSource, futureTime, futureTime);
+
+    // 第二会话：重启 dev（新进程语义——内存缓存清空；compileConfig 进程内缓存
+    // 同样为空 → config 闭包重编译，b.js 更新为新源码产物）
+    _resetDevOnDemandState();
+    setDevOnDemandEnabled(true);
+    setDevDist('.faapi');
+    await generateManifestOnly();
+    // 前置条件确认：b.js 已被 config 闭包重编译为不含 markChatInput 的新产物
+    expect(readFileSync(bProduct, 'utf-8')).not.toContain('markChatInput');
+
+    // bootstrap.ts 未改 → bootstrap.js 产物 fresh；修复后仍走闭包逐文件新鲜度
+    // 检查，发现 a.js stale → 重编译，import 链路一致
+    const compiled = await ensureCompiled(bootstrapSource, tempDir, '.faapi');
+    expect(compiled).toBe(true);
+
+    const mod = (await import(pathToFileURL(join(tempDir, '.faapi', 'bootstrap.js')).href)) as {
+      default: () => string;
+    };
+    expect(await mod.default()).toBe('refactored');
+  });
+
+  it('ensureSchemaGenerated 闭包感知：跨文件类型变更后重新生成（handler 未改）', async () => {
+    // zod.js 内容内联跨文件类型（checker 解析完整 RuntimeType），handler 未改
+    // 不足以证明 schema 最新——依赖类型在 dev 停机期间被改、重启后仅凭 handler
+    // mtime 判 fresh 会用过期 schema 校验（校验按旧类型执行，静默错）
+    const libDir = join(tempDir, 'src', 'lib');
+    mkdirSync(libDir, { recursive: true });
+    const typesSource = join(libDir, 'types.ts');
+    const handlerSource = join(tempDir, 'src', 'api', 'user', 'handler.ts');
+    writeFileSync(typesSource, `export interface UserQuery { page: number; }\n`, 'utf-8');
+    writeHandler(
+      'api/user/handler.ts',
+      [
+        `import type { UserQuery } from '../../lib/types';`,
+        `export type Query = UserQuery;`,
+        `export function GET(query: Query) { return { page: query.page }; }`,
+      ].join('\n'),
+    );
+    await generateManifestOnly();
+
+    const { routes } = await scanRoutes(tempDir, ['src/api/**/*.ts'], '.faapi');
+    const { serializeRoutes } = await import('./generateRoutes');
+    const serialized = serializeRoutes(routes, [], tempDir, '.faapi');
+    const routeFilePath = serialized.routes[0].filePath;
+    const schemaPath = join(tempDir, '.faapi', 'api', 'user', 'zod.js');
+
+    // 第一会话：编译 handler + 生成 zod
+    await ensureCompiled(handlerSource, tempDir, '.faapi');
+    const generated1 = await ensureSchemaGenerated(
+      schemaPath,
+      routeFilePath,
+      serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
+      tempDir,
+      '.faapi',
+    );
+    expect(generated1).toBe(true);
+    const zodBefore = readFileSync(schemaPath, 'utf-8');
+
+    // 停机重构：类型从 number 改为 string（coerce 行为差异可观测），handler 不动
+    const futureTime = Date.now() / 1000 + 10;
+    writeFileSync(typesSource, `export interface UserQuery { page: string; }\n`, 'utf-8');
+    utimesSync(typesSource, futureTime, futureTime);
+
+    // 新进程语义（真实重启下 Program/内存缓存天然为空；存活进程由 watcher
+    // reloadRoutes 的 invalidateProgramCache 承担同一失效）
+    _resetDevOnDemandState();
+    setDevOnDemandEnabled(true);
+    setDevDist('.faapi');
+    invalidateProgramCache();
+
+    // 修复后：闭包内 types.ts mtime 晚于 zod.js → 重新生成（修复前 false：仅凭
+    // handler mtime 判 fresh 提前跳过，schema 按旧类型执行）
+    const generated2 = await ensureSchemaGenerated(
+      schemaPath,
+      routeFilePath,
+      serialized.routes as unknown as import('../routers/routeTypes').RouteManifest,
+      tempDir,
+      '.faapi',
+    );
+    expect(generated2).toBe(true);
+    expect(readFileSync(schemaPath, 'utf-8')).not.toBe(zodBefore);
   });
 });

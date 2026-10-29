@@ -23,8 +23,8 @@ loadToolModule(filePath, functionName, rootDir)
   │    ├─ prodPathToSourcePath(filePath, rootDir, dist) → 源码 .ts 路径
   │    ├─ ensureCompiled(sourcePath, rootDir, dist)
   │    │    ├─ compiledFiles.has → 跳过
-  │    │    ├─ mtime fresh → 跳过
-  │    │    └─ compileDevRoutes({ files: [sourcePath] }) → 单文件编译
+  │    │    ├─ 依赖闭包逐文件 mtime 检查 → 全 fresh → 零编译返回 false
+  │    │    └─ 有 stale（入口或任一闭包文件）→ compileDevRoutes({ files: stale 集 })
   │    └─ 编译失败 → 抛 "Failed to compile tool module"
   ├─ importWithCacheBust(filePath, bustViteCache=isDevOnDemandEnabled())
   │    └─ dev 按需模式:走 Node 原生 import + 时间戳 query 绕过 Vite SSR 缓存
