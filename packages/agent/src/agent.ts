@@ -367,8 +367,7 @@ export interface AgentDeps {
    *
    * 框架三路径合成、基础字段（tasks/log/signal）保证正确：
    * - HTTP 请求：`toAgentToolContext` 收窄完整请求 ctx（@faapi/agent 插件工厂）
-   * - 进程内任务：carry + scoped TaskClient + 任务级 logger + job.signal 合成
-   * - 隔离任务：worker 侧合成；工具与钩子经 RPC 回宿主，宿主以同配方合成
+   * - 任务：carry + scoped TaskClient + 任务级 logger + job.signal 合成
    * - 测试/编程式：`createStandaloneToolContext`（无 app 场景的合规构造）
    *
    * 业务身份字段（currentUserId 等）经 declare module 增强本类型，随 ctx 全链
@@ -973,8 +972,7 @@ export class Agent {
     }
 
     // 可见性过滤（agent:filter-tools 事件）：无权 tool 不进 LLM 的 tools 清单
-    // （每次 run/stream 生效）。await 兼容：隔离任务路径的订阅端经 RPC 垫片转发
-    // 宿主执行（异步）
+    // （每次 run/stream 生效）
     const defs = Array.from(definitions.values());
     // agent:filter-tools 事件：LLM 可见清单
     // 组装末尾发射,handler 原地 filter/splice（载荷不含 agent 名,专属名按 agent
@@ -1368,10 +1366,6 @@ export async function validateToolCtx(
  * - `Agent.executeTool` 常规 tool 分支（守卫 + 白名单 + sub-agent 分流留在类内——
  *   守卫覆盖 sub-agent 派发、白名单按声明集合校验；schemaCache 传实例缓存，
  *   保持"同一 tool 只解析一次"语义）
- * - 隔离任务的宿主侧工具执行器（`@faapi/agent` 插件注册的 agentToolRunner）——
- *   worker 的 RPC 垫片把 tool-call 转发到宿主，宿主以同函数执行：schema 解析、
- *   钩子、handler 与全部资源（db 连接池等）都留在宿主，worker 只跑 LLM 编排循环
- *
  * 校验失败返回 `{ error }` 对象（不抛错，回传 LLM 重试）；tool 未找到 / handler
  * 抛错原样上抛（reactLoop per-tool catch 回传 LLM）。agent:after-tool-call 订阅端
  * 自身抛错只留痕（审计故障不劫持执行语义）。

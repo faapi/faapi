@@ -1,7 +1,7 @@
 /**
  * createTaskToolContext——任务路径的 AgentToolContext 合成（单一配方）
  *
- * 进程内任务的 `taskCtx.agent` 惰性通道与隔离任务的宿主侧工具执行器共用：
+ * 任务的 `taskCtx.agent` 惰性通道构造：
  * carry 数据字段落顶层（身份在 enqueue 处声明一次），契约字段（tasks/log/
  * signal）后置展开——carry 不可覆盖框架保证。
  *
@@ -16,7 +16,7 @@ import type { AgentToolContext } from '../runtime/agentToolContext';
 export interface TaskToolContextSource {
   /** enqueue 时 `opts.carry` 声明的执行上下文快照（未携带为空对象） */
   carry: Record<string, unknown>;
-  /** 任务执行作用域的 TaskClient（进程内 scoped / 隔离宿主侧 scoped） */
+  /** 任务执行作用域的 TaskClient */
   tasks: AgentToolContext['tasks'];
   /** 任务级 logger（scope `task:<name>`，jobId/task/attempt） */
   log: Logger;

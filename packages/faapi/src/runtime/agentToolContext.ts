@@ -3,7 +3,7 @@ import type { FaapiContext } from './contextTypes';
 
 /**
  * tool handler ctx 的框架注入字段载体——tasks/log/signal 三字段在三条约 agent
- * 执行路径上（HTTP / 进程内任务 / 隔离任务）由框架保证恒在恒正确。
+ * 执行路径上（HTTP / 任务）由框架保证恒在恒正确。
  *
  * **刻意声明为 type alias（非 interface）**：拒绝 `declare module` 增强——业务侧
  * 增强声明会因同名重复标识符编译报错（TS2300）。理由：增强是交叉标注之外的
@@ -33,14 +33,14 @@ import type { FaapiContext } from './contextTypes';
 export type AgentToolContext = {
   /**
    * 任务队列客户端——HTTP: app 实例（registries.taskHandle 注入）；任务:
-   * 同一 app 实例的 scoped TaskClient；隔离任务: 工具在宿主执行，收到宿主侧
+   * 同一 app 实例的 scoped TaskClient（任务路径：
    * scoped TaskClient（参数与返回值受结构化克隆约束）；无队列编排的 ctx
    * （轻量测试设施/编程式裸构）为抛错桩——调用即显式失败并给修复指引
    */
   tasks: import('../tasks/taskTypes.js').TaskClient;
   /**
    * 日志器——HTTP: 请求级（scope `http`，requestId/method/path）；任务: 任务级
-   * （scope `task:<name>`，jobId/task/attempt）；隔离任务: 宿主侧任务级 logger
+   * （scope `task:<name>`，jobId/task/attempt）；任务路径: 任务级 logger
    */
   log: Logger;
   /**

@@ -388,7 +388,7 @@ export interface TaskClient {
    * （匹配所有执行/所有 attempt）。**不回放订阅前历史**（补历史用 listEvents）；
    * 返回退订函数。handler 抛错 console.error 留痕——不影响任务执行与其他订阅者。
    *
-   * **仅宿主侧可用**：隔离任务 `taskCtx.tasks.subscribe` 显式抛错（回调函数不可
+   * **进程内可用**：订阅是回调签名，仅本进程语义（
    * 结构化克隆跨线程）；进程内任务为活引用可直调，但订阅面向管理面/桥接。
    * 完整契约见 taskEvents.md。
    */

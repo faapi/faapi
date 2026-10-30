@@ -48,14 +48,13 @@ const MAX_EVENTS_PER_JOB = 1_000;
 const MAX_EVENTS_TOTAL = 10_000;
 
 /**
- * 挂起信封持久化（suspend/resume 两路径共用的唯一写入点）
+ * 挂起信封持久化（`taskCtx.suspend` 的唯一写入点）
  *
- * 进程内 `taskCtx.suspend` 直调、隔离路径 `onSuspend`（worker RPC 回传宿主）
- * 共用：state 连同原 payload 以信封持久化到驱动 `taskState` 存储（跨实例/重启
- * 正确），调用方各自落 `suspended` 标记（完成分支据此转 suspended——不记 result、
- * 组记账不落定）。驱动未实现 `TaskDriver.taskState` 显式抛错（能力边界，两路径
- * 同口径——隔离路径错误经 RPC 原样回传 worker）。activations 保留进入本次执行时
- * 的值（首挂 0；激活重投的执行再挂时保留原计数，resume 时递增）
+ * state 连同原 payload 以信封持久化到驱动 `taskState` 存储（跨实例/重启正确），
+ * 调用方落 `suspended` 标记（完成分支据此转 suspended——不记 result、批量记账
+ * 不落定）。驱动未实现 `TaskDriver.taskState` 显式抛错（能力边界）。
+ * activations 保留进入本次执行时的值（首挂 0；激活重投的执行再挂时保留原计数，
+ * resume 时递增）
  */
 async function persistSuspendEnvelope(
   driver: TaskDriver,
@@ -229,10 +228,9 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
   }
 
   /**
-   * carry 纯数据校验（enqueue 时刻显式失败，与 config 快照同款边界）：身份/标记
-   * 快照要随任务持久化（跨实例/重启）并 postMessage 进隔离 worker——非普通对象
-   * 或含不可结构化克隆值（函数/symbol/不可克隆宿主对象）在入队即报错，不留到
-   * 派发时刻才炸
+   * carry 纯数据校验（enqueue 时刻显式失败）：身份/标记快照要随任务 envelope
+   * 持久化（跨实例/重启正确，经驱动载荷包装存储）——非普通对象或含不可
+   * 结构化克隆值（函数/symbol/不可克隆宿主对象）在入队即报错，不留到执行时刻才炸
    */
   function assertCarryData(carry: Record<string, unknown>): void {
     if (typeof carry !== 'object' || carry === null || Array.isArray(carry)) {
@@ -444,9 +442,8 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
         emit: (data) => {
           if (record.status === 'running') appendEvent(record, data);
         },
-        // 任务挂起：与隔离路径共用同一信封写入（persistSuspendEnvelope——语义
-        // 零差），落账由完成分支按 suspended 标记执行。驱动未实现 taskState
-        // 能力显式抛错（错误同步抛给 run，隔离路径经 RPC 原样回传）
+        // 任务挂起：经 persistSuspendEnvelope 写信封，落账由完成分支按
+        // suspended 标记执行。驱动未实现 taskState 能力显式抛错（错误同步抛给 run）
         suspend: async (state?: unknown) => {
           await persistSuspendEnvelope(driver, job, state);
           suspended = true;
@@ -468,7 +465,7 @@ export function createTaskQueue(deps: TaskQueueDeps): TaskQueue {
             if (!agentResolved) {
               // 执行 ctx 按契约合成：carry 数据字段落顶层（身份在 enqueue 处
               // 声明一次）+ 契约字段（tasks/log/signal）后置——carry 不可覆盖
-              // 框架保证。与隔离路径宿主侧执行器同配方（createTaskToolContext）
+              // 框架保证。与 HTTP 请求链同配方（createTaskToolContext）
               cachedAgent = store.get(
                 createTaskToolContext({
                   carry: taskCtx.carry,

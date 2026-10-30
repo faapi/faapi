@@ -163,7 +163,7 @@ function belowThreshold(level: LogLevel, threshold: LogLevel | undefined): boole
 }
 
 /**
- * 当前生效的管道级别（任务隔离派发用：级别随 workerData 下发做 worker 侧预过滤，
+ * 当前生效的管道级别（
  * 宿主侧 writeLogEntry 再次过滤——两级一致，派发后级别变更以宿主为准；
  * undefined = 不过滤，worker 侧同样放行全量）
  */
@@ -211,9 +211,6 @@ function globalDispatch(entry: LogEntry): void {
 
 /**
  * 写一条预构建的日志条目（直达全局管道，各出口按自身阈值过滤）
- *
- * 任务隔离执行桥接用：worker 内联日志器把条目作为纯数据 postMessage 回传宿主，
- * 宿主侧经本函数走统一管道（自定义 sink / 文件管道同样覆盖隔离任务）。
  */
 export function writeLogEntry(entry: LogEntry): void {
   globalDispatch(entry);

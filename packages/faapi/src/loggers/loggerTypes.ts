@@ -3,7 +3,7 @@
  *
  * Logger 跨越 handler（ctx.log / 参数 log）、任务（taskCtx.log）与任意业务代码
  * （createLogger）多条路径，类型是各路径形状一致的单一来源；
- * LogEntry 为纯数据（可结构化克隆），是隔离任务日志跨线程回传的契约。
+ * LogEntry 为纯数据。
  */
 
 /** 日志级别（阈值序：debug < info < warn < error） */
