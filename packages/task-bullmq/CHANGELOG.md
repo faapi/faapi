@@ -1,5 +1,7 @@
 # @faapi/task-bullmq
 
+## 7.19.0
+
 ## 7.18.0
 
 ### Minor Changes
