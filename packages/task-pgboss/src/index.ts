@@ -359,6 +359,38 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
     'completion_enqueued, mode, next_index, payloads, carry';
 
   /**
+   * jsonb 列绑参：先序列化为 JSON 文本（缺省 SQL NULL）。node-pg 的 prepareValue 对
+   * 顶层数组输出 PG 数组字面量（元素是 JSON 串、整体不是 JSON），jsonb 解析 22P02——
+   * 序列清单 payloads 恒为数组，裸绑必炸；carry 为对象虽会被自动 JSON 化，统一显式。
+   */
+  function toJsonbParam(value: unknown): string | null {
+    return value === undefined || value === null ? null : JSON.stringify(value);
+  }
+
+  /**
+   * jsonb 往返的结构等价比对（对象键序无关）：PG jsonb 存储按自身规则重排对象键序，
+   * 读回与声明逐字节比较会把同参重投误判为形状漂移。两侧先走 JSON 往返归一
+   * （与入库路径同一序列化），再按键名排序后比较。
+   */
+  function jsonbEquivalent(a: unknown, b: unknown): boolean {
+    const sortKeysDeep = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(sortKeysDeep);
+      if (v !== null && typeof v === 'object') {
+        const src = v as Record<string, unknown>;
+        return Object.fromEntries(
+          Object.keys(src)
+            .sort()
+            .map((k) => [k, sortKeysDeep(src[k])]),
+        );
+      }
+      return v;
+    };
+    const canonical = (v: unknown): string =>
+      JSON.stringify(sortKeysDeep(JSON.parse(JSON.stringify(v ?? null))));
+    return canonical(a) === canonical(b);
+  }
+
+  /**
    * 组记账实现（TaskDriver.groups）——经 boss.getDb().executeSql 计账。
    * 落定幂等由成员行 settled 守卫承载；成员翻转 + 计数递增在单条 CTE 语句内原子。
    */
@@ -384,8 +416,8 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
             decl.onComplete ?? null,
             decl.onFailure,
             decl.mode,
-            (decl.payloads ?? null) as object,
-            (decl.carry ?? null) as object,
+            toJsonbParam(decl.payloads),
+            toJsonbParam(decl.carry),
           ],
         );
         if (inserted.rows.length > 0) return;
@@ -403,8 +435,8 @@ export function createPgBossDriver(driverOptions: PgBossDriverOptions = {}): Tas
           (row.on_complete ?? null) === (decl.onComplete ?? null) &&
           row.on_failure === decl.onFailure &&
           (row.mode ?? 'parallel') === decl.mode &&
-          JSON.stringify(row.payloads ?? null) === JSON.stringify(decl.payloads ?? null) &&
-          JSON.stringify(row.carry ?? null) === JSON.stringify(decl.carry ?? null);
+          jsonbEquivalent(row.payloads, decl.payloads) &&
+          jsonbEquivalent(row.carry, decl.carry);
         if (!same) {
           throw new Error(
             `[faapi] Task batch "${decl.id}" already exists with different options ` +

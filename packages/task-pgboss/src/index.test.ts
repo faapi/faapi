@@ -420,6 +420,94 @@ describe('createPgBossDriver 组记账', () => {
     ).rejects.toThrow(/already exists with different options/);
   });
 
+  it('create：payloads / carry 以 JSON 文本绑定 jsonb 参数，缺省保持 SQL NULL', async () => {
+    // node-pg prepareValue 对顶层数组输出 PG 数组字面量（{"{…}","{…}"}）而非 JSON，
+    // jsonb 列解析 22P02——序列清单恒为数组，驱动必须先 JSON.stringify 再绑参
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    boss.sqlHandler = (t) => (SQL_IS.create(t) ? [{ id: 'g1' }] : []);
+    const payloads = [{ i: 1, tag: 'a' }, { i: 2 }];
+    const carry = { userId: 'u1', nested: { k: [1, 2] } };
+    await groups.create({
+      id: 'g1',
+      task: 'chunks',
+      total: 2,
+      onFailure: 'run-to-completion',
+      mode: 'serial',
+      payloads,
+      carry,
+    });
+    const insert = boss.sqls.find((s) => SQL_IS.create(s.text))!;
+    const [, , , , , , boundPayloads, boundCarry] = insert.values;
+    expect(typeof boundPayloads).toBe('string');
+    expect(typeof boundCarry).toBe('string');
+    expect(JSON.parse(boundPayloads as string)).toEqual(payloads);
+    expect(JSON.parse(boundCarry as string)).toEqual(carry);
+
+    // parallel 且未传 payloads/carry → SQL NULL（不是 JSON 文本 "null"）
+    boss.sqls.length = 0;
+    await groups.create({
+      id: 'g2',
+      task: 'chunks',
+      total: 1,
+      onFailure: 'run-to-completion',
+      mode: 'parallel',
+    });
+    const insert2 = boss.sqls.find((s) => SQL_IS.create(s.text))!;
+    expect(insert2.values[6]).toBeNull();
+    expect(insert2.values[7]).toBeNull();
+  });
+
+  it('create：同 id 重投的幂等比对按结构深比对——jsonb 读回键序重排不误判为形状漂移，值真变仍抛错', async () => {
+    const driver = await warmDriver();
+    const groups = driver.groups!;
+    const boss = fakeBosses()[0]!;
+    // INSERT 冲突（0 行）→ 对比 SELECT 返回的行模拟 PG jsonb 规范化后的键序（与声明不同）
+    const existingRow = {
+      task: 'chunks',
+      total: 2,
+      on_complete: 'summary',
+      on_failure: 'run-to-completion',
+      mode: 'serial',
+      payloads: [
+        { a: 1, b: { d: 4, c: 3 } },
+        { a: 2, b: { d: 40, c: 30 } },
+      ],
+      carry: { x: 'X', y: 'Y' },
+    };
+    boss.sqlHandler = (t) => (SQL_IS.create(t) ? [] : [existingRow]);
+    const decl = {
+      id: 'g1',
+      task: 'chunks',
+      total: 2,
+      onComplete: 'summary',
+      onFailure: 'run-to-completion' as const,
+      mode: 'serial' as const,
+    };
+    await expect(
+      groups.create({
+        ...decl,
+        payloads: [
+          { b: { c: 3, d: 4 }, a: 1 },
+          { b: { c: 30, d: 40 }, a: 2 },
+        ],
+        carry: { y: 'Y', x: 'X' },
+      }),
+    ).resolves.toBeUndefined();
+    // 值真变（同键序）→ 仍判形状漂移抛错，深比对不放宽检测
+    await expect(
+      groups.create({
+        ...decl,
+        payloads: [
+          { a: 1, b: { d: 4, c: 3 } },
+          { a: 2, b: { d: 40, c: 31 } },
+        ],
+        carry: { x: 'X', y: 'Y' },
+      }),
+    ).rejects.toThrow(/already exists with different options/);
+  });
+
   it('cancelRemaining：fail-fast 取消未落定成员，仅真实生效（state=cancelled）才落定；run-to-completion 为 no-op', async () => {
     const driver = await warmDriver();
     const groups = driver.groups!;

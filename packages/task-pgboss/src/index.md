@@ -7,6 +7,7 @@
 - 主包任务子系统只面向驱动无关的 `TaskDriver` 接口（driverTypes.md），持久化队列能力由本适配层承载。
 - pg-boss（v10 起移除 v9 的隐式建队列，v12 同）行为：`send()` 的 INSERT SQL `JOIN queue`，对未创建的队列静默返回 null（不报错）；`work()` 只注册进程内轮询器，同样不建队列。驱动若不显式 `createQueue`，空库上首次 `enqueue` 必然拿到 null——驱动把无 dedupId 的 null 当失败抛错，业务接口 500（生产冷启动必现，dev 因本地库早已有队列而难复现）。
 - pg-boss 的 `create_queue` plpgsql 幂等（`ON CONFLICT DO NOTHING`，队列已存在直接返回），驱动在投递前无条件补建队列是安全且便宜的——每个任务名每进程只需一次真实建队列，之后进程内 Set 缓存短路。
+- 批量行的 `payloads` / `carry` 是 jsonb 列，经 `executeSql` 绑定时驱动**先 `JSON.stringify` 成 JSON 文本再绑参**（缺省保持 SQL NULL）：node-pg 的 `prepareValue` 对普通对象自动 JSON 化，但对顶层数组输出 PG 数组字面量（`{"{…}","{…}"}`，元素是 JSON 串而整体不是 JSON），jsonb 列解析直接 22P02——序列清单恒为数组，裸绑必炸。同 id 重投的幂等比对按**结构深比对**（对象键序无关）：PG jsonb 存储会按自身规则重排对象键序，读回与声明逐字节比较会把同参重投误判为"形状漂移"。
 
 ## 使用场景
 
