@@ -1,6 +1,6 @@
 # agent
 
-一句话概括：Agent 类——按 `agent.name` 查找元数据、组装 tool 列表（tools + sub-agent）、提供 `run` / `stream` / `asTool`,把 [reactLoop](./reactLoop.md) 与 faapi 核心的 agent/tool 注册表粘合起来,并在 sub-agent 递归时传递 `enableTracing`、链式续拼 [traceId](./traceId.md)、把子循环结果包装为 [SubAgentToolResult](./reactLoop.md)（携带 `usage` / `turns` 供父循环上卷,tracing 开启时再附 sub-trace）。
+一句话概括：Agent 类——按 `agent.name` 查找元数据、组装 tool 列表（tools + sub-agent）、提供 `run` / `stream` / `asTool`,把 [reactLoop](./reactLoop.md) 与 faapi 核心的 agent/tool 注册表粘合起来,并在 sub-agent 递归时传递 `enableTracing`、把子循环结果包装为 [SubAgentToolResult](./reactLoop.md)（携带 `usage` / `turns` 供父循环上卷,tracing 开启时再附 sub-trace）。
 
 ## 为什么需要
 
@@ -29,7 +29,7 @@ Agent 类把这些「胶水」逻辑集中在一处,reactLoop 保持纯函数。
 | 类型 | 说明 |
 | --- | --- |
 | `AgentDeps` | Agent 运行时依赖（providers Map + llms + rootDir + config + 请求上下文透传 ctx + 注册表/加载器访问器 + 可选 schema 解析器 / `agent:system-prompt` 装饰事件发射器；无默认 provider / 默认 agent 名——每次调用显式指定） |
-| `AgentRuntimeConfig` | 全局 agent 配置覆盖（maxTurns / maxAgentDepth / enableTracing / traceId / traceIdTemplate） |
+| `AgentRuntimeConfig` | 全局 agent 配置覆盖（maxTurns / maxAgentDepth / enableTracing） |
 | `ToolSchemaResolution` | tool schema 解析结果（jsonSchema 给 LLM + validate 给执行前校验） |
 | `AgentRecursionError` | sub-agent 递归超 `maxAgentDepth` 时抛出 |
 | `SubAgentToolResult` | sub-agent tool 的结构化返回值（`{ __subAgent: true, result, usage?, turns?, trace? }`）——reactLoop 据此上卷子循环 `usage` / `turns`、剥壳回传、发 `subagent_call` 事件（`trace` 存在时）。详见 [reactLoop.md](./reactLoop.md)「usage 与 turns 的整树口径」与 [trace](./trace.md) |
@@ -115,7 +115,6 @@ class Agent {
 | `maxHistoryTokens` | — | — | `AgentRuntimeConfig.maxHistoryTokens`（历史超限事件触发阈值,未设置 = 不估算不发射;框架零内置裁剪——超限承接见 [reactLoop.md](./reactLoop.md) 的 `agent:history-over-budget` 章节） |
 | `toolTimeoutMs` | — | — | `AgentRuntimeConfig.toolTimeoutMs`（未设置 = 不限时;`faapi.config` 的 `agent.toolTimeoutMs` 经 `toAgentRuntimeConfig` 拆装到达） |
 | `enableTracing` | `options.enableTracing` | — | `AgentRuntimeConfig.enableTracing`（默认 `false`） |
-| `traceId` | `options.traceId`（显式指定,全局关闭也生效） | — | 自动生成（`AgentRuntimeConfig.traceId` 默认 `true`;显式 `false` 整体关闭）——生成/注入/链式规则详见 [traceId.md](./traceId.md) |
 
 `options.model` 是字符串 key,解析规则见 [agentHandle.md](./agentHandle.md) 的「`options.model` 字符串 key 解析规则」。
 `options.model` 未传且无 `options.provider` 时抛 `AgentError`——模型是调用侧决策,无 config fallback；
@@ -125,22 +124,6 @@ class Agent {
 完全跳过 llms key 解析,`options.model` 变为原始 model 名原样透传（支持带 `/` 的 model id）。
 仅本次调用生效,sub-agent 递归继承父调用解析出的 provider。详见 [agentHandle.md](./agentHandle.md) 的
 「`options.provider` 外部 provider」章节。
-
-### traceId 组装与注入
-
-`traceId`（默认开启,详见 [traceId.md](./traceId.md)）在 `buildLoopConfig` 内与 systemPrompt
-同批组装：
-
-1. **解析**：`options.traceId`（显式,最高——全局关闭也生效）> 全局开启时自动生成
-   （`AgentRuntimeConfig.traceId !== false`,12 位十六进制段）> 关闭且未显式传 = `undefined`
-2. **注入**：追加在最终 system 消息**末尾**,顺序为 `agent:system-prompt` 事件改写结果 →
-   `subAgentContextBlock` → traceId 块（框架级元数据,不经 `agent:system-prompt` 装饰事件,业务 prompt 原样保留）
-3. **两个不注入场景**：最终 system 为空（不凭空多出只含元数据的 system 消息）;续跑历史自带
-   system 消息（本次 systemPrompt 本就不被采用,历史不被改写、不重复注入）
-4. **传递**：本次 traceId 进 `callCtx`,`executeSubAgent` 为子调用链式续拼
-   （父完整 ID + '.' + 新段,`subOptions.traceId`）——父关闭时子同样无,关闭语义整树一致
-5. **暴露**：非流式 `result.traceId` + `result.trace.traceId`;流式 `done.traceId`;
-   流式 sub 包装 `wrapped.trace.traceId`（非流式 sub 由子 `run()` 自行填充）
 
 ### systemPromptFile（提示词文件）
 
@@ -184,7 +167,7 @@ export const config = {
 - **缺失变量显式抛错**：占位符在 vars 中无对应值 → `AgentError`（带 agent 名与占位符名）,
   不发起 LLM 请求,不静默留占位符
 - **渲染时机**：base 解析（systemPromptFile 读文件 / 内联 systemPrompt）之后、
-  `agent:system-prompt` 事件之前——订阅端看到渲染后内容;traceId 块仍在其后追加
+  `agent:system-prompt` 事件之前——订阅端看到渲染后内容
 - **新鲜度**：每次 run / stream / 派发渲染,不缓存——dev 改 prompt 文件立即生效
 
 ### `agent:system-prompt` systemPrompt 装饰事件（base + 应用装饰）

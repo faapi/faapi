@@ -25,7 +25,7 @@
 | --- | --- |
 | `ToolExecutor` | tool 执行函数 `(name, args) => Promise<unknown>`，由 Agent 类提供 |
 | `ReactLoopConfig` | 循环配置（provider + systemPrompt + tools + executeTool + maxTurns + model 等） |
-| `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage + traceId + trace）；`usage` / `turns` 为整树口径（见「usage 与 turns 的整树口径」章节）；`traceId` 由 Agent 层填充（循环不感知,见 [traceId.md](./traceId.md)） |
+| `ReactLoopResult` | 非流式返回（content + reasoning + messages + turns + stopReason + usage + trace）；`usage` / `turns` 为整树口径（见「usage 与 turns 的整树口径」章节） |
 | `ReactLoopStreamChunk` | 流式 chunk（deltaContent + deltaReasoning + toolCall + toolResult + subagentEvent + done）；`done.usage` / `done.turns` 同整树口径；`done.messages` 为最终完整历史（与非流式 `ReactLoopResult.messages` 同源对齐） |
 | `SubAgentToolResult` | sub-agent tool 的结构化返回值（`{ __subAgent: true, result, usage?, turns?, trace? }`），reactLoop 识别后上卷用量、剥壳回传（见「usage 与 turns 的整树口径」章节） |
 | `ReactLoopError` | 系统级错误（maxTurns 超限，携带中断时 messages 供续跑），tool 执行错误不抛此类型 |
@@ -178,7 +178,7 @@ interface ReactLoopStreamChunk {
   /** 嵌套子代理循环的中间事件（冒泡透传，见「子代理事件冒泡」章节） */
   subagentEvent?: SubAgentEvent;
   /** 循环结束（最终结果）；`messages` 为最终完整历史（含最终 assistant 消息，已剥离推理内容），与非流式 `ReactLoopResult.messages` 同源——流式消费方持久化后经 `config.messages` 续跑（挂起/恢复编排）不必走异常路径 */
-  done?: { content: string; reasoning?: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage; traceId?: string; messages: LLMMessage[] };
+  done?: { content: string; reasoning?: string; turns: number; stopReason: LLMStopReason; usage?: LLMUsage; messages: LLMMessage[] };
 }
 ```
 

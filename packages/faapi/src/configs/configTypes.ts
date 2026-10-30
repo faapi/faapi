@@ -315,26 +315,6 @@ export interface AgentConfig {
    */
   enableTracing?: boolean;
   /**
-   * 层级追踪 ID（默认 `true`——自动生成，详见 `@faapi/agent` 的
-   * [traceId](../../agent/src/traceId.md) 文档）
-   *
-   * 每次根 `agent.run()` / `agent.stream()` 自动生成 12 位十六进制段作为 traceId，
-   * sub-agent 派发链式续拼（父完整 ID + '.' + 新段），注入最终 system 消息末尾
-   * （中性元数据措辞，指示 LLM 忽略）并在结果暴露（`result.traceId` / 流式
-   * `done.traceId` / `trace.traceId`）——LLM 网关日志与业务日志按同一 ID 关联。
-   *
-   * `false` 整体关闭：不生成、不注入、结果无字段；单次调用显式传
-   * `run(input, { traceId: ctx.requestId })` 时仍生效（显式优先）。
-   */
-  traceId?: boolean;
-  /**
-   * traceId 注入模板（缺省用英文默认文案，见 traceId.md）
-   *
-   * 必须含 `{traceId}` 占位符（渲染时替换为完整 ID），缺失时 run/stream 抛
-   * `AgentError`（fail fast）。
-   */
-  traceIdTemplate?: string;
-  /**
    * 发送给 LLM 的历史 token 预算（近似估算，未设置 = 不裁剪）
    *
    * 多轮 tool 循环中对话历史只增不减，大 tool 结果会撑爆模型上下文窗口导致

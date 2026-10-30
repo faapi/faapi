@@ -77,8 +77,6 @@ function toAgentRuntimeConfig(agentConfig: AgentConfig): AgentRuntimeConfig {
     maxHistoryTokens: agentConfig.maxHistoryTokens,
     toolTimeoutMs: agentConfig.toolTimeoutMs,
     enableTracing: agentConfig.enableTracing,
-    traceId: agentConfig.traceId,
-    traceIdTemplate: agentConfig.traceIdTemplate,
   };
 }
 

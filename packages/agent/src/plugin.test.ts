@@ -27,8 +27,8 @@ vi.mock('@faapi/faapi/src/loaders/loadToolSchema', async (importOriginal) => {
 });
 
 // ─── Mock ./provider 避免 real HTTP ──────────────────
-// completeRequests 经 vi.hoisted 跨 mock 边界共享——配置映射用例断言 Agent 实际发给
-// provider 的 system 消息（traceId 开关/模板经 plugin → AgentRuntimeConfig 生效）
+// completeRequests 经 vi.hoisted 跨 mock 边界共享——用例据此断言 Agent 实际发给
+// provider 的 system 消息
 const { completeRequests } = vi.hoisted(() => ({
   completeRequests: [] as { messages: unknown[] }[],
 }));
@@ -218,35 +218,6 @@ describe('@faapi/agent plugin', () => {
       expect(h1).not.toBe(h2);
     });
 
-    it('config.agent.traceId:false 映射 AgentRuntimeConfig——run 的 system 消息无 trace 注入块', async () => {
-      completeRequests.length = 0;
-      const factory = setupAndCaptureFactory(makeCtx({ ...fullAgentConfig, traceId: false }));
-      const agent = factory!(makeReqCtx()) as Agent;
-
-      const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
-      expect(result.content).toBe('ok');
-      expect(result.traceId).toBeUndefined();
-      expect(completeRequests[0]!.messages[0]).toEqual({
-        role: 'system',
-        content: 'you are a researcher',
-      });
-    });
-
-    it('config.agent.traceIdTemplate 映射 AgentRuntimeConfig——run 的 system 消息用自定义文案', async () => {
-      completeRequests.length = 0;
-      const factory = setupAndCaptureFactory(
-        makeCtx({ ...fullAgentConfig, traceIdTemplate: 'T={traceId}' }),
-      );
-      const agent = factory!(makeReqCtx()) as Agent;
-
-      const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
-      expect(result.traceId).toMatch(/^[0-9a-f]{12}$/);
-      expect(completeRequests[0]!.messages[0]).toEqual({
-        role: 'system',
-        content: `you are a researcher\n\nT=${result.traceId}`,
-      });
-    });
-
     it('config.agent.enableTracing:true 经复合块到达运行时——run 返回 result.trace', async () => {
       // 复合块拆装单一清单：enableTracing 必须经 toAgentRuntimeConfig 到达运行时（漏拼即配置静默失效回落 false）
       completeRequests.length = 0;
@@ -256,7 +227,6 @@ describe('@faapi/agent plugin', () => {
       const result = await agent.run('hello', { agent: 'researcher', model: 'gpt-4o' });
       expect(result.content).toBe('ok');
       expect(result.trace).toBeDefined();
-      expect(result.trace!.traceId).toBe(result.traceId);
     });
 
     it('emitAppEvent 由插件 overrides 注入（优先于 decorateDeps 同名字段）——业务桥接走 app 总线订阅', async () => {

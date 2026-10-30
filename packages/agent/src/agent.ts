@@ -44,7 +44,6 @@ import {
   type SubAgentToolResult,
 } from './reactLoop';
 import type { AgentTraceEvent } from './trace';
-import { buildTraceIdBlock, createTraceSegment, joinTraceId } from './traceId';
 
 // schema 解析结果契约主包持有（loader 域，见 faapi 的 toolSchemaResolver.md），
 // 此处 re-export 保持 `import type { ToolSchemaResolution } from '@faapi/agent'` 导入路径不变
@@ -278,24 +277,6 @@ export interface AgentRuntimeConfig {
    */
   enableTracing?: boolean;
   /**
-   * 层级追踪 ID(默认 `true`——自动生成,详见 [traceId.md](./traceId.md))
-   *
-   * 每次根 `run` / `stream` 自动生成 12 位十六进制段,sub-agent 派发链式续拼
-   * (父完整 ID + '.' + 新段),注入最终 system 消息末尾并在结果暴露
-   * (`ReactLoopResult.traceId` / 流式 `done.traceId` / `AgentTrace.traceId`)。
-   *
-   * `false` 整体关闭:不生成、不注入、结果无字段(逐字节回到现状);
-   * 单次调用显式传 `AgentRunOptions.traceId` 时仍生效(显式优先)。
-   */
-  traceId?: boolean;
-  /**
-   * traceId 注入模板(缺省用英文默认文案,见 traceId.md)
-   *
-   * 必须含 `{traceId}` 占位符(渲染时替换为完整 ID),缺失抛 `AgentError`——
-   * 静默渲染出无 ID 的 trace 块会让注入块失去关联能力。
-   */
-  traceIdTemplate?: string;
-  /**
    * 执行守卫/审计/可见性过滤经 [appEventBus](../../faapi/src/events/appEventBus.md)
    * 的 `agent:before-tool-call` / `agent:after-tool-call` / `agent:filter-tools`
    * 事件承载（经 `AgentDeps.emitAppEvent` 发射,订阅入口 `getApp().on`——启动期写 `src/bootstrap.ts`）。
@@ -318,12 +299,6 @@ export interface AgentRuntimeConfig {
 interface AgentCallContext {
   agentName: string;
   enableTracing: boolean;
-  /**
-   * 本次调用的层级追踪 ID(见 [traceId.md](./traceId.md))——已注入本次 system
-   * 消息并在结果暴露;`executeSubAgent` 据此为子调用链式续拼子 ID。
-   * `config.agent.traceId: false` 且未显式传 `options.traceId` 时 `undefined`。
-   */
-  traceId: string | undefined;
   provider: LLMProvider;
   model: string | undefined;
   /**
@@ -483,12 +458,7 @@ export class Agent {
    * @throws {Error} provider.complete 抛错时立即传播
    */
   async run(input?: string, options?: AgentRunOptions): Promise<ReactLoopResult> {
-    const {
-      agentName,
-      config,
-      traceId,
-      input: effectiveInput,
-    } = await this.buildLoopConfig(input, options);
+    const { agentName, config, input: effectiveInput } = await this.buildLoopConfig(input, options);
     // 执行作用域挂载（详见 [agentScope](./agentScope.md)）：整条 reactLoop promise 链在
     // 当前 agent 作用域内——ALS 随 promise 传播，同轮 Promise.all 并发派发的每个分支
     // 各自继承；sub 换栈经 executeSubAgent → subAgent.run/stream 统一发生
@@ -498,11 +468,6 @@ export class Agent {
     // reactLoop 不知 agent 名,在此填充顶层 trace.agentName（sub-agent 调本方法时也走此路径）
     if (result.trace) {
       result.trace.agentName = agentName;
-      result.trace.traceId = traceId;
-    }
-    // traceId 暴露到顶层结果（与 trace.traceId 同值,见 traceId.md）
-    if (traceId !== undefined) {
-      result.traceId = traceId;
     }
     return result;
   }
@@ -523,12 +488,7 @@ export class Agent {
    * @throws {Error} provider.stream 抛错时立即传播
    */
   async *stream(input?: string, options?: AgentRunOptions): AsyncIterable<ReactLoopStreamChunk> {
-    const {
-      agentName,
-      config,
-      traceId,
-      input: effectiveInput,
-    } = await this.buildLoopConfig(input, options);
+    const { agentName, config, input: effectiveInput } = await this.buildLoopConfig(input, options);
     // 执行作用域挂载（详见 [agentScope](./agentScope.md)）。ALS 语义：async generator
     // 体内不捕获创建时上下文——体内段落随消费方每次 next() 的上下文执行。因此逐次在
     // 作用域内驱动内层迭代器（等价 yield*，背压保持：仅消费方拉动时推进），chunk 原样
@@ -540,13 +500,7 @@ export class Agent {
           iterator.next(),
         );
         if (done) return;
-        // done chunk 附带本次 traceId（与 ReactLoopResult.traceId 同语义,见 traceId.md）;
-        // 其余 chunk（delta/toolCall/traceEvent/subagentEvent）原样转发
-        if (value.done && traceId !== undefined) {
-          yield { ...value, done: { ...value.done, traceId } };
-        } else {
-          yield value;
-        }
+        yield value;
       }
     } finally {
       // 消费方提前 break / 抛错时对位 yield* 的迭代器收尾语义
@@ -657,7 +611,6 @@ export class Agent {
     /** 本次 user 输入原文（undefined = 纯续跑）——root-input 塑形经 addInput 在 loop 首轮落账,不改写此值 */
     input: string | undefined;
     config: ReactLoopConfig;
-    traceId: string | undefined;
   }> {
     // 输入守卫：全新对话必须有 input,续跑必须有 messages（空 input + messages = 纯续跑）
     if (!input && !options?.messages?.length) {
@@ -724,18 +677,11 @@ export class Agent {
     // enableTracing 优先级:options > deps.config > 默认 false（opt-in,零开销）
     const enableTracing = options?.enableTracing ?? this.deps.config?.enableTracing ?? false;
 
-    // traceId 解析（见 traceId.md）：options.traceId（显式,最高——全局关闭也生效）
-    // > 全局开启时自动生成（默认 true,12 位十六进制段）> 关闭且未显式传 =
-    // undefined（不生成、不注入、结果无字段,逐字节现状）
-    const traceId =
-      options?.traceId || (this.deps.config?.traceId !== false ? createTraceSegment() : undefined);
-
     // 本次调用的解析结果——executeTool / executeSubAgent 复用（路由按声明来源判定,
-    // sub-agent 递归继承 provider/model;traceId 供 executeSubAgent 链式续拼子 ID）
+    // sub-agent 递归继承 provider/model）
     const callCtx: AgentCallContext = {
       agentName,
       enableTracing,
-      traceId,
       provider,
       model,
       declaredTools,
@@ -755,22 +701,12 @@ export class Agent {
       ? [systemPrompt, this.subAgentContextBlock].filter(Boolean).join('\n\n')
       : systemPrompt;
 
-    // traceId 注入块（框架级元数据,不经 resolveSystemPrompt 装饰）——追加在最终
-    // system 消息末尾（subAgentContextBlock 之后,业务 prompt 原样保留）。最终
-    // system 为空时不注入（不凭空多出只含元数据的 system 消息,见 traceId.md
-    // 「两个不注入场景」——续跑历史自带 system 时本次 systemPrompt 本就不被采用）
-    const finalSystemPrompt =
-      withContextBlock && traceId !== undefined
-        ? `${withContextBlock}\n\n${buildTraceIdBlock(traceId, this.deps.config?.traceIdTemplate)}`
-        : withContextBlock;
-
     return {
       agentName,
-      traceId,
       input,
       config: {
         provider,
-        systemPrompt: finalSystemPrompt,
+        systemPrompt: withContextBlock,
         model,
         temperature: options?.temperature,
         maxTokens: options?.maxTokens,
@@ -1188,17 +1124,11 @@ export class Agent {
     // 继承父调用的 provider 与 model（sub-agent 不声明模型,恒沿用父调用解析
     // 结果）。单字段 { input } 直传字符串（与显式入参 schema 形状一致),
     // 其余形状 stringify 兜底;传递 enableTracing 让 sub-agent 采集 trace。
-    // traceId 链式续拼（见 traceId.md）：子 ID = 父完整 ID + '.' + 新段;父调用
-    // traceId 关闭（undefined）时子调用同样无——关闭语义整树一致
     const subOptions: AgentRunOptions = {
       agent: subName,
       provider: callCtx.provider,
       model: callCtx.model,
       enableTracing: callCtx.enableTracing,
-      traceId:
-        callCtx.traceId !== undefined
-          ? joinTraceId(callCtx.traceId, createTraceSegment())
-          : undefined,
     };
 
     // 派发入参塑形经 agent:root-input 事件：子循环 buildLoopConfig 对非空 input
@@ -1285,7 +1215,6 @@ export class Agent {
       if (traceEvents) {
         wrapped.trace = {
           agentName: '',
-          traceId: subOptions.traceId,
           startedAt,
           durationMs: performance.now() - startedAt,
           turns: done?.turns ?? 0,

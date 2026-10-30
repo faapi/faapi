@@ -166,8 +166,6 @@ describe('createAgentDeps', () => {
       maxHistoryTokens: 30000,
       toolTimeoutMs: 30_000,
       enableTracing: true,
-      traceId: false,
-      traceIdTemplate: 'trace: {traceId}',
     };
     const deps = createAgentDeps({ registries: makeRegistries(), ctx: toolCtx, agentConfig });
 
@@ -180,8 +178,6 @@ describe('createAgentDeps', () => {
       maxHistoryTokens: 30000,
       toolTimeoutMs: 30_000,
       enableTracing: true,
-      traceId: false,
-      traceIdTemplate: 'trace: {traceId}',
     });
   });
 

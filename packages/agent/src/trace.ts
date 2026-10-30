@@ -10,12 +10,6 @@ import type { LLMMessage, LLMStopReason, LLMUsage } from './provider';
 export interface AgentTrace {
   /** agent 名 */
   agentName: string;
-  /**
-   * 层级追踪 ID(与 ReactLoopResult.traceId 同值,见 [traceId.md](./traceId.md))。
-   * sub-trace 携带子链完整 ID(父完整 ID + '.' + 子段)——嵌套结构据此还原调用树。
-   * Agent 层填充;traceId 关闭时 `undefined`。
-   */
-  traceId?: string;
   /** 开始时间（performance.now() ms,相对进程启动,便于算相对耗时） */
   startedAt: number;
   /** 总耗时 ms（done 时填充,抛错时也填充） */

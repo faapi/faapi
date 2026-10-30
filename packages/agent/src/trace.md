@@ -25,7 +25,7 @@
 
 | 类型 | 说明 |
 | --- | --- |
-| `AgentTrace` | 单次 agent.run() 的完整明细（agentName + traceId + startedAt + durationMs + turns + usage + stopReason + content + events）；`turns` / `usage` 为整树口径（与 `ReactLoopResult` 同值，含全部 sub-agent 循环） |
+| `AgentTrace` | 单次 agent.run() 的完整明细（agentName + startedAt + durationMs + turns + usage + stopReason + content + events）；`turns` / `usage` 为整树口径（与 `ReactLoopResult` 同值，含全部 sub-agent 循环） |
 | `AgentTraceEvent` | discriminated union,按 `type` 区分：`llm_call` / `tool_call` / `subagent_call`；事件 `turn` 序号是主循环口径（1..N 连续，不含 sub-agent 内部轮） |
 | `SubAgentToolResult` | sub-agent tool 的结构化返回值（`{ __subAgent: true, result, usage?, turns?, trace? }`），reactLoop 据此上卷用量、发 `subagent_call` 事件（`trace` 存在时） |
 | `TracingToolResult` | 旧版 sub-agent 返回值（`{ __trace: true, result, trace }`，无用量字段）——reactLoop 仍兼容识别（仅发事件、不上卷用量），新代码用 `SubAgentToolResult` |
@@ -40,13 +40,6 @@
 - **非流式**：`ReactLoopResult.trace?: AgentTrace`（`enableTracing=true` 时填充）
 - **流式**：`ReactLoopStreamChunk.traceEvent?: AgentTraceEvent`（与 deltaContent / toolCall / toolResult / done 互斥,一个 chunk 至多一个字段）
 - **AgentHandle**：`agent.run(input, options?)` / `agent.stream(input, options?)` 新增 `options.enableTracing`
-
-### 与 traceId 的关系
-
-`AgentTrace.traceId`（`traceId` 默认开启时填充,详见 [traceId.md](./traceId.md)）与 tracing
-是**两个独立开关**：traceId 管「LLM 侧与业务侧日志按同一 ID 关联」（轻量,默认开）,
-tracing 管「单次调用的结构化明细快照」（重,opt-in）。开 tracing 不自动开/关 traceId,
-反之亦然；两者都开时 `trace.traceId` 与 `result.traceId` 同值,sub-trace 携带子链完整 ID。
 
 ### 事件序列示例
 

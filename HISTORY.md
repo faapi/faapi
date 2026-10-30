@@ -55,6 +55,7 @@
 | `scanRoutes` / `scanTools` 运行时 `import` handler / tool 模块提取方法名 | 零 import：正则 / AST 扫描源码 | 运行时 import 让 dev 启动慢、按需编译无法实现 | 6.x |
 | `extractAllTypes` 提前解析文件全部顶层类型 | 按需提取（`collectRouteSchemaSources`） | 任何无关类型坏掉都让提取整体失败 | — |
 | 流式父循环的子代理增量冒泡通道（`subagentDelta` chunk 字段、`SubAgentDelta` 类型、`SubAgentDeltaEmitter.onSubAgentDelta`） | `subagentEvent` 统一事件通道（`SubAgentEvent` 判别联合：`delta` / `tool_call` / `tool_result`；`SubAgentEventEmitter.onSubAgentEvent`） | 单一通道承载子代理全部中间事件（LLM 增量 + tool 调用/结果，孙代透传口径不变），不维护「增量」与「事件」两套形态 | 7.16.0 |
+| `traceId` 层级追踪 ID（`config.agent.traceId` / `traceIdTemplate` 配置、`AgentRunOptions.traceId`、结果字段 `result.traceId` / 流式 `done.traceId` / `AgentTrace.traceId`、`@faapi/agent` 内部 `traceId` 模块——每次 run/stream 生成 12 位十六进制段，以 `[trace] trace_id=…` 块注入 system 消息末尾，sub-agent 派发链式续拼子 ID） | 不提供——system 消息只含业务提示词（模板渲染 → `agent:system-prompt` 装饰 → 派发上下文块），框架不再注入任何元数据；结构化调用明细仍由 `enableTracing`（`packages/agent/src/trace.md`）承担，跨系统关联键由业务侧自行经 provider 请求头 / 日志字段传递 | 把观测元数据混进提示词进入 LLM 视野；且显式 `options.traceId` 优先于全局 `traceId: false`，业务无法彻底关闭注入。维护者决策（2026-10-30）整体下线 | 7.20.0 |
 
 ### 1.1 已移除的迁移护栏（2026-10-28 维护者决策）
 
