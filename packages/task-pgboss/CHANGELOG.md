@@ -1,5 +1,7 @@
 # @faapi/task-pgboss
 
+## 7.20.0
+
 ## 7.19.0
 
 ### Minor Changes

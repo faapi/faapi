@@ -1,6 +1,6 @@
 {
   "name": "@faapi/task-pgboss",
-  "version": "7.19.0",
+  "version": "7.20.0",
   "description": "pg-boss task queue driver for faapi — persistent queue on PostgreSQL",
   "type": "module",
   "main": "./src/index.ts",
